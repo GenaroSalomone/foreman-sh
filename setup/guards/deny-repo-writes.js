@@ -1,0 +1,1298 @@
+// The read-only guard, once, for every lane — the opencode half.
+//
+// The Python half is `deny_repo_writes.py` beside this file, and it carries the
+// full account of why eight copies became two: read its module docstring first.
+// The short version is that four Python copies had drifted 11.5 KB apart, in
+// BOTH directions, while the eight-copy conformance suite stayed green — it
+// compared each lane's Python against its own JavaScript and never compared one
+// lane against another.
+//
+// What is shared here is detection. What stays per lane is the policy in
+// `guards.json` at brain's root, loaded below: protected roots, prose, and
+// EXEMPTIONS. An exemption is not a check, so a lane with no `worktree_roots`
+// cannot reach the spent-worktree teardown branch.
+//
+// Why a guard at all: `permission.edit` matches tool *paths*, and a shell
+// redirect is not a path — `echo x > docs/file.md` is one bash call whose
+// argument merely contains a filename. That hole is not theoretical; it is how
+// the first enforcement test of this setup wrote a probe file with every deny
+// rule in place. And matching the string is not enough either: `..`, a symlink,
+// or a sibling directory whose name merely begins with a protected root all
+// defeat a substring test. Every boundary question below RESOLVES, then
+// compares.
+//
+// KEEP THIS FILE AND THE PYTHON IN STEP. `setup/guards/` holds the conformance
+// suite that proves you did, and it now compares lanes as well as runtimes.
+
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { userInfo } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// NATIVE WINDOWS: ONE SPELLING OF A PATH, as in the Python half (read the
+// comment above `_canon` there). On Windows every root, working directory and
+// path token is folded to `/c/data/x` — drive as a leading segment, forward
+// slashes, lower case — before it is compared, and realpath runs on the native
+// spelling. Folding only makes spellings equal, so it adds matches and never
+// removes one. Elsewhere each helper is the identity. The policy's `~` is
+// `userInfo().homedir`, which on Windows is the profile directory of the
+// account's token, not USERPROFILE. `DENY_REPO_WRITES_AS_NATIVE_WINDOWS=1`
+// folds on any platform, so the folding is testable where Windows is not.
+const NATIVE_WINDOWS = process.platform === "win32";
+const WINPATHS = NATIVE_WINDOWS || process.env.DENY_REPO_WRITES_AS_NATIVE_WINDOWS === "1";
+const DRIVE = /^([A-Za-z]):(?:[\\/]|$)/;
+const TEXT_DRIVE = /(?<![\w])([A-Za-z]):\//g;
+
+export function canon(p) {
+  if (!WINPATHS || typeof p !== "string" || !p) return p;
+  let q = p.replace(/\\/g, "/");
+  const m = DRIVE.exec(q);
+  if (m) q = "/" + m[1] + q.slice(2);
+  if (q.startsWith("/")) q = normPath(q);
+  return q.toLowerCase();
+}
+
+function canonText(text) {
+  if (!WINPATHS || typeof text !== "string") return text;
+  return text.replace(/\\/g, "/").replace(TEXT_DRIVE, (_, d) => `/${d}/`).toLowerCase();
+}
+
+function isAbs(p) {
+  if (typeof p !== "string") return false;
+  if (WINPATHS) return p.startsWith("/") || p.startsWith("\\") || DRIVE.test(p);
+  return p.startsWith("/");
+}
+
+function joinPath(base, rel) {
+  if (WINPATHS) return canon(canon(base).replace(/\/+$/, "") + "/" + rel.replace(/\\/g, "/"));
+  return base.replace(/\/+$/, "") + "/" + rel;
+}
+
+// Canonical spelling -> one Windows can open, or null.
+function nativeOf(c) {
+  const m = /^\/([a-z])(\/.*)?$/.exec(c);
+  if (m) return `${m[1]}:${m[2] ?? "/"}`;
+  if (c === "/tmp" || c.startsWith("/tmp/")) {
+    const t = process.env.TEMP ?? process.env.TMP;
+    return t ? t.replace(/\\/g, "/").replace(/\/+$/, "") + c.slice(4) : null;
+  }
+  const r = (process.env.HW_MSYS_ROOT ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+  return r && c.startsWith("/") ? r + c : null;
+}
+
+// ── THE LANE TABLE ─────────────────────────────────────────────────────────
+//
+// THE VALUES LIVE IN `guards.json`, beside `projects.json` at brain's root, and
+// the Python half reads the same file. Read the comment above `load_policy` in
+// `deny_repo_writes.py` for what each key means and why. The short version:
+// `productRepos` is the floor every lane protects, `worktreeRoots` is the only
+// key that grants an exemption, and `~` is the home in the password database,
+// not `$HOME`.
+//
+// A MISSING OR MALFORMED FILE FAILS CLOSED. It is loaded at import, so a bad
+// policy makes this module fail to import, and every lane shim already turns
+// that into a throw on every bash call. The checks match the Python ones
+// exactly, and an unknown key is refused rather than ignored.
+//
+// NOT protected, on purpose: brain itself, where every brainer writes.
+// `writeHere` names it for that reason.
+export const POLICY_PATH = join(
+  dirname(dirname(dirname(realpathSync(fileURLToPath(import.meta.url))))),
+  "guards.json");
+
+const TOP_KEYS = ["comment", "brain_root", "product_repos", "defaults", "lanes",
+  "specialists_from"];
+const LANE_REQUIRED = ["repo", "worktrees", "write_here", "where"];
+const LANE_OPTIONAL = ["worktree_roots", "git_tail", "redirect_tail"];
+const LANE_NAME = /^[a-z][a-z-]*$/;
+
+function policyError(message) {
+  return new Error(`deny-repo-writes: guards.json: ${message}`);
+}
+
+function policyPath(value, where, home) {
+  if (typeof value !== "string" || !value) {
+    throw policyError(`${where} must be a non-empty path string, got ${JSON.stringify(value)}`);
+  }
+  if (value === "~") value = home;
+  else if (value.startsWith("~/")) value = home + value.slice(1);
+  value = canon(value);
+  if (!isAbs(value)) {
+    throw policyError(`${where} must be absolute or start with ~/, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function policyText(value, where) {
+  if (typeof value !== "string" || !value) {
+    throw policyError(`${where} must be a non-empty string, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+export function loadPolicy(path = POLICY_PATH) {
+  let doc;
+  try {
+    doc = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw policyError(`cannot read ${path}: ${String(error?.message ?? error)}`);
+  }
+  if (!isObject(doc)) throw policyError(`${path} is not a JSON object`);
+  const unknown = Object.keys(doc).filter((k) => !TOP_KEYS.includes(k)).sort();
+  const missing = ["brain_root", "defaults", "lanes", "product_repos"]
+    .filter((k) => !(k in doc));
+  if (unknown.length || missing.length) {
+    throw policyError(`unknown keys ${JSON.stringify(unknown)}, missing keys ${JSON.stringify(missing)}`);
+  }
+  const home = canon(userInfo().homedir);
+  const brainRoot = policyPath(doc.brain_root, "brain_root", home);
+  if (!Array.isArray(doc.product_repos) || !doc.product_repos.length) {
+    throw policyError("product_repos must be a non-empty list");
+  }
+  const productRepos = Object.freeze(
+    doc.product_repos.map((p, i) => policyPath(p, `product_repos[${i}]`, home)));
+  const defaults = doc.defaults;
+  if (!isObject(defaults)
+      || Object.keys(defaults).sort().join(",") !== "git_tail,redirect_tail") {
+    throw policyError("defaults must hold exactly git_tail and redirect_tail");
+  }
+  for (const key of Object.keys(defaults)) policyText(defaults[key], `defaults.${key}`);
+  if (!isObject(doc.lanes) || !("brain" in doc.lanes)) {
+    throw policyError("lanes must be an object that includes the brain root lane");
+  }
+  const lanes = {};
+  for (const [name, raw] of Object.entries(doc.lanes)) {
+    if (!LANE_NAME.test(name)) throw policyError(`lane name ${JSON.stringify(name)} is not a lowercase word`);
+    if (!isObject(raw)) throw policyError(`lanes.${name} is not an object`);
+    const laneUnknown = Object.keys(raw)
+      .filter((k) => !LANE_REQUIRED.includes(k) && !LANE_OPTIONAL.includes(k)).sort();
+    const laneMissing = LANE_REQUIRED.filter((k) => !(k in raw));
+    if (laneUnknown.length || laneMissing.length) {
+      throw policyError(`lanes.${name}: unknown keys ${JSON.stringify(laneUnknown)}, missing keys ${JSON.stringify(laneMissing)}`);
+    }
+    // AN OPTIONAL KEY IS ABSENT OR WELL-FORMED, NEVER null. `??` would read a
+    // present `null` as absent and fall back to the default; the Python half's
+    // `raw.get(key, default)` returns the `None` and refuses it. So only a
+    // missing key takes the default here too, and a `null` fails closed in both.
+    const opt = (key, fallback) => (key in raw ? raw[key] : fallback);
+    const exempt = opt("worktree_roots", []);
+    if (!Array.isArray(exempt)) throw policyError(`lanes.${name}.worktree_roots must be a list`);
+    lanes[name] = {
+      repo: policyPath(raw.repo, `lanes.${name}.repo`, home),
+      worktrees: policyPath(raw.worktrees, `lanes.${name}.worktrees`, home),
+      worktreeRoots: exempt.map((p, i) => policyPath(p, `lanes.${name}.worktree_roots[${i}]`, home)),
+      alsoProtect: productRepos,
+      writeHere: policyText(raw.write_here, `lanes.${name}.write_here`),
+      where: policyText(raw.where, `lanes.${name}.where`),
+      gitTail: policyText(opt("git_tail", defaults.git_tail), `lanes.${name}.git_tail`),
+      redirectTail: policyText(opt("redirect_tail", defaults.redirect_tail), `lanes.${name}.redirect_tail`),
+    };
+  }
+  return { brainRoot, productRepos, lanes };
+}
+
+const POLICY = loadPolicy();
+export const BRAIN_ROOT = POLICY.brainRoot;
+export const PRODUCT_REPOS = POLICY.productRepos;
+export const LANES = POLICY.lanes;
+
+// A guard that silently no-ops on an unknown lane is worse than no guard.
+export function config(lane) {
+  const raw = LANES[lane];
+  if (!raw) {
+    throw new Error(
+      `deny-repo-writes: unknown lane ${JSON.stringify(lane)} — known lanes are ` +
+      `${Object.keys(LANES).sort().join(", ")}. A shim and the lane table have ` +
+      `diverged; the guard is NOT protecting anything until this is fixed.`);
+  }
+  // `repo`/`worktrees` stay the lane's OWN pair — the teardown exemption and the
+  // prose key on them. `roots` is every tree the lane must not write, deduped
+  // because a lane's own repo is normally in PRODUCT_REPOS too.
+  const roots = [raw.repo, raw.worktrees];
+  for (const extra of raw.alsoProtect ?? []) {
+    if (!roots.includes(extra)) roots.push(extra);
+  }
+  // Resolved once, not once per token: `decide` now asks the boundary question
+  // of every absolute path in a command.
+  return { ...raw, lane, roots, resolvedRoots: resolveRoots(roots) };
+}
+
+// ── DETECTION ──────────────────────────────────────────────────────────────
+// Shared by every lane. Nothing here is lane-configured, and nothing here was
+// dropped from any copy.
+
+// Mutating shell verbs, word-anchored so `remove_stale_rows` or a path segment
+// called `cp-report` cannot trip them.
+const MUTATORS =
+  /(?<![\w-])(rm|mv|cp|rsync|tee|touch|mkdir|rmdir|truncate|dd|ln|chmod|chown|install|patch|sponge|ed|ex|python|python3|node|ruby|perl|php|deno|bun|osascript|xargs)(?![\w-])/;
+// sed/perl/awk only mutate with an in-place flag.
+const INPLACE = /(?<![\w-])(sed|perl|gawk|awk)\b[^|;&]*\s-i\b/;
+// Any redirect that creates or appends to a file (not 2>&1, not a heredoc).
+const REDIRECT = /(?<![0-9&])>{1,2}(?!&)/;
+
+// WORD-ANCHORING IS NOT COMMAND-POSITION. Measured 2026-09-10 with `cwd`
+// inside the `lane-a` lane: `ls app/scripts/bin/node` and
+// `cat app/docs/rm.md` were both DENIED, because `/` and `.`
+// sit outside `[\w-]` — the same class `MUTATORS`'s lookaround excludes — so
+// a path SEGMENT merely named after a mutator (`bin/node`, `rm.md`) satisfies
+// the same boundary a real invocation does. Widening the lookaround to
+// include `/`/`.` is the naive fix and it is unsafe: it would let
+// `/usr/bin/python3 -c "open(...,'w')"` back through, which is exactly the
+// hole `MUTATORS` grew interpreter names to close. The real distinction is
+// POSITION, not spelling: a mutator counts only when it is the word actually
+// being invoked as a command — the head of a simple command, optionally
+// reached through variable assignments (`VAR=1 python3`), the `env`/
+// `command`/`exec`/`xargs` wrappers, and/or a leading path
+// (`/usr/bin/python3`) — and not when it is an operand of some OTHER command
+// (`ls`, `cat`, `test -x`, `wc`). Kept in exact parity with the Python.
+const CMD_BOUNDARY = /[;&|(`"'\n]|\$\(/g;
+const CMD_PREFIX_ALLOWED =
+  /^\s*(?:\w+=\S*\s+)*(?:(?:env|command|exec|xargs(?:\s+-\S+)*)\s+)*(?:[\w./-]*\/)?$/;
+
+function isCommandPosition(text, pos) {
+  const prefix = text.slice(0, pos);
+  let lastBoundaryEnd = 0;
+  CMD_BOUNDARY.lastIndex = 0;
+  let m;
+  while ((m = CMD_BOUNDARY.exec(prefix))) {
+    lastBoundaryEnd = m.index + m[0].length;
+    if (m.index === CMD_BOUNDARY.lastIndex) CMD_BOUNDARY.lastIndex += 1;
+  }
+  const segment = prefix.slice(lastBoundaryEnd);
+  return CMD_PREFIX_ALLOWED.test(segment);
+}
+// git subcommands that change a tree or its refs.
+const GIT_MUTATORS =
+  /(?<![\w-])git\b[^|;&]*?(?<![\w-])(commit|add|rm|mv|checkout|switch|restore|reset|revert|merge|rebase|cherry-pick|apply|am|stash|push|clean|gc|prune|worktree\s+(add|remove|prune)|branch\s+-[dDmM]|tag|config|update-ref|symbolic-ref)(?![\w-])/;
+
+// ── BOUNDARY: RESOLVE, THEN COMPARE ────────────────────────────────────────
+//
+// JS has no os.path.normpath. Written out rather than reached for through
+// node:path so the predicate stays readable beside the Python it mirrors.
+export function normPath(p) {
+  const isAbs = p.startsWith("/");
+  const out = [];
+  for (const part of p.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (out.length && out[out.length - 1] !== "..") out.pop();
+      else if (!isAbs) out.push("..");
+      continue;
+    }
+    out.push(part);
+  }
+  const joined = out.join("/");
+  if (isAbs) return "/" + joined;
+  return joined === "" ? "." : joined;
+}
+
+// node's realpathSync THROWS on a missing path where Python's os.path.realpath
+// resolves as far as it can and returns the rest untouched. `WORKTREES` for
+// one lane does not exist on disk today, so this difference is live,
+// not hypothetical: walk up to the deepest existing ancestor and re-attach the
+// tail, which is what Python does and what keeps the two halves in step.
+//
+// A DANGLING LINK IS FOLLOWED, NOT WALKED PAST. realpathSync also throws on a
+// symlink whose target does not exist, and the walk used to step over it and
+// re-attach the link's OWN name — so `<link> -> <repo>/absent` resolved to
+// `<link>`, outside every root, and `echo x > <link>` / `mkdir <link>`, which
+// create the target INSIDE the repo, were allowed. os.path.realpath follows it
+// (measured 2026-09-29: py=deny js=allow on the live brain lane). So when the
+// deepest existing head is a link, resolve its target with the tail re-attached,
+// bounded the way the kernel bounds it (ELOOP); a loop answers as written.
+const MAX_LINK_HOPS = 40;
+
+function followDangling(head, tail, hops, again) {
+  if (hops >= MAX_LINK_HOPS) return null;
+  let target;
+  try {
+    if (!lstatSync(head).isSymbolicLink()) return null;
+    target = readlinkSync(head);
+  } catch {
+    return null;
+  }
+  return again(target, tail, hops + 1);
+}
+
+function realPath(p, hops = 0) {
+  if (NATIVE_WINDOWS) return realPathWindows(p, hops);
+  if (WINPATHS && !p.startsWith("/")) return canon(p);
+  if (!p.startsWith("/")) return normPath(p);
+  const norm = normPath(p);
+  const parts = norm.split("/").filter(Boolean);
+  for (let keep = parts.length; keep >= 0; keep -= 1) {
+    const head = "/" + parts.slice(0, keep).join("/");
+    const tail = parts.slice(keep);
+    try {
+      const resolved = realpathSync(head);
+      return canon(tail.length ? normPath(resolved + "/" + tail.join("/")) : resolved);
+    } catch {
+      const followed = followDangling(head, tail, hops, (target, rest, n) => {
+        // A relative target counts its `..` from where the link REALLY lives,
+        // as the kernel does — not from its lexical parent, which may itself
+        // have been reached through a symlink.
+        const abs = target.startsWith("/") ? target : realPath(dirname(head), n) + "/" + target;
+        return realPath(rest.length ? abs + "/" + rest.join("/") : abs, n);
+      });
+      if (followed !== null) return followed;
+      // keep walking up
+    }
+  }
+  return canon(norm);
+}
+
+// A home as bash spells it: forward slashes, drive as a leading segment, case
+// kept. Elsewhere, as given.
+function shellHome(h) {
+  if (!WINPATHS || typeof h !== "string") return h;
+  const f = h.replaceAll("\\", "/");
+  const m = /^([A-Za-z]):(\/|$)/.exec(f);
+  return m ? "/" + m[1].toLowerCase() + f.slice(2) : f;
+}
+
+// The same walk on the native spelling: realpathSync.native of the deepest
+// existing ancestor, the rest re-attached, the answer folded back to canonical.
+// .native, because only the OS call expands an 8.3 short name (RUNNER~1) to the
+// long one: two spellings of one directory would otherwise stay two.
+function realPathWindows(p, hops = 0) {
+  const c = canon(p);
+  const n = typeof c === "string" ? nativeOf(c) : null;
+  if (n === null) return c;
+  const drive = n.slice(0, 3);
+  const parts = n.slice(3).split("/").filter(Boolean);
+  for (let keep = parts.length; keep >= 0; keep -= 1) {
+    const head = drive + parts.slice(0, keep).join("/");
+    const tail = parts.slice(keep);
+    try {
+      const resolved = realpathSync.native(head);
+      return canon(tail.length ? resolved + "/" + tail.join("/") : resolved);
+    } catch {
+      // The same dangling-link follow as `realPath`, on the native spelling.
+      const followed = followDangling(head, tail, hops, (target, rest, k) => {
+        const t = target.replace(/\\/g, "/");
+        const abs = DRIVE.test(t) ? t : t.startsWith("/") ? drive.slice(0, 2) + t
+          : nativeOf(realPathWindows(canon(dirname(head)), k)) + "/" + t;
+        return realPathWindows(canon(rest.length ? abs + "/" + rest.join("/") : abs), k);
+      });
+      if (followed !== null) return followed;
+      // keep walking up
+    }
+  }
+  return c;
+}
+
+// The forms a path may be recognised under: normalised, and resolved. Extra
+// candidates and extra roots can only make `insideAny` MORE true, so this
+// direction never opens a hole — which is why both sides are resolved even
+// though no protected root is a symlink today (checked 2026-09-06).
+function resolveRoots(roots) {
+  const out = [];
+  for (const root of roots) {
+    if (!out.includes(root)) out.push(root);
+    const real = realPath(root);
+    if (!out.includes(real)) out.push(real);
+  }
+  return out;
+}
+
+// The forms a path may be recognised under: normalised, and resolved. The
+// resolved candidate is ABSOLUTE-ONLY: this plugin's cwd has nothing to do with
+// the shell's, so resolving a relative path would answer a boundary question
+// about a path that was never named. Every caller already passes an absolute
+// path; this makes the requirement structural rather than remembered.
+function candidates(p) {
+  const out = [WINPATHS ? canon(p) : normPath(p)];
+  if (!isAbs(p)) return out;
+  const real = realPath(p);
+  if (!out.includes(real)) out.push(real);
+  return out;
+}
+
+function insideAny(cfg, p) {
+  if (!p) return false;
+  for (const cand of candidates(p)) {
+    for (const root of cfg.resolvedRoots) {
+      if (cand === root || cand.startsWith(root + "/")) return true;
+    }
+  }
+  return false;
+}
+
+// Absolute-path-looking runs in a command. Deliberately crude: it is used only
+// to ASK the boundary question of a token, and `insideAny` answers it. A token
+// that is not really a path resolves to something outside the trees and changes
+// nothing.
+const ABS_TOKEN = /\/[^\s;|&()<>"']+/g;
+const WIN_TOKEN = /(?<![\w])[A-Za-z]:[\\/][^\s;|&()<>"']*/g;
+
+// The first absolute path in `probe` that lands inside, or null.
+//
+// THE GATE ITSELF WAS A SUBSTRING TEST. Measured 2026-09-06 against all eight
+// pre-unification copies, with a symlink `ro-link -> app`:
+// `rm -rf <ro-link>/src` and `echo probe > <ro-link>/HOLE.txt` were ALLOWED by
+// every one of them. Every inner predicate had been taught to resolve, and the
+// guard still let those through — because `probe.includes(repo)` decided
+// whether any of them ran. Resolving the destination is pointless if the gate
+// never opens.
+//
+// This only widens what REACHES the deny chain; the chain still decides, so a
+// READ through a symlink (`rg -n foo <ro-link>/src`) matches no mutator and is
+// still allowed.
+export function resolvesProtected(cfg, probe) {
+  const seen = new Set();
+  for (const m of probe.matchAll(ABS_TOKEN)) {
+    const token = m[0];
+    if (seen.has(token)) continue;
+    seen.add(token);
+    if (insideAny(cfg, token)) return token;
+  }
+  // And in Windows' spelling, which has no leading `/` for ABS_TOKEN to start at.
+  if (WINPATHS) {
+    for (const m of probe.matchAll(WIN_TOKEN)) {
+      const token = m[0];
+      if (seen.has(token)) continue;
+      seen.add(token);
+      if (insideAny(cfg, token)) return token;
+    }
+  }
+  // And as shell words — see the Python twin (2026-09-24): ABS_TOKEN stops at a
+  // space or a quote, so a spaced root reached through a symlink never opened
+  // the gate. Only adds tokens to ask about.
+  for (const m of probe.matchAll(SHELL_WORD)) {
+    const token = unquoteWord(m[0]);
+    if (seen.has(token) || !isAbs(token)) continue;
+    seen.add(token);
+    if (insideAny(cfg, token)) return token;
+  }
+  return null;
+}
+
+// The cwd axis. Boundary-correct and `..`-normalising, unlike a bare
+// startsWith: a sibling directory whose name merely BEGINS with a protected
+// root (`app-notes`) is not inside it, and denying there is a
+// false positive that teaches an agent to route around the guard.
+export function insideProtected(cfg, dir) {
+  if (!dir || !isAbs(dir)) return false;
+  return insideAny(cfg, dir);
+}
+
+// True for a path strictly beneath one of the lane's worktree roots. Strictly:
+// a root itself is not a worktree, and `REPO + "/.worktrees"` must never let
+// `REPO` through. The trailing slash is what enforces both.
+function underAWorktreeRoot(cfg, p) {
+  p = canon(p);
+  for (const root of cfg.worktreeRoots) {
+    for (const r of [root, realPath(root)]) {
+      if (p.startsWith(r + "/")) return true;
+    }
+  }
+  return false;
+}
+
+// ── NARROW EXCEPTION: tearing down a spent worktree ────────────────────────
+//
+// `hw done` closes the space but leaves the worktree and its branch on disk. It
+// left the brainer asking the operator to run two git commands after every
+// task — the chore this whole setup exists to remove.
+//
+// Only two forms pass, and only because each REFUSES by itself when the thing
+// it deletes still holds work: `git worktree remove <path>` on a dirty
+// worktree, `git branch -d` on an unmerged branch. `--force`/`-f`/`-D` and
+// `worktree prune` stay denied. An optional `-C <dir>` is permitted because
+// `git worktree remove` must run from inside the registering repository.
+//
+// GATED ON `worktreeRoots` BEING NON-EMPTY — three of four lanes never had it.
+const ALLOWED_TEARDOWN =
+  /^\s*git\s+(?:-C\s+(?<c>[^\s;|&]+)\s+)?(?:worktree\s+remove\s+(?<wt>[^\s;|&]+)\s*|branch\s+-d\s+(?<br>[^;|&]+?)\s*)$/;
+const FORCE = /(?<![\w-])(--force|-f|-D)(?![\w-])/;
+
+function expandUser(p, home) {
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return home + p.slice(1);
+  return p;
+}
+
+function isSpentWorktreeTeardown(cfg, probe, home) {
+  if (!cfg.worktreeRoots.length) return false;
+  if (FORCE.test(probe)) return false;
+  const m = ALLOWED_TEARDOWN.exec(probe);
+  if (!m) return false;
+  const g = m.groups ?? {};
+  // A RELATIVE PATH REFUSES THE EXEMPTION — see the Python's note: resolving it
+  // would use this process's cwd, not the shell's.
+  if (g.c !== undefined && g.c !== null) {
+    const raw = expandUser(g.c.replace(/^["']|["']$/g, ""), home);
+    if (!isAbs(raw)) return false;
+    const c = realPath(raw);
+    if (c !== realPath(cfg.repo) && c !== cfg.repo && !underAWorktreeRoot(cfg, c)) {
+      return false;
+    }
+  }
+  if (g.wt === undefined || g.wt === null) return true; // `git branch -d`
+  const rawWt = expandUser(g.wt.replace(/^["']|["']$/g, ""), home);
+  if (!isAbs(rawWt)) return false;
+  return underAWorktreeRoot(cfg, realPath(rawWt));
+}
+
+// ── WHAT IS DATA AND WHAT IS CODE ──────────────────────────────────────────
+//
+// `rg -n "cp " <REPO>/x` is a search pattern, not an invocation of `cp`, and a
+// heredoc's prose is not command text. Denying those is a FALSE POSITIVE, and a
+// false positive teaches the agent to route around the guard. Only one
+// lane's Python copy carried this; all four lanes and both runtimes
+// carry it now.
+//
+// The two escape hatches are what make masking safe: a quote that IS a script
+// (`bash -c "rm x"`) and a heredoc that FEEDS a shell (`bash <<EOF`) stay fully
+// visible to every regex.
+const HEREDOC_START = /<<(-)?\s*(['"]?)(\w+)\2/;
+const SHELL_INTERPRETERS = "(?:bash|sh|zsh|dash|ksh|ash)";
+const SHELL_WRAPPERS = "(?:(?:env|command|exec)\\s+)*";
+const SHELL_DASH_C = new RegExp(
+  "(?:^|[|;&(])\\s*" + SHELL_WRAPPERS + "(?:[\\w./-]*/)?" +
+  SHELL_INTERPRETERS + "\\b(?:\\s+-[\\w-]+)*\\s+-c\\s*$");
+// CONSUMERS WHOSE HEREDOC BODY CAN DETERMINE A DESTINATION — see the Python's
+// note for the measurement: `xargs -I{} rm {} <<EOF` runs `rm` once per LINE
+// of its stdin, `patch`'s destination is the `+++ b/<path>` header inside the
+// diff it is fed, `ed`/`ex` read editing commands (including `w <path>`) from
+// stdin, and a general interpreter's script can read its own stdin and act on
+// it in ways this guard cannot parse away.
+const HEREDOC_BODY_IS_LIVE =
+  "(?:bash|sh|zsh|dash|ksh|ash|xargs|patch|ed|ex|" +
+  "python|python3|node|ruby|perl|php|deno|bun|osascript)";
+const SHELL_HEREDOC_TARGET = new RegExp(
+  "(?:^|[|;&(])\\s*" + SHELL_WRAPPERS + "(?:[\\w./-]*/)?" +
+  HEREDOC_BODY_IS_LIVE + "\\b(?=\\s|<<|$)");
+
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Drop heredoc body lines that are DATA — keep the ones that are CODE. A
+// heredoc fed to a shell interpreter IS command text: the shell executes every
+// line, so it stays in the scan. Line-based, not a real shell parser: good
+// enough for `<<DELIM` … `DELIM`, `<<-DELIM` (leading tabs) and `<<'EOF'`.
+export function stripHeredocBodies(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    out.push(line);
+    const m = HEREDOC_START.exec(line);
+    if (!m) {
+      i += 1;
+      continue;
+    }
+    const dash = Boolean(m[1]);
+    const delim = m[3];
+    const closeRe = new RegExp("^" + (dash ? "\\t*" : "") + escapeRe(delim) + "\\s*$");
+    const feedsShell = SHELL_HEREDOC_TARGET.test(line);
+    i += 1;
+    while (i < lines.length && !closeRe.test(lines[i])) {
+      if (feedsShell) out.push(lines[i]); // code the shell executes
+      i += 1;
+    }
+    if (i < lines.length) {
+      out.push(lines[i]);
+      i += 1;
+    }
+  }
+  return out.join("\n");
+}
+
+// Blank the interior of quoted strings that are DATA, not CODE. The quote marks
+// themselves survive, so a `>` right before a quoted redirect target is still
+// visible. A quote immediately after a shell `-c` is left unmasked: it IS the
+// script.
+//
+// A TOP-LEVEL BACKSLASH ESCAPES THE NEXT CHARACTER — see the Python's note for
+// the measurement. `echo \' && rm -rf <REPO>/x \'` contains no real quote as far
+// as bash is concerned, and without this the scanner blanked the `rm` out of the
+// text every deny regex reads. This runtime never masked at all before, so the
+// escape has to arrive with the masking, not after it.
+// Returns {masked, balanced}. An UNTERMINATED quote blanks everything from the
+// opening quote to the end of the text — a general-purpose way to hide a command
+// from every deny regex. bash refuses to run such a line, but "the shell would
+// have rejected it anyway" is a claim about another program's parser, and this
+// guard does not lean on one: the caller falls back to the unmasked text.
+export function maskQuotes(text) {
+  const out = [];
+  let balanced = true;
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i];
+    if (c === "\\" && i + 1 < n) {
+      // Escaped: emit both characters and let NEITHER open a quote.
+      out.push(c);
+      out.push(text[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const quote = c;
+      const quoteStart = i;
+      out.push(c);
+      i += 1;
+      const start = i;
+      while (i < n && text[i] !== quote) {
+        if (quote === '"' && text[i] === "\\" && i + 1 < n) {
+          i += 2;
+          continue;
+        }
+        i += 1;
+      }
+      const interior = text.slice(start, i);
+      if (SHELL_DASH_C.test(text.slice(0, quoteStart))) out.push(interior);
+      else out.push(" ".repeat(interior.length));
+      if (i < n) {
+        out.push(text[i]);
+        i += 1;
+      } else {
+        balanced = false; // ran off the end looking for the closer
+      }
+    } else {
+      out.push(c);
+      i += 1;
+    }
+  }
+  return { masked: out.join(""), balanced };
+}
+
+// ── NARROW EXCEPTION: copying OUT of a protected tree ──────────────────────
+//
+// `hw done` tells the operator "Move what you need out first" before a worktree
+// is reaped, and this guard denied exactly that move, stranding the artifacts in
+// the one place it was just said they would not survive.
+//
+// The cause: the guard asked whether a mutating command NAMES a protected path,
+// never WHERE in the argument list that path sits. In `cp SRC DST` only DST is
+// written; a protected path in SRC is a READ, and reading is allowed.
+//
+// `mv` is deliberately absent from the tables below. Moving out of a protected
+// tree REMOVES the source, so BOTH operands are write targets and it stays
+// denied. The same reasoning excludes `rsync --remove-source-files`.
+//
+// Fail-closed by construction: SOURCE operands are the only tokens this never
+// inspects, and a source is whatever is LEFT once argv[0], every option, every
+// option value and the final destination have each been individually recognised
+// and cleared. Anything unaccounted for returns a refusal.
+
+// argv[0], with any leading directory stripped.
+const COPY_LIKE = /^(?:[^\s/]*\/)*(cp|rsync|install)$/;
+
+// A metacharacter means this is not one simple command, and parsing shell to
+// decide that a write is safe is how a guard stops being one. A surviving `$`
+// counts too: after expansion it means a variable this plugin cannot resolve.
+const NOT_SIMPLE = /[<>|;&()`\n$]/;
+
+// Options that decide WHICH operand is the destination, or that delete the
+// source. Refused outright rather than parsed.
+const COPY_ORDER_FLAGS = {
+  cp: new Set(["-t", "--target-directory"]),
+  install: new Set(["-t", "--target-directory", "-d", "--directory"]),
+  rsync: new Set(["--remove-source-files"]),
+};
+
+// Per command: [self-contained short letters, value-taking short letters,
+// self-contained long options, value-taking long options]. An ALLOWLIST: an
+// option not in it refuses the exemption rather than being guessed at, because
+// guessing is how an option VALUE gets mistaken for a source operand — and an
+// option value can be a write target (`rsync --backup-dir DIR`) while a source
+// operand never is.
+const COPY_FLAGS = {
+  cp: [
+    "abcdfHiLlnPpRrsTuvXxZ",
+    "S",
+    new Set(["archive", "attributes-only", "backup", "copy-contents", "debug",
+      "dereference", "force", "interactive", "link", "no-clobber",
+      "no-dereference", "no-preserve", "no-target-directory",
+      "one-file-system", "parents", "preserve", "recursive", "reflink",
+      "remove-destination", "sparse", "strip-trailing-slashes",
+      "symbolic-link", "update", "verbose"]),
+    new Set(["suffix"]),
+  ],
+  install: [
+    "bcCDpsTvZ",
+    "mogS",
+    new Set(["backup", "compare", "no-target-directory", "preserve-timestamps",
+      "preserve-context", "strip", "verbose"]),
+    new Set(["mode", "owner", "group", "suffix", "strip-program", "context"]),
+  ],
+  rsync: [
+    "aAcdDgGhHiklLmnoOpPqrRsStuUvWxXzZ0",
+    "efMBT",
+    new Set(["archive", "checksum", "compress", "delete", "delete-after",
+      "delete-before", "delete-during", "delete-excluded", "dirs", "dry-run",
+      "existing", "group", "hard-links", "human-readable", "ignore-existing",
+      "ignore-times", "itemize-changes", "links", "no-perms", "numeric-ids",
+      "omit-dir-times", "one-file-system", "owner", "partial", "perms",
+      "progress", "prune-empty-dirs", "quiet", "recursive", "relative",
+      "size-only", "sparse", "stats", "times", "update", "verbose",
+      "whole-file"]),
+    new Set(["exclude", "include", "exclude-from", "include-from", "files-from",
+      "filter", "rsh", "rsync-path", "chmod", "chown", "timeout", "bwlimit",
+      "max-size", "min-size", "block-size", "temp-dir", "backup-dir", "suffix",
+      "compare-dest", "copy-dest", "link-dest", "log-file", "partial-dir",
+      "info", "debug", "out-format"]),
+  ],
+};
+
+// JS has no shlex either. POSIX-mode word splitting, and it THROWS on an
+// unbalanced quote — which the caller turns into a refusal, matching the
+// Python's ValueError branch. NOT_SIMPLE has already rejected $, backtick and
+// every other metacharacter before this runs, so the remaining surface is
+// quoting alone.
+export function shlexSplit(s) {
+  const out = [];
+  let cur = "";
+  let started = false;
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "\\") {
+      if (i + 1 >= s.length) throw new Error("No escaped character");
+      cur += s[i + 1];
+      started = true;
+      i += 2;
+      continue;
+    }
+    if (c === "'") {
+      const j = s.indexOf("'", i + 1);
+      if (j < 0) throw new Error("No closing quotation");
+      cur += s.slice(i + 1, j);
+      started = true;
+      i = j + 1;
+      continue;
+    }
+    if (c === '"') {
+      i += 1;
+      let closed = false;
+      while (i < s.length) {
+        if (s[i] === "\\" && i + 1 < s.length && "\"\\$`".includes(s[i + 1])) {
+          cur += s[i + 1];
+          i += 2;
+          continue;
+        }
+        if (s[i] === '"') {
+          closed = true;
+          i += 1;
+          break;
+        }
+        cur += s[i];
+        i += 1;
+      }
+      if (!closed) throw new Error("No closing quotation");
+      started = true;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (started) {
+        out.push(cur);
+        cur = "";
+        started = false;
+      }
+      i += 1;
+      continue;
+    }
+    cur += c;
+    started = true;
+    i += 1;
+  }
+  if (started) out.push(cur);
+  return out;
+}
+
+// True only when `token` DEMONSTRABLY resolves outside every protected root.
+// Anything it cannot resolve — a relative path with no absolute cwd to anchor
+// it, an rsync `host:path` remote spec — is false, i.e. treated as protected.
+// This is the one direction that must never be optimistic: it is the test
+// applied to the DESTINATION operand, to every option value and to every
+// redirect target, and a wrong `true` here is a real write let through.
+//
+// The leading substring test is deliberately blunt and deliberately kept: a
+// token that merely CONTAINS a protected root refuses the exemption without
+// further argument. Over-refusing a write target is the safe direction.
+export function landsOutsideProtected(cfg, token, cwd) {
+  if (cfg.roots.some((root) => token.includes(root) || canonText(token).includes(root))) return false;
+  if (!isAbs(token)) {
+    // `host:path` / `rsync://` — a remote spec this plugin cannot resolve.
+    if (token.split("/")[0].includes(":")) return false;
+    if (!cwd || !isAbs(cwd)) return false;
+    token = joinPath(cwd, token);
+  }
+  return !insideAny(cfg, token);
+}
+
+// Split argv[1:] into operands, or return null if anything is unrecognised.
+// null means "this plugin does not understand this command line", which is
+// always a refusal — never an allow.
+export function copyOperands(cfg, argv, name, cwd) {
+  const [selfShort, valueShort, selfLong, valueLong] = COPY_FLAGS[name];
+  const orderFlags = COPY_ORDER_FLAGS[name];
+  const operands = [];
+  let i = 1;
+  const n = argv.length;
+  while (i < n) {
+    const tok = argv[i];
+    if (tok === "--") {
+      operands.push(...argv.slice(i + 1));
+      return operands;
+    }
+    if (!tok.startsWith("-") || tok === "-") {
+      operands.push(tok);
+      i += 1;
+      continue;
+    }
+    if (tok.startsWith("--")) {
+      const eq = tok.indexOf("=");
+      const head = eq === -1 ? tok : tok.slice(0, eq);
+      const attached = eq === -1 ? null : tok.slice(eq + 1);
+      if (orderFlags.has(head)) return null;
+      const longName = head.slice(2);
+      if (attached !== null) {
+        // Attached value: never confusable with an operand, but it can still
+        // BE a write target, so it is checked like one.
+        if (!selfLong.has(longName) && !valueLong.has(longName)) return null;
+        if (!landsOutsideProtected(cfg, attached, cwd)) return null;
+        i += 1;
+        continue;
+      }
+      if (selfLong.has(longName)) {
+        i += 1;
+        continue;
+      }
+      if (valueLong.has(longName)) {
+        if (i + 1 >= n) return null;
+        if (!landsOutsideProtected(cfg, argv[i + 1], cwd)) return null;
+        i += 2;
+        continue;
+      }
+      return null;
+    }
+    // Short cluster, e.g. `-Rv`, `-m644`, `-m 644`.
+    if (orderFlags.has(tok)) return null;
+    let j = 1;
+    let consumedValue = false;
+    while (j < tok.length) {
+      const letter = tok[j];
+      if (orderFlags.has("-" + letter)) return null;
+      if (valueShort.includes(letter)) {
+        const rest = tok.slice(j + 1);
+        if (rest) {
+          if (!landsOutsideProtected(cfg, rest, cwd)) return null;
+          i += 1;
+        } else {
+          if (i + 1 >= n) return null;
+          if (!landsOutsideProtected(cfg, argv[i + 1], cwd)) return null;
+          i += 2;
+        }
+        consumedValue = true;
+        break;
+      }
+      if (!selfShort.includes(letter)) return null;
+      j += 1;
+    }
+    if (!consumedValue) i += 1;
+  }
+  return operands;
+}
+
+// [allowed, note] — allowed only for a copy whose destination is outside.
+// `note` explains a refusal, and is empty when the command is not copy-shaped
+// at all. It goes into the deny message so a denied `cp` says WHY the
+// source-vs-destination exception did not apply.
+export function isCopyOutOfProtected(cfg, probe, cwd) {
+  if (NOT_SIMPLE.test(probe)) {
+    const words = probe.split(/\s+/).filter(Boolean);
+    const head = words.length ? words[0] : "";
+    if (COPY_LIKE.test(head)) {
+      return [false,
+        " This looks like a copy, but it is not one simple command (it contains" +
+        " a redirect, a pipe, a chain, a substitution or an unexpanded" +
+        " variable), so the source-vs-destination exception does not apply —" +
+        " run the copy on its own."];
+    }
+    return [false, ""];
+  }
+  let argv;
+  try {
+    argv = shlexSplit(probe);
+  } catch {
+    return [false, ""];
+  }
+  if (argv.length === 0) return [false, ""];
+  const m = COPY_LIKE.exec(argv[0]);
+  if (!m) return [false, ""];
+  // Only an argv[0] that NAMES a path can name a protected one; a bare `cp` is
+  // resolved through PATH, and resolving it against the cwd instead would
+  // misreport "the binary is in the repo" for every copy run from inside one.
+  if (argv[0].includes("/") && !landsOutsideProtected(cfg, argv[0], cwd)) {
+    return [false, ` The \`${argv[0]}\` being run is itself inside a protected tree.`];
+  }
+  const name = m[1];
+  const operands = copyOperands(cfg, argv, name, cwd);
+  if (operands === null) {
+    return [false,
+      ` This is a \`${name}\`, but it uses an option this guard does not parse` +
+      ` (or one that moves the destination, like \`-t\`), so it cannot tell` +
+      ` source from destination and refuses rather than guess. A plain` +
+      ` \`${name} -R <src> <dst>\` is exempt when only the source is protected.`];
+  }
+  if (operands.length < 2) {
+    return [false,
+      ` This is a \`${name}\` with fewer than two operands, so there is no` +
+      ` destination to check.`];
+  }
+  const dest = operands[operands.length - 1];
+  if (!landsOutsideProtected(cfg, dest, cwd)) {
+    return [false,
+      ` The DESTINATION operand (${dest}) is inside a protected tree. Copying` +
+      ` OUT is allowed; copying IN is not.`];
+  }
+  return [true, ""];
+}
+
+// {raw, resolved} for the first redirect target that lands inside a
+// protected root, or null if every target resolves outside. Reading FROM a
+// protected tree INTO brain used to be denied — a false positive that only
+// teaches an agent to route around the guard.
+//
+// Every copy used to answer this with its own `t.startsWith(REPO)` — a raw
+// substring test on a WRITE TARGET, exactly what `landsOutsideProtected` exists
+// to refuse. They are one question now, so a symlinked or `..`-laden target is
+// resolved rather than pattern-matched, and a relative target resolves against
+// the cwd instead of being blanket-denied. An unresolvable target still denies.
+//
+// RETURNING THE RESOLVED PATH, not just a boolean — see the Python's note:
+// with only a boolean, the deny message fell back to "the command names a
+// protected root" even when the match came from resolving `$HOME` or a
+// symlink, describing a literal-string test this branch does not run.
+// A REDIRECT TARGET IS A SHELL WORD — see the Python twin (2026-09-24). The
+// targets are a UNION: the base pattern's, exactly as before, plus the word
+// after every `>` outside quotes. The first draft replaced the base pattern and
+// was fail-open (Judgment Day, judge B): a `>` inside a quoted string swallowed
+// the real redirect. A command can only gain targets, never lose one.
+const WORD = String.raw`(?:"[^"]*"|'[^']*'|\\.|[^\s;|&()<>\\])+`;
+const SHELL_WORD = new RegExp(WORD, "g");
+const BARE_REDIRECT_TARGET = /(?<![0-9&])>{1,2}(?!&)\s*([^\s;|&()<>]+)/g;
+function unquoteWord(word) {
+  return word.replace(/"([^"]*)"|'([^']*)'|\\(.)|["']/g,
+    (_m, dq, sq, esc) => dq ?? sq ?? esc ?? "");
+}
+function redirectTargets(probe) {
+  const targets = [...probe.matchAll(BARE_REDIRECT_TARGET)].map((m) => m[1].replace(/^["']|["']$/g, ""));
+  const word = new RegExp(WORD, "y");
+  let i = 0, quote = null;
+  const n = probe.length;
+  while (i < n) {
+    const c = probe[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else if (c === "\\" && quote === '"') i += 1;
+      i += 1;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "\\") i += 1;
+    else if (c === ">" && !(i && (/[0-9]/.test(probe[i - 1]) || probe[i - 1] === "&"))) {
+      let j = i + 1;
+      if (j < n && probe[j] === ">") j += 1;
+      if (j < n && probe[j] === "&") { i = j + 1; continue; }
+      while (j < n && (probe[j] === " " || probe[j] === "\t")) j += 1;
+      word.lastIndex = j;
+      const m = word.exec(probe);
+      if (m) targets.push(unquoteWord(m[0]));
+      i = j;
+      continue;
+    }
+    i += 1;
+  }
+  return targets;
+}
+
+export function redirectLandsInProtected(cfg, probe, cwd) {
+  for (const t of redirectTargets(probe)) {
+    if (!landsOutsideProtected(cfg, t, cwd)) {
+      let resolved = isAbs(t) ? t
+        : (WINPATHS ? joinPath(cwd || ".", t) : normPath((cwd || ".").replace(/\/+$/, "") + "/" + t));
+      if (isAbs(resolved)) resolved = realPath(resolved);
+      return { raw: t, resolved };
+    }
+  }
+  return null;
+}
+
+// ── THE DECISION ───────────────────────────────────────────────────────────
+//
+// A pure function of (lane, command, cwd): null to allow, or {rule, reason} to
+// refuse. Split out from the hook so a harness can drive it directly; the hook
+// below is the thin part that turns a refusal into opencode's only refusal
+// mechanism, a throw.
+export function decide(lane, command, cwd) {
+  if (typeof command !== "string" || !command) return null;
+  const cfg = config(lane);
+
+  // Match against an EXPANDED copy. A literal absolute-path test let
+  // `~/...` and `$HOME/...` through, and the tilde form is how an
+  // agent naturally writes the path. The shell expands them after this plugin
+  // has already decided, so expand them here first.
+  // On Windows HOME may arrive as a backslash drive path (msys converts it for a native
+  // program): spelled the way bash expands it, so a path built on it still
+  // matches the patterns below before anything is folded.
+  const HOME = shellHome(process.env.HOME ?? userInfo().homedir);
+  const probe = command
+    .split("${HOME}").join(HOME)
+    .split("$HOME").join(HOME)
+    .replace(/(^|[^\w~])~\//g, `$1${HOME}/`);
+
+  // `noHeredoc` drops heredoc body lines (data, not command text) but keeps
+  // quotes intact, so a real redirect target that happens to be quoted is still
+  // resolvable. `masked` additionally blanks quoted-string interiors. Path
+  // detection stays on the unmasked text — it needs the real path, quoted or not.
+  const noHeredoc = stripHeredocBodies(probe);
+  const quoted = maskQuotes(noHeredoc);
+  // Unbalanced quotes: the masking is not trustworthy, so do not mask.
+  const masked = quoted.balanced ? quoted.masked : noHeredoc;
+
+  // EVERY protected root, not just the lane's own pair — see the Python half.
+  const { roots } = cfg;
+  let { where } = cfg;
+
+  // Dangerous only if it can write AND can land in a protected tree — because
+  // it names one, stands in one, or cds into one.
+  //
+  // SCANNED ON `noHeredoc`, NOT `probe` — see the Python's note for the
+  // measurement: a `git commit` whose message was fed by `cat <<'EOF' ... EOF`
+  // (data, not code — the heredoc feeds `cat`, so it never reaches a shell)
+  // cited a protected root as evidence, and scanning the raw command text made
+  // that citation indistinguishable from a real destination. No verb's write
+  // destination is ever spelled inside the payload it is asked to write, only
+  // in its own operands or the working directory, so a heredoc body is always
+  // DATA for this question — exactly like it already is for the verb regexes
+  // below, which read `masked`.
+  // And in the shell's own spelling — see the Python twin (2026-09-24, a root
+  // with spaces written with backslash escapes). Unescaping only ADDS matches.
+  const unescaped = noHeredoc.replace(/\\(.)/g, "$1");
+  const noHeredocC = canonText(noHeredoc);
+  const unescapedC = canonText(unescaped);
+  const namedRoot = roots.find((root) => noHeredoc.includes(root) || unescaped.includes(root)
+    || noHeredocC.includes(root) || unescapedC.includes(root)) ?? null;
+  const namesProtected = namedRoot !== null;
+  // A cross-lane denial must name the tree it is protecting: `where` is the
+  // lane's own prose and is the wrong sentence for another lane's tree.
+  if (namedRoot !== null && namedRoot !== cfg.repo && namedRoot !== cfg.worktrees) {
+    where = `another lane's protected tree (${namedRoot})`;
+  }
+  const standsIn = insideProtected(cfg, cwd);
+  const cdsRe = new RegExp(`cd\\s+["']?(${roots.map(escapeRe).join("|")})`);
+  const cdsInto = cdsRe.test(noHeredoc) || cdsRe.test(noHeredocC);
+  // And the same question asked of paths that do not SPELL a protected root — a
+  // symlink into one, or a `..` traversal back into one. Skipped when a literal
+  // already opened the gate, so the common case costs nothing.
+  const resolvedToken = namesProtected ? null : resolvesProtected(cfg, noHeredoc);
+  if (!(namesProtected || resolvedToken || standsIn || cdsInto)) return null;
+
+  // Name WHICH condition tripped. A deny that only says "this command mutates
+  // the repo" sends the reader to inspect the command text — and when the
+  // trigger was the working directory, there is nothing there to find: under
+  // opencode the bash tool carries it as its own `workdir` argument, so it
+  // never appears in the command text at all.
+  const triggers = [];
+  if (standsIn) {
+    triggers.push(
+      `the working directory is inside it (${cwd}) — this is NOT in the command` +
+      ` text above; opencode's bash tool carries the directory as a separate` +
+      ` \`workdir\` argument. Re-run with a workdir outside the tree`);
+  }
+  if (namesProtected) triggers.push(`the command names a protected root (${namedRoot})`);
+  if (resolvedToken) {
+    triggers.push(
+      `a path in the command RESOLVES inside it (${resolvedToken} -> ` +
+      `${realPath(resolvedToken)}) even though the root does not appear ` +
+      "literally — a symlink or a `..` traversal");
+  }
+  if (cdsInto) triggers.push("the command itself cd's into it");
+  const trigger = triggers.join("; and ");
+
+  // Cleaning up after `hw done` is maintenance, not a repo write. Checked
+  // before the git deny, and inert on a lane with no `worktreeRoots`.
+  if (isSpentWorktreeTeardown(cfg, probe, HOME)) return null;
+
+  // Copying OUT of a protected tree is a READ of it — in `cp SRC DST` only DST
+  // is written. Honoured only when the sole reason we got this far is that the
+  // command NAMES a protected path: when the working directory is inside one,
+  // or the command cd's into one, a RELATIVE destination can land inside it
+  // without ever naming it.
+  let [copyOutOk, copyNote] = isCopyOutOfProtected(cfg, probe, cwd);
+  if (copyOutOk) {
+    if (!(standsIn || cdsInto)) return null;
+    copyNote =
+      " This copy's destination is outside the protected trees, but the working" +
+      " directory is inside one (or the command cd's into one), so a relative" +
+      " operand could still land inside one without naming it. Re-run it from" +
+      " outside.";
+  }
+
+  // A CONTENT-ONLY MATCH IS NOT A CONFIRMED DESTINATION — see the Python's
+  // note. `namedRoot`/`resolvedToken` answer "does a protected path appear in
+  // this command's CODE", never "is it this command's write target", and a
+  // path can appear in code as a quoted argument that is pure prose (a
+  // citation, a commit message) rather than an operand. When the match
+  // survives quote-masking it sat in plain, unquoted text — the shape every
+  // real operand has — and the trigger stays confident; when masking blanked
+  // it away, the only reason we are here is a quoted string. (A citation
+  // inside a heredoc body never reaches this point at all: it was already
+  // excluded from `namedRoot`/`resolvedToken` above.)
+  const contentOnly = !standsIn && !cdsInto && (
+    (namedRoot !== null && !masked.includes(namedRoot) && !canonText(masked).includes(namedRoot)) ||
+    (resolvedToken !== null && !masked.includes(resolvedToken))
+  );
+
+  if (GIT_MUTATORS.test(masked)) {
+    if (contentOnly) {
+      return { rule: "git", reason:
+        `Blocked: this git command's text contains the path of ${where} ` +
+        `(${trigger}), but a git subcommand's actual destination is its cwd ` +
+        `(or an explicit -C/--git-dir/--work-tree), never text elsewhere in ` +
+        `the command — and this match sits inside a quoted argument, not one ` +
+        `of those. I could not confirm whether this is a real destination or ` +
+        `a citation, and refuse rather than guess. If you are only citing the ` +
+        `path as evidence, move it into a heredoc body instead of a quoted ` +
+        "argument (e.g. `git commit -F -` fed by `cat <<'EOF' ... EOF`): a " +
+        `heredoc that does not feed a shell is already read as data, not as ` +
+        `this trigger.` };
+    }
+    return { rule: "git", reason:
+      `Blocked: this git subcommand mutates ${where} (${trigger}). ${cfg.gitTail}` };
+  }
+  if (INPLACE.test(masked)) {
+    if (contentOnly) {
+      return { rule: "inplace", reason:
+        `Blocked: an in-place edit's command text contains the path of ` +
+        `${where} (${trigger}), sitting inside a quoted argument rather than ` +
+        `in the file operand itself. I could not confirm whether this is the ` +
+        `edited file or a citation, and refuse rather than guess.` };
+    }
+    return { rule: "inplace", reason:
+      `Blocked: in-place edit targeting ${where} (${trigger}). The brainer is ` +
+      `read-only there.` };
+  }
+  if (REDIRECT.test(masked)) {
+    const redirectHit = redirectLandsInProtected(cfg, noHeredoc, cwd);
+    if (redirectHit) {
+      return { rule: "redirect", reason:
+        `Blocked: shell redirect while targeting ${where} (${trigger}). This ` +
+        `redirect's destination resolves to ${redirectHit.resolved} ` +
+        `(written as \`${redirectHit.raw}\` in the command). This is the ` +
+        `exact hole that path-based permission rules do not cover. Write to ` +
+        `${cfg.writeHere} instead. ${cfg.redirectTail}` };
+    }
+  }
+  let mutatorInvoked = false;
+  {
+    const re = new RegExp(MUTATORS.source, "g");
+    let m;
+    while ((m = re.exec(masked))) {
+      if (isCommandPosition(masked, m.index)) { mutatorInvoked = true; break; }
+      if (m.index === re.lastIndex) re.lastIndex += 1;
+    }
+  }
+  if (mutatorInvoked) {
+    if (contentOnly) {
+      return { rule: "mutator", reason:
+        `Blocked: this command's text contains the path of ${where} ` +
+        `(${trigger}), sitting inside a quoted argument rather than in a ` +
+        `plain operand. That is as often a citation (evidence pasted into a ` +
+        `decisions.md entry) as a real destination, and I could not confirm ` +
+        `which. Refusing is the safe default. If you are only citing the ` +
+        `path, move it into a heredoc body instead of a quoted argument: a ` +
+        `heredoc that does not feed a shell is already read as data, not as ` +
+        `this trigger. If you are instead trying to PRESERVE data by ` +
+        `copying it OUT of a protected tree, run \`cp -R\`, \`rsync -a\` or ` +
+        `\`install\` directly rather than through an interpreter — those ` +
+        `parse source from destination and are already exempt when only ` +
+        `the source is protected.` };
+    }
+    return { rule: "mutator", reason:
+      `Blocked: file-mutating command targeting ${where} (${trigger}). The brainer ` +
+      `is read-only there.${copyNote}` };
+  }
+  return null;
+}
+
+// Exported for the test harness only. Nothing in the tree imports these.
+export const __internals = {
+  LANES, config, normPath, realPath, shlexSplit, landsOutsideProtected,
+  copyOperands, isCopyOutOfProtected, insideProtected, stripHeredocBodies,
+  maskQuotes, redirectLandsInProtected, isSpentWorktreeTeardown,
+};
+
+// The opencode plugin factory. Each lane's `.opencode/plugin/deny-repo-writes.js`
+// is a two-line shim that names its lane and re-exports the result.
+export function makeDenyRepoWrites(lane) {
+  // AN UNKNOWN LANE DENIES; IT DOES NOT THROW AT LOAD. Throwing here was the
+  // first draft, and it is fail-OPEN in the way that matters: what opencode
+  // does with a plugin that throws while loading is not established, and the
+  // plausible answers (skip the plugin, log and continue) both leave the lane
+  // unguarded with no refusal anywhere. Refusing inside the hook uses the ONE
+  // mechanism opencode is documented to honour — a throw from
+  // `tool.execute.before` — so the failure is loud on every bash call instead.
+  let laneError = null;
+  try {
+    config(lane);
+  } catch (e) {
+    laneError = e;
+  }
+  return async (pluginInput) => {
+    // opencode's `tool.execute.before` input carries {tool, sessionID, callID}
+    // and NO cwd — verified against @opencode-ai/plugin's shipped index.d.ts.
+    // The Python hook receives the shell's cwd in its JSON payload; the JS API
+    // has no equivalent, so the cwd comes from the bash tool's OWN `workdir`
+    // argument ("The working directory to run the command in. Defaults to the
+    // current directory. Use this instead of 'cd' commands."), falling back to
+    // the session directory the plugin was handed at construction. This is the
+    // one place the opencode API forces a different shape from the Python, and
+    // it matters: `workdir` is how an opencode agent is TOLD to change
+    // directory, so a guard that ignores it cannot see the cwd axis at all.
+    const sessionDir = pluginInput?.directory ?? pluginInput?.worktree ?? process.cwd();
+    return {
+      "tool.execute.before": async (input, output) => {
+        if (input.tool !== "bash") return;
+        if (laneError) {
+          throw new Error(
+            `Blocked: ${laneError.message} Every bash command is refused until a ` +
+            "lane this guard knows is named, because a guard that cannot resolve " +
+            "its lane cannot tell a protected tree from any other directory.");
+        }
+        const args = output?.args ?? {};
+        const workdir =
+          typeof args.workdir === "string" && args.workdir ? args.workdir : null;
+        // A CRASH HERE ALREADY REFUSES, and that asymmetry with the Python is
+        // worth naming rather than leaving to be rediscovered: opencode's
+        // refusal IS a throw, so an exception out of `decide` fails closed for
+        // free, while Claude Code reads a non-2 exit with no deny JSON as a
+        // non-blocking error and lets the command run. The Python half had to
+        // be taught this explicitly (see `main` there, 2026-09-07). It is
+        // wrapped anyway so the refusal SAYS a crash happened — "a guard that
+        // reached no verdict" and "a guard that refused you" call for different
+        // moves by whoever reads it.
+        let verdict;
+        try {
+          verdict = decide(lane, args.command ?? "", workdir ?? sessionDir);
+        } catch (error) {
+          throw new Error(
+            `Blocked: the ${lane} read-only guard CRASHED while deciding ` +
+            `(${String(error?.message ?? error)}). It reached no verdict, and a ` +
+            "guard that reached no verdict has not established that this command " +
+            "is safe. Every bash command is refused until this is fixed.");
+        }
+        // opencode's tool.execute.before returns void, so refusal is a throw.
+        if (verdict) throw new Error(verdict.reason);
+      },
+    };
+  };
+}

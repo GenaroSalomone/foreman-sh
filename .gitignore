@@ -1,0 +1,7 @@
+.DS_Store
+# written by `hw reap`
+.hw-reap-count
+# per-lane engram config, not memory
+*/.engram/
+.claude/settings.json.bak.*
+*/.claude/settings.json.bak.*

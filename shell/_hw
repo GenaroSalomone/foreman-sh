@@ -1,0 +1,73 @@
+#compdef hw
+# zsh completion for hw. Installed to ~/.zsh/completions, which .zshrc adds to fpath.
+
+_hw() {
+  # brain is where this file lives, links followed: ~/.zsh/completions/_hw
+  # links to brain/shell/_hw.
+  local brain=${${(%):-%x}:A:h:h}
+  local -a projects
+  # The lanes and their hw_aliases come from the lane table, projects.json at
+  # the brain root, in its `lanes` order — so a lane added there completes
+  # without an edit here.
+  local table=$brain/projects.json
+  projects=(
+    ${(f)"$(jq -r '.work as $w | .lanes | to_entries[] | .key as $l | .value as $v
+      | ("\($l):" + (if $v.repoless then "no repo — work in \($w)/\($l)"
+                    elif $v.checkout == "{brain}" then "this setup itself — work in \($w)/\($l)"
+                    else $v.checkout end)),
+        (($v.hw_aliases // [])[] | "\(.):alias for \($l)")' $table 2>/dev/null)"}
+    'done:close a space and report its database'
+    'status:what is running, and what never closed'
+    'handle:does a keychain handle resolve? present/absent only'
+  )
+
+  _hw_canon() {
+    local lane
+    lane=$(jq -r --arg a "$1" '.lanes | to_entries[] | select((.value.hw_aliases // []) | index([$a])) | .key' \
+      $table 2>/dev/null)
+    print -r -- "${lane:-$1}"
+  }
+
+  _hw_briefs() {
+    local proj="$(_hw_canon "$1")" dir
+    dir="$brain/$proj/briefs"
+    [[ -d $dir ]] || return
+    local -a b
+    b=(${dir}/*.md(N:t:r))
+    (( ${#b} )) && _describe -t briefs "brief for $proj" b
+  }
+
+  case $CURRENT in
+    2) _describe -t projects 'project' projects ;;
+    3)
+      if [[ ${words[2]} == done ]]; then
+        _describe -t projects 'project' projects
+      elif [[ ${words[2]} == (status|handle) ]]; then
+        # `status` takes nothing; a keychain handle is not completable without
+        # reading the keychain, which this must never do.
+        return
+      else
+        _hw_briefs "${words[2]}"
+      fi
+      ;;
+    4)
+      if [[ ${words[2]} == done ]]; then
+        _hw_briefs "${words[3]}"
+      else
+        _values 'option' '--agent' '--model' '--effort' '--here' '--no-db' '--brief' '--sdd' '--no-handle-check'
+      fi
+      ;;
+    *)
+      case ${words[CURRENT-1]} in
+        --agent)  _values 'agent' claude opencode codex ;;
+        --effort) _values 'effort' low medium high xhigh max ultra ;;
+        --model)  _values 'model' opus sonnet haiku fable ;;
+        --brief)  _files -g '*.md' ;;
+        --sdd)    _values 'sdd' speckit none ;;
+        *)        _values 'option' '--agent' '--model' '--effort' '--here' '--no-db' '--brief' '--sdd' '--no-handle-check' '--drop-db' ;;
+      esac
+      ;;
+  esac
+}
+
+_hw "$@"

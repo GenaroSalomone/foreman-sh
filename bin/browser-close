@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+#
+# browser-close — close an agent-browser session and PROVE it, or say what is
+# still open and why.
+#
+#   browser-close                       # close every session, verify
+#   browser-close --session <name>      # close one, verify
+#   browser-close --profile <path>      # a profile path to verify is released
+#
+# With no --profile it checks $HW_BROWSER_PROFILE, which hw sets per task. Do
+# NOT pass a bare profile NAME: a name resolves to
+# ~/.agent-browser/profiles/<name>, which every task in the project shares.
+#
+# WHY THIS EXISTS.
+#
+# `agent-browser close` prints "✓ Browser closed" and that sentence is not
+# evidence. Measured 2026-08-25 on a namespace with NO sessions at all:
+#
+#     $ agent-browser session list   → No active sessions
+#     $ agent-browser close          → ✓ Browser closed
+#     $ agent-browser session list   → Active sessions: → default
+#
+# The close SPAWNED the registration it claims to have removed. `close --all`
+# does the same: it prints "Closed session: default" and the session is still
+# listed the instant afterwards. The registration is a short-lived daemon, gone
+# in under a second — so it is a RACE, not a leak, and it is invisible to
+# anything that checks immediately.
+#
+# That race cost a real run. The browser QA subagent of a product-lane task
+# closed, listed, saw a session, concluded the close had failed, and relaunched —
+# three times (qa-grid-regression-22395, -24999, -run2-30473). Each relaunch was
+# a HEADED Chrome against the shared user-data-dir, which restores the previous
+# windows, so the third launch inherited two launches worth of them. The pile of
+# empty windows was not a Chrome bug; it was a retry loop feeding on a false
+# negative.
+#
+# So this script never reports from the close's own output. It settles, then
+# reads the two signals that actually carry the fact: the session registry, and
+# the Chrome processes holding the profile's user-data-dir.
+set -euo pipefail
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
+# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
+# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
+# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
+case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
+
+die()  { printf 'browser-close: %s\n' "$*" >&2; exit 1; }
+note() { printf 'browser-close: %s\n' "$*" >&2; }
+
+SESSION=""
+# NOT $HW_PROJECT. That default named the SHARED profile —
+# ~/.agent-browser/profiles/<project> — which is the singleton two tasks fight
+# over and the one thing a task should never touch. hw hands every run
+# HW_BROWSER_PROFILE, a path under its own artifacts; with neither set there is
+# no named profile to check, which is the correct answer for the ephemeral
+# default rather than a guess at a shared one.
+PROFILE="${HW_BROWSER_PROFILE:-}"
+SETTLE_MS=1500
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session) [ $# -ge 2 ] || die "--session needs a name"; SESSION="$2"; shift 2 ;;
+    --profile) [ $# -ge 2 ] || die "--profile needs a name or path"; PROFILE="$2"; shift 2 ;;
+    --settle-ms) [ $# -ge 2 ] || die "--settle-ms needs a number"; SETTLE_MS="$2"; shift 2 ;;
+    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown option: $1 (takes --session, --profile, --settle-ms)" ;;
+  esac
+done
+case "$SETTLE_MS" in ''|*[!0-9]*) die "--settle-ms must be a whole number of milliseconds (got: $SETTLE_MS)" ;; esac
+
+AB="${BROWSER_CLOSE_AGENT_BROWSER:-agent-browser}"
+
+# An unset namespace makes the CLI operate on its default namespace. That can
+# honestly list no sessions while leaving the task namespace untouched, so
+# refusing is safer than closing the wrong daemon and calling it verified.
+NAMESPACE="${AGENT_BROWSER_NAMESPACE:-}"
+[ -n "$NAMESPACE" ] || die "no AGENT_BROWSER_NAMESPACE — refusing to close the default namespace and report success"
+if printf '%s' "$NAMESPACE" | LC_ALL=C grep -q '[^ -~]'; then
+  die "AGENT_BROWSER_NAMESPACE contains non-ASCII characters whose lowercase sidecar path cannot be reproduced safely"
+fi
+if [ -n "$SESSION" ]; then
+  case "$SESSION" in *[!A-Za-z0-9_-]*) die "--session must contain only ASCII letters, numbers, hyphens, or underscores" ;; esac
+fi
+
+# Match agent-browser 0.31.2's pinned get_socket_dir implementation exactly for
+# the configurations this shell can establish. Its priority is a non-empty
+# explicit override, then a non-empty XDG runtime root, then HOME. dirs::home_dir
+# has platform fallbacks when HOME is absent; reproducing those in shell would
+# be a guess, so that uncommon configuration is the one we refuse.
+if [ -n "${AGENT_BROWSER_SOCKET_DIR:-}" ]; then
+  sidecar_base="$AGENT_BROWSER_SOCKET_DIR"
+elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  sidecar_base="$XDG_RUNTIME_DIR/agent-browser"
+elif [ -n "${HOME:-}" ]; then
+  sidecar_base="$HOME/.agent-browser"
+else
+  die "cannot establish agent-browser's sidecar root: AGENT_BROWSER_SOCKET_DIR, XDG_RUNTIME_DIR, and HOME are all empty"
+fi
+
+# sanitize_session_component lowercases ASCII and retains only the first
+# separator in each adjacent '-'/'_' run, dropping leading/trailing separators.
+# Non-ASCII alphanumerics are valid upstream but are deliberately refused above:
+# locale-dependent shell case conversion cannot prove the same path.
+namespace_path=""
+last_was_sep=0
+namespace_rest="$NAMESPACE"
+while [ -n "$namespace_rest" ]; do
+  char="${namespace_rest:0:1}"
+  namespace_rest="${namespace_rest:1}"
+  case "$char" in
+    [A-Z]) char="$(printf '%s' "$char" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+           namespace_path="$namespace_path$char"; last_was_sep=0 ;;
+    [a-z0-9]) namespace_path="$namespace_path$char"; last_was_sep=0 ;;
+    -|_)
+      if [ -n "$namespace_path" ] && [ "$last_was_sep" = 0 ]; then
+        namespace_path="$namespace_path$char"
+      fi
+      last_was_sep=1
+      ;;
+    *)
+      if [ -n "$namespace_path" ] && [ "$last_was_sep" = 0 ]; then
+        namespace_path="$namespace_path-"
+      fi
+      last_was_sep=1
+      ;;
+  esac
+done
+case "$namespace_path" in *[-_]) namespace_path="${namespace_path%?}" ;; esac
+[ -n "$namespace_path" ] || die "AGENT_BROWSER_NAMESPACE sanitizes to an empty namespace; refusing the default sidecar root"
+sidecar_root="$sidecar_base/namespaces/$namespace_path/run"
+if [ -n "$PROFILE" ]; then
+  case "$PROFILE" in
+    /*) : ;;
+    *) [ -n "${HOME:-}" ] || die "a relative --profile needs HOME to resolve agent-browser's shared profile path" ;;
+  esac
+fi
+
+command -v "$AB" >/dev/null 2>&1 || die "no agent-browser in PATH, so there is nothing to close and nothing to verify"
+
+# ── 1. ask it to close ────────────────────────────────────────────────────
+# The output is recorded, never believed. It is here so a failure has the
+# vendor's own words attached to it.
+if [ -n "$SESSION" ]; then
+  close_out="$("$AB" --session "$SESSION" close 2>&1)" || true
+else
+  close_out="$("$AB" close --all 2>&1)" || true
+fi
+
+# ── 2. let the registration daemon die ────────────────────────────────────
+# The whole point. Measured at well under a second; 1.5s is that with room.
+"${BROWSER_CLOSE_SLEEP:-/bin/sleep}" "$((SETTLE_MS / 1000)).$(printf '%03d' "$((SETTLE_MS % 1000))")"
+
+# ── 3. read the signals that carry the fact ───────────────────────────────
+# This is deliberately before session list: list/info prune stale sidecars, so
+# they cannot be the only evidence that a daemon is gone. A live pid is an
+# external, non-mutating signal that the namespace still has a live owner.
+live_sidecars=""
+inspection_error=""
+pid_files=()
+if [ -d "$sidecar_root" ]; then
+  if [ ! -r "$sidecar_root" ] || [ ! -x "$sidecar_root" ]; then
+    inspection_error="$sidecar_root is not readable and searchable"
+  elif [ -n "$SESSION" ]; then
+    pid_files=("$sidecar_root/$SESSION.pid")
+  else
+    shopt -s nullglob
+    pid_files=("$sidecar_root"/*.pid)
+    shopt -u nullglob
+  fi
+else
+  # Absence is evidence only when an existing ancestor is inspectable. Without
+  # this, EACCES and ENOENT collapse into the same `test -d` result.
+  ancestor="$sidecar_root"
+  while [ ! -e "$ancestor" ] && [ "$ancestor" != / ] && [ "$ancestor" != . ]; do
+    case "$ancestor" in
+      */*) ancestor="${ancestor%/*}"; [ -n "$ancestor" ] || ancestor=/ ;;
+      *) ancestor=. ;;
+    esac
+  done
+  if [ ! -d "$ancestor" ] || [ ! -r "$ancestor" ] || [ ! -x "$ancestor" ]; then
+    inspection_error="cannot verify that absent sidecar root $sidecar_root is reachable from $ancestor"
+  fi
+fi
+for pid_file in "${pid_files[@]:-}"; do
+  [ -f "$pid_file" ] || continue
+  case "$pid_file" in */dashboard.pid) continue ;; esac
+  if [ ! -r "$pid_file" ]; then
+    inspection_error="cannot read sidecar PID file $pid_file"
+    continue
+  fi
+  if ! pid="$(<"$pid_file")"; then
+    inspection_error="could not inspect sidecar PID file $pid_file"
+    continue
+  fi
+  case "$pid" in
+    ''|*[!0-9]*) continue ;;
+  esac
+  kill_error=""
+  if kill_error="$(LC_ALL=C kill -0 "$pid" 2>&1)"; then
+    session_name="$(basename "$pid_file" .pid)"
+    live_sidecars="${live_sidecars}${live_sidecars:+, }${session_name} (pid $pid)"
+  else
+    case "$kill_error" in
+      *"No such process"*) : ;;
+      *) inspection_error="could not establish liveness for pid $pid from $pid_file: ${kill_error:-unknown kill -0 failure}" ;;
+    esac
+  fi
+done
+
+list_out="$("$AB" session list 2>&1 || true)"
+still_listed=""
+case "$list_out" in
+  *"No active sessions"*) : ;;
+  *) still_listed="$(printf '%s' "$list_out" | sed '1d' | tr -d ' →' | tr '\n' ' ' | sed 's/ *$//')" ;;
+esac
+
+# The profile's own Chrome, matched on user-data-dir — NOT on "Chrome for
+# Testing" alone. Another task's browser is not this task's leak, and killing or
+# even reporting it as one is how a cleanup starts eating somebody else's run.
+chrome_pids=""
+if [ -n "$PROFILE" ]; then
+  case "$PROFILE" in
+    /*) udd="$PROFILE" ;;
+    *)  udd="$HOME/.agent-browser/profiles/$PROFILE"
+        note "'$PROFILE' is a shared profile name, not a path: every task in the project uses $udd."
+        note "Chrome locks it, so the second task to launch loses — measured. Prefer \$HW_BROWSER_PROFILE, or no profile at all (the default is a fresh ephemeral one)." ;;
+  esac
+  chrome_pids="$(pgrep -f -- "--user-data-dir=$udd" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' || true)"
+fi
+
+# ── 4. report what was OBSERVED ───────────────────────────────────────────
+if [ -n "$still_listed" ]; then
+  note "agent-browser said: ${close_out:-<no output>}"
+  note "but ${SETTLE_MS}ms later these sessions are still registered: $still_listed"
+  note "that is past the settle window, so it is not the usual phantom — the close did not take."
+  note "DO NOT relaunch into a new session: each launch restores the shared profile's windows."
+  exit 1
+fi
+
+if [ -n "$inspection_error" ]; then
+  note "agent-browser said: ${close_out:-<no output>}"
+  note "but the independent sidecar observation failed: $inspection_error"
+  note "the registry read may prune state, so this close is not verified. DO NOT relaunch."
+  exit 1
+fi
+
+if [ -n "$live_sidecars" ]; then
+  note "agent-browser said: ${close_out:-<no output>}"
+  note "but the independent sidecar snapshot before session list found live daemon(s): $live_sidecars"
+  note "the session registry may prune stale state; this close is not verified. DO NOT relaunch."
+  exit 1
+fi
+
+if [ -n "$chrome_pids" ]; then
+  note "no sessions are registered, but Chrome is still holding $udd (pids: $chrome_pids)."
+  note "that is a live browser owned by something else — another task on this profile, or a"
+  note "window a human opened. It is NOT this session's leak and this script will not kill it."
+  exit 3
+fi
+
+printf 'closed and verified: no live daemon PID observed before registry pruning, and no registered session'
+if [ -n "$PROFILE" ]; then
+  printf ', and no Chrome holding %s' "$udd"
+else
+  printf '; no profile was checked'
+fi
+printf '\n'

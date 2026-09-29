@@ -1,0 +1,551 @@
+#!/usr/bin/env bash
+#
+# lint-shell — catch the one bug this codebase keeps writing.
+#
+# Under `set -euo pipefail`, an assignment inherits its command substitution's
+# exit status. So `X="$(cmd)"` where cmd can legitimately fail kills the script
+# with no message. Four instances shipped before anyone noticed, and a fifth was
+# written *while fixing the other four*:
+#
+#   _infer_brief   no brief          -> hw exited 1, silent
+#   done-invoker   any artifact      -> never notified, silent
+#   _interactive   one empty brief   -> picker never drew, silent
+#   cmd_status     no .hw directory  -> listed one task and stopped
+#
+# The fix is always `|| true` (or an if/else). This flags the shapes; a human
+# decides. Exit 1 if anything is flagged.
+set -uo pipefail
+# NATIVE WINDOWS (Git Bash): see bin/msys-compat.sh. Elsewhere OSTYPE never matches.
+case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
+
+# Zero arguments used to print "clean: no silent-exit shapes in 0 file(s)" and
+# exit 0 — a green light for having checked nothing, which is the same silent
+# success this linter exists to catch, in the linter itself. A glob that matches
+# nothing must fail loudly, not pass.
+if [ $# -eq 0 ]; then
+  printf 'lint-shell: no files given — nothing was checked, so nothing is clean\n' >&2
+  printf 'usage: lint-shell <file>...\n' >&2
+  exit 64
+fi
+
+# AND THE SAME HOLE ONE LEVEL DOWN, which the fix above walked past. The loop
+# below is `[ -f "$f" ] || continue`, and the summary counted `$#` — the ARGV
+# count, not the files read. So:
+#
+#     $ lint-shell nope1.sh nope2.sh
+#     clean: no silent-exit shapes in 2 file(s)     (exit 0)
+#
+# having opened nothing. Measured 2026-09-07. A tool about "ways for this script
+# to die without saying anything" died without saying anything, on the number it
+# prints as its verdict.
+#
+# THREE VALUES, and the middle one is new:
+#   0   every argument was read, and none was flagged
+#   1   something was flagged
+#   65  at least one argument could NOT be read, or the analyser crashed on
+#       it. Not 1 — nothing was flagged —
+#       and emphatically not 0. "I checked these and they are clean" and "I
+#       could not open these" are different claims, and only the first is a
+#       clean bill. A partial read reports both halves and exits 65.
+hits=0
+read_count=0
+unreadable=""
+unanalysable=""
+hz_out="$(mktemp "${TMPDIR:-/tmp}/lint-shell.XXXXXX")" || exit 70
+hz_err="$(mktemp "${TMPDIR:-/tmp}/lint-shell.XXXXXX")" || exit 70
+trap 'rm -f "$hz_out" "$hz_err"' EXIT
+
+# Emit executable, unhandled hazards as `line:kind:source`. This is a bounded
+# lexer, not a shell parser: it recognizes assignment substitutions, top-level
+# pipeline/list operators, quoting, heredocs, errexit/pipefail state, and direct
+# conditional contexts. Anything beyond that remains visible rather than being
+# declared safe by proximity to an unrelated `||`.
+_hazards() {
+  python3 - "$1" <<'PY'
+import re, sys
+
+path = sys.argv[1]
+lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+commands = "grep find rg jq herdr engram git ls pgrep awk sed".split()
+command_alt = "|".join(commands)
+assignment = re.compile(
+    r"^\s*(?P<context>(?:(?:if|while|until)\s+|!\s+)?)"
+    r"[A-Za-z_][A-Za-z0-9_]*\s*=\s*\"?\$\("
+)
+option_arm = re.compile(r"^\s*--[A-Za-z0-9-]+\)")
+heredoc = None
+option_scopes = []
+
+# Executables start with errexit/pipefail off. Source-only libraries have no
+# shebang and inherit both from their caller, so unknown is treated as enabled.
+executable = bool(lines and lines[0].startswith("#!"))
+errexit = False if executable else None
+pipefail = False if executable else None
+
+def close_substitution(text, start):
+    contexts, i = [None], start + 2
+    while i < len(text):
+        c = text[i]
+        quote = contexts[-1]
+        if quote == "single":
+            if c == "'": contexts[-1] = None
+            i += 1; continue
+        if quote == "double":
+            if c == "\\": i += 2; continue
+            if c == '"': contexts[-1] = None; i += 1; continue
+            if text.startswith("$(", i): contexts.append(None); i += 2; continue
+            i += 1; continue
+        if c == "\\": i += 2; continue
+        if c == "'": contexts[-1] = "single"; i += 1; continue
+        if c == '"': contexts[-1] = "double"; i += 1; continue
+        if c == "#" and (i == 0 or text[i - 1].isspace()):
+            nl = text.find("\n", i)
+            i = len(text) if nl < 0 else nl + 1
+            continue
+        if text.startswith("$(", i):
+            contexts.append(None); i += 2; continue
+        if c == ")":
+            contexts.pop()
+            if not contexts:
+                return i
+        i += 1
+    return None
+
+def top_level_mask(body):
+    """Keep only unquoted top-level syntax; mask nested substitutions."""
+    out = list(body)
+    i, contexts = 0, [None]
+    while i < len(body):
+        c = body[i]
+        quote = contexts[-1]
+        nested = len(contexts) > 1
+        if quote == "single":
+            out[i] = " "
+            if c == "'": contexts[-1] = None
+            i += 1; continue
+        if quote == "double":
+            out[i] = " "
+            if c == "\\":
+                if i + 1 < len(out): out[i + 1] = " "
+                i += 2; continue
+            if c == '"': contexts[-1] = None
+            elif body.startswith("$(", i):
+                if i + 1 < len(out): out[i + 1] = " "
+                contexts.append(None); i += 2; continue
+            i += 1; continue
+        if nested:
+            out[i] = " "
+            if c == "\\":
+                if i + 1 < len(out): out[i + 1] = " "
+                i += 2; continue
+            if c in "'\"": contexts[-1] = "single" if c == "'" else "double"
+            elif body.startswith("$(", i):
+                if i + 1 < len(out): out[i + 1] = " "
+                contexts.append(None); i += 2; continue
+            elif c == ")": contexts.pop()
+            i += 1; continue
+        if c == "\\":
+            out[i] = " "
+            if i + 1 < len(out): out[i + 1] = " "
+            i += 2; continue
+        if c in "'\"":
+            out[i] = " "; contexts[-1] = "single" if c == "'" else "double"; i += 1; continue
+        if body.startswith("$(", i):
+            out[i] = out[i + 1] = " "; contexts.append(None); i += 2; continue
+        if c == "#" and (i == 0 or body[i - 1].isspace()):
+            nl = body.find("\n", i)
+            end = len(body) if nl < 0 else nl
+            out[i:end] = " " * (end - i)
+            i = end; continue
+        i += 1
+    return "".join(out)
+
+def top_ops(mask):
+    return [(m.start(), m.group()) for m in re.finditer(r"\|\||&&|(?<!\|)\|(?!\|)|;|\n", mask)]
+
+def heredoc_start(line):
+    """Return a real top-level heredoc delimiter after shell quote removal."""
+    mask = top_level_mask(line)
+    match = re.search(r"<<-?", mask)
+    if not match:
+        return None
+    strip_tabs = match.group().endswith("-")
+    i, delimiter, consumed = match.end(), [], False
+    while i < len(line) and line[i] in " \t":
+        i += 1
+    while i < len(line):
+        c = line[i]
+        if c in " \t;&|<>()":
+            break
+        consumed = True
+        if c == "'":
+            i += 1
+            end = line.find("'", i)
+            if end < 0:
+                return None
+            delimiter.append(line[i:end])
+            i = end + 1
+            continue
+        if c == '"':
+            i += 1
+            while i < len(line) and line[i] != '"':
+                if line[i] == "\\" and i + 1 < len(line):
+                    i += 1
+                delimiter.append(line[i])
+                i += 1
+            if i >= len(line):
+                return None
+            i += 1
+            continue
+        if c == "\\" and i + 1 < len(line):
+            i += 1
+            c = line[i]
+        delimiter.append(c)
+        i += 1
+    return ("".join(delimiter), strip_tabs) if consumed else None
+
+def option_scope_open(code):
+    stripped = code.strip()
+    function = re.match(
+        r"^(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\s*\))?\s*\{",
+        stripped,
+    )
+    if function and not re.search(r"}\s*;?\s*$", stripped[function.end():]):
+        return "function"
+    if re.fullmatch(r"\(\s*", stripped):
+        return "subshell"
+    return None
+
+def option_scope_closes(code, kind):
+    stripped = code.strip()
+    if kind == "function":
+        return bool(re.match(r"^}\s*;?\s*$", stripped))
+    return bool(re.match(r"^\)\s*;?\s*$", stripped))
+
+def or_handler_guarantees_success(mask, position):
+    handler = mask[position + 2:]
+    ops = top_ops(handler)
+    if any(op != "||" for _, op in ops):
+        return False
+    final_arm = handler[ops[-1][0] + 2:] if ops else handler
+    final_arm = final_arm.strip()
+    if re.fullmatch(r"(?:(?:command|builtin)\s+)?(?:true|:)", final_arm):
+        return True
+    return bool(re.fullmatch(r"(?:(?:command|builtin)\s+)?echo(?:\s+[^<>&|;()]*)?", final_arm))
+
+def command_is_risky(mask, match, pf):
+    ops = top_ops(mask)
+    after = [(p, op) for p, op in ops if p >= match.end()]
+    next_list = next(((p, op) for p, op in after if op in ("||", "&&", ";", "\n")), None)
+    if next_list and next_list[1] == "||" and or_handler_guarantees_success(mask, next_list[0]):
+        return False
+    stage_end = next_list[0] if next_list else len(mask)
+    # awk/sed used as pure filters on a pipe return zero for an empty/no-match
+    # input. Their direct-file forms remain covered (I/O can fail), as does an
+    # awk program with an explicit non-zero exit. This is an invocation-level
+    # distinction, not removal of either detector class.
+    command = match.group("cmd")
+    entered_from_pipe = match.group(1) == "|"
+    stage = mask[match.end():stage_end]
+    if entered_from_pipe and command == "sed":
+        return False
+    if entered_from_pipe and command == "awk" and not re.search(r"\bexit\b", stage):
+        return False
+    has_later_stage = any(op == "|" and match.end() <= p < stage_end for p, op in ops)
+    return not has_later_stage or pf is not False
+
+def body_has_risky_command(body, pf):
+    mask = top_level_mask(body)
+    start = re.compile(
+        rf"(^|[|;&\n])\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*"
+        rf"(?:(?:command|builtin|env)\s+)*(?P<cmd>{command_alt})(?=\s|[<>&|;()]|$)", re.M
+    )
+    return any(command_is_risky(mask, m, pf) for m in start.finditer(mask))
+
+# A command substitution whose stderr is discarded, written where its VALUE
+# decides something: inside a test, or as the subject of if/while/until. The
+# keyword has to be at a command position — see the note at the call site.
+# WHERE A VALUE DECIDES SOMETHING. `case` is in here because it is the dominant
+# conditional idiom in this codebase and the first draft missed it entirely — a
+# Judgment Day judge walked seven shapes past the rule on 2026-09-07 and five
+# got through. `test` is `[` under another name; backticks are `$()` under an
+# older one.
+_UM_SUBJECT = re.compile(
+    r"\$\((?:[^()]|\$\([^()]*\))*2>\s*/dev/null(?:[^()]|\$\([^()]*\))*\)"
+    r"|`[^`]*2>\s*/dev/null[^`]*`")
+
+# THE SUBJECT HAS TO SIT INSIDE THE DECISION, not merely on a line that has one.
+# `[ -n "$x" ] && y="$(cmd 2>/dev/null)"` decides nothing on the substitution —
+# it is an assignment guarded by an unrelated test — and the first draft flagged
+# it because any bracket anywhere on the line opened the gate. A judge found
+# that false positive on 2026-09-07, in the same pass that found five misses.
+#
+# So the line is cut into DECISION REGIONS, and only a subject inside one counts.
+_UM_REGIONS = [
+    # `[ … ]` and `[[ … ]]`, and `test …` up to the next list operator.
+    (re.compile(r"(?<![\w-])\[\[?\s"), re.compile(r"\s\]\]?(?:\s|;|$)")),
+    (re.compile(r"(?<![\w-])test\s"), re.compile(r"(?:&&|\|\||;|$)")),
+    # `case X in`
+    (re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b|\belse\b)\s*case\s"), re.compile(r"\sin(?:\s|$)")),
+    # `if|while|until <command>` up to the `;`, `then` or `do` that ends it.
+    (re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b|\belse\b)\s*(?:if|while|until)\s"),
+     re.compile(r";|\bthen\b|\bdo\b|$")),
+]
+
+def unmeasured_decision_subjects(text):
+    """Every discarded-stderr substitution sitting inside a decision region."""
+    out = []
+    for opener, closer in _UM_REGIONS:
+        for om in opener.finditer(text):
+            cm = closer.search(text, om.end())
+            end = cm.start() if cm else len(text)
+            for sub in _UM_SUBJECT.finditer(text, om.end(), end):
+                out.append(sub.group(0))
+    return out
+
+unmeasured_exit_tested = re.compile(
+    r"(?:^|[;&|]|\bthen\b)\s*(?:if|while|until)\s+!?\s*[A-Za-z_][A-Za-z0-9_]*=\"?\$\(")
+
+def unmeasured_value_fallback(subject):
+    """A fallback INSIDE the substitution that supplies a real value.
+
+    `[ -n "$(…)" ] || printf "empty"` is the test's ELSE BRANCH and used to
+    silence the finding; so did `|| printf x` written inside a COMMENT, and so
+    did an EMPTY fallback (`|| printf ""`), which supplies no value at all.
+    All three were judge findings on 2026-09-07. Asking the SUBJECT settles all
+    of them, because a comment and an else-branch are not inside it.
+    """
+    return bool(re.search(r"\|\|\s*(?:printf|echo)\s+(?![\"']{2}(?:\s|\)|$))\S", subject))
+
+_UM_EXISTS = re.compile(r"\[\s*!?\s*-[rdfse]\s+\"?(\$?[^]\"\s]+)\"?\s*\]\s*(?:&&|\|\||;)")
+
+def unmeasured_guarded_by_existence(text, subject):
+    """True when a `[ -r X ]` guards a plain REDIRECT READ of X in `subject`.
+
+    NAMING THE SAME PATH IS NOT ENOUGH. `[ -d "$lockdir" ] && [ -z "$(find
+    "$lockdir" …)" ]` names it twice and the guard still answers a different
+    question: the directory existing is exactly the case where `find` can fail,
+    and that branch DELETES the lock. Measured 2026-09-07 — a judge found it
+    live at `bin/hw:496` after the first version of this exclusion hid it.
+
+    A redirect either opens the file or the shell fails; there is no third way
+    for it to come back empty-but-broken. A COMMAND handed the path can fail for
+    reasons the guard never tested.
+    """
+    for m in _UM_EXISTS.finditer(text):
+        target = m.group(1)
+        if target and re.search(r"<\s*\"?" + re.escape(target), subject):
+            return True
+    return False
+
+def update_options(text, current_e, current_pf):
+    stripped = text.strip()
+    if not stripped.startswith("set "):
+        return current_e, current_pf
+    words = stripped.split()
+    for idx, word in enumerate(words[1:], 1):
+        if re.fullmatch(r"-[A-Za-z]+", word) and "e" in word[1:]: current_e = True
+        if re.fullmatch(r"\+[A-Za-z]+", word) and "e" in word[1:]: current_e = False
+        if word == "pipefail" and idx and "o" in words[idx - 1]:
+            current_pf = not words[idx - 1].startswith("+")
+        if word == "errexit" and idx and "o" in words[idx - 1]:
+            current_e = not words[idx - 1].startswith("+")
+    return current_e, current_pf
+
+i = 0
+while i < len(lines):
+    line = lines[i]
+    stripped = line.lstrip()
+    if heredoc:
+        delimiter, strip_tabs = heredoc
+        candidate = line.lstrip("\t") if strip_tabs else line
+        if candidate == delimiter:
+            heredoc = None
+        i += 1; continue
+    if not stripped or stripped.startswith("#"):
+        i += 1; continue
+
+    code = top_level_mask(line)
+    scope_kind = option_scope_open(code)
+    if scope_kind:
+        option_scopes.append((scope_kind, errexit, pipefail))
+
+    m = assignment.match(line)
+    if m and errexit is not False:
+        start = line.find("$(", m.start())
+        logical, end_line = line, i
+        end = close_substitution(logical, start)
+        while end is None and end_line + 1 < len(lines):
+            end_line += 1
+            logical += "\n" + lines[end_line]
+            end = close_substitution(logical, start)
+        # Include only a syntactically continued outer handler. An unrelated
+        # following `|| true` must never shield this assignment.
+        while end is not None and logical.rstrip().endswith("\\") and end_line + 1 < len(lines):
+            end_line += 1
+            logical += "\n" + lines[end_line]
+        if end is None:
+            print(f"{i + 1}:assignment:{line}")
+        else:
+            body = logical[start + 2:end]
+            tail = logical[end + 1:].lstrip().lstrip('"').lstrip()
+            tail = re.sub(r"\\\s*\n\s*", "", tail)
+            outer_conditional = bool(m.group("context")) or tail.startswith(("||", "&&"))
+            mask = top_level_mask(body)
+            conditional_hazard = bool(re.match(r"^\s*\[\[?\s", mask) and "&&" in mask and "||" not in mask)
+            if not outer_conditional and conditional_hazard:
+                print(f"{i + 1}:conditional:{line}")
+            elif not outer_conditional and body_has_risky_command(body, pipefail):
+                print(f"{i + 1}:assignment:{line}")
+
+    # ── UNMEASURED: a discarded stderr feeding a decision ────────────────────
+    #
+    # `[ -n "$(cmd ... 2>/dev/null)" ]` cannot tell "the command answered, and
+    # the answer is nothing" from "the command failed". Both are an empty
+    # string, and the test then decides on it. That is the shape behind the
+    # 2026-09-07 worktree fixes: `git status --porcelain 2>/dev/null` inside a
+    # test read a corrupted index as a clean tree, and `herdr agent list
+    # 2>/dev/null | jq … || true` read a dead daemon as "nobody is working
+    # here" — one gate away from `git worktree remove`.
+    #
+    # WHAT IS DELIBERATELY NOT FLAGGED, and why the rule is worth having:
+    # measured over `bin/` on 2026-09-07, the naive version of this produced
+    # 111 findings and a variable-flow version produced 142. Both prototypes
+    # ship at `setup/guards/unmeasured-rule-prototypes.py` so those two numbers
+    # can be re-derived rather than believed — they were unverifiable prose
+    # until a judge said so. Almost all were
+    # reads that are legitimately optional, and a rule at that volume is one
+    # people learn to scroll past. Three exclusions take it to 4, and all four
+    # were triaged one at a time — a stale 2 sat here until a judge read it,
+    # which is this rule's own subject reappearing in its own comment:
+    #
+    #   * the exit code IS tested — `if x="$(...)"`, `until ! x="$(...)"`. The
+    #     failure is observed; only the stderr is hidden.
+    #   * the read is gated on the thing existing on the same line — a
+    #     `[ -r f ] && x="$(… < f …)"`. Absent is the expected case and the
+    #     guard says so.
+    #   * a fallback supplies a real value — `|| printf 'claude'`. The empty
+    #     case never reaches the test.
+    #
+    # THE KEYWORD MUST BE AT A COMMAND POSITION. `until` is an ordinary
+    # variable name in this codebase (`hw:4424`), and matching it anywhere
+    # turned two assignments into phantom loops on the first pass.
+    #
+    # ALLOWLIST: end the line with `# lint-shell: measured-elsewhere` and say
+    # WHY in the code. It is for a read whose failure is genuinely observed
+    # somewhere else, or where the empty branch is the safe one and that is
+    # written down.
+    # MATCHED ON `line`, NOT `code`. `top_level_mask` blanks quoted-string
+    # interiors, and every instance of this shape lives inside double quotes —
+    # `[ -n "$(cmd 2>/dev/null)" ]`. Against the masked text the rule found
+    # nothing at all, which is how a rule can be added and change no number.
+    # NO `errexit` GATE HERE, unlike the hazards above, and that is deliberate:
+    # a discarded stderr deciding a test is wrong with or without `set -e`. The
+    # gate would have exempted every file before its `set -e` line and every
+    # region after a `set +e` (`bin/hw:8467`). Dropping it adds 0 findings on
+    # today's `bin/`, so nothing was hidden — but "bin/ carries zero" would have
+    # been a narrower claim than it reads. Raised by a judge, 2026-09-07.
+    if not re.search(r"#\s*lint-shell:\s*measured-elsewhere", line) \
+            and not unmeasured_exit_tested.search(line):
+        for _subject in unmeasured_decision_subjects(line):
+            if unmeasured_value_fallback(_subject):
+                continue
+            if unmeasured_guarded_by_existence(line, _subject):
+                continue
+            print(f"{i + 1}:unmeasured:{line}")
+            break
+
+    shift_match = re.search(r"\bshift\s+2\b", code)
+    if shift_match and errexit is not False:
+        arm = i
+        while arm >= 0 and not option_arm.match(lines[arm]):
+            arm -= 1
+        arm_text = "\n".join(lines[arm:i + 1]) if arm >= 0 else ""
+        tail = code[shift_match.end():].lstrip()
+        guarded = re.search(r"\$#\s*\"?\s*-ge\s+2", arm_text) or "_need_val \"$@\"" in arm_text
+        guarded = bool(guarded or tail.startswith(("||", "&&")) or re.match(r"^\s*(?:if|while|until|!)\b", code))
+        if not guarded:
+            print(f"{i + 1}:shift:{line}")
+
+    errexit, pipefail = update_options(code, errexit, pipefail)
+    if option_scopes and option_scope_closes(code, option_scopes[-1][0]):
+        _, errexit, pipefail = option_scopes.pop()
+    heredoc = heredoc_start(line)
+    i += 1
+PY
+}
+
+for f in "$@"; do
+  if [ ! -f "$f" ]; then
+    unreadable="$unreadable$f"$'\n'
+    continue
+  fi
+  if [ ! -r "$f" ]; then
+    unreadable="$unreadable$f"$'\n'
+    continue
+  fi
+  # THE ANALYSER'S EXIT STATUS IS THE SIGNAL, not the emptiness of its pipe.
+  #
+  # `read_count` used to be bumped HERE, after two predicates and before a byte
+  # was read, and `done < <(_hazards "$f")` threw the analyser's status away —
+  # a process substitution's exit code is not available to the loop. So an
+  # empty pipe from a FAILED reader was indistinguishable from a clean file.
+  # Measured 2026-09-07 by a Judgment Day judge, with `python3` stubbed to
+  # exit 7, against a file that really does carry a flagged shape:
+  #
+  #     clean: no silent-exit shapes in 1 file(s)     exit 0
+  #
+  # Zero bytes read, green light — the same sentence this whole change is
+  # about, one level in. So the output goes to a file whose status IS checked,
+  # and a file that could not be analysed joins the unreadable list rather than
+  # the clean one.
+  if ! _hazards "$f" > "$hz_out" 2>"$hz_err"; then
+    unanalysable="$unanalysable$f: $(tr '\n' ' ' < "$hz_err" | cut -c1-160)"$'\n'
+    continue
+  fi
+  read_count=$((read_count + 1))
+  while IFS=: read -r n kind line; do
+    case "$kind" in
+      assignment) message='assignment may inherit a non-zero status — add || true' ;;
+      conditional) message='$( [ … ] && … ) returns 1 when the test is false — use if/else' ;;
+      shift) message='shift 2 returns 1 when only one argument is left' ;;
+      unmeasured) message='a discarded stderr decides this — an empty result from a FAILED command is the same bytes as a real negative answer' ;;
+      *) continue ;;
+    esac
+    printf '%s:%s: %s\n' "$f" "$n" "$message"
+    printf '    %s\n' "$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-88)"
+    hits=$((hits + 1))
+  done < "$hz_out"
+done
+
+# Named before the verdict, because it changes what the verdict can claim. A
+# file the analyser CRASHED on is in the same position as one that could not be
+# opened: unchecked. It is listed separately because the fix is different — one
+# is a bad path, the other is a broken toolchain.
+if [ -n "$unanalysable" ]; then
+  printf '\nlint-shell: the analyser FAILED on %s file(s), so they were not checked:\n' \
+    "$(printf '%s' "$unanalysable" | wc -l | tr -d ' ')" >&2
+  printf '%s' "$unanalysable" | sed 's/^/    /' >&2
+fi
+if [ -n "$unreadable" ]; then
+  # `grep -c .` SKIPS EMPTY LINES, so `lint-shell ""` printed "0 of 1
+  # argument(s) could NOT be read" — a count of zero inside the sentence that
+  # names one. Caught by a Judgment Day judge, 2026-09-07. The whole subject of
+  # this file is numbers that match what happened, so it counts records.
+  printf '\nlint-shell: %s of %s argument(s) could NOT be read, so they were not checked:\n' \
+    "$(printf '%s' "$unreadable" | wc -l | tr -d ' ')" "$#" >&2
+  printf '%s' "$unreadable" | sed 's/^/    /' >&2
+fi
+
+if [ "$hits" -gt 0 ]; then
+  printf '\n%s finding(s) in %s file(s) read. Each is a way for this script to die without saying anything.\n' "$hits" "$read_count" >&2
+  exit 1
+fi
+
+if [ -n "$unreadable" ] || [ -n "$unanalysable" ]; then
+  printf 'lint-shell: %s file(s) read and clean, but the arguments above were never checked — this is NOT a clean bill for them.\n' "$read_count" >&2
+  exit 65
+fi
+
+# `$read_count`, never `$#`: the number has to be what was READ.
+printf 'clean: no silent-exit shapes in %s file(s)\n' "$read_count"

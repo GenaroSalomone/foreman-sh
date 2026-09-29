@@ -1,0 +1,45 @@
+{
+  "comment": [
+    "What the read-only guards protect, for every lane and every runtime.",
+    "Read by setup/guards/deny_repo_writes.py (Claude Code and Codex) and",
+    "setup/guards/deny-repo-writes.js (OpenCode), and by specialist_roster.py",
+    "for specialists_from. Why each value is what it is stays in the comment",
+    "beside the readers; this file carries values.",
+    "",
+    "Paths: a leading ~ is the user's home from the password database, not",
+    "$HOME, so a process that exports another HOME does not move what is",
+    "protected. specialists_from is the exception: the roster has always",
+    "expanded ~ from $HOME, and still does.",
+    "",
+    "product_repos is the floor: every lane protects every entry, plus its",
+    "own repo and worktrees. worktree_roots is the ONLY key that grants an",
+    "exemption (the spent-worktree teardown); a lane without it cannot reach",
+    "one. Adding a root here is a decision about every lane. git_tail and",
+    "redirect_tail fall back to defaults. A missing or malformed file makes",
+    "every guard REFUSE, it does not let anything through."
+  ],
+  "brain_root": "~/brain",
+  "product_repos": [
+    "~/code/app",
+    "~/brain/work"
+  ],
+  "defaults": {
+    "git_tail": "The brainer is read-only there — only the task's executor changes repo state, in its own worktree. Read-only git (log/status/diff/show/rev-list) is allowed.",
+    "redirect_tail": "If you were only reading and the '>' is part of a search pattern, keep the tree's absolute path out of the command. This check resolves the redirect's actual target — expanding `$HOME`/`~`, unwinding `..`, and following symlinks — before deciding, so respelling the path does not change the answer; it does not key on the literal text."
+  },
+  "lanes": {
+    "brain": {
+      "repo": "~/code/app",
+      "worktrees": "~/brain/work",
+      "write_here": "~/brain/<lane>/",
+      "where": "a product repo or a live worktree"
+    },
+    "setup": {
+      "repo": "~/code/app",
+      "worktrees": "~/brain/work",
+      "write_here": "~/brain/setup/",
+      "where": "the app repo or a live worktree"
+    }
+  },
+  "specialists_from": {}
+}

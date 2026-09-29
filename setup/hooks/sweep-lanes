@@ -1,0 +1,3 @@
+# setup/hooks/sweep-lanes — the lanes setup/hooks/pre-commit treats as one
+# agent's work each: a commit mixing two of them, or one with shared tooling,
+# is refused as a `git add -A` sweep. One lane name per line; none here.

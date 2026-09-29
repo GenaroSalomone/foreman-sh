@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+#
+# Refuse a commit that mixes shared TOOLING with one project LANE's files.
+#
+# WHY. brain is written by several agents at once. A brainer finishing one
+# lane's work that runs `git add -A` sweeps another agent's uncommitted tooling
+# into a commit titled after its own lane's decision. Nothing is lost, but the
+# history then says a lane decision contained a rewrite of shared tooling, and
+# the author of that rewrite never gets to describe it.
+#
+# The sweep has a signature: shared tooling and a lane's own files in one commit.
+# That is almost never a real change — tooling lands with tooling, a lane's
+# decisions land with that lane. So refuse it and name the fix: stage paths.
+#
+# Override with `git commit --no-verify` for the rare genuine mixed change.
+#
+# DELETIONS COUNT, since 2026-09-08. The filter was `ACMR` — additions, copies,
+# modifications, renames — so a sweep that DELETED another agent's files across
+# two lanes was waved through, and `setup/tests/96` pinned that as a decided
+# boundary. It is now decided the other way, because the two costs are not
+# symmetric: a legitimate cleanup spanning two lanes is stopped and has to stage
+# paths or pass --no-verify, which costs a minute; a sweep that deletes another
+# agent's uncommitted brief is not recoverable from anywhere. The override in the
+# line above is the escape hatch for the rare real cross-lane deletion, and it
+# was always the escape hatch for the rare real cross-lane change.
+set -euo pipefail
+
+staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
+[ -n "$staged" ] || exit 0
+
+# Budget is mandatory; legacy format diagnostics remain advisory during migration.
+# The checker reads the index, including archives staged by this same commit.
+if printf '%s\n' "$staged" | grep -qE '/decisions\.md$'; then
+  python3 "$(git rev-parse --show-toplevel)/setup/hooks/decisions-check.py" --staged
+fi
+
+tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|shell/|layouts/|setup/plans/|setup/hooks/|CLAUDE\.shared\.md|CLAUDE\.md$|README\.md|BRIEF-TEMPLATE\.md)' || true)"
+# THE LANES ARE A LIST IN setup/hooks/sweep-lanes, one per line, not a literal
+# here: which lanes a brain has is configuration, and this hook is mechanism.
+# `setup/` is NOT a lane for this purpose: setup/decisions.md is this repo's own
+# engineering log and a tooling change lands with its entry — that is the normal
+# pattern, not a sweep. An EMPTY or ABSENT list is a brain with no such lane,
+# and the lane checks then match nothing: a fixture repo that carries only the
+# hooks it exercises has no list, and must commit the way it always has.
+sweep_lanes_file="$(git rev-parse --show-toplevel)/setup/hooks/sweep-lanes"
+sweep_lanes="$(grep -vE '^[[:space:]]*(#|$)' "$sweep_lanes_file" 2>/dev/null || true)"
+if printf '%s\n' "$sweep_lanes" | grep -vqE '^([a-z][a-z0-9-]*)?$'; then
+  echo "pre-commit: $sweep_lanes_file holds a line that is not a lane name (a lowercase word) — refusing." >&2
+  exit 1
+fi
+sweep_re="^($(printf '%s\n' "$sweep_lanes" | grep . | paste -sd'|' - || true))/"
+[ -n "$sweep_lanes" ] || sweep_re='^/'   # no lane: no staged path starts with /
+lane="$(printf '%s\n' "$staged" | grep -E "${sweep_re}(decisions|briefs/|CLAUDE\.md|\.claude/|opencode\.json)" || true)"
+
+# A sweep does not need tooling in it to be a sweep: one that mixes two lanes'
+# briefs and decisions with no tooling file at all is waved through by the
+# check above. Lane work lands with its own lane, so two lanes in one commit is
+# the same signature wearing different clothes.
+lanes="$(printf '%s\n' "$staged" \
+  | grep -oE "$sweep_re" \
+  | sort -u | tr -d '/' || true)"
+lane_count="$(printf '%s\n' "$lanes" | grep -c . || true)"
+
+if [ "$lane_count" -gt 1 ]; then
+  {
+    echo "pre-commit: this commit spans $lane_count project lanes."
+    echo
+    echo "  lanes:"; printf '%s\n' "$lanes" | sed 's/^/    /'
+    echo
+    echo "  files:"; printf '%s\n' "$staged" \
+      | grep -E "$sweep_re" | sed 's/^/    /'
+    echo
+    echo "That is the signature of \`git add -A\` in a repo several agents write to."
+    echo "One agent's brief ends up inside another agent's decision commit."
+    echo
+    echo "Stage paths instead:"
+    echo "    git reset && git add <the files this commit is actually about>"
+    echo
+    echo "If the change genuinely spans lanes: git commit --no-verify"
+  } >&2
+  exit 1
+fi
+
+# RUN THE REGRESSION SUITE WHEN bin/ IS STAGED, and only then.
+#
+# THIS COMMENT USED TO CARRY THE COST AS A NUMBER, and it was wrong twice. It
+# said "~4s" for a suite that had not been that fast in some time; that was
+# corrected to "~19s as of 2026-08-25, at 158 tests — measured, not estimated,
+# because a hook's cost is what decides whether people reach for --no-verify".
+# On 2026-09-07, at 1856 tests, the same suite took ~13 minutes run alone and
+# ~40 from this hook on a loaded machine, and the author of that session reached
+# for --no-verify six times. The comment predicted its own failure and then
+# became an instance of it.
+#
+# A NUMBER MEASURED ONCE AND PRINTED AS A PROPERTY IS THE SAME DEFECT IN PROSE.
+# It is the shape the whole `close-the-assertion-gaps` line of work is about: an
+# assertion about a subject printed from something other than a signal that
+# subject emitted. A prose constant cannot emit anything. So the cost is no
+# longer written down here — the hook TIMES ITS OWN RUN and prints what it
+# actually took, every time, on success and on failure alike. The number is a
+# measurement of this run, on this machine, at this suite size, which is the
+# only version of it that can be true when it is read.
+#
+# It is printed on SUCCESS too, deliberately. A cost that only shows up when
+# something is already broken is invisible exactly while it is being paid.
+#
+# A suite nobody runs is worth exactly what bin/lint-shell is currently worth:
+# it exits 1 on five preexisting findings and everyone steps over it. This one
+# is wired to the moment it matters — a commit that changes the tools. It is
+# hermetic (stubbed herdr, every hw call --dry-run, no worktree built, no agent
+# launched) so it is safe to run from a hook in a repo with live agents in it.
+#
+# `git commit --no-verify` still skips it, same as the checks below.
+#
+# THE PATTERN ITSELF LIVES IN ONE FILE, sourced here and by setup/hooks/pre-push
+# — see setup/hooks/suite-trigger-pattern.sh for why a second inline copy is a
+# defect, not a convenience.
+. "$(git rev-parse --show-toplevel)/setup/hooks/suite-trigger-pattern.sh"
+# A sourced file that defines nothing must not be read as "nothing triggers" —
+# checked explicitly rather than left to accidental grep-on-empty-pattern
+# semantics (this hook's own `set -euo pipefail` at the top already refuses a
+# failed `.` above, but a file that sources cleanly while defining an empty or
+# unset variable would not trip that).
+[ -n "${SUITE_TRIGGER_PATTERN:-}" ] || {
+  echo "pre-commit: setup/hooks/suite-trigger-pattern.sh did not define SUITE_TRIGGER_PATTERN — refusing to guess what can invalidate the suite." >&2
+  exit 1
+}
+if printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+  root="$(git rev-parse --show-toplevel)"
+  # THE SAME DOOR HAS A SECOND LATCH, and it was open until 2026-09-09.
+  # `git -c <key>=<value>` serialises every `-c` into GIT_CONFIG_PARAMETERS and
+  # exports it, so a descendant git applies it at COMMAND-LINE precedence —
+  # which outranks a repository's own config, so a fixture cannot defend itself
+  # with `git config`. This hook is normally reached as
+  # `git -c core.hooksPath=setup/hooks commit`, which handed
+  # `core.hooksPath=setup/hooks` to every git command the suite runs. tests/105
+  # builds fixture repos whose whole point is that a pre-commit hook at
+  # <fixture>/.git/hooks refuses a corrupt decisions rotation; git went looking
+  # in <fixture>/setup/hooks/ instead, found nothing, and eight corrupt commits
+  # were accepted with no guard involved. The guard was never wrong — it was
+  # never called.
+  #
+  # Built HERE, not inside the `-x` branch below, because both suites launched
+  # in this block need it. Swept by PREFIX because `env -u` cannot name
+  # GIT_CONFIG_KEY_<n>, and the suite strips the same family again itself.
+  hook_git_config_unset=()
+  for _gc_name in ${!GIT_CONFIG@}; do hook_git_config_unset+=(-u "$_gc_name"); done
+  unset _gc_name 2>/dev/null || true
+  if [ -x "$root/setup/test-hw" ]; then
+    # RUN IT WITH GIT'S ENVIRONMENT STRIPPED. A hook exports GIT_DIR and
+    # GIT_INDEX_FILE, and every git command any child runs inherits them — so a
+    # test that builds a throwaway repo with `cd $tmp && git init` initialises
+    # THIS repository instead. That is not hypothetical: on 2026-08-24 it
+    # committed a two-file fixture over HEAD here and left every real file
+    # untracked. `git reset --mixed` restored it and nothing had been pushed.
+    # The suite unsets these itself; this is the second lock on the same door,
+    # because the failure mode is silent and lands on a repo several agents
+    # write to.
+    # THE FAST GATE, NOT THE FULL SUITE. pre-commit used to run the whole
+    # thing — 1856 tests at 13-40 minutes by 2026-09-07, and that cost is what
+    # `setup/decisions.md` names as the reason `--no-verify` got reached for six
+    # times. `HW_TEST_GATE=fast` runs only the subject files
+    # `setup/test-budgets.json` classifies at or under its measured threshold;
+    # everything else still runs, mandatorily, in `setup/hooks/pre-push` for the
+    # two remotes this repo allows — nothing is skipped, it is PAID LATER, at a
+    # point that does not sit between every commit and the next thought.
+    hook_started="$(date +%s)"
+    hook_rc=0
+    out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
+               -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+               -u GIT_COMMON_DIR -u GIT_PREFIX \
+               "${hook_git_config_unset[@]+"${hook_git_config_unset[@]}"}" \
+               HW_TEST_GATE=fast bash "$root/setup/test-hw" 2>&1)" || hook_rc=$?
+    hook_elapsed=$(( $(date +%s) - hook_started ))
+    # THE SUITE'S NUMBER TRAVELS WITH ITS OWN CAVEAT, or it does not travel.
+    #
+    # `setup/test-hw` prints "N tests passed  (TRACKED only — the number this
+    # commit can reproduce)" and, when untracked subjects ran, a second line
+    # saying how many more are NOT in that number. It argues at length in its
+    # own source that the number must never be quoted without the sentence
+    # under it, "because a reader who sees a number quotes the number and not
+    # the sentence under it".
+    #
+    # The first version of this hook lifted the integer with `sed` and reprinted
+    # it bare — a new instance of exactly the class this commit is about,
+    # created inside the fix for it. Caught by a Judgment Day judge on
+    # 2026-09-07 against a stub emitting both lines: 1900 subjects had run and
+    # the hook said "1856 tests". So the WHOLE headline is carried, caveat
+    # included, and the untracked line with it when there is one.
+    # `|| true` ON BOTH, and this file runs under `set -euo pipefail`: a grep
+    # that matches nothing exits 1, pipefail carries it, and the ASSIGNMENT then
+    # kills the hook — silently, before it prints anything, with the commit
+    # refused for no stated reason. That is a silent-exit shape introduced INTO
+    # the hook while fixing the hook, caught by test 94 on the first run. It is
+    # the exact hazard `bin/lint-shell` exists to flag and `_common.sh` documents
+    # at length; the untracked line is legitimately absent most of the time.
+    hook_headline="$(printf '%s\n' "$out" | grep -E '^([0-9]+ tests passed|FAST GATE: [0-9]+ tests passed)' | tail -1 || true)"
+    hook_untracked="$(printf '%s\n' "$out" | grep -E '^ *\+ [0-9]+ ok from UNTRACKED' | tail -1 || true)"
+    if [ "$hook_rc" -ne 0 ]; then
+      # Attribution is executor testimony, not a tree-derived claim about who
+      # wrote bytes. Keep the hook's real index intact while reading it: the
+      # private index Git supplied is the exact staged set the failed suite saw.
+      suite_trigger_paths="$(printf '%s\n' "$staged" | grep -E "$SUITE_TRIGGER_PATTERN" || true)"
+      trigger_count="$(printf '%s\n' "$suite_trigger_paths" | grep -c . || true)"
+      # `paste -sd', '` LOOKS like a join and is not: both BSD and GNU paste read
+      # -d as a CYCLIC LIST of single-character delimiters, so two paths join
+      # with "," (the space never appears) and three alternate "," then " ".
+      # Caught by a judge on 2026-09-09, in the one line this change exists to
+      # make trustworthy.
+      trigger_named="$(printf '%s\n' "$suite_trigger_paths" | grep . | head -3 \
+        | awk 'NR>1{printf ", "} {printf "%s", $0} END{if (NR) print ""}' || true)"
+      [ "$trigger_count" -le 3 ] || trigger_named="$trigger_named (+$((trigger_count - 3)) more)"
+      stage_rc=0
+      stage_out="$(cd "$root" && "$root/bin/hw" stage 2>&1)" || stage_rc=$?
+      {
+        # NAME WHAT ACTUALLY TRIGGERED IT. This line said "and this commit
+        # changes bin/." unconditionally, and the trigger at the top of this
+        # block has matched six path shapes since long before 2026-09-09 —
+        # setup/tests/, setup/guards/, setup/test-hw and the two
+        # deny-repo-writes hooks among them. On 2026-09-09 a commit staging
+        # only setup/tests/112 was told it changed bin/. That is this repo's own
+        # subject matter arriving in its own diagnostic: an assertion about a
+        # subject printed from something other than a signal that subject
+        # emitted, and a prose constant emits nothing. $suite_trigger_paths is
+        # already computed from the staged set, so the headline is derived from
+        # it too rather than asserted alongside it.
+        echo "pre-commit: setup/test-hw failed after ${hook_elapsed}s (the fast gate; the full suite is mandatory at push), and this commit changes ${trigger_named}, which triggers it."
+        echo
+        printf '%s\n' "$out" | grep -E '^not ok' | sed 's/^/    /'
+        echo
+        echo "  staged paths that triggered setup/test-hw:"
+        printf '%s\n' "$suite_trigger_paths" | sed 's/^/    /'
+        echo
+        echo "  executor declarations — testimony, never inferred authorship:"
+        printf '%s\n' "$stage_out" | sed 's/^/    /'
+        [ "$stage_rc" -eq 0 ] || echo "    (one or more paths remain UNATTRIBUTED or AMBIGUOUS; that is an honest refusal, not a guessed owner)"
+        echo
+        echo "Run it yourself:  HW_TEST_GATE=fast bash setup/test-hw"
+        echo "The full suite (mandatory before push) is:  bash setup/test-hw"
+        echo "If the test is the thing that is wrong, fix the test in this commit."
+        echo "Shared-tree recovery: do NOT use \`git commit -- <paths>\`; it commits working-tree bytes, not a private index."
+        echo "Use the private-index/commit-tree recipe in setup/CLAUDE.md instead."
+        echo "If you are certain: git commit --no-verify"
+      } >&2
+      exit 1
+    fi
+    if [ -n "$hook_headline" ]; then
+      printf 'pre-commit: the fast gate passed in %ss (measured on this run) — %s\n' \
+        "$hook_elapsed" "$hook_headline" >&2
+      [ -z "$hook_untracked" ] || printf 'pre-commit:  %s\n' "$(printf '%s' "$hook_untracked" | sed 's/^ *//')" >&2
+    else
+      printf 'pre-commit: the fast gate passed in %ss (measured on this run; its test count line was not found).\n' \
+        "$hook_elapsed" >&2
+    fi
+    # SAY IT WHEN IT IS EXPENSIVE. The hook's own argument is that its cost is
+    # what decides whether people reach for --no-verify, so a cost that has
+    # grown past the point of being paid willingly should say so where it is
+    # felt, rather than waiting for someone to notice in a postmortem.
+    # THE THRESHOLD IS OVERRIDABLE SO THE BRANCH CAN BE DRIVEN. Both judges
+    # killed the first version's check for it: it was `grep -q 'over two
+    # minutes' "$HOOK"`, a literal-presence read of the subject's own source,
+    # and raising the constant to 999999 or replacing the `if` with `false` both
+    # survived while the text stayed. A branch nothing can execute is a branch
+    # nothing can test.
+    if [ "$hook_elapsed" -ge "${HW_PRECOMMIT_SLOW_SECONDS:-120}" ]; then
+      printf 'pre-commit: that is past the %ss mark this hook calls expensive. A hook this slow is the reason --no-verify gets reached for; if it keeps growing, that is the thing to fix, not this hook.\n' \
+        "${HW_PRECOMMIT_SLOW_SECONDS:-120}" >&2
+    fi
+  fi
+  # THE CHANNEL SUITE, when the channel is what changed. It is separate because
+  # it stands up a stub HTTP server and takes ~10s, so it is not worth paying on
+  # every bin/ commit — but it IS the only thing that exercises the delivery
+  # contract, and on 2026-08-25 a commit rewrote bin/channel-send's whole
+  # opencode route without it running. It caught a real regression the moment it
+  # was finally run: the stub still modelled the removed two-route design.
+  if printf '%s\n' "$staged" | grep -qE '^bin/(channel-send|ask-invoker|done-invoker|invoker-common\.sh)$' \
+     && [ -x "$root/setup/test-channel-send" ]; then
+    if ! out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
+                    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+                    -u GIT_COMMON_DIR -u GIT_PREFIX \
+                    "${hook_git_config_unset[@]+"${hook_git_config_unset[@]}"}" \
+                    bash "$root/setup/test-channel-send" 2>&1)"; then
+      {
+        echo "pre-commit: setup/test-channel-send failed, and this commit changes the delivery path."
+        echo
+        printf '%s\n' "$out" | grep -E '^not ok' | sed 's/^/    /'
+        echo
+        echo "Run it yourself:  bash setup/test-channel-send"
+        echo "If the STUB is what is wrong, fix the stub in this commit — but only"
+        echo "after checking a real receiver, not to make the suite green."
+        echo "If you are certain: git commit --no-verify"
+      } >&2
+      exit 1
+    fi
+  fi
+fi
+
+[ -n "$tooling" ] && [ -n "$lane" ] || exit 0
+
+{
+  echo "pre-commit: this commit mixes shared tooling with a project lane."
+  echo
+  echo "  tooling:"; printf '%s\n' "$tooling" | sed 's/^/    /'
+  echo "  lane:";    printf '%s\n' "$lane"    | sed 's/^/    /'
+  echo
+  echo "That is the signature of \`git add -A\` in a repo several agents write to."
+  echo "It has twice buried one agent's work inside another's commit message."
+  echo
+  echo "Stage paths instead:"
+  echo "    git reset && git add <the files this commit is actually about>"
+  echo
+  echo "If the change genuinely spans both: git commit --no-verify"
+} >&2
+exit 1

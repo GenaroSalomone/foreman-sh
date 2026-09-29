@@ -1,0 +1,50 @@
+{
+  "comment": [
+    "The lanes this harness dispatches, and the only place their data lives.",
+    "Read by bin/project-spaces.sh (lane_config_load) for bin/hw, bin/brain,",
+    "the invokers and shell/hw-restore-env.zsh. Why each value is what it is",
+    "stays in the code comment beside its reader; this file carries values.",
+    "",
+    "Paths: a leading ~ is $HOME. {brain} is the brain root, {work} the",
+    "top-level `work` below, {checkout} the lane's checkout (after its",
+    "checkout_var override), {lane} the lane name, {task} the task name.",
+    "",
+    "Order: `lanes` is the order hw names lanes in (its messages, `hw reports`).",
+    "`survey_order` is the order surveys walk them (`hw reap`, `hw worktrees`,",
+    "the invoker roots); a lane missing from it is walked last, in `lanes` order.",
+    "",
+    "`build` names the file, relative to this one, that hw sources to build a",
+    "task's worktree for that lane (lanes/<lane>.sh). A lane with a worktree and",
+    "no `build` gets a complete dry run and a refusal to launch."
+  ],
+  "work": "~/brain/work",
+  "lanes": {
+    "setup": {
+      "hw_aliases": [
+        "hw",
+        "meta"
+      ],
+      "brain_aliases": [],
+      "space": "harness",
+      "engram": "brain",
+      "vendor": "claude",
+      "model": "",
+      "account": "default",
+      "checkout": "{brain}",
+      "base": "main",
+      "base_ref_prefix": "",
+      "branch": "task/{task}",
+      "worktree_root": "{work}/{lane}",
+      "worktree": "{work}/{lane}/{task}",
+      "build": "lanes/git-worktree.sh",
+      "brain_guard": false,
+      "deps": {
+        "line": "none — the harness is shell, Python and tests; nothing in this lane installs"
+      },
+      "db": {
+        "line": "none — brain is prose, shell and tests; there is nothing to provision",
+        "no_db_inert": true
+      }
+    }
+  }
+}

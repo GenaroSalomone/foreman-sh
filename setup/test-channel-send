@@ -1,0 +1,711 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# THE HARNESS OWNS EVERY CASE'S ENVIRONMENT, so the pane's does not reach it.
+#
+# This line used to read `unset HW_CHAINING_ENABLED HW_DONE_KEEP_PANE` — an
+# enumeration of names to remove, which is the shape `setup/tests/_common.sh`
+# already replaced after it failed three times in one day. This is the FOURTH
+# instance, measured 2026-09-08: `hw` exports FOUR chaining variables into every
+# `--keep-pane` executor and only TWO were named here. With
+# `HW_CHAINING_LEASE_SECONDS` still set, done-invoker's chaining branch takes
+# `CHAINING_LEASE=1`, which owes a lease and therefore needs `hw` — so the
+# "chaining reports with no hw at all" case refused, correctly, and this suite
+# printed 38 ok for a brainer and `not ok` for every executor that ran it. Same
+# tree, two answers, and the executor's red is the one that looks like a
+# regression in whatever it was working on.
+#
+# So it is a PREFIX SWEEP. Every case in this file sets what it needs through
+# `env` or an explicit assignment, so there is nothing here to keep: unlike
+# _common.sh this needs no exception list, and a new `hw` export is scrubbed the
+# day it is invented rather than the day someone notices.
+#
+# `${!HW_@}` is bash 3.2 prefix name expansion, and it yields an empty word list
+# rather than an error under `set -u` when nothing matches.
+for _v in ${!HW_@}; do unset "$_v" 2>/dev/null || true; done
+unset _v 2>/dev/null || true
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/channel-send-test.XXXXXX")"
+PORT_FILE="$TMP/port"
+SERVER_PID=""
+
+cleanup() {
+  if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+node --input-type=module - "$PORT_FILE" <<'NODE' &
+import fs from "node:fs"
+import http from "node:http"
+
+const portFile = process.argv[2]
+const state = new Map()
+const session = "ses_testchannel"
+
+function scenarioState(name) {
+  if (!state.has(name)) state.set(name, { posts: 0, messages: new Map(), pending: new Map() })
+  return state.get(name)
+}
+
+function send(response, status, body) {
+  response.statusCode = status
+  if (body === undefined) return response.end()
+  response.setHeader("content-type", "application/json")
+  response.end(JSON.stringify(body))
+}
+
+const server = http.createServer(async (request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1")
+  const [, scenario, ...rest] = url.pathname.split("/")
+  const path = `/${rest.join("/")}`
+  const current = scenarioState(scenario)
+
+  if (path === "/admin") return send(response, 200, { posts: current.posts })
+  // late-persist's message lands when the TEST says so, not on a timer. A timer
+  // raced the caller's poll: on a loaded machine the poll could run after it and
+  // see the message (exit 0), or the check after it could run before it.
+  if (path === "/release" && request.method === "POST") {
+    for (const [id, message] of current.pending) current.messages.set(id, message)
+    const released = current.pending.size
+    current.pending.clear()
+    return send(response, 200, { released })
+  }
+  if (path === `/session/${session}` && request.method === "GET") {
+    if (scenario === "wrong-session") return send(response, 404, { error: "not found" })
+    return send(response, 200, { id: session })
+  }
+  if (path === "/session/status") {
+    const busy = ["busy", "busy-processed", "idempotent-processed", "no-persist", "hung-poll"].includes(scenario)
+    return send(response, 200, busy ? { [session]: { type: "busy" } } : {})
+  }
+  if (path === "/question") {
+    const body = scenario === "blocked-question" ? [{ id: "que_unrelated", sessionID: session }] : []
+    return send(response, 200, body)
+  }
+  if (path === "/permission") {
+    const body = scenario === "blocked-permission" ? [{ id: "per_unrelated", sessionID: session }] : []
+    return send(response, 200, body)
+  }
+  if (path === `/session/${session}/prompt_async` && request.method === "POST") {
+    current.posts += 1
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const payload = JSON.parse(Buffer.concat(chunks).toString())
+    // SETTLED RECEIVERS PERSIST TOO. Measured against a real `opencode serve`
+    // on 2026-08-25: prompt_async on a session with no /session/status entry
+    // persists the user message and starts a real turn. This stub used to model
+    // only the old two-route design — settled receivers answered the
+    // synchronous POST and never persisted — which is why it kept passing while
+    // that route was returning HTTP 500 in the field.
+    if (["busy", "busy-processed", "idempotent-processed",
+         "idle", "wrong-envelope", "turn-failed"].includes(scenario)) {
+      current.messages.set(payload.messageID, {
+        info: { id: payload.messageID, role: "user" },
+        // wrong-envelope persists a DIFFERENT body under the delivery id: the
+        // identity check is what the old settled route proved by parentage.
+        parts: scenario === "wrong-envelope"
+          ? [{ type: "text", text: "not what was sent" }]
+          : payload.parts,
+      })
+    }
+    // exit1-lies (2026-08-25): the endpoint accepted this POST
+    // (204 below) but only PERSISTS the message after the caller's persistence
+    // timeout — reproducing the measured real-world case where a
+    // persistence-poll timeout fired while the message genuinely landed moments
+    // later. "After" is made certain: the message is held until the test posts
+    // /late-persist/release, which it does only once the caller has exited.
+    if (scenario === "late-persist") {
+      current.pending.set(payload.messageID, {
+        info: { id: payload.messageID, role: "user" },
+        parts: payload.parts,
+      })
+    }
+    // turn-failed is deliberately absent here: admitted and persisted, but no
+    // assistant response ever arrives. That is exit 4, not exit 1.
+    if (["busy-processed", "idempotent-processed", "idle"].includes(scenario)) {
+      setTimeout(() => current.messages.set(`assistant_${payload.messageID}`, {
+        info: {
+          id: `assistant_${payload.messageID}`,
+          role: "assistant",
+          parentID: payload.messageID,
+          time: { completed: Date.now() },
+        },
+      }), 40)
+    }
+    return send(response, 204)
+  }
+  if (path === `/session/${session}/message` && request.method === "GET") {
+    return send(response, 200, Array.from(current.messages.values()))
+  }
+  const messageMatch = path.match(new RegExp(`^/session/${session}/message/(msg_[A-Za-z0-9_]+)$`))
+  // hung-poll ADMITS the message and then never answers a persistence poll in
+  // time: the answer comes a full second later, long after the caller's poll
+  // has aborted. That abort is what a loaded machine produces, made certain.
+  if (messageMatch && request.method === "GET" && scenario === "hung-poll") {
+    return setTimeout(() => send(response, 404, { error: "not found" }), 1000)
+  }
+  if (messageMatch && request.method === "GET") {
+    const message = current.messages.get(messageMatch[1])
+    return message ? send(response, 200, message) : send(response, 404, { error: "not found" })
+  }
+  if (path === `/session/${session}/message` && request.method === "POST") {
+    current.posts += 1
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const payload = JSON.parse(Buffer.concat(chunks).toString())
+    const parentID = scenario === "wrong-envelope" ? "msg_someone_else" : payload.messageID
+    return send(response, 200, {
+      info: { role: "assistant", parentID, time: { completed: Date.now() } },
+      parts: [{ type: "text", text: "processed" }],
+    })
+  }
+  send(response, 404, { error: "unknown route" })
+})
+
+server.listen(0, "127.0.0.1", () => {
+  fs.writeFileSync(portFile, String(server.address().port))
+})
+NODE
+SERVER_PID=$!
+
+for _ in $(seq 1 100); do
+  [ -s "$PORT_FILE" ] && break
+  sleep 0.02
+done
+[ -s "$PORT_FILE" ] || { printf 'test server did not start\n' >&2; exit 1; }
+PORT="$(<"$PORT_FILE")"
+
+pass() { printf 'ok - %s\n' "$1"; }
+
+expect_success() {
+  local scenario="$1" label="$2"
+  CHANNEL_DELIVERY_TIMEOUT_MS=1000 CHANNEL_PERSISTENCE_TIMEOUT_MS=250 \
+    "$ROOT/bin/channel-send" opencode ses_testchannel "http://127.0.0.1:$PORT/$scenario" "test message"
+  pass "$label"
+}
+
+expect_processed_success() {
+  local scenario="$1" label="$2"
+  CHANNEL_DELIVERY_TIMEOUT_MS=1000 CHANNEL_PERSISTENCE_TIMEOUT_MS=250 \
+    "$ROOT/bin/channel-send" --require processed opencode ses_testchannel \
+      "http://127.0.0.1:$PORT/$scenario" "test message"
+  pass "$label"
+}
+
+expect_failure() {
+  local scenario="$1" pattern="$2" label="$3" output
+  if output="$(CHANNEL_DELIVERY_TIMEOUT_MS=1000 CHANNEL_PERSISTENCE_TIMEOUT_MS=150 \
+      "$ROOT/bin/channel-send" opencode ses_testchannel "http://127.0.0.1:$PORT/$scenario" "test message" 2>&1)"; then
+    printf 'not ok - %s: unexpectedly succeeded\n' "$label" >&2
+    exit 1
+  fi
+  case "$output" in
+    *"$pattern"*) pass "$label" ;;
+    *) printf 'not ok - %s: missing diagnostic %s in: %s\n' "$label" "$pattern" "$output" >&2; exit 1 ;;
+  esac
+}
+
+expect_processed_failure() {
+  local scenario="$1" pattern="$2" label="$3" output
+  if output="$(CHANNEL_DELIVERY_TIMEOUT_MS=250 CHANNEL_PERSISTENCE_TIMEOUT_MS=150 \
+      "$ROOT/bin/channel-send" --require processed opencode ses_testchannel \
+        "http://127.0.0.1:$PORT/$scenario" "test message" 2>&1)"; then
+    printf 'not ok - %s: unexpectedly succeeded\n' "$label" >&2
+    exit 1
+  fi
+  case "$output" in
+    *"$pattern"*) pass "$label" ;;
+    *) printf 'not ok - %s: missing diagnostic %s in: %s\n' "$label" "$pattern" "$output" >&2; exit 1 ;;
+  esac
+}
+
+expect_success busy "busy receiver persists native async delivery"
+expect_processed_success busy-processed "busy receiver proves causal processing when required"
+expect_processed_failure busy "message processing" "processed receipt rejects persistence-only delivery"
+
+for _ in 1 2; do
+  CHANNEL_DELIVERY_TIMEOUT_MS=1000 CHANNEL_PERSISTENCE_TIMEOUT_MS=250 \
+    "$ROOT/bin/channel-send" --require processed --id envelope-reply-1 \
+      opencode ses_testchannel "http://127.0.0.1:$PORT/idempotent-processed" "same reply"
+done
+posts="$(curl -fsS "http://127.0.0.1:$PORT/idempotent-processed/admin" | jq -r .posts)"
+[ "$posts" = 1 ] || { printf 'not ok - idempotent retry made %s POSTs\n' "$posts" >&2; exit 1; }
+pass "processed retry reuses one stable OpenCode delivery"
+
+expect_success idle "settled receiver is delivered through the same async route"
+expect_processed_success idle "settled receiver proves causal processing too"
+expect_failure wrong-session "session-identity" "wrong session is nonzero"
+expect_failure wrong-envelope "wrong message identity" "a receiver that persists different bytes is refused"
+
+# exit1-lies, THE DEFECT THIS SUITE MISSED. `expect_failure` only asserts
+# nonzero — it does not read the exit CODE — so this line passed identically
+# whether channel-send exited 1 (the old, false "nothing landed") or 5 (the
+# true "admitted, unconfirmed"). Audited 2026-08-25: 10/10 real
+# deliveries that hit this branch were already in the receiver's session.
+np_out="$(CHANNEL_DELIVERY_TIMEOUT_MS=1000 CHANNEL_PERSISTENCE_TIMEOUT_MS=150 \
+  "$ROOT/bin/channel-send" opencode ses_testchannel "http://127.0.0.1:$PORT/no-persist" "test message" 2>&1)" && np_rc=0 || np_rc=$?
+[ "$np_rc" = 5 ] || { printf 'not ok - HTTP 204 with unconfirmed persistence exited %s, expected 5: %s\n' "$np_rc" "$np_out" >&2; exit 1; }
+case "$np_out" in
+  *"may already be in the receiver"*) pass "HTTP 204 with unconfirmed persistence exits 5 and tells the truth" ;;
+  *) printf 'not ok - exit 5 diagnostic does not say the message may have landed: %s\n' "$np_out" >&2; exit 1 ;;
+esac
+
+# THE CASE-CLOSER: a persistence timeout that fires while the message is
+# genuinely still landing must (a) exit 5, not 1, and (b) the message must
+# actually turn up in the receiver's session once persistence catches up —
+# proving exit 5 is not just a relabeled exit 1 but a fact about what was
+# measured to be true.
+lp_out="$(CHANNEL_DELIVERY_TIMEOUT_MS=2000 CHANNEL_PERSISTENCE_TIMEOUT_MS=60 \
+  "$ROOT/bin/channel-send" opencode ses_testchannel "http://127.0.0.1:$PORT/late-persist" "landed late" 2>&1)" && lp_rc=0 || lp_rc=$?
+[ "$lp_rc" = 5 ] || { printf 'not ok - a late-but-real persistence exited %s, expected 5: %s\n' "$lp_rc" "$lp_out" >&2; exit 1; }
+lp_id="$(printf '%s' "$lp_out" | grep -oE 'msg_channel_[a-f0-9]+' | head -1)"
+[ -n "$lp_id" ] || { printf 'not ok - could not recover the delivery id from exit-5 output: %s\n' "$lp_out" >&2; exit 1; }
+lp_released="$(curl -s -X POST "http://127.0.0.1:$PORT/late-persist/release")"
+[ "$lp_released" = '{"released":1}' ] || { printf 'not ok - the late message was not held for release (got %s), so the caller could have seen it\n' "$lp_released" >&2; exit 1; }
+lp_status="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/late-persist/session/ses_testchannel/message/$lp_id")"
+[ "$lp_status" = 200 ] || { printf 'not ok - the message exit-5 hedged about never actually landed (GET returned %s)\n' "$lp_status" >&2; exit 1; }
+pass "exit 5 hedges correctly: the message it could not confirm in time did land"
+
+# A POLL THAT ABORTS IS NOT A NON-DELIVERY EITHER. The message was admitted
+# (204); the persistence poll then timed out inside its own fetch. That used to
+# exit 1, "nothing landed", which is the lie exit 5 exists to replace — and it
+# is what made the two cases above go red on a loaded machine, 5 in 48 runs
+# measured 2026-09-24, every one "aborted due to timeout" after a 204.
+hp_out="$(CHANNEL_DELIVERY_TIMEOUT_MS=1000 CHANNEL_PERSISTENCE_TIMEOUT_MS=150 \
+  "$ROOT/bin/channel-send" opencode ses_testchannel "http://127.0.0.1:$PORT/hung-poll" "test message" 2>&1)" && hp_rc=0 || hp_rc=$?
+[ "$hp_rc" = 5 ] || { printf 'not ok - an admitted message whose persistence poll aborted exited %s, expected 5: %s\n' "$hp_rc" "$hp_out" >&2; exit 1; }
+case "$hp_out" in
+  *"may already be in the receiver"*) pass "a persistence poll that aborts after HTTP 204 exits 5, not 1" ;;
+  *) printf 'not ok - exit 5 after an aborted poll does not say the message may have landed: %s\n' "$hp_out" >&2; exit 1 ;;
+esac
+
+# THE DISTINCTION THAT COST AN EXECUTOR. `hw next` rolled its task counter back
+# on an HTTP 500 that proved nothing about whether the message had landed, and
+# the orchestrator closed a healthy executor on the strength of it. Exit 4 says
+# the message IS in the receiver's session; only its turn failed. Asserting the
+# CODE, not just nonzero — the whole point is that callers branch on it.
+tf_out="$(CHANNEL_DELIVERY_TIMEOUT_MS=400 CHANNEL_PERSISTENCE_TIMEOUT_MS=250 \
+  "$ROOT/bin/channel-send" --require processed opencode ses_testchannel \
+    "http://127.0.0.1:$PORT/turn-failed" "test message" 2>&1)" && tf_rc=0 || tf_rc=$?
+[ "$tf_rc" = 4 ] || { printf 'not ok - delivered-but-turn-failed exited %s, expected 4: %s\n' "$tf_rc" "$tf_out" >&2; exit 1; }
+case "$tf_out" in
+  *"IS in the receiver's session"*) pass "a failed turn exits 4 and says the message landed" ;;
+  *) printf 'not ok - exit 4 diagnostic does not say the message landed: %s\n' "$tf_out" >&2; exit 1 ;;
+esac
+# NEGATIVE: a real delivery failure must still be 1, or the distinction is noise.
+ws_out="$(CHANNEL_DELIVERY_TIMEOUT_MS=400 "$ROOT/bin/channel-send" --require processed \
+  opencode ses_testchannel "http://127.0.0.1:$PORT/wrong-session" "test message" 2>&1)" && ws_rc=0 || ws_rc=$?
+[ "$ws_rc" = 1 ] || { printf 'not ok - an undelivered message exited %s, expected 1\n' "$ws_rc" >&2; exit 1; }
+pass "an undelivered message still exits 1, so 1 and 4 stay distinguishable"
+expect_failure blocked-question "pending question" "unrelated question blocks text injection"
+expect_failure blocked-permission "pending permission" "unrelated permission blocks text injection"
+
+for scenario in blocked-question blocked-permission; do
+  posts="$(curl -fsS "http://127.0.0.1:$PORT/$scenario/admin" | jq -r .posts)"
+  [ "$posts" = 0 ] || { printf 'not ok - %s received raw text\n' "$scenario" >&2; exit 1; }
+done
+pass "blocked dialogs received no POST"
+
+if output="$(CHANNEL_DELIVERY_TIMEOUT_MS=100 "$ROOT/bin/channel-send" opencode \
+    ses_testchannel http://127.0.0.1:1 "test message" 2>&1)"; then
+  printf 'not ok - dead endpoint unexpectedly succeeded\n' >&2
+  exit 1
+fi
+case "$output" in
+  *"failed at session-identity"*) pass "dead endpoint is nonzero" ;;
+  *) printf 'not ok - dead endpoint diagnostic: %s\n' "$output" >&2; exit 1 ;;
+esac
+
+INVOKER_PROG=test-channel-send
+INVOKER_BIN_DIR="$ROOT/bin"
+die() { printf 'test-channel-send: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=../bin/invoker-common.sh
+. "$ROOT/bin/invoker-common.sh"
+
+HW_EXECUTOR_VENDOR=opencode; HW_INVOKER_VENDOR=opencode
+HW_INVOKER_SESSION=ses_test; HW_INVOKER_ENDPOINT=http://127.0.0.1:1
+[ "$(invoker_route)" = opencode ]
+HW_EXECUTOR_VENDOR=codex; HW_INVOKER_VENDOR=codex
+HW_INVOKER_SESSION=thread_test; HW_INVOKER_ENDPOINT=/tmp/test.sock
+[ "$(invoker_route)" = herdr ]
+HW_EXECUTOR_VENDOR=claude; HW_INVOKER_VENDOR=claude
+HW_INVOKER_SESSION=ses_test; HW_INVOKER_ENDPOINT=-
+[ "$(invoker_route)" = herdr ]
+HW_EXECUTOR_VENDOR=opencode; HW_INVOKER_VENDOR=codex
+HW_INVOKER_SESSION=thread_test; HW_INVOKER_ENDPOINT=/tmp/test.sock
+[ "$(invoker_route)" = herdr ]
+pass "Codex reports use herdr because no native transport exists; OpenCode, Claude and mixed routes remain unchanged"
+
+HW_EXECUTOR_VENDOR=opencode; HW_INVOKER_VENDOR=opencode
+HW_INVOKER_SESSION=ses_test; HW_INVOKER_ENDPOINT=http://127.0.0.1:1
+HERDR_PANE_ID=pane-executor
+herdr() {
+  case "$1 $2" in
+    "agent get") printf '{"result":{"agent":{"agent":"opencode","agent_session":{"value":"ses_reply"}}}}' ;;
+    "pane process-info") printf '{"result":{"process_info":{"foreground_processes":[{"argv":["opencode","--port","43210"]}]}}}' ;;
+    *) printf '{}' ;;
+  esac
+}
+reply_command="$(invoker_reply_command 'run:ask:1:reply')"
+case "$reply_command" in
+  *"--require processed"*"--id"*) pass "OpenCode ask replies require processed idempotent receipt" ;;
+  *) printf 'not ok - OpenCode reply command lacks processed idempotent receipt: %s\n' "$reply_command" >&2; exit 1 ;;
+esac
+
+# THE CASE PRODUCTION ACTUALLY HAS, and the reason the test above missed a live
+# bug for a day: it sets HW_INVOKER_VENDOR itself. hw records HW_EXECUTOR_VENDOR
+# and HW_INVOKER_PANE in `.hw/<run>/env` and has NEVER recorded
+# HW_INVOKER_VENDOR, so a real executor always has it unset. The reply command
+# used to require `$INVOKER_SENDER_VENDOR = ${HW_INVOKER_VENDOR:-}` — a
+# comparison against the empty string — which made the native branch dead for
+# every vendor. On 2026-08-25 that sent a brainer into the idle gate for 9
+# minutes, twice, while the executor's own OpenCode endpoint answered 200 the
+# whole time. A fixture that supplies a variable production does not have is a
+# fixture that tests something nobody runs.
+_saved_invoker_vendor="${HW_INVOKER_VENDOR:-}"
+unset HW_INVOKER_VENDOR
+reply_command="$(invoker_reply_command 'run:ask:1:reply')"
+case "$reply_command" in
+  *" herdr "*) printf 'not ok - reply command falls back to the gated herdr route when HW_INVOKER_VENDOR is unset, which is every real executor: %s\n' "$reply_command" >&2; exit 1 ;;
+  *"--require processed"*" opencode "*) pass "reply command stays native with HW_INVOKER_VENDOR unset, as every real executor has it" ;;
+  *) printf 'not ok - unexpected reply command with HW_INVOKER_VENDOR unset: %s\n' "$reply_command" >&2; exit 1 ;;
+esac
+
+# NEGATIVE: with no endpoint resolvable there IS nothing but the gated route,
+# and it must still be chosen. Dropping the vendor term must not turn an
+# unaddressable executor into a native command that cannot work.
+herdr() {
+  case "$1 $2" in
+    "agent get") printf '{"result":{"agent":{"agent":"opencode","agent_session":{"value":"ses_reply"}}}}' ;;
+    "pane process-info") printf '{"result":{"process_info":{"foreground_processes":[{"argv":["opencode","--auto"]}]}}}' ;;
+    *) printf '{}' ;;
+  esac
+}
+reply_command="$(invoker_reply_command 'run:ask:1:reply')"
+case "$reply_command" in
+  *" herdr "*) pass "reply command still uses herdr when no native endpoint is resolvable" ;;
+  *) printf 'not ok - reply command went native with no endpoint to send to: %s\n' "$reply_command" >&2; exit 1 ;;
+esac
+[ -z "$_saved_invoker_vendor" ] || HW_INVOKER_VENDOR="$_saved_invoker_vendor"
+unset -f herdr
+
+HARNESS="$TMP/invoker-harness"
+MOCK_BIN="$HARNESS/mock-bin"
+mkdir -p "$HARNESS/bin" "$MOCK_BIN"
+cp "$ROOT/bin/ask-invoker" "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/state-witness.sh" "$HARNESS/bin/"
+
+cat > "$HARNESS/bin/channel-send" <<'MOCK'
+#!/usr/bin/env bash
+exit "${MOCK_CHANNEL_RC:?}"
+MOCK
+# THE HARNESS MUST BE A COMPLETE brain/bin, NOT A SUBSET.
+#
+# done-invoker's delivered path closes the owned task tab/workspace through
+# `hw done`, resolved beside the invoker. This harness shipped ask-invoker,
+# done-invoker and the shared library and stopped there, so on 2026-08-26 the
+# delivered fixture below reported successfully and then died on a missing
+# `hw` — a red suite caused entirely by the copy list, not by the code. The
+# stub records its invocation and honours MOCK_HW_RC so the close can be made
+# to fail on purpose.
+cat > "$HARNESS/bin/hw" <<'MOCK'
+#!/usr/bin/env bash
+printf 'hw %s\n' "$*" >> "${MOCK_HW_LOG:-/dev/null}"
+exit "${MOCK_HW_RC:-0}"
+MOCK
+cat > "$HARNESS/bin/herdr-rpc" <<'MOCK'
+#!/usr/bin/env bash
+if [ "${1:-}" = call ] && [ "${2:-}" = pane.report_metadata ]; then
+  printf '%s\n' "$3" >> "${MOCK_METADATA_LOG:?}"
+elif [ "${1:-}" = call ] && [ "${2:-}" = agent.list ]; then
+  jq -s '{agents:[(last | {pane_id, tokens:(.tokens | with_entries(select(.value != null)))})]}' "${MOCK_METADATA_LOG:?}"
+fi
+exit 0
+MOCK
+cat > "$MOCK_BIN/herdr" <<'MOCK'
+#!/usr/bin/env bash
+exit 0
+MOCK
+chmod +x "$HARNESS/bin/channel-send" "$HARNESS/bin/herdr-rpc" "$HARNESS/bin/hw" "$MOCK_BIN/herdr"
+
+ASK_WORK="$HARNESS/ask-work"
+ASK_STATE="$ASK_WORK/.hw/ask-run"
+ASK_METADATA="$HARNESS/ask-metadata.jsonl"
+mkdir -p "$ASK_STATE"
+printf '1' > "$ASK_STATE/ask-count"
+if output="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=4 MOCK_METADATA_LOG="$ASK_METADATA" \
+    HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
+    HW_TASK=accounting-test HW_PROJECT=setup HW_WORKDIR="$ASK_WORK" HW_RUN=ask-run \
+    "$HARNESS/bin/ask-invoker" "Can this failed delivery be retried?" 2>&1)"; then
+  printf 'not ok - failed ask delivery unexpectedly succeeded\n' >&2
+  exit 1
+fi
+case "$output" in
+  *"question was not delivered and no ask was spent"*) ;;
+  *) printf 'not ok - failed ask delivery diagnostic: %s\n' "$output" >&2; exit 1 ;;
+esac
+[ "$(<"$ASK_STATE/ask-count")" = 1 ] || {
+  printf 'not ok - failed ask delivery consumed ask-count\n' >&2
+  exit 1
+}
+jq -e 'select(.tokens.ask_state == "undelivered")' "$ASK_METADATA" >/dev/null || {
+  printf 'not ok - failed ask delivery metadata was not undelivered\n' >&2
+  exit 1
+}
+pass "failed ask delivery preserves count and undelivered metadata"
+
+DONE_WORK="$HARNESS/done-work"
+DONE_STATE="$DONE_WORK/.hw/done-run"
+DONE_METADATA="$HARNESS/done-metadata.jsonl"
+mkdir -p "$DONE_STATE"
+if output="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=4 MOCK_METADATA_LOG="$DONE_METADATA" \
+    HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
+    HW_TASK=accounting-test HW_PROJECT=setup HW_WORKDIR="$DONE_WORK" HW_RUN=done-run \
+    "$HARNESS/bin/done-invoker" "Accounting failure test." 2>&1)"; then
+  printf 'not ok - failed done delivery unexpectedly succeeded\n' >&2
+  exit 1
+fi
+case "$output" in
+  *"done marker was not written"*) ;;
+  *) printf 'not ok - failed done delivery diagnostic: %s\n' "$output" >&2; exit 1 ;;
+esac
+[ ! -e "$DONE_STATE/done" ] || {
+  printf 'not ok - failed done delivery wrote done marker\n' >&2
+  exit 1
+}
+jq -e 'select(.tokens.done_state == "undelivered")' "$DONE_METADATA" >/dev/null || {
+  printf 'not ok - failed done delivery metadata was not undelivered\n' >&2
+  exit 1
+}
+pass "failed done delivery leaves marker absent and metadata undelivered"
+
+DONE_SUCCESS_WORK="$HARNESS/done-success-work"
+DONE_SUCCESS_ARTIFACTS="$DONE_SUCCESS_WORK/.artifacts"
+DONE_SUCCESS_METADATA="$HARNESS/done-success-metadata.jsonl"
+mkdir -p "$DONE_SUCCESS_ARTIFACTS" "$DONE_SUCCESS_WORK/source"
+printf 'one\n' > "$DONE_SUCCESS_ARTIFACTS/one.txt"
+printf 'two\n' > "$DONE_SUCCESS_ARTIFACTS/two.txt"
+printf 'not an artifact\n' > "$DONE_SUCCESS_WORK/source/code.txt"
+DONE_SUCCESS_HW_LOG="$HARNESS/done-success-hw.log"
+ds_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=0 MOCK_METADATA_LOG="$DONE_SUCCESS_METADATA" \
+  MOCK_HW_LOG="$DONE_SUCCESS_HW_LOG" \
+  HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
+  HW_TASK=artifact-test HW_PROJECT=setup HW_WORKDIR="$DONE_SUCCESS_WORK" \
+  HW_ARTIFACTS="$DONE_SUCCESS_ARTIFACTS" HW_RUN=done-success-run \
+  "$HARNESS/bin/done-invoker" "Artifact root accounting test." 2>&1)" && ds_rc=0 || ds_rc=$?
+[ "$ds_rc" = 0 ] || { printf 'not ok - a delivered-and-closed report exited %s, expected 0: %s\n' "$ds_rc" "$ds_out" >&2; exit 1; }
+jq -e 'select(.tokens.artifacts == "2")' "$DONE_SUCCESS_METADATA" >/dev/null || {
+  printf 'not ok - done-invoker did not count only HW_ARTIFACTS\n' >&2
+  exit 1
+}
+pass "done-invoker counts only HW_ARTIFACTS"
+[ "$(cat "$DONE_SUCCESS_HW_LOG")" = "hw done setup artifact-test" ] || {
+  printf 'not ok - delivered report did not close through hw done: %s\n' "$(cat "$DONE_SUCCESS_HW_LOG")" >&2
+  exit 1
+}
+pass "a delivered report closes through hw done and exits 0"
+
+# ── THE COLLAPSE THIS SUITE MISSED. A delivered report whose close fails used
+# to exit 1 — the same code as a report that never reached the brainer — so a
+# caller branching on the exit read "retry, nothing was lost" about a report
+# the brainer was already holding. Asserting the CODE, not just nonzero: the
+# whole point is that 1 and 4 are now different facts. The `expect_failure`
+# helpers above are exactly the shape that let channel-send's own exit-1 lie
+# survive for a day.
+DONE_CF_WORK="$HARNESS/done-close-failed-work"
+DONE_CF_STATE="$DONE_CF_WORK/.hw/done-cf-run"
+DONE_CF_HW_LOG="$HARNESS/done-close-failed-hw.log"
+mkdir -p "$DONE_CF_STATE"
+cf_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=0 MOCK_METADATA_LOG="$HARNESS/done-cf-metadata.jsonl" \
+  MOCK_HW_LOG="$DONE_CF_HW_LOG" MOCK_HW_RC=9 \
+  HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
+  HW_TASK=close-failed-test HW_PROJECT=setup HW_WORKDIR="$DONE_CF_WORK" HW_RUN=done-cf-run \
+  "$HARNESS/bin/done-invoker" "Close failure test." 2>&1)" && cf_rc=0 || cf_rc=$?
+[ "$cf_rc" = 4 ] || { printf 'not ok - delivered-but-close-failed exited %s, expected 4: %s\n' "$cf_rc" "$cf_out" >&2; exit 1; }
+case "$cf_out" in
+  "done-invoker: THE REPORT IS DELIVERED AND SAFE"*) ;;
+  *) printf 'not ok - exit 4 does not LEAD with the report being delivered and safe: %s\n' "$cf_out" >&2; exit 1 ;;
+esac
+case "$cf_out" in
+  *"could not close the owned task tab/workspace"*"pane is still open at pane-executor"*) ;;
+  *) printf 'not ok - exit 4 does not name the close failure and where the pane is: %s\n' "$cf_out" >&2; exit 1 ;;
+esac
+# NOT SILENT. Masking the failed close would undo the same-day fix in bin/hw.
+[ "$(cat "$DONE_CF_HW_LOG")" = "hw done setup close-failed-test" ] || {
+  printf 'not ok - the close was never attempted: %s\n' "$(cat "$DONE_CF_HW_LOG")" >&2
+  exit 1
+}
+# The report DID land, so the marker stays written: re-running would be a
+# second report for one task, which is why the diagnostic forbids it.
+[ -f "$DONE_CF_STATE/done" ] || {
+  printf 'not ok - exit 4 discarded the done marker, so a retry would double-report\n' >&2
+  exit 1
+}
+pass "a delivered report whose close fails exits 4, not 1, and leads with the report being safe"
+
+# NEGATIVE: an undelivered report must still be 1, or 1 and 4 are noise. This
+# is the third of the three exits, run for real rather than read off the source.
+DONE_ND_WORK="$HARNESS/done-undelivered-work"
+mkdir -p "$DONE_ND_WORK/.hw/done-nd-run"
+nd_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=2 MOCK_METADATA_LOG="$HARNESS/done-nd-metadata.jsonl" \
+  MOCK_HW_LOG="$HARNESS/done-nd-hw.log" \
+  HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
+  HW_TASK=undelivered-test HW_PROJECT=setup HW_WORKDIR="$DONE_ND_WORK" HW_RUN=done-nd-run \
+  "$HARNESS/bin/done-invoker" "Undelivered test." 2>&1)" && nd_rc=0 || nd_rc=$?
+[ "$nd_rc" = 1 ] || { printf 'not ok - an undelivered report exited %s, expected 1: %s\n' "$nd_rc" "$nd_out" >&2; exit 1; }
+[ ! -e "$HARNESS/done-nd-hw.log" ] || {
+  printf 'not ok - an undelivered report attempted a close, destroying the only copy\n' >&2
+  exit 1
+}
+pass "an undelivered report still exits 1, so delivery and close stay distinguishable"
+
+# ── THE LATE PRECONDITION. A brain/bin with no `hw` beside the invoker must be
+# refused BEFORE the first irreversible act, not discovered after the brainer
+# has the report. Verified by what did NOT happen: no metadata publication, no
+# done marker, no toast — the pane is still the only copy and the identical
+# command can be re-run once the install is fixed.
+NOHW_BIN="$HARNESS/nohw-bin"
+NOHW_WORK="$HARNESS/nohw-work"
+mkdir -p "$NOHW_BIN" "$NOHW_WORK/.hw/nohw-run"
+cp "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/state-witness.sh" "$NOHW_BIN/"
+cp "$HARNESS/bin/channel-send" "$HARNESS/bin/herdr-rpc" "$NOHW_BIN/"
+nohw_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=0 MOCK_METADATA_LOG="$HARNESS/nohw-metadata.jsonl" \
+  HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
+  HW_TASK=nohw-test HW_PROJECT=setup HW_WORKDIR="$NOHW_WORK" HW_RUN=nohw-run \
+  "$NOHW_BIN/done-invoker" "No hw beside me." 2>&1)" && nohw_rc=0 || nohw_rc=$?
+[ "$nohw_rc" = 1 ] || { printf 'not ok - a done-invoker with no adjacent hw exited %s, expected 1: %s\n' "$nohw_rc" "$nohw_out" >&2; exit 1; }
+case "$nohw_out" in
+  *"REFUSING BEFORE REPORTING"*"no executable \`hw\` beside this invoker"*) ;;
+  *) printf 'not ok - the missing-hw refusal does not say it refused before reporting: %s\n' "$nohw_out" >&2; exit 1 ;;
+esac
+[ ! -e "$HARNESS/nohw-metadata.jsonl" ] || {
+  printf 'not ok - the missing-hw refusal published tokens, so it did not refuse before reporting\n' >&2
+  exit 1
+}
+[ ! -e "$NOHW_WORK/.hw/nohw-run/done" ] || {
+  printf 'not ok - the missing-hw refusal wrote the done marker\n' >&2
+  exit 1
+}
+pass "a done-invoker with no adjacent hw refuses before reporting, publishing nothing"
+
+# …and the escape hatch it names actually works: chaining owes no close, so the
+# same broken install can still report. A refusal that strands finished work
+# would be a worse bug than the one it replaced.
+nohw_keep_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=0 MOCK_METADATA_LOG="$HARNESS/nohw-keep-metadata.jsonl" \
+  HW_CHAINING_ENABLED=1 \
+  HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
+  HW_TASK=nohw-test HW_PROJECT=setup HW_WORKDIR="$NOHW_WORK" HW_RUN=nohw-keep-run \
+  "$NOHW_BIN/done-invoker" "No hw beside me, chaining on." 2>&1)" && nohw_keep_rc=0 || nohw_keep_rc=$?
+[ "$nohw_keep_rc" = 0 ] || { printf 'not ok - chaining could not report without hw, exit %s: %s\n' "$nohw_keep_rc" "$nohw_keep_out" >&2; exit 1; }
+pass "the escape hatch the refusal names works: chaining reports with no hw at all"
+
+# ── the gate must not spend its budget on a state that cannot change ────────
+#
+# Measured 2026-08-27: `w41:p6H` published `agent_status=working` and
+# `turn_state=ended_unreported` AT THE SAME TIME, while two `herdr agent wait`
+# processes — 1200s and 600s — burned on an `idle` that could not arrive. Both
+# of channel-send's waits are level-triggered on that same field.
+#
+# A COPY OF bin/, NOT A STUB ON $PATH. channel-send resolves its helper as
+# "$BIN_DIR/herdr-rpc" — an absolute path beside itself — so a stub earlier in
+# $PATH is never consulted and every assertion here would pass on a binary that
+# still waits. Only a copy makes the substituted helper the one that runs.
+GATE_BIN="$TMP/gate-bin"; mkdir -p "$GATE_BIN"
+cp "$ROOT"/bin/* "$GATE_BIN/" 2>/dev/null || true
+[ -x "$GATE_BIN/channel-send" ] || { printf 'not ok - gate: the bin copy has no executable channel-send\n' >&2; exit 1; }
+GATE_MOCK="$TMP/gate-mock"; mkdir -p "$GATE_MOCK"
+cat > "$GATE_MOCK/herdr" <<'MOCK'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "agent get") printf '{"result":{"agent":{"agent":"opencode","agent_status":"working","cwd":"/tmp","tokens":{"turn_state":"ended_unreported"}}}}\n' ;;
+  "pane process-info") printf '{"result":{"process_info":{"foreground_processes":[{"argv":["opencode","--port","49997"]}]}}}\n' ;;
+  # A SENTINEL NOBODY ELSE CAN SAY. It was the bare word DELIVERED, and on
+  # 2026-09-03 that assertion went red against a gate that had refused
+  # correctly: channel-send's exit-code footer prints "NOT DELIVERED — nothing
+  # landed" on the same stream this captures, so the check for "did the mock
+  # send" started matching channel-send explaining that it had NOT sent. A
+  # sentinel that a correct run can utter is not a sentinel.
+  "agent prompt") printf 'HERDR-PROMPT-WAS-SENT\n' ;;
+  *) printf '{"result":{}}\n' ;;
+esac
+MOCK
+cat > "$GATE_MOCK/curl" <<'MOCK'
+#!/usr/bin/env bash
+printf '[]\n'
+MOCK
+chmod +x "$GATE_MOCK/herdr" "$GATE_MOCK/curl"
+
+gate_run() { # <pane.read behaviour> <budget_ms> -> prints channel-send's output
+  cat > "$GATE_BIN/herdr-rpc" <<MOCK
+#!/usr/bin/env bash
+# The wait is REAL: it blocks for a slice and then reports a timeout, exactly as
+# herdr-rpc does on a pane that never reaches idle. So "it did not spend the
+# budget" is a claim about wall clock against \$2, not about a stubbed no-op.
+if [ "\$1" = wait-agent ]; then sleep 1; exit 2; fi
+if [ "\$1 \$2" = "call pane.read" ]; then $1; fi
+printf '{"result":{}}\n'
+MOCK
+  chmod +x "$GATE_BIN/herdr-rpc"
+  env PATH="$GATE_MOCK:$PATH" TMPDIR="$TMP" HW_INVOKER_WAIT_MS="$2" \
+      WITNESS_SLICE_MS=1000 WITNESS_SAMPLES=2 WITNESS_INTERVAL_S=0 \
+      timeout 60 "$GATE_BIN/channel-send" herdr wG:p1 - "a message that must not be sent" 2>&1 || true
+}
+
+# SETTLED: a static screen plus an endpoint that answers no prompts. The gate
+# must refuse fast and say the budget is not what is missing.
+gate_started="$(date +%s)"
+gate_out="$(gate_run 'printf "{\"read\":{\"text\":\"an unchanging screen\"}}\n"; exit 0' 900000)"
+gate_elapsed=$(( $(date +%s) - gate_started ))
+case "$gate_out" in
+  *"NOT going to become idle"*) pass "channel-send: the herdr gate refuses a proved-settled receiver instead of waiting it out" ;;
+  *) printf 'not ok - channel-send: the gate did not refuse a settled receiver: %s\n' "$gate_out" >&2; exit 1 ;;
+esac
+[ "$gate_elapsed" -lt 60 ] \
+  && pass "channel-send: it refused in ${gate_elapsed}s rather than spending the 900s budget" \
+  || { printf 'not ok - channel-send: the gate took %ss\n' "$gate_elapsed" >&2; exit 1; }
+case "$gate_out" in
+  *"do not retry with a larger HW_INVOKER_WAIT_MS"*) pass "channel-send: a settled refusal does not offer advice that cannot work" ;;
+  *) printf 'not ok - channel-send: settled refusal still offered a bigger budget: %s\n' "$gate_out" >&2; exit 1 ;;
+esac
+case "$gate_out" in
+  *"NOTHING was sent"*) pass "channel-send: a settled refusal states that nothing was sent" ;;
+  *) printf 'not ok - channel-send: settled refusal does not say nothing was sent: %s\n' "$gate_out" >&2; exit 1 ;;
+esac
+case "$gate_out" in
+  *HERDR-PROMPT-WAS-SENT*) printf 'not ok - channel-send: the gate refused and delivered anyway: %s\n' "$gate_out" >&2; exit 1 ;;
+  *) pass "channel-send: a refused gate delivers nothing" ;;
+esac
+
+# UNKNOWN MUST COST THE CALLER NOTHING IT DID NOT ALREADY PAY. With the screen
+# reader failing, the cross-check cannot be made — and a fix that shortened a
+# wait on no evidence would be a new instance of the bug it fixes.
+gate_out="$(gate_run 'exit 1' 3000)"
+case "$gate_out" in
+  *"still working after"*) pass "channel-send: an unavailable cross-check falls back to the ordinary timeout message" ;;
+  *) printf 'not ok - channel-send: unknown did not fall back to a plain timeout: %s\n' "$gate_out" >&2; exit 1 ;;
+esac
+case "$gate_out" in
+  *"NOT going to become idle"*) printf 'not ok - channel-send: unknown was reported as a settled refusal: %s\n' "$gate_out" >&2; exit 1 ;;
+  *) pass "channel-send: an unavailable cross-check is never reported as a proved refusal" ;;
+esac
+case "$gate_out" in
+  *"cross-check:"*) pass "channel-send: a timeout still names what the cross-check could not read" ;;
+  *) printf 'not ok - channel-send: the timeout did not report the cross-check attempt: %s\n' "$gate_out" >&2; exit 1 ;;
+esac
+
+# A MISSING LIBRARY DEGRADES, IT DOES NOT GUESS. An incomplete bin/ must wait as
+# it always did and say so — never invent a verdict it could not compute.
+rm -f "$GATE_BIN/state-witness.sh"
+gate_out="$(gate_run 'printf "{\"read\":{\"text\":\"an unchanging screen\"}}\n"; exit 0' 3000)"
+case "$gate_out" in
+  *"state-witness.sh is missing"*) pass "channel-send: a missing cross-check library is announced, not assumed" ;;
+  *) printf 'not ok - channel-send: a missing library was silent: %s\n' "$gate_out" >&2; exit 1 ;;
+esac
+case "$gate_out" in
+  *"NOT going to become idle"*) printf 'not ok - channel-send: it claimed a proved refusal with no library: %s\n' "$gate_out" >&2; exit 1 ;;
+  *) pass "channel-send: with no library it refuses to claim a verdict it cannot compute" ;;
+esac

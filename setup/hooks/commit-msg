@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# NO AI ATTRIBUTION IS EVER WRITTEN INTO A COMMIT MESSAGE HERE.
+#
+# "Never add Co-Authored-By or AI attribution to commits" is a standing hard
+# rule (~/.claude/CLAUDE.md, ## Rules). It was enforced only at push time until
+# 2026-09-16, by setup/hooks/pre-push, which walks the range being published.
+# That is days late: deebd4f reached GitHub carrying attribution, and removing
+# it there would have meant rewriting ~196 commits, so it was left. This hook
+# refuses the message at the moment it is written, which is the moment the
+# mistake is free to fix.
+#
+# THE TWO GATES ARE NOT REDUNDANT AND NEITHER REPLACES THE OTHER. This one is
+# the earliest point at which the offending bytes exist; pre-push is the last
+# point every commit must pass regardless of how it was built, and it is what
+# still covers a clone where nobody ran setup/install-hooks.sh. They share ONE
+# detection — setup/hooks/attribution-pattern.sh — precisely so that "the two
+# gates disagree" cannot happen silently.
+#
+# WHAT THIS HOOK DOES NOT COVER, stated rather than implied, because the
+# comment in pre-push already says it and it is still true. The `setup` lane is
+# repo-less and shares this repo's index, so its commits are built with the
+# private-index recipe in setup/CLAUDE.md — `git commit-tree`, WHICH RUNS NO
+# HOOKS AT ALL. commit-msg is not invoked for those, and the four offending
+# commits of 2026-09-10 were built exactly that way: this hook would not have
+# seen one of them. What it does cover is every ordinary `git commit` in this
+# repo and in any clone where the hooks are installed — which is how commits in
+# the product lanes and by humans are made. pre-push remains the gate that sees
+# everything.
+#
+# Override with `git commit --no-verify` — the same escape hatch as every other
+# gate here, because a hook may be wrong and a human may have a reason.
+#
+# Installed by setup/install-hooks.sh as a bare symlink; see setup/hooks/README.md.
+set -euo pipefail
+
+MSG_FILE="${1:-}"
+[ -n "$MSG_FILE" ] || {
+  echo "commit-msg: invoked with no message file — git always passes one; refusing rather than guessing." >&2
+  exit 1
+}
+[ -r "$MSG_FILE" ] || {
+  echo "commit-msg: cannot read the message file '$MSG_FILE' — refusing rather than letting an unreadable message through." >&2
+  exit 1
+}
+
+# RESOLVED FROM THE REPO ROOT, NOT FROM `dirname $BASH_SOURCE`. git invokes this
+# as `.git/hooks/commit-msg`, a SYMLINK into setup/hooks/, so that dirname is
+# `.git/hooks` — where the shared file is not. pre-push died exactly that way on
+# 2026-09-09 and setup/tests/121 now drives the INSTALLED hooks to hold it.
+_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "commit-msg: could not resolve the repository root, so the shared attribution pattern cannot be sourced — refusing rather than running an ungated commit." >&2
+  exit 1
+}
+. "$_root/setup/hooks/attribution-pattern.sh"
+# A SOURCED FILE THAT DEFINES NOTHING IS THE SAME AS SILENCE. An unset pattern
+# would make `grep -E ''` match every line — this gate would then refuse
+# everything, which is the safe direction but for the wrong reason and with no
+# explanation. Say it instead.
+[ -n "${ATTRIBUTION_PATTERN:-}" ] || {
+  echo "commit-msg: setup/hooks/attribution-pattern.sh did not define ATTRIBUTION_PATTERN — refusing to guess what counts as AI attribution." >&2
+  exit 1
+}
+# The refusal's own wording is shared too, so both gates name a line the same
+# way. A sourced file that defines the pattern but not the formatter is a
+# half-updated install, not something to paper over with a fallback.
+command -v attribution_offending_lines >/dev/null 2>&1 || {
+  echo "commit-msg: setup/hooks/attribution-pattern.sh did not define attribution_offending_lines — refusing rather than reporting an offense it cannot name." >&2
+  exit 1
+}
+
+# WHAT IS JUDGED: EVERYTHING EXCEPT GIT'S OWN VERBOSE DIFF. Nothing else is
+# discarded, and the two halves of that sentence were each paid for once.
+#
+# HALF ONE — THE FAIL-OPEN. The first version of this hook stripped comment
+# lines and truncated at any scissors-SHAPED line before grepping, on the stated
+# assumption that git removes them anyway. That holds only when the message is
+# EDITED. git-commit(1): the `default` cleanup mode is `strip` only "if the
+# message is to be edited", otherwise `whitespace`, which is "same as strip
+# except #commentary is not removed"; scissors truncation is likewise only for
+# an edited message. `git commit -m`/`-F` without `-e` — every scripted and
+# agent commit — gets `whitespace`.
+#
+#   MEASURED 2026-09-16, git 2.50.1, throwaway repo, no hook:
+#     git commit -F - with  "feat: y" / "# ---…--- >8 ---…---" / a plain
+#     "Co-Authored-By: Claude …" trailer
+#   → git log -1 --format=%B keeps BOTH lines.
+#
+# The old hook truncated at the first, never saw the trailer, and exited 0: an
+# ordinary attribution trailer landing in a real commit through the gate built
+# to stop exactly that. Found by adversarial review, then reproduced before it
+# was believed.
+#
+# HALF TWO — THE FALSE REFUSAL. Discarding nothing at all fixed that and broke
+# something real in the other direction. Under `git commit -v` git appends the
+# staged diff to the message file BEFORE this hook runs, and a unified diff
+# prefixes an UNCHANGED context line with a single space — which satisfied the
+# pattern's THEN-CURRENT `^[[:space:]]*` anchor. This repo's own files carry the
+# example trailer as content (this file, README.md, tests/152), so a `-v` commit
+# editing anything near one of those lines was refused for text that never
+# reaches the message.
+#
+#   MEASURED the same day, same git: `GIT_EDITOR=true git commit -v` on a file
+#   whose unchanged neighbouring line is a trailer → refused, commit did not
+#   land. Not theoretical; reproduced.
+#
+# THAT PARTICULAR ROUTE IS NOW CLOSED TWICE OVER, and the marker rule below is
+# kept anyway. Since 2026-09-17 ATTRIBUTION_PATTERN is anchored at `^` with no
+# whitespace class (see setup/hooks/attribution-pattern.sh for why), so a diff
+# CONTEXT line — which always carries a leading space — can no longer match at
+# all, and neither can a `+`/`-`/`@@`/`diff --git`/`index` line. The marker rule
+# is therefore belt-and-braces today rather than load-bearing. It stays because
+# removing it would trade a measured safeguard for nothing: it drops only lines
+# that are BOTH below git's own three-line marker AND shaped like diff content,
+# and no such line can match the anchored pattern in the first place, so keeping
+# it cannot introduce a false negative.
+#
+# SO THE DISCRIMINATOR IS GIT'S OWN MARKER, NOT A SCISSORS SHAPE. Under `-v` git
+# writes three fixed lines together:
+#
+#     # ------------------------ >8 ------------------------
+#     # Do not modify or remove the line above.
+#     # Everything below it will be ignored.
+#
+# Only when all three are present is anything below them dropped, and only lines
+# that are unified-diff content (`+`, `-`, ` `, `@@`, `diff --git`, `index`).
+# A forged scissors line on its own drops nothing. A forged full marker block
+# drops nothing either unless the trailer is itself shaped like a diff line: a
+# plain trailer at column 0 below it is still seen and still refused. Both of
+# those are arms in setup/tests/152.
+#
+# A `#`-PREFIXED TRAILER IS A KNOWN GAP, AND IT IS OPEN — not closed here, not
+# closed by the rule above, and not touched by the 2026-09-17 anchor narrowing
+# either: `#` was never whitespace, so `# Co-Authored-By: Claude …` matched
+# neither gate before and matches neither now. Under the non-interactive
+# `whitespace` cleanup git keeps that line in the message. The anchor is a
+# property anyone can read off the regex; what was measured is only that git
+# keeps such a line. Closing it would refuse a message quoting the rule inside a
+# comment, which this repo's own files do constantly. Named, not fixed. See
+# setup/hooks/README.md.
+_effective="$(awk '
+  { lines[NR] = $0 }
+  END {
+    marker = 0
+    for (i = 1; i <= NR; i++) {
+      if (index(lines[i], ">8") > 0 && index(lines[i], "--------") > 0 \
+          && index(lines[i+1], "Do not modify or remove the line above") > 0 \
+          && index(lines[i+2], "Everything below it will be ignored") > 0) {
+        marker = i; break
+      }
+    }
+    for (i = 1; i <= NR; i++) {
+      if (marker && i > marker && lines[i] ~ /^([-+ @]|diff --git |index [0-9a-f])/) continue
+      print lines[i]
+    }
+  }
+' "$MSG_FILE")"
+
+# THE REFUSAL NAMES THE LINE AND THE COLUMN, and that is not decoration. This
+# repo's rules require evidence to be pasted INTO the commit message, so a
+# message can legitimately carry the trailer as a quotation and illegitimately
+# carry it as a trailer AT THE SAME TIME. The old refusal printed the offending
+# text and nothing else, and a reader holding both could not tell which one the
+# gate had actually objected to. Line number plus column answers it, and the
+# column is the rule itself: column 1 is a trailer, anything else is a quote.
+offending="$(printf '%s\n' "$_effective" | attribution_offending_lines '    ')"
+if [ -n "$offending" ]; then
+  {
+    echo "commit-msg: refusing — this message carries AI attribution as a TRAILER."
+    printf '%s\n' "$offending"
+    echo
+    echo "Only column 1 is refused: a git trailer begins its own line at column 0."
+    echo "An indented quotation, or one inside a shell example, is evidence and passes."
+    echo
+    echo "The rule is: conventional commits, no Co-Authored-By, no AI attribution."
+    echo "Delete the line(s) above — or indent them, if they are evidence — and commit again."
+    echo "If you are certain: git commit --no-verify"
+  } >&2
+  exit 1
+fi
+exit 0

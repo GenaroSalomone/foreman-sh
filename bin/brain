@@ -1,0 +1,1198 @@
+#!/usr/bin/env bash
+#
+# brain — open (or focus) a project's brainer space.
+#
+#   brain <lane> | <alias>   a lane of projects.json, by name or by one of
+#                            its brain_aliases
+#   brain <name> --opencode  same brainer, opencode instead of claude
+#   brain <name> --reset     replace the agent, keeping the space, tab and pane
+#   brain <name> --reset --self   the brainer resetting ITSELF (see below)
+#   brain                    list what exists
+#
+# A BRAINER RESETTING ITSELF is a different problem from resetting another one,
+# and the difference is time, not permission. The process asking for the reset is
+# the process the reset kills, so it can neither perform it nor report on it: by
+# definition it is WORKING — that is what running the command means — and the
+# refusal below is the correct answer to every OTHER caller. `--self` is the one
+# path out, and it is DEFERRED AND DETACHED rather than immediate: brain measures
+# everything it can measure while it is still alive (who you are, which executors
+# would lose their reader), hands the reset to a process in its own session, and
+# that process waits for this turn to end before replacing anything. Nothing
+# about the refusal is loosened; the reset simply happens a moment later, from
+# outside.
+#
+# A brainer space is long-lived: one per project, focused rather than rebuilt.
+# Task spaces are the disposable ones — those are `hw`.
+#
+# EXIT CODES. 0 opened, focused or reset. 64 a usage error. 3 means "you are in
+# front of the brainer, and it is in the WRONG LANE" — its cwd is not the
+# brain root's <project> directory, so it loads another lane's CLAUDE.md and another
+# lane's deny-guard entries, and `hw` refuses to dispatch from it. `--reset`
+# repairs exactly that, and returns 3 itself when it could not. Everything else
+# is 1, and every refusal says whether anything was sent. `--self` exits 0 when
+# the reset has been ARMED, not performed — the detached arm writes what it did
+# to a log this command names, because the conversation that asked will not be
+# there to read it.
+#
+# The two agents read the SAME brainer: CLAUDE.md, decisions.md and the command
+# bodies are one copy each. opencode reaches them through opencode.json
+# (`instructions`) and .opencode/command/*.md symlinks, so nothing is duplicated
+# and the two cannot drift apart.
+#
+set -euo pipefail
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
+# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
+# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
+# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
+case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
+
+# Resolve through the ~/bin symlink, the same way the invokers do: ${BASH_SOURCE}
+# is the LINK, and the shared table lives beside the TARGET.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+BRAIN_BIN="$(cd -P "$(dirname "$_src")" && pwd)"
+# shellcheck source=project-spaces.sh
+. "$BRAIN_BIN/project-spaces.sh"
+# The brain root is the directory above the one this script lives in —
+# ~/bin/brain is a link, resolved above — or HW_BRAIN_ROOT when set.
+# THE SPELLING IS KEPT, not canonicalised: the old root was the literal
+# home-relative path, so a root reached through a symlinked parent (or a
+# $HOME with a `//` in it) must print exactly as it was reached. $_src is the
+# script after every link was followed; only a relative one needs a `cd`.
+case "$_src" in
+  /*) _brain_root="${_src%/*/*}" ;;
+  *)  _brain_root="$(cd "$(dirname "$_src")/.." && pwd)" ;;
+esac
+BRAIN="${HW_BRAIN_ROOT:-$_brain_root}"
+lane_config_load "$BRAIN" || { echo "brain: the lane table did not load — fix $BRAIN/projects.json (the reason is above)" >&2; exit 1; }
+
+_free_port() {
+  python3 - <<'PY'
+import socket
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+}
+
+# A lane name, or one of its `brain_aliases` in projects.json.
+proj=""
+if [ -n "${1:-}" ]; then
+  if lane_known "$1"; then proj="$1"
+  else proj="$(lane_alias brain "$1")" || proj=""
+  fi
+fi
+case "${proj:+known}:${1:-}" in
+  known:*) ;;
+  :) printf 'brainers:\n'; for d in "$BRAIN"/*/; do
+        # A lane's old name is a symlink to its new one (brain/<old> → <new>),
+        # kept for live sessions; it is not a second brainer.
+        [ ! -L "${d%/}" ] || continue
+        [ -f "$d/CLAUDE.md" ] && printf '  %s\n' "$(basename "$d")"; done
+      printf '\nusage: brain <%s> [--opencode|--claude] [--reset [--self] [--force]]\n' "$(printf '%s' "$HW_LANES" | tr ' ' '|')"; exit 0 ;;
+  *)  echo "unknown brainer: $1  (try: $(printf '%s' "$HW_LANES" | sed 's/ /, /g'))" >&2; exit 64 ;;
+esac
+
+kind="$(project_default_kind "$proj")"
+# A lane whose vendor is opencode names who runs its EXECUTORS. The brainer is
+# opencode only where the lane ships one (opencode.json); a lane the installer
+# built has none, and its brainer is Claude Code. Only the DEFAULT falls back:
+# an explicit --opencode over such a lane is still refused below.
+[ "$kind" != opencode ] || [ -f "$BRAIN/$proj/opencode.json" ] || kind=claude
+RESET=0
+FORCE=0
+SELF=0
+AWAIT_PANE=""
+shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    # The vendor used to fork the SPACE label, which is how a lane ended up with a
+    # workspace called `brain:<lane>:oc`. One space per project now, so the vendor
+    # distinguishes the TAB instead — and two brainers on one project no longer
+    # collide in a label lookup.
+    --opencode|-o) kind=opencode ;;
+    --claude|-c) kind=claude ;;
+    --reset) RESET=1 ;;
+    # --force is only ever read on the reset path, and it overrides exactly one
+    # refusal: live executors still pointing at this brainer. It does not soften
+    # the identity, liveness or transport refusals, because those are not
+    # judgement calls a human can take responsibility for from here.
+    --force) FORCE=1 ;;
+    # --self is the ONLY way a brainer resets its own pane, and it is a word the
+    # human (or the brainer acting for them) has to type: a reset discards the
+    # conversation, and being your own victim does not make that cheaper. It
+    # widens no refusal — it defers the reset to a detached process so that the
+    # refusals can all be asked again, honestly, once this turn is over.
+    --self) SELF=1 ;;
+    # --await-idle is the detached arm calling brain back. It is not a user
+    # flag: it names the pane whose turn must END before the ordinary reset path
+    # runs, and everything that path reads is re-read after the wait.
+    --await-idle) shift; AWAIT_PANE="${1:-}"
+                  [ -n "$AWAIT_PANE" ] || { echo "--await-idle needs a pane id" >&2; exit 64; } ;;
+    *) echo "unknown flag: $1  (try: --opencode, --claude, --reset, --self, --force)" >&2; exit 64 ;;
+  esac
+  shift
+done
+[ "$FORCE" = 0 ] || [ "$RESET" = 1 ] || { echo "--force means nothing without --reset" >&2; exit 64; }
+[ "$SELF" = 0 ] || [ "$RESET" = 1 ] || { echo "--self means nothing without --reset" >&2; exit 64; }
+[ -z "$AWAIT_PANE" ] || [ "$RESET" = 1 ] || { echo "--await-idle means nothing without --reset" >&2; exit 64; }
+# THE DETACHED ARM IS NOT ITSELF A SELF-RESET. It inherits the brainer pane's
+# environment, HERDR_PANE_ID and all, so `--self` would be satisfied there too
+# and it would arm a third process instead of doing the work.
+[ "$SELF" = 0 ] || [ -z "$AWAIT_PANE" ] || { echo "--self and --await-idle are the two halves of one reset, not one call" >&2; exit 64; }
+
+dir="$BRAIN/$proj"
+[ -f "$dir/CLAUDE.md" ] || { echo "no brainer at $dir" >&2; exit 1; }
+if [ "$kind" = opencode ]; then
+  # Without this, opencode loads none of the brainer's instructions and silently
+  # behaves like a generic agent.
+  [ -f "$dir/opencode.json" ] || { echo "no opencode brainer at $dir (missing opencode.json)" >&2; exit 1; }
+fi
+
+# THE ENGRAM LABEL IS PINNED HERE, and it was pinned nowhere before (2026-08-20).
+# README.md says it must be, and the comment above used to claim opencode.json
+# carried it — it does not; no file in this repo mentions ENGRAM_PROJECT. Both
+# brainers still landed under `brain` only because engram resolves a project by
+# GIT ROOT, and every brainer cwd is inside this repo, whose root is `brain`. That
+# is luck, not a pin: it breaks the moment a brainer runs outside the repo, and it
+# is exactly how observations from a stray session landed under a personal
+# account label (a pane whose cwd was ~, which is not a repo at all). Pinning
+# costs nothing when detection already agrees and saves the case where it does
+# not.
+# The label is the lane's `engram` field, `brain` when it has none. A lane with
+# a durable history under its own label, or whose own `.mcp.json` pins
+# `--project <lane>`, declares that label there; the rest share `brain` (see
+# README.md's memory table). Without the field the brainer and its executors
+# would write under different labels, which is a split nobody notices until a
+# search comes back empty.
+ENGRAM_LABEL="$(lane_get "$proj" engram)" || ENGRAM_LABEL=""
+: "${ENGRAM_LABEL:=brain}"
+
+# THE BRAINER GETS AN ENGRAM SESSION OF ITS OWN, as hw's executors do.
+#
+# MEASURED 2026-09-28 against a private serve: a brainer whose label is not
+# `brain` (three product lanes today) and whose mem_save names no session is routed
+# to manual-save-<label>, a row `brain` owns, and refused — the same failure hw
+# fixed for executors, and a brainer does not pass through hw. A session
+# registered here, with the brainer's directory, is selected instead: engram
+# canonicalizes the directory to the git root on both sides (POST /sessions and
+# the MCP's cwd, project.RuntimeWorktreeDirectory), so the brain checkout's root
+# is the match, and the project keeps two lanes' brainers apart there.
+#
+# ONE ID PER LABEL, `brainer-<label>`, reused across relaunches: a renewal is
+# idempotent, and a fresh id per launch would leave two live candidates for one
+# project and directory, which engram refuses rather than guessing between.
+# Renewed at every Claude turn end by bin/hw-stop-hook.sh (the lease is 30
+# minutes). Only on a serve proven to be this machine's store
+# (bin/engram-serve.sh); otherwise a line, never a failed launch.
+BRAIN_ENGRAM_SESSION=""
+brain_engram_register() {
+  local id="brainer-$ENGRAM_LABEL" url verdict rc=0
+  # `[ -r ]` first: bash exits outright on a `.` of a missing file, `||` or not.
+  [ -r "$BRAIN_BIN/engram-serve.sh" ] || return 0
+  # shellcheck source=engram-serve.sh
+  . "$BRAIN_BIN/engram-serve.sh"
+  url="$(engram_serve_url)"
+  verdict="$(engram_serve_verdict "$url")" || rc=$?
+  if [ "$rc" = 0 ] && engram_session_post "$id" "$ENGRAM_LABEL" "$dir" "$url" >/dev/null 2>&1; then
+    BRAIN_ENGRAM_SESSION="$id"
+    echo "brain: engram session $id registered under $ENGRAM_LABEL (renewed at every turn end)" >&2
+  else
+    echo "brain: engram session NOT registered: ${verdict:-POST $url/sessions refused}. A mem_save without session_id may fall into manual-save-$ENGRAM_LABEL." >&2
+  fi
+  return 0
+}
+brain_engram_register
+
+# ONE SPACE PER PROJECT, ONE TAB PER AGENT. The brainer used to own a workspace
+# of its own (`brain:<proj>`) while `hw` built one per task, so a project with a
+# brainer and three executors was five workspaces and the word "workspace" stopped
+# meaning anything. The space is the PROJECT; the brainer is a tab in it, beside
+# the tabs of the tasks it launched. See setup/plans/agent-tabs.md.
+space="$(project_space_label "$proj")" || { echo "no space label for $proj" >&2; exit 1; }
+tab_label=brainer
+[ "$kind" != opencode ] || tab_label=brainer:oc
+
+# A FAILED LIST IS NOT AN EMPTY LIST, and the paragraph above says exactly what
+# that costs. This line was
+#
+#     ws="$(herdr workspace list 2>/dev/null | jq ... || true)"
+#
+# so a `workspace list` that FAILED — herdr not running, the socket moved, an
+# RPC error, jq handed something that is not JSON — produced the same empty
+# string as "this project has no space yet", and the branch below then went on to
+# `workspace create`. That is the five-workspaces-per-project bug the
+# space-per-project design replaced, reachable again through any transport
+# error, and it leaves no trace: the brainer comes up in a brand-new space
+# beside the one holding its executors.
+#
+# So the two answers are separated. `herdr_list` returns the selection only when
+# herdr actually answered the question asked; anything else stops here, because
+# there is no safe default. Creating is wrong (duplicate space) and so is
+# assuming it exists (we would focus a tab id we never got).
+TMPDIR_BRAIN="${TMPDIR:-/tmp}"
+
+# THE SAME TWO CHECKS, AND THE WHOLE REPLY. `herdr_list` extracts one field;
+# the reset path below needs the entire pane list, because it asks four
+# questions of it (identity, cwd, liveness, and which executors are still
+# pointing here) and four round trips would let the answers disagree with each
+# other. Splitting it keeps ONE copy of the fail-closed discipline the comment
+# above describes rather than a second, subtly different one.
+herdr_json() {   # herdr_json <what> <jq array path> [args...]
+  local what="$1"
+  local arr="$2"
+  # `|| return 1` IS NOT DECORATION — `shift 2` returns 1 when only one argument
+  # is left, and under `set -e` that ends the script with nothing said. bin/brain
+  # carries zero of those debts and bin/lint-shell's ratchet (setup/tests/76)
+  # only goes down, so a caller that passed too few arguments gets a return, not
+  # a silent death.
+  shift 2 || return 1
+  local raw err rc=0
+  # STDOUT AND STDERR SEPARATELY. Folding them with `2>&1` put herdr's warnings
+  # INSIDE the JSON, so a herdr that exited 0 while printing anything at all
+  # failed the array-shape check below and brain refused to open a brainer — a
+  # new false refusal keyed on another program's stderr hygiene. Raised by
+  # Judgment Day, 2026-09-08. The stderr is still read; it is the diagnostic,
+  # not the data.
+  err="$TMPDIR_BRAIN/herdr-stderr.$$"
+  raw="$(herdr "$@" 2>"$err")" || rc=$?
+  local said
+  said="$( { cat "$err" 2>/dev/null; printf '%s' "$raw"; } | head -2 | tr '\n' ' ' || true)"
+  rm -f "$err" 2>/dev/null || true
+  if [ "$rc" != 0 ]; then
+    printf 'brain: `herdr %s` failed (exit %s), so it is not known whether %s exists.\n' \
+      "$*" "$rc" "$what" >&2
+    printf 'brain: refusing to continue — treating a failed query as "nothing found" is how one\n' >&2
+    printf 'brain: project ended up with five workspaces. herdr said: %s\n' \
+      "$said" >&2
+    # `return`, NOT `exit`: this runs inside `$( )`, where `exit` ends only the
+    # SUBSHELL and brain would carry straight on with an empty answer — which is
+    # the bug itself. brain runs `set -e`, so the failed assignment is the stop.
+    return 1
+  fi
+  if ! printf '%s' "$raw" | jq -e "($arr | type) == \"array\"" >/dev/null 2>&1; then
+    printf 'brain: `herdr %s` exited 0 but its reply has no %s array, so the answer cannot be\n' \
+      "$*" "$arr" >&2
+    printf 'brain: read as "none". Refusing to continue. It said: %s\n' \
+      "$said" >&2
+    return 1
+  fi
+  printf '%s' "$raw"
+}
+
+herdr_list() {   # herdr_list <what> <jq array path> <jq select+extract> [args...]
+  # SEPARATE `local` STATEMENTS and no cross-reference: bash 3.2 declares all
+  # names in one `local` before assigning, so `local a=$1 b=$a` reads an unset a.
+  local what="$1"
+  local arr="$2"
+  local pick="$3"
+  shift 3
+  local raw
+  # NOT `local raw="$(herdr_json ...)"`: `local` is a command with its own exit
+  # status, so it swallows the failure and `set -e` never fires — the exact
+  # "a failed call is not an empty answer" defect this pair exists to refuse.
+  raw="$(herdr_json "$what" "$arr" "$@")" || return 1
+  printf '%s' "$raw" | jq -r "$pick" 2>/dev/null | head -1 || true
+}
+
+# `herdr agent get` PUTS ITS ANSWER ON WHICHEVER STREAM ITS ANSWER IS.
+#
+# MEASURED 2026-09-16, and it is the reason `brain --reset` could not finish a
+# single real reset: the SUCCESS body goes to stdout, the `agent_not_found` body
+# goes to STDERR, and the exit status is 1 in both the "gone" and the
+# "unreachable" case.
+#
+#   $ herdr agent get w8C:p1 2>/dev/null ; echo "[rc=$?]"
+#   [rc=1]
+#   $ herdr agent get w8C:p1 2>&1 1>/dev/null
+#   {"error":{"code":"agent_not_found","message":"agent target w8C:p1 not found"}}
+#
+# Every reader below discards stderr and then looks for that body, so it never
+# found it. On a live probe (w8C:p1, 2026-09-16) the reset sent /exit, the agent
+# really did go, and brain still printed "15s after /exit … has NOT been proved
+# agent-free" and left a bare shell — a refusal produced by reading the wrong
+# pipe, not by anything the pane did. setup/tests/137 and /143 modelled the body
+# on stdout, which is why a green suite never said so.
+#
+# THE DISCIPLINE THE REST OF THIS FILE KEEPS IS KEPT HERE. The streams are still
+# read SEPARATELY, exactly as herdr_json reads them and for the same reason — a
+# warning folded into a success body is a false refusal keyed on another
+# program's stderr hygiene. stdout wins whenever it said anything at all; stderr
+# is consulted only when stdout was silent. And the BODY is still the evidence:
+# an unreachable herdr also exits non-zero and also writes to stderr, but it
+# writes "could not connect", which is not `agent_not_found` and is refused.
+# brain_trust_dir <dir> <account config dir> — mark <dir> trusted in the
+# account's .claude.json, as bin/hw's _trust_dir does for an executor. Never
+# lowers a decision, backs the file up before the one write, and writes nothing
+# when the file does not exist yet: that account has never run Claude Code, and
+# its welcome is the person's (see claude_first_run_pending).
+brain_trust_dir() {
+  local cfg rc=0
+  cfg="$(claude_account_json "${2:-}")"
+  [ -f "$cfg" ] || return 0
+  BRAIN_TRUST_CFG="$cfg" BRAIN_TRUST_DIR="$1" python3 - <<'PY' || rc=$?
+import json, os, shutil, sys, time
+cfg = os.environ["BRAIN_TRUST_CFG"]
+d = os.path.realpath(os.environ["BRAIN_TRUST_DIR"])
+try:
+    with open(cfg) as fh:
+        data = json.load(fh)
+    projects = data.setdefault("projects", {})
+    if not isinstance(data, dict) or not isinstance(projects, dict):
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+p = projects.setdefault(d, {})
+if not isinstance(p, dict):
+    sys.exit(1)
+if p.get("hasTrustDialogAccepted") is True:
+    sys.exit(2)
+shutil.copy2(cfg, cfg + ".bak-brain-" + time.strftime("%Y%m%d-%H%M%S"))
+p["hasTrustDialogAccepted"] = True
+tmp = cfg + ".brain-tmp"
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2)
+os.replace(tmp, cfg)
+PY
+  case "$rc" in
+    0) echo "brain: $1 marked trusted in $cfg (Claude Code would otherwise open on its folder-trust question)" >&2 ;;
+    2) : ;;
+    *) echo "brain: could not mark $1 trusted in $cfg — the brainer may open on the folder-trust question" >&2 ;;
+  esac
+  return 0
+}
+
+brain_agent_get() {   # $1 = pane; prints whichever stream carried the body
+  local err out
+  err="$TMPDIR_BRAIN/herdr-agent-get.$$"
+  out="$(herdr agent get "$1" 2>"$err")" || true
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
+  else
+    cat "$err" 2>/dev/null || true
+  fi
+  rm -f "$err" 2>/dev/null || true
+}
+
+ws="$(herdr_list "a workspace labelled $space" '.result.workspaces' \
+      "$(printf '.result.workspaces[] | select(.label == %s) | .workspace_id' "$(jq -Rn --arg l "$space" '$l')")" \
+      workspace list)"
+
+# ── the four questions a reset asks of one pane list ────────────────────────
+#
+# WHY A RESET EXISTS AT ALL. `brain` had exactly two paths: focus an existing
+# brainer, or build one. Replacing a brainer meant closing its tab by hand in
+# herdr and re-running `brain <proj>`, which is the friction that prompted this.
+# `hw unstick` already does the hard half for an executor — restart
+# the agent IN its pane, keeping tab, cwd and worktree — and this is that
+# discipline applied to the long-lived agent.
+#
+# HOW AN AGENT IS REPLACED IN PLACE, MEASURED 2026-09-14 against a throwaway
+# space (w88), never against a live brainer:
+#
+#   * `herdr agent send-keys <pane> ctrl+c` twice does NOT exit claude, and
+#     neither does ctrl+d. Both leave it idle at its prompt. `hw unstick`'s
+#     ctrl+c is an OpenCode fact and does not generalise.
+#   * `herdr pane send-text <pane> '/exit'` followed by `herdr pane send-keys
+#     <pane> enter` DOES exit it: process-info drops to `["-zsh"]` and
+#     `herdr agent get` answers `agent_not_found`. The same two calls exit
+#     opencode, so one mechanism covers both vendors this launcher starts.
+#   * `herdr agent start … --pane <same pane>` then comes up with a NEW session
+#     id (49231a3e… → 364ab636…). That is the reset: same pane, new conversation.
+#   * THE PANE ID SURVIVES, and so do the pane label, the tab and the tab label.
+#     That is the fact the refusal below is calibrated on.
+#   * A `cd` sent into the pane IS reflected in what `herdr pane list` reports as
+#     the pane's cwd, so a reset can also RELOCATE a misplaced brainer.
+#
+# WHY THE EXECUTOR REFUSAL IS SOFT, AND WHY IT IS STILL A REFUSAL. Every
+# executor carries its brainer's pane id in `.hw/<run>/env` as HW_INVOKER_PANE,
+# and if that pane stopped being the pane, every live executor's return channel
+# would point at nothing — silently, if a reset ever relocated a brainer's
+# pane while an executor was running. Because the pane id survives here, that does NOT happen: the
+# reports still land. What is destroyed is the CONTEXT they land in — the
+# conversation that knows what it dispatched and why. So the reset refuses and
+# names the executors, and `--force` is the human taking that cost knowingly.
+#
+# The identity and liveness refusals are NOT overridable, for the reason
+# `hw unstick` gives: this replaces a live conversation, so it needs positive
+# evidence that nothing is running, never the absence of evidence that
+# something is.
+
+# THE BRAINER'S PANE, from the tab that carries its label. A brainer tab holds
+# one pane; if it ever holds more, the `brain`-labelled one is the brainer and
+# anything ambiguous prints nothing rather than guessing which session to kill.
+# Prints: <pane_id>\t<label>\t<cwd>\t<agent>\t<agent_status>
+brain_tab_pane() {  # $1 = tab id; stdin = herdr pane list
+  BRAIN_TAB="$1" python3 -c '
+import json, os, sys
+try:
+    panes = json.load(sys.stdin)["result"]["panes"]
+except Exception:
+    sys.exit(0)
+tab = os.environ["BRAIN_TAB"]
+mine = [p for p in panes if p.get("tab_id") == tab]
+named = [p for p in mine if p.get("label") == "brain"]
+pick = named[0] if len(named) == 1 else (mine[0] if len(mine) == 1 else None)
+if pick is None:
+    sys.exit(0)
+print("\t".join([pick.get("pane_id") or "", pick.get("label") or "",
+                 pick.get("cwd") or "", pick.get("agent") or "",
+                 pick.get("agent_status") or ""]))
+' 2>/dev/null
+}
+
+# IS SOMETHING STILL RUNNING IN THAT WORK DIRECTORY? Positive evidence only: a
+# pane whose cwd is the directory (or inside it) AND which herdr says is carrying
+# an agent. A run whose executor is gone can never report, so it cannot be
+# harmed by this — it is already in `hw status`'s finished-unreported queue.
+brain_live_agent_in() {  # $1 = work directory; stdin = herdr pane list
+  BRAIN_DIR="$1" python3 -c '
+import json, os, sys
+try:
+    panes = json.load(sys.stdin)["result"]["panes"]
+except Exception:
+    sys.exit(1)
+d = os.path.realpath(os.environ["BRAIN_DIR"]).rstrip("/")
+for p in panes:
+    if not (p.get("agent") or ""):
+        continue
+    c = os.path.realpath(p.get("cwd") or "/").rstrip("/")
+    if c == d or c.startswith(d + "/"):
+        sys.exit(0)
+sys.exit(1)
+' 2>/dev/null
+}
+
+# THE EXECUTORS A RESET WOULD LEAVE TALKING TO A STRANGER. Not every unreported
+# run of the lane: one whose executor died months ago names this pane forever and
+# would block the reset for good. The dangerous set is the one that is still
+# going to report — never reported, names THIS pane, and has a live agent in its
+# own work directory. One line per run: <task>  <run>
+brain_reset_blockers() {  # $1 = project, $2 = brainer pane; stdin = herdr pane list
+  local proj="$1"
+  local pane="$2"
+  local panes task run invoker wdir
+  panes="$(cat)"
+  lane_unreported_runs "$proj" | while IFS="$(printf '\t')" read -r task run invoker wdir; do
+    [ "$invoker" = "$pane" ] || continue
+    printf '%s' "$panes" | brain_live_agent_in "$wdir" || continue
+    printf '%s\t%s\n' "$task" "$run"
+  done
+}
+
+# THE EXECUTOR GATE, ASKED BY BOTH RESET PATHS. It was inline in the ordinary
+# reset until --self needed the same question answered EARLIER — a self-reset
+# must measure who would lose their reader while the brainer is still alive to
+# say so, because the process that would print it is the one being replaced.
+# Extracted rather than copied: two spellings of this refusal would drift, and
+# the count is the only thing standing between a report and a stranger.
+# $3 is the flag list the refusal tells you to re-run with, because `--self`
+# and the ordinary path are not the same command.
+brain_blocker_gate() {  # $1 = project, $2 = brainer pane, $3 = flags; stdin = pane list
+  local proj="$1"
+  local pane="$2"
+  local flags="$3"
+  local panes blockers
+  panes="$(cat)"
+  # CHECKED IN BRAIN'S OWN WORDS. `lane_unreported_runs` returns 1 for a
+  # project `lane_work_bases` does not know, and that failure would otherwise
+  # surface as `set -e` killing the command substitution below with no
+  # explanation at all. The two tables are in sync today; this is what says
+  # so out loud the day somebody adds a sixth lane to one of them.
+  lane_work_bases "$proj" >/dev/null 2>&1 || {
+    printf 'brain: bin/project-spaces.sh has no work roots for %s, so brain cannot tell whether\n' "$proj" >&2
+    printf 'brain: this lane has executors that never reported. Add it to lane_work_bases.\n' >&2
+    printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+    return 1
+  }
+  blockers="$(printf '%s' "$panes" | brain_reset_blockers "$proj" "$pane")"
+  if [ -n "$blockers" ] && [ "$FORCE" != 1 ]; then
+    printf 'brain: %s executor(s) of %s have not reported yet and their return address is THIS\n' "$(printf '%s\n' "$blockers" | wc -l | tr -d ' ')" "$proj" >&2
+    printf 'brain: pane (%s):\n' "$pane" >&2
+    printf '%s\n' "$blockers" | while IFS="$(printf '\t')" read -r bt br; do
+      printf 'brain:   %s  (run %s)\n' "$bt" "$br" >&2
+    done
+    printf 'brain: the pane id SURVIVES a reset (measured 2026-09-14), so their reports will still\n' >&2
+    printf 'brain: be delivered — what dies is the conversation that knows what it dispatched and\n' >&2
+    printf 'brain: why, so each report lands on a brainer with no context for it. Read them first\n' >&2
+    printf 'brain: (hw status), or accept that cost with: brain %s %s --force\n' "$proj" "$flags" >&2
+    printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+    return 1
+  fi
+  [ -z "$blockers" ] || printf 'brain: --force: resetting with %s unreported executor(s) still addressed to %s.\n' \
+    "$(printf '%s\n' "$blockers" | wc -l | tr -d ' ')" "$pane" >&2
+  return 0
+}
+
+# Already open? Focus the brainer's TAB, not the space — the space may hold
+# several executor tabs and landing on whichever was focused last is not "open the
+# brainer".
+if [ -n "$ws" ]; then
+  tab="$(herdr_list "the $tab_label tab in $ws" '.result.tabs' \
+         "$(printf '.result.tabs[] | select(.workspace_id == %s and .label == %s) | .tab_id' \
+            "$(jq -Rn --arg w "$ws" '$w')" "$(jq -Rn --arg l "$tab_label" '$l')")" \
+         tab list)"
+  if [ -n "$tab" ]; then
+    # ONE pane list for every question below. Same fail-closed rule as the two
+    # lookups above: a `pane list` that failed is not a brainer with no pane.
+    panes_json="$(herdr_json "the panes of $tab" '.result.panes' pane list)"
+    tabpane="$(printf '%s' "$panes_json" | brain_tab_pane "$tab")"
+    pane=""; pane_cwd=""; pane_agent=""; pane_status=""
+    if [ -n "$tabpane" ]; then
+      pane="$(printf '%s' "$tabpane" | cut -f1)"
+      pane_cwd="$(printf '%s' "$tabpane" | cut -f3)"
+      pane_agent="$(printf '%s' "$tabpane" | cut -f4)"
+      pane_status="$(printf '%s' "$tabpane" | cut -f5)"
+    fi
+    verdict=""
+    [ -z "$pane" ] || verdict="$(printf '%s' "$panes_json" | lane_brainer_verdict "$pane" "$dir")"
+
+    if [ "$RESET" = 1 ]; then
+      [ -n "$pane" ] || {
+        printf 'brain: %s / %s (%s) has no single pane labelled `brain`, so there is no one agent to\n' "$space" "$tab_label" "$tab" >&2
+        printf 'brain: replace. Nothing was sent and nothing was restarted. Look at that tab first.\n' >&2
+        exit 1
+      }
+      # ── THE DETACHED ARM, WAITING OUT THE TURN THAT ARMED IT ─────────────
+      #
+      # This is the half that survives the brainer. It was started by the --self
+      # branch below, in its own session, and everything it was told is already
+      # stale: the brainer was WORKING when it was armed, because running the
+      # command IS working. So it waits for that turn to end and then re-reads
+      # every question from scratch — `hw unstick`'s "capture is not authority",
+      # applied to a gap that is minutes wide rather than milliseconds.
+      #
+      # IT LOOSENS NOTHING. After the wait, the ordinary refusals below decide:
+      # a brainer that went BLOCKED instead of idle is still refused, an
+      # agent_status nobody can read is still refused, and the second `agent
+      # get` immediately before the first key is still the one that rules.
+      if [ -n "$AWAIT_PANE" ]; then
+        # THE SAME IDENTITY THE --self HALF PROVED, PROVED AGAIN HERE. Raised by
+        # Judgment Day, 2026-09-16, by both judges independently: `--await-idle`
+        # was a plain flag gated only on `--reset`, so `brain <lane> --reset
+        # --await-idle <pane>` typed by anybody would WAIT OUT a third party's
+        # turn and then reset them — turning the immediate "is WORKING … Let it
+        # finish" refusal into a deferred, unattended reset. That is exactly the
+        # refusal this change promised not to loosen.
+        #
+        # The arm is a child of the brainer's own pane, so it inherits that
+        # pane's HERDR_PANE_ID; demanding it costs the real path nothing and
+        # leaves no way to reach the wait from outside the pane being reset.
+        [ -n "${HERDR_PANE_ID:-}" ] && [ "${HERDR_PANE_ID:-}" = "$AWAIT_PANE" ] || {
+          printf 'brain: --await-idle is the second half of `--reset --self`, and it waits out a turn\n' >&2
+          printf 'brain: instead of refusing it — so it is only ever legal from INSIDE the pane being\n' >&2
+          printf 'brain: reset. You are %s and this names %s. Resetting somebody else is `brain %s\n' "${HERDR_PANE_ID:-nobody}" "$AWAIT_PANE" "$proj" >&2
+          printf 'brain: --reset`, which refuses a WORKING brainer instead of outliving it.\n' >&2
+          printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        [ "$AWAIT_PANE" = "$pane" ] || {
+          printf 'brain: this reset was armed for %s, but the %s brainer is %s now — it moved between\n' "$AWAIT_PANE" "$proj" "$pane" >&2
+          printf 'brain: the request and this attempt. brain will not reset a pane nobody asked about.\n' >&2
+          printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        await_max="${BRAIN_AWAIT_IDLE_MAX:-900}"
+        await_poll="${BRAIN_AWAIT_POLL:-3}"
+        waited=0
+        await_last=working
+        # DID A TURN ACTUALLY END, OR WAS THE PANE ALREADY SETTLED? Judgment Day
+        # round 2: the line below claimed "the turn that armed this reset ended
+        # after 0s" even when the first poll found the pane already agent-free,
+        # where no turn was ever observed at all. Cosmetic, and a log that says
+        # something it did not see is how the next reader is misled.
+        await_saw_working=0
+        while :; do
+          await_reply="$(brain_agent_get "$pane")"
+          # A PANE THAT IS ALREADY EMPTY IS NOT A PANE STILL WORKING. The agent
+          # may have exited on its own while this arm waited; that is a bare
+          # shell, which is what the ordinary path treats as the repair case.
+          if printf '%s' "$await_reply" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
+            break
+          fi
+          await_st="$(printf '%s' "$await_reply" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
+          # ONLY A STATUS THAT WAS READ ENDS THE WAIT. `blocked` and anything
+          # brain cannot read belong to the refusals below, which say so in
+          # their own words — but an EMPTY reading is not a reading. Judgment
+          # Day, 2026-09-16: `[ "$await_st" = working ] || break` treated a
+          # herdr that could not be reached exactly like a finished turn, and
+          # then logged "the turn that armed this reset ended after Ns" about a
+          # brainer that may still be mid-sentence. The later reads are all
+          # fail-closed, so nothing unsafe was observed — but a wait whose own
+          # comment promises positive evidence has to keep that promise, so an
+          # unreadable reply is polled through and named at the ceiling.
+          if [ -z "$await_st" ]; then
+            await_last=unreadable
+          else
+            await_last="$await_st"
+            [ "$await_st" != working ] || await_saw_working=1
+            [ "$await_st" = working ] || break
+          fi
+          [ "$waited" -lt "$await_max" ] || {
+            if [ "$await_last" = unreadable ]; then
+              printf 'brain: %s could not be read by `herdr agent get` once in the %ss since this reset was\n' "$pane" "$waited" >&2
+              printf 'brain: armed, so whether that turn ever ended is UNKNOWN. An unreachable reader is not\n' >&2
+              printf 'brain: evidence that a restart is safe. Nothing was sent and nothing was restarted.\n' >&2
+            else
+              printf 'brain: %s has been WORKING for %ss since this reset was armed. brain is not going to\n' "$pane" "$waited" >&2
+              printf 'brain: replace a conversation that never stopped talking. Nothing was sent and nothing\n' >&2
+              printf 'brain: was restarted; arm it again when that turn is over.\n' >&2
+            fi
+            exit 1
+          }
+          sleep "$await_poll"
+          waited=$((waited + await_poll))
+        done
+        if [ "$await_saw_working" = 1 ]; then
+          printf 'brain: the turn that armed this reset ended after %ss — re-reading everything before\n' "$waited" >&2
+        else
+          printf 'brain: no turn was in flight when this reset was reached (%ss) — re-reading everything\n' "$waited" >&2
+        fi
+        printf 'brain: before touching the pane, because none of it was measured since.\n' >&2
+        panes_json="$(herdr_json "the panes of $tab" '.result.panes' pane list)"
+        tabpane="$(printf '%s' "$panes_json" | brain_tab_pane "$tab")"
+        pane=""; pane_cwd=""; pane_agent=""; pane_status=""
+        if [ -n "$tabpane" ]; then
+          pane="$(printf '%s' "$tabpane" | cut -f1)"
+          pane_cwd="$(printf '%s' "$tabpane" | cut -f3)"
+          pane_agent="$(printf '%s' "$tabpane" | cut -f4)"
+          pane_status="$(printf '%s' "$tabpane" | cut -f5)"
+        fi
+        [ "$pane" = "$AWAIT_PANE" ] || {
+          printf 'brain: after the wait, the %s brainer tab no longer holds %s (it holds %s). Nothing was\n' "$proj" "$AWAIT_PANE" "${pane:-nothing}" >&2
+          printf 'brain: sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        verdict="$(printf '%s' "$panes_json" | lane_brainer_verdict "$pane" "$dir")"
+      fi
+
+      # ── THE SELF-RESET: MEASURE WHILE ALIVE, RESET FROM OUTSIDE, LATER ───
+      #
+      # The contradiction this branch exists for is not one of permission. The
+      # process asking is the process the reset kills, so it can neither perform
+      # the reset nor report on it, and it is WORKING by definition — running
+      # the command is the turn. `bin/brain` had no notion of "yo" at all: not
+      # a case handled badly, no case.
+      #
+      # DEFERRED AND DETACHED, and both words are load-bearing. Detached, because
+      # a child of this agent dies with it; deferred, because the refusals above
+      # are right and the only honest way past them is to ask them again once
+      # they are no longer true. What is done HERE, while the brainer is still
+      # alive to print it, is the measuring: who you are, and which executors are
+      # about to lose the conversation that dispatched them.
+      if [ "$SELF" = 1 ]; then
+        # WHICH PANE YOU ARE, FROM HERDR RATHER THAN FROM A GUESS. Every pane
+        # herdr creates carries HERDR_PANE_ID in its environment — measured
+        # 2026-09-16 in a pane built by `herdr tab create`, where it matched the
+        # id `pane list` reports — and a brainer pane is created by exactly that
+        # call, further down this file. It is NOT HW_INVOKER_PANE: that is an
+        # executor's pointer at its brainer, and reading it here would reset
+        # whoever dispatched you.
+        [ -n "${HERDR_PANE_ID:-}" ] || {
+          printf 'brain: --self means "reset the pane I am in", and HERDR_PANE_ID is not set here, so\n' >&2
+          printf 'brain: brain cannot tell which pane that is. It will not guess: the guess is a live\n' >&2
+          printf 'brain: conversation. Nothing was sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        [ "$HERDR_PANE_ID" = "$pane" ] || {
+          printf 'brain: --self means "reset the pane I am in", but you are %s and the %s brainer is\n' "$HERDR_PANE_ID" "$proj" >&2
+          printf 'brain: %s. Resetting somebody else is `brain %s --reset`, and that path refuses a\n' "$pane" "$proj" >&2
+          printf 'brain: WORKING brainer — --self does not widen it, it only defers your own.\n' >&2
+          printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        # THE SAME GATE THE OTHER PATH ASKS, ASKED EARLY. After the detach there
+        # is nobody left to read a refusal, so every executor question is settled
+        # here, in the conversation that can still act on the answer.
+        printf '%s' "$panes_json" | brain_blocker_gate "$proj" "$pane" "--reset --self" || exit 1
+        # AND THE COUNT IS SAID OUT LOUD EVEN WHEN IT IS ZERO. R4 of the
+        # 2026-09-16 audit: 32 of 79 never-reported runs are "the brainer's pane
+        # is no longer there". A self-reset is the moment that number is cheap
+        # to know and expensive to discover later.
+        self_blockers="$(printf '%s' "$panes_json" | brain_reset_blockers "$proj" "$pane")"
+        self_n=0
+        [ -z "$self_blockers" ] || self_n="$(printf '%s\n' "$self_blockers" | wc -l | tr -d ' ')"
+        printf 'brain: measured before arming: %s executor(s) of %s have not reported and their return\n' "$self_n" "$proj" >&2
+        printf 'brain: address is this pane (%s). The pane id survives, so their reports still land —\n' "$pane" >&2
+        printf 'brain: in a conversation that will know nothing about them.\n' >&2
+        [ "$self_n" = 0 ] || printf '%s\n' "$self_blockers" | while IFS="$(printf '\t')" read -r bt br; do
+          printf 'brain:   %s  (run %s)\n' "$bt" "$br" >&2
+        done
+
+        # THE DETACH ITSELF. `nohup … &` is not enough: the arm must outlive an
+        # agent that is about to be told to `/exit`, so it gets its own SESSION
+        # (setsid) and its own descriptors. python3 is already a hard dependency
+        # of this file — every pane question above is answered by one — so this
+        # costs no new one, and unlike `disown` it does not depend on which shell
+        # or tool harness happens to be running brain.
+        self_log="${TMPDIR:-/tmp}/brain-self-reset-$(printf '%s' "$pane" | tr -c 'A-Za-z0-9_.-' '_').log"
+        self_args=("$proj")
+        [ "$kind" != opencode ] || self_args+=(--opencode)
+        [ "$kind" != claude ] || self_args+=(--claude)
+        self_args+=(--reset --await-idle "$pane")
+        [ "$FORCE" != 1 ] || self_args+=(--force)
+        self_pid="$(BRAIN_SELF_LOG="$self_log" BRAIN_SELF_BASH="$BASH" python3 - "$BRAIN_BIN/brain" "${self_args[@]}" <<'PY'
+import os, sys
+log = os.environ["BRAIN_SELF_LOG"]
+if os.name == "nt":
+    # Native Windows has no fork. A DETACHED child in its own process group,
+    # out of the pane job when that job allows it, is the same outliving arm.
+    import subprocess
+    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    with open(log, "ab") as out:
+        for extra in (0x01000000, 0):  # CREATE_BREAKAWAY_FROM_JOB, then without
+            try:
+                # brain is a #! script, which Windows cannot run: the bash running brain runs it.
+                p = subprocess.Popen([os.environ["BRAIN_SELF_BASH"]] + sys.argv[1:], stdin=subprocess.DEVNULL, stdout=out,
+                                     stderr=out, creationflags=flags | extra, close_fds=True)
+                break
+            except OSError:
+                if not extra:
+                    raise
+    sys.stdout.write(str(p.pid))
+    sys.exit(0)
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0); os.dup2(out, 1); os.dup2(out, 2)
+    try:
+        os.execv(sys.argv[1], sys.argv[1:])
+    except Exception as exc:                      # pragma: no cover - exec rarely fails
+        os.write(2, ("brain: the detached arm could not start: %s\n" % exc).encode())
+        os._exit(127)
+sys.stdout.write(str(pid))
+PY
+)" || {
+          printf 'brain: the detached arm could not be started, so nothing is armed and nothing was\n' >&2
+          printf 'brain: reset. This conversation is intact.\n' >&2
+          exit 1
+        }
+        [ -n "$self_pid" ] || {
+          printf 'brain: the detached arm reported no pid, so brain cannot say it is running. Nothing\n' >&2
+          printf 'brain: was sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        echo "armed: $space / $tab_label (pane $pane, $kind) resets itself when this turn ends — same pane, new conversation"
+        echo "  it runs detached as pid $self_pid and writes what it did to $self_log"
+        case "${OSTYPE:-}" in
+          msys*|cygwin*) echo "  nothing has been reset yet; call it off with: taskkill /PID $self_pid /F  (a Windows pid)" ;;
+          *) echo "  nothing has been reset yet; call it off with: kill $self_pid" ;;
+        esac
+        exit 0
+      fi
+
+      # LIVENESS, BEFORE ANYTHING IS SENT. A brainer that is working has a turn
+      # in flight, and one that is blocked is waiting on a person; replacing
+      # either discards work nobody asked to lose. `hw unstick` refuses on the
+      # same two states for the same reason. An absent agent is a BARE SHELL,
+      # and starting one there is the repair, not a risk.
+      case "$pane_status" in
+        working)
+          printf 'brain: %s is WORKING (%s) — a turn is in flight, and a reset would discard it.\n' "$pane" "${pane_agent:-agent}" >&2
+          printf 'brain: Let it finish, then reset.\n' >&2
+          printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+          exit 1 ;;
+        blocked)
+          printf 'brain: %s is BLOCKED (%s) — it is waiting for a person, and a reset would discard\n' "$pane" "${pane_agent:-agent}" >&2
+          printf 'brain: that prompt and the turn behind it. Answer it instead.\n' >&2
+          printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+          exit 1 ;;
+        # `done` IS A SETTLED TURN, and leaving it out made `--reset` unusable for
+        # the case it was extended to serve. MEASURED 2026-09-16 on a real probe
+        # pane: the brainer that armed its own reset settled to agent_status=done
+        # when the turn ended, and the detached arm refused it as "a status brain
+        # does not know how to read as safe" — a refusal with nothing behind it.
+        # It is not a guess about herdr's vocabulary either: `bin/hw` already
+        # reads the two together in three independent places, one of them saying
+        # it in words — "$pane is $status, not working" for `idle|done`
+        # (bin/hw:624), the delivery gate (bin/hw:9019) and the readiness probe
+        # (bin/hw:1230). `working` and `blocked` are untouched: this accepts one
+        # more settled state, it does not soften a live one.
+        idle|done|"") : ;;
+        unknown)
+          # `unknown` IS WHAT A PANE WITH NO AGENT REPORTS, and the catch-all
+          # below read it as danger — the exact opposite of what it means.
+          # The comment three lines above
+          # this case already says *an absent agent is a BARE SHELL, and
+          # starting one there is the repair, not a risk*, and the guard
+          # contradicted it. The one state `--reset` exists to fix was the one
+          # state it refused to touch.
+          #
+          # NOT ACCEPTED BLINDLY, THOUGH, and that is the whole difference
+          # between this and widening the pattern to `idle|unknown|""`.
+          # `unknown` is herdr's answer for *I cannot characterise this*, and a
+          # LIVE agent can wear it too. So the same positive evidence this file
+          # already uses after `/exit` is demanded here: `agent get` returning
+          # `agent_not_found` — a body, not an exit status, for the reason the
+          # comment down there spells out. Absent means repair; anything else
+          # means the reinforcement below was right and still stands.
+          probe="$(brain_agent_get "$pane")"
+          if printf '%s' "$probe" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
+            printf 'brain: %s reports agent_status=unknown and `herdr agent get` says agent_not_found —\n' "$pane" >&2
+            printf 'brain: that is a bare shell, which is what --reset is for. Continuing.\n' >&2
+          else
+            printf 'brain: %s reports agent_status=unknown and `herdr agent get` did NOT answer\n' "$pane" >&2
+            printf 'brain: agent_not_found, so something may still be running there. brain --reset\n' >&2
+            printf 'brain: replaces a live conversation and needs positive evidence that nothing is.\n' >&2
+            printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+            exit 1
+          fi ;;
+        *)
+          printf 'brain: %s reports agent_status=%s, which brain --reset does not know how to read as\n' "$pane" "$pane_status" >&2
+          printf 'brain: safe. It replaces a live conversation, so it needs positive evidence that\n' >&2
+          printf 'brain: nothing is running, not the absence of evidence that something is.\n' >&2
+          printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+          exit 1 ;;
+      esac
+
+      printf '%s' "$panes_json" | brain_blocker_gate "$proj" "$pane" "--reset" || exit 1
+
+      # CAPTURE IS NOT AUTHORITY — the rule `hw unstick` states in those words.
+      # Every check above reads ONE pane list, taken before the blocker scan and
+      # before any of this output; a brainer that woke up in between must not be
+      # replaced on the strength of a stale reading. So the status is re-read
+      # immediately before the first key, from `agent get` this time, and an
+      # unreadable answer is a refusal rather than a shrug. This narrows the
+      # window; it does not mathematically close it.
+      # IT RUNS IN BOTH DIRECTIONS, and that is the half a single `if
+      # [ -n "$pane_agent" ]` would have missed: a pane the list showed as a bare
+      # shell may have had an agent started in it since, and `agent start` over a
+      # live conversation is the same accident from the other side.
+      now="$(brain_agent_get "$pane")"
+      now_status="$(printf '%s' "$now" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
+      if printf '%s' "$now" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
+        pane_agent=""   # nothing is running there now, whatever the list said
+      elif [ -n "$now_status" ]; then
+        # Same pair as the pane-list case above, for the same reason — and it has
+        # to be BOTH, or the fresher read refuses what the first one accepted.
+        [ "$now_status" = idle ] || [ "$now_status" = done ] || {
+          printf 'brain: %s was %s when the pane list was read and is %s now — brain --reset refuses\n' \
+            "$pane" "${pane_status:-absent}" "$now_status" >&2
+          printf 'brain: on the fresher reading. Nothing was sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        pane_agent="${pane_agent:-agent}"
+      else
+        printf 'brain: %s could not be read by `herdr agent get` immediately before the reset, so\n' "$pane" >&2
+        printf 'brain: whether anything is running in it is UNKNOWN. An unreachable reader is not\n' >&2
+        printf 'brain: evidence that a restart is safe.\n' >&2
+        printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+        exit 1
+      fi
+      if [ -n "$pane_agent" ]; then
+        echo "brain: replacing the $pane_agent in $pane — the space, tab, pane and cwd all stay." >&2
+        herdr pane send-text "$pane" '/exit' >/dev/null 2>&1 \
+          || { echo "brain: could not send /exit to $pane; nothing was restarted." >&2; exit 1; }
+        sleep 1
+        herdr pane send-keys "$pane" enter >/dev/null 2>&1 \
+          || { echo "brain: /exit was typed into $pane but could not be submitted; look at that pane before starting anything else." >&2; exit 1; }
+        # POSITIVE EVIDENCE, NOT A FAILED CALL. `herdr agent get` exits 1 and
+        # prints {"error":{"code":"agent_not_found"…}} when the agent is really
+        # gone — measured 2026-09-14 against a pane holding a bare shell and
+        # against a pane id that does not exist. A herdr that cannot be REACHED
+        # also exits non-zero, and the first draft here read that as "gone": it
+        # tested the pipeline's exit status, which `set -o pipefail` makes
+        # non-zero for both. That is the "a failed call is not an empty answer"
+        # defect this file already carries two guards for, and here it would
+        # start a SECOND agent on top of a live conversation. So the body is the
+        # evidence, and nothing else is accepted as proof.
+        gone=0
+        for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+          sleep 1
+          agent_reply="$(brain_agent_get "$pane")"
+          if printf '%s' "$agent_reply" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
+            gone=1; break
+          fi
+        done
+        [ "$gone" = 1 ] || {
+          echo "brain: 15s after /exit, $pane has NOT been proved agent-free — herdr either still reports an agent there or could not be asked. brain will NOT start a second one over it. Look at that pane." >&2
+          exit 1
+        }
+      else
+        echo "brain: $pane is a bare shell (no agent) — starting the $kind brainer in it." >&2
+      fi
+
+      # THE RELOCATION, and it is the most useful thing a reset does. A brainer
+      # whose cwd is not its lane loads another lane's CLAUDE.md and another
+      # lane's guard entries, and `hw` refuses to dispatch from it. Sent only
+      # after the agent is gone, so it lands on the pane's shell.
+      RESET_CWD_UNFIXED=0
+      case "$verdict" in
+        mismatch*)
+          echo "brain: this brainer was standing in ${pane_cwd:-<unknown>}, not $dir — moving it." >&2
+          if herdr pane send-text "$pane" "cd $dir" >/dev/null 2>&1; then
+            sleep 1
+            herdr pane send-keys "$pane" enter >/dev/null 2>&1 \
+              || echo "brain: the cd was typed into $pane but could not be submitted." >&2
+          else
+            echo "brain: the cd could not be sent to $pane." >&2
+          fi
+          sleep 2
+          # NOT AN UNGUARDED ASSIGNMENT. Past this point the old agent is already
+          # stopped, so a `pane list` that fails would abort under `set -e` with
+          # herdr_json's generic "it is not known whether … exists" and leave a
+          # bare shell behind with nobody told. Raised by Judgment Day,
+          # 2026-09-14. An unverifiable move is treated as a move that did not
+          # happen, and the brainer is still started so the pane is not left
+          # empty.
+          moved="$(herdr_json "the panes of $tab" '.result.panes' pane list || true)"
+          [ -n "$moved" ] || echo "brain: the pane list could not be re-read, so the move could not be verified." >&2
+          moved="$(printf '%s' "$moved" | lane_brainer_verdict "$pane" "$dir")"
+          # A RELOCATION THAT DID NOT HAPPEN IS NOT A WARNING, IT IS A STATUS.
+          # The focus path exits 3 for exactly this state — a brainer you can see
+          # but that cannot do its job — and a reset that ended in the same state
+          # reported success and exited 0. Raised by Judgment Day, 2026-09-14: a
+          # caller could not tell the two apart. The agent is still started,
+          # because a bare shell would be strictly worse, and the exit code says
+          # what it is.
+          [ "$moved" = ok ] || {
+            echo "brain: WARNING — $pane still reports the wrong cwd ($moved); the brainer below is in the wrong lane." >&2
+            RESET_CWD_UNFIXED=1
+          }
+          ;;
+      esac
+      # THE HANDLES, RE-ASSERTED. A reset is also the moment to repair a label
+      # somebody renamed by hand — without them the next `brain $proj` finds
+      # nothing and builds a second brainer beside this one.
+      herdr tab rename "$tab" "$tab_label" >/dev/null 2>&1 || true
+      herdr pane rename "$pane" brain >/dev/null 2>&1 || true
+      RESET_PANE="$pane"
+      RESET_TAB="$tab"
+    elif [ -n "$pane" ] && [ "$verdict" = ok ] \
+         && brain_agent_get "$pane" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
+      # THE TAB IS THERE AND THE BRAINER IS NOT. MEASURED 2026-09-24 on a new
+      # macOS user: the brainer's Claude had exited, `brain faai` focused the tab
+      # and exited 0, and the person was left in front of a bare shell with only
+      # `--reset` to get out. A pane `herdr agent get` answers agent_not_found
+      # for holds no conversation to lose — the same positive evidence the reset
+      # path demands after `/exit` — so starting the brainer there is the repair
+      # the person asked for by typing `brain`. A pane in the wrong cwd is NOT
+      # taken this road: it keeps the refusal below, and its --reset.
+      echo "brain: $pane is a bare shell — the $proj brainer's agent has exited. Starting a new one in the same pane." >&2
+      RESET_PANE="$pane"
+      RESET_TAB="$tab"
+      REVIVE=1
+    else
+      herdr tab focus "$tab" >/dev/null
+      echo "focused $space / $tab_label ($tab)"
+      # THE CHECK `hw` ALREADY MAKES, AND `brain` DID NOT. A pane can be
+      # labelled `brain` while its cwd is still the brain root itself — not the
+      # setup lane's own directory — and `hw` refuses to dispatch from it while
+      # `brain setup` would focus it without a word. Two halves of one setup,
+      # disagreeing, and only one of them said so.
+      #
+      # It focuses anyway: the human asked to be put in front of their brainer
+      # and that happened. It exits 3 because the brainer they were put in front
+      # of cannot do its job — CLAUDE.md requires a brainer rooted at the brain
+      # root's own <project> directory, the deny-guard table treats the root
+      # `brain` as a different lane from `setup`, and `hw` will refuse every
+      # dispatch.
+      case "$verdict" in
+        mismatch*)
+          printf 'brain: WARNING — %s is NOT the %s brainer: %s\n' "$pane" "$proj" "${verdict#*$(printf '\t')}" >&2
+          printf 'brain: expected label=brain cwd=%s. It loads the wrong lane'"'"'s CLAUDE.md and guard\n' "$dir" >&2
+          printf 'brain: rules, and `hw` refuses to dispatch from it. Fix it with: brain %s --reset\n' "$proj" >&2
+          exit 3 ;;
+      esac
+      exit 0
+    fi
+  fi
+fi
+# `[ -n "${RESET_PANE:-}" ]` IS NOT BELT AND BRACES. Without it the reset branch
+# above fell straight through to this refusal: measured 2026-09-14 on the live
+# probe, `brain setup --reset` sent /exit, emptied the pane, and THEN printed
+# "there is no setup brainer to reset … Nothing was sent and nothing was
+# restarted." A refusal that has already acted is worse than no refusal, and this
+# one had the agent's own corpse behind it. This guard is only for the case it
+# names: a project with no brainer tab at all.
+[ "$RESET" = 0 ] || [ -n "${RESET_PANE:-}" ] || {
+  printf 'brain: there is no %s brainer to reset (no %s tab in %s). Open one with: brain %s\n' \
+    "$proj" "$tab_label" "${ws:-the $space space, which does not exist}" "$proj" >&2
+  printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
+  exit 1
+}
+
+# THE ACCOUNT, FOR THE BRAINER, from the same table `hw` reads for executors.
+# The account decision names both roles, so both resolve it here rather than
+# through a `.envrc` that direnv has to be told to trust.
+#
+# Two limits, stated because a brainer that believes the wrong one is the whole
+# failure mode: CLAUDE_CONFIG_DIR is read by Claude Code alone, so an opencode
+# brainer is unaffected; and this sets the environment of a pane being CREATED,
+# so an already-open brainer keeps the account it was started with. The focus
+# branch above returns long before this line, and --reset reaches it but cannot
+# change a pane's environment either — see the note at the creation branch below.
+# A FUNCTION, so the suite can drive it instead of grepping for its name.
+# `brain` has no --dry-run — every path it has ends in a live herdr object — so
+# an inline block here would be assertable only at the source level, and a
+# source-level assertion is exactly the "green claim whose subject never ran"
+# this repo keeps closing. Prints the --env argument (or nothing) on stdout, the
+# human-readable state on stderr, and exits non-zero when it refuses.
+# setup/tests/122-the-account-an-executor-inherits.sh drives it directly.
+brain_account_env() {   # <project> <kind>
+  local proj="$1" kind="$2" acct dir
+  acct="$(project_default_account "$proj" 2>/dev/null || printf 'default')"
+  dir="$(account_config_dir "$acct" 2>/dev/null || printf '')"
+  [ -n "$dir" ] || return 0
+  if [ "$kind" != claude ]; then
+    echo "brain: account $acct is this lane's default but does NOT apply to a $kind brainer — only Claude Code reads CLAUDE_CONFIG_DIR." >&2
+    return 0
+  fi
+  if ! account_verify "$acct"; then
+    echo "brain: account '$acct' is this lane's default and its capability parity could not be established (see above)." >&2
+    echo "brain: refusing to open a brainer under an unverified account." >&2
+    return 1
+  fi
+  echo "brain: account $acct → CLAUDE_CONFIG_DIR=$dir (lane default for $proj, parity verified)" >&2
+  printf 'CLAUDE_CONFIG_DIR=%s' "$dir"
+}
+account_flag=""
+account_flag="$(brain_account_env "$proj" "$kind")" || exit 1
+brain_acct_dir="${account_flag#CLAUDE_CONFIG_DIR=}"
+workspace_env=(--env "ENGRAM_PROJECT=$ENGRAM_LABEL")
+[ -z "$BRAIN_ENGRAM_SESSION" ] || workspace_env+=(--env "BRAIN_ENGRAM_SESSION=$BRAIN_ENGRAM_SESSION")
+[ -z "$account_flag" ] || workspace_env+=(--env "$account_flag")
+[ "$kind" != opencode ] || workspace_env+=(--env "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
+# TWO WAYS IN, ONE PANE OUT. The space may already exist — `hw --tab` creates it
+# on its first dispatch just as readily as this does — so the brainer is a new TAB
+# in it. Only when nothing exists yet do we create the workspace, and then its own
+# first tab becomes the brainer rather than being left as unlabelled debris.
+# A RESET ALREADY HAS ITS CONTAINER — that is the whole point of it — so it skips
+# both creation branches and goes straight to `agent start` on the pane it just
+# emptied. The env above is NOT re-applied: `--env` is read when a pane is
+# CREATED, so a reset keeps the ENGRAM_PROJECT and CLAUDE_CONFIG_DIR the pane was
+# opened with. A brainer whose ENV is wrong needs a new tab, not a reset; the
+# account check above still refuses rather than restarting under an unverified one.
+if [ "$RESET" = 1 ] || [ "${REVIVE:-0}" = 1 ]; then
+  tab="$RESET_TAB"
+  pane="$RESET_PANE"
+elif [ -n "$ws" ]; then
+  tab_raw="$(herdr tab create --workspace "$ws" --cwd "$dir" \
+             "${workspace_env[@]}" --no-focus 2>&1 || true)"
+  tab="$(printf '%s' "$tab_raw" | jq -r '.result.tab.tab_id // .result.tab_id' 2>/dev/null || true)"
+  pane="$(printf '%s' "$tab_raw" | jq -r '.result.pane.pane_id // .result.root_pane.pane_id' 2>/dev/null || true)"
+  [ -n "$tab" ] && [ "$tab" != null ] || { echo "herdr tab create failed in $ws: $(printf '%s' "$tab_raw" | head -2)" >&2; exit 1; }
+else
+  ws_raw="$(herdr workspace create --cwd "$dir" --label "$space" \
+            "${workspace_env[@]}" --no-focus 2>&1 || true)"
+  ws="$(printf '%s' "$ws_raw" | jq -r '.result.workspace.workspace_id' 2>/dev/null || true)"
+  [ -n "$ws" ] && [ "$ws" != null ] || { echo "herdr workspace create failed: $(printf '%s' "$ws_raw" | head -2)" >&2; exit 1; }
+  tab="$(printf '%s' "$ws_raw" | jq -r '.result.tab.tab_id // .result.root_pane.tab_id' 2>/dev/null || true)"
+  pane="$(printf '%s' "$ws_raw" | jq -r '.result.root_pane.pane_id // .result.pane.pane_id' 2>/dev/null || true)"
+  [ -n "$pane" ] && [ "$pane" != null ] \
+    && pane="$pane" \
+    || pane="$(herdr pane list --workspace "$ws" 2>/dev/null | jq -r '.result.panes[0].pane_id' 2>/dev/null || true)"
+fi
+[ -n "$pane" ] && [ "$pane" != null ] || { echo "no pane to start the brainer in ($ws)" >&2; exit 1; }
+# The TAB label is the handle: `tab list` returns it, unlike `pane rename`, which
+# sets a display-only label nothing can query. That is what lets this command find
+# the brainer again instead of rebuilding it.
+# AND THE RENAME IS THE HANDLE, so `|| true` on it was the same defect one line
+# further on. The tab LABEL is the only queryable name (the comment above says
+# so), and it is what the block near the top uses to find this brainer again. A
+# rename that failed silently left the tab unlabelled, so the next `brain` for
+# this project found nothing and built a SECOND brainer tab beside this one —
+# and, unlike the workspace case, with nothing in the output to suggest why.
+if [ -n "${tab:-}" ] && [ "$tab" != null ]; then
+  rename_out="$(herdr tab rename "$tab" "$tab_label" 2>&1)" || {
+    printf 'brain: `herdr tab rename %s %s` failed, so this tab has no queryable label and the\n' \
+      "$tab" "$tab_label" >&2
+    printf 'brain: next `brain %s` will not find it — it will build a second brainer beside it.\n' \
+      "$proj" >&2
+    printf 'brain: herdr said: %s\n' "$(printf '%s' "$rename_out" | head -2 | tr '\n' ' ')" >&2
+    exit 1
+  }
+fi
+herdr pane rename "$pane" brain >/dev/null
+# Retry, for the same reason hw does: a freshly created pane is not at its shell
+# prompt yet and `agent start` rejects it with agent_pane_busy. brain had no
+# retry at all, so it lost that race in silence and left you a bare shell.
+tries=0
+agent_args=()
+if [ "$kind" = opencode ]; then
+  opencode_port="$(_free_port)"
+  agent_args=(-- --auto --port "$opencode_port")
+else
+  # THE FOLDER-TRUST QUESTION, ANSWERED THE WAY `hw` ANSWERS IT FOR EXECUTORS.
+  # Measured 2026-09-24: hw trusted the executor's directory and brain did not
+  # trust the brainer's, so a new user's first brainer opened on "Is this a
+  # project you created or one you trust?". The person asked for this directory
+  # by running the installer; it is theirs.
+  brain_trust_dir "$dir" "$brain_acct_dir"
+  # AND WHAT IS THE PERSON'S, SAID BEFORE THE PANE STOPS ON IT. The welcome
+  # (login included) and the Bypass Permissions warning appear once per account
+  # and only a person may answer them — in the pane that is about to open, which
+  # is therefore focused first.
+  first_run="$(claude_first_run_pending "$brain_acct_dir" | tr '\n' ' ')"
+  if [ -n "$first_run" ]; then
+    echo "brain: Claude Code's first run is not finished in this account (${first_run% })." >&2
+    echo "brain: the brainer's pane opens on it and answering it is yours, there: finish the welcome and" >&2
+    echo "brain: login, and accept the Bypass Permissions warning. Nothing here answers it for you." >&2
+    herdr tab focus "$tab" >/dev/null 2>&1 || true
+  fi
+  # SAME REASON AS `hw` (see _build_agent_args): settings.json's
+  # bypass mode is read at startup, needs two other keys nothing reports on, and
+  # a session already running never re-reads it. A brainer that opens in manual
+  # mode asks permission for its own `rg`, so the flag goes on the launch.
+  agent_args=(-- --dangerously-skip-permissions)
+fi
+while [ "$tries" -lt 15 ]; do
+  # `${a[@]+"${a[@]}"}`, NOT `"${a[@]}"`. macOS ships bash 3.2 and under `set -u`
+  # an EMPTY array expansion is an unbound-variable error there — so every claude
+  # brainer (agent_args is empty for claude, non-empty only for opencode) failed
+  # to start and this loop reported it as the soft `note:` below, leaving a bare
+  # shell. Found 2026-08-24 while moving brainers into tabs: the opencode path
+  # worked and the claude path did not, which is exactly the shape of an empty
+  # array. A note where there should be a failure is how a tool hides not having
+  # done its job.
+  if out="$(herdr agent start "$proj" --kind "$kind" --pane "$pane" --timeout 60000 ${agent_args[@]+"${agent_args[@]}"} 2>&1)" \
+     && printf '%s' "$out" | jq -e '.result.agent.interactive_ready == true' >/dev/null 2>&1; then
+    break
+  fi
+  printf '%s' "$out" | grep -q agent_pane_busy || break
+  sleep 2; tries=$((tries + 1))
+done
+# LOUD, not a note. This printed `note:` for years while meaning "the agent you
+# asked for is not running" — see the bash 3.2 comment above for what it hid.
+if ! printf '%s' "${out:-}" | jq -e '.result.agent.interactive_ready == true' >/dev/null 2>&1; then
+  # A FIRST-RUN SCREEN IS NOT A BARE SHELL. Claude is running there, waiting on a
+  # person, and "start it by hand" would put a second one on top of it.
+  screen=""
+  [ "$kind" != claude ] || screen="$(herdr agent read "$pane" --source detection --lines 80 2>/dev/null || true)"
+  dialog="$(printf '%s' "$screen" | claude_startup_dialog)"
+  if [ -n "$dialog" ]; then
+    echo "brain: claude IS running in $pane, stopped on a first-run screen ($dialog): $(claude_dialog_advice "$dialog" "$brain_acct_dir")." >&2
+    echo "brain: answer it in that pane — it is focused — and the brainer continues from there." >&2
+  else
+    echo "brain: $kind did NOT start in $pane — the tab is a bare shell, not a brainer." >&2
+    echo "brain: last reply from herdr: $(printf '%s' "${out:-<none>}" | head -c 200)" >&2
+    if [ -n "$screen" ]; then
+      echo "brain: what the pane was showing (last lines):" >&2
+      printf '%s\n' "$screen" | sed '/^[[:space:]]*$/d' | tail -8 | sed 's/^/    /' >&2
+    fi
+    echo "brain: start it by hand in that pane, or re-run once the pane is at its prompt." >&2
+  fi
+fi
+if [ -n "${tab:-}" ] && [ "$tab" != null ]; then
+  herdr tab focus "$tab" >/dev/null 2>&1 || herdr workspace focus "$ws" >/dev/null
+else
+  herdr workspace focus "$ws" >/dev/null
+fi
+if [ "${REVIVE:-0}" = 1 ]; then
+  echo "restarted $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, new conversation, the old one had already exited — cwd $dir"
+elif [ "$RESET" = 1 ]; then
+  echo "reset $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, new conversation — cwd $dir"
+  [ "${RESET_CWD_UNFIXED:-0}" = 0 ] || {
+    echo "brain: but it is STILL in the wrong lane — see the warning above. \`hw\` will refuse to dispatch from it." >&2
+    exit 3
+  }
+else
+  echo "opened $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — cwd $dir"
+fi

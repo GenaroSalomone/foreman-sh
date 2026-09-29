@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""The read-only guard for Codex, on the PreToolUse point that already exists.
+
+WHAT WAS TRUE BEFORE THIS FILE, measured 2026-09-06 and recorded in
+`setup/decisions.md` ("Codex corre sin sandbox"):
+
+  * `~/.codex/config.toml` carries `sandbox_mode = "danger-full-access"` and
+    `approval_policy = "never"`, so nothing in Codex's own sandboxing intercepts
+    a write.
+  * `~/.codex/hooks.json` had exactly one `PreToolUse` hook —
+    `block-keychain-secret-read.py` — and nothing playing the role of
+    `deny-repo-writes` for any of the four lanes.
+
+So this was a guard that was MISSING, not a capability that was ABSENT: the hook
+point works, and the keychain hook proves it live. This file fills it.
+
+HOW IT DIFFERS FROM THE OTHER TWO VENDORS, and it is the only interesting part.
+Claude Code registers the guard in each lane's `.claude/settings.json`, and
+opencode in each lane's `.opencode/plugin/` — both are per-directory, so the
+guard loads for a BRAINER standing in `~/brain/<lane>` and does not
+load for an EXECUTOR in its worktree. That distinction is the whole design:
+executors write, that is their job.
+
+`~/.codex/hooks.json` is GLOBAL. It loads for every Codex session there is. So
+the scoping the other two vendors get from the filesystem has to be done here,
+explicitly: resolve the session's directory, and guard only when it is inside a
+brain lane. Outside one — a worktree, a repo checkout, anywhere else — this
+exits 0 and stays out of the way, which is exactly what the per-directory
+registration does for the other two.
+
+THE REFUSAL PROTOCOL IS CODEX'S, NOT CLAUDE'S. Claude Code's PreToolUse takes a
+JSON `permissionDecision` on stdout and exit 0. Codex blocks on EXIT 2 with the
+reason on stderr — the shape `block-keychain-secret-read.py` already uses on
+this machine. Emitting Claude's JSON here would print a blob and allow the
+command.
+
+WHAT THIS DOES NOT COVER, stated rather than implied. Only `Bash`. The Claude
+guard is two halves — this hook for Bash, and each lane's `permissions.deny`
+list for `Edit()`/`Write()` — and Codex has no equivalent of the second half:
+`approval_policy = "never"` means there is no deny list to put it in. A Codex
+write through its own patch/write tool is therefore STILL UNGUARDED. Closing
+that needs Codex's write-tool payload shape, which cannot be established from
+here: a first Codex launch stops on two dialogs a brief cannot answer (see
+`bin/hw` `_codex_startup_ready`), so the shape has to be captured by a human
+session. It is a separate, named piece of work, not something to guess at.
+"""
+import json
+import os
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+# WHERE BRAIN IS COMES FROM THE SAME POLICY AS WHAT IT PROTECTS (`guards.json`,
+# `brain_root`), and so does the answer when that policy cannot be read. The
+# shared module loads it at import. This import used to be bare, and a module
+# that failed to import made this hook exit 1, which is not Codex's refusal
+# (exit 2 is). A guard that cannot load cannot tell a brainer from an executor
+# either, because it no longer knows where brain is, so `main` refuses every
+# Bash call in every Codex session until it loads. Loud, and closed.
+try:
+    from deny_repo_writes import BRAIN_ROOT as BRAIN, LANES, config, decide  # noqa: E402
+    # The shared module's path spelling (identity off Windows; see `_canon`).
+    from deny_repo_writes import _is_abs, _norm, _real  # noqa: E402
+    LOAD_ERROR = None
+except Exception as exc:  # noqa: BLE001 — ANY failure here must refuse
+    BRAIN, LANES, config, decide = None, {}, None, None
+    LOAD_ERROR = exc
+
+
+def lane_for(directory):
+    """The brain lane `directory` sits in, or None.
+
+    `..` and symlinks are resolved first for the same reason every other
+    boundary question in this guard resolves: a lane reached under another name
+    is still that lane, and the shared CLAUDE.md in the brain root's parent
+    directory being a symlink into this repo is the local idiom, not an exotic
+    case.
+    """
+    if not directory or not _is_abs(directory):
+        return None
+    resolved = _real(directory)
+    brain = _real(BRAIN)
+    for candidate in (resolved, _norm(directory)):
+        for root in (brain, BRAIN):
+            if not (candidate == root or candidate.startswith(root + "/")):
+                continue
+            rest = candidate[len(root):].lstrip("/")
+            # THE ROOT ITSELF IS A LANE. `rest` is empty for `~/brain`,
+            # and an empty lane name matched nothing, so a Codex session sitting
+            # at the root fell through to "not a brainer" and was unguarded —
+            # the same hole measured on 2026-09-07 for the Claude registration.
+            lane = rest.split("/")[0] if rest else "brain"
+            if lane in LANES:
+                return lane
+            # A brain subdirectory that is NOT a lane (`bin/`, `_skills/`, a
+            # stray path) is still a brainer standing inside brain, so it gets
+            # the root lane rather than no guard.
+            return "brain"
+    return None
+
+
+def lane_candidates(payload):
+    """Directories that might say WHICH LANE this session belongs to.
+
+    Ordered most-specific first, and every source is tried because the payload
+    key Codex uses is not established here — a first launch needs a human to
+    clear two dialogs, so the shape has not been captured. `os.getcwd()` is the
+    backstop: a PreToolUse hook is spawned by the agent, so its own cwd is the
+    session's unless Codex deliberately changes it.
+
+    THIS ANSWERS ONE QUESTION ONLY. An earlier draft used the directory that
+    resolved the lane as the SHELL's cwd as well, and that conflation was a
+    hole, measured 2026-09-06:
+
+        payload cwd = ~/repo   (an earlier `cd`)
+        CODEX_PROJECT_DIR = ~/brain/lane-a
+        command = `rm -rf ./x`
+            codex guard   ALLOW
+            claude hook   DENY   (same command, same cwd)
+
+    The payload's cwd is not under `brain/`, so it resolved no lane; the loop
+    fell through to the launch-time env var, which did — and that stale brain
+    directory was then handed to `decide` as the cwd. `stands_in_protected` was
+    computed against a directory the shell had long left, so the cwd axis was
+    silently off for exactly the case it exists to catch. The two questions are
+    now answered separately: this one picks the lane, `shell_cwd` picks the cwd.
+
+    THE SOURCE IS PART OF THE ANSWER. Each candidate is yielded as
+    `(directory, from_payload)`: a payload key is something this invocation
+    observed, an environment variable is a value fixed at launch by whoever
+    started the process. `main` uses the distinction for exactly one case — see
+    the `brain` root note there.
+    """
+    for value in (
+        payload.get("cwd"),
+        payload.get("working_directory"),
+        payload.get("workdir"),
+    ):
+        if value:
+            yield value, True
+    for value in (
+        os.environ.get("CODEX_PROJECT_DIR"),
+        os.environ.get("CLAUDE_PROJECT_DIR"),
+        os.environ.get("PWD"),
+    ):
+        if value:
+            yield value, False
+    try:
+        yield os.getcwd(), False
+    except OSError:
+        return
+
+
+def shell_cwd(payload):
+    """Where the command will actually RUN — the cwd axis, and nothing else.
+
+    Freshest first and never an env var fixed at session launch: a stale value
+    here does not mis-name the lane, it silently disables the axis. `os.getcwd()`
+    is the last resort because the hook is spawned by the agent, so it at least
+    tracks the session rather than its launch.
+    """
+    for value in (
+        payload.get("cwd"),
+        payload.get("working_directory"),
+        payload.get("workdir"),
+    ):
+        if value and _is_abs(value):
+            return value
+    try:
+        return os.getcwd()
+    except OSError:
+        return ""
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        sys.exit(0)  # Never block on a malformed payload.
+
+    if payload.get("tool_name") != "Bash":
+        sys.exit(0)
+
+    command = payload.get("tool_input", {}).get("command", "") or ""
+    if not command:
+        sys.exit(0)
+
+    if LOAD_ERROR is not None:
+        print(
+            "BLOCKED by deny-repo-writes (codex): the shared guard could not load "
+            "(setup/guards/deny_repo_writes.py and guards.json): %s: %s. Every "
+            "Bash command is refused until it loads, because a guard that is not "
+            "running cannot tell a protected tree from any other directory."
+            % (type(LOAD_ERROR).__name__, LOAD_ERROR),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    # A MORE SPECIFIC LANE OUTRANKS THE ROOT, whichever candidate produced it.
+    # Adding `brain` as a lane must not silently RE-LABEL the other four: a lane-a
+    # brainer whose payload cwd is `~/brain/bin` resolves "brain" on
+    # the first candidate, and returning it there would have dropped Cowork's
+    # store and the team's docs — lane-a's own extra trees — from the guard, while
+    # the launch-time `CODEX_PROJECT_DIR` still said `brain/lane-a`. So the root is
+    # held as a fallback and the search continues.
+    lane = None
+    root_fallback = False
+    for directory, from_payload in lane_candidates(payload):
+        found = lane_for(directory)
+        if not found:
+            continue
+        # THE BARE `brain` ROOT IS NOT RESOLVED FROM THE ENVIRONMENT. It is the
+        # least specific lane and the likeliest stale value: an operator's shell
+        # or a launcher standing in `~/brain` puts that path in `PWD`,
+        # and every process it spawns inherits it — including an EXECUTOR in its
+        # own worktree, which must never be guarded (a guarded executor cannot
+        # do its job at all). Measured while adding this lane: a
+        # payload whose cwd was `~/repo-scratch/some-task`
+        # was blocked, resolved as lane=brain from the harness shell's `PWD`.
+        #
+        # A lane SUBDIRECTORY in an env var stays trusted, because the earlier
+        # measurement in `lane_candidates` above depends on it: a brainer that
+        # `cd`'d out of its lane is still a brainer, and only the launch-time
+        # variable still says so.
+        if found == "brain" and not from_payload:
+            continue
+        if found == "brain":
+            root_fallback = True
+            continue
+        lane = found
+        break
+    if lane is None and root_fallback:
+        lane = "brain"
+    if lane is None:
+        # Not a brainer. An executor's worktree, a repo checkout, anywhere else
+        # — the same answer the per-directory registration gives the other two
+        # vendors.
+        sys.exit(0)
+
+    # THE CWD AXIS GETS THE REAL CWD, resolved independently of which directory
+    # happened to name the lane. See `lane_candidates` for the measurement that
+    # forced this apart.
+    verdict = decide(config(lane), command, shell_cwd(payload))
+    if verdict:
+        print(
+            "BLOCKED by deny-repo-writes (codex, lane=%s): %s" % (lane, verdict[1]),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

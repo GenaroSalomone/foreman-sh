@@ -1,0 +1,1402 @@
+#!/usr/bin/env bash
+#
+# test-hw — the negative cases this toolchain keeps needing and kept losing.
+#
+# THIS IS THE ENTRY POINT AND THE RUNNER. The pre-commit hook, everyone's
+# muscle memory and every brief call it by this name; the tests themselves live
+# one directory down, one file per subject, in setup/tests/. Why they were
+# split, and what every subject file may assume, is in setup/tests/_common.sh.
+#
+# It runs each subject file in order as its own bash process and sums the
+# `ok -` lines. It does not source them: separate processes are what stop one
+# subject's $TMP, fixtures and helper names from reaching another's.
+#
+# A failing subject file stops the run, exactly as a failing assertion always
+# has, and its name is printed — that is the one thing the old single file
+# could not tell you.
+set -euo pipefail
+
+# STRIP GIT'S AMBIENT ENVIRONMENT BEFORE ANYTHING ELSE.
+#
+# This is not hygiene, it is damage control, and it is here because it already
+# happened. A git hook exports GIT_DIR and GIT_INDEX_FILE, and EVERY git command
+# a hook-invoked child runs targets those — including `git init` inside an
+# unrelated directory. The rollback fixture in 03-launch-rollback.sh does
+# `( cd "$TMP/rb" && git init && git add -A && git commit )`, which reads as
+# obviously scoped and is not: run from pre-commit, on 2026-08-24, it
+# initialised brain's own repository, committed the fixture's two files over
+# HEAD and left every real file untracked. Nothing was lost — the commit was
+# never pushed and `git reset --mixed` restored it — but the working tree of a
+# repo several agents write to was one `--hard` away from real damage.
+#
+# _common.sh unsets these again in every child, which is where it actually
+# bites. Doing it here too costs nothing and covers this process as well.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX \
+      2>/dev/null || true
+
+# AND THE CONFIG-INJECTION FAMILY, which the list above missed until 2026-09-09.
+#
+# `git -c <key>=<value> …` does not keep that setting to itself: git serialises
+# every `-c` into GIT_CONFIG_PARAMETERS (and accepts the same injection as
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>), exports it, and
+# EVERY descendant git process applies it — at command-line precedence, which
+# beats the repository's own config. A hook is a descendant, and so is every git
+# command a hook-invoked test runs inside a throwaway fixture.
+#
+# MEASURED 2026-09-09. `git -c core.hooksPath=setup/hooks commit` — the way this
+# repo's hook gets invoked when .git/hooks is not the source — leaked
+# `core.hooksPath=setup/hooks` all the way down into
+# tests/105-decisions-staged-budget.sh, whose fixtures install a pre-commit hook
+# at <fixture>/.git/hooks/pre-commit and then commit deliberately corrupt
+# rotations to prove the guard REFUSES them. In the leaked context git looked for
+# the hook at <fixture>/setup/hooks/pre-commit — a directory the fixture creates
+# for other reasons and never puts a hook in — found nothing, ran no guard, and
+# accepted all eight corrupt commits. The guard was never wrong; it was never
+# called. Standalone the same file passes, which is what made it look like the
+# suite failed "only inside the hook".
+#
+# The prefix sweep covers GIT_CONFIG itself, GIT_CONFIG_GLOBAL/SYSTEM, and the
+# numbered KEY/VALUE pairs a fixed list cannot name.
+for _v in ${!GIT_CONFIG@}; do
+  unset "$_v" 2>/dev/null || true
+done
+unset _v 2>/dev/null || true
+
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_ROOT="$(cd "$HERE/.." && pwd -P)"
+# NATIVE WINDOWS (Git Bash): the runner's own python, ps and pgrep go through
+# bin/msys-compat.sh, as every entry point's do. A fixture tree that carries
+# only this runner has no bin/. Elsewhere OSTYPE never matches.
+case "${OSTYPE:-}" in msys*|cygwin*)
+  if [ -f "$SOURCE_ROOT/bin/msys-compat.sh" ]; then . "$SOURCE_ROOT/bin/msys-compat.sh"
+  else export PYTHONUTF8=1; fi ;;
+esac
+# Capture ALL checkout bytes (including ignored/untracked subjects), plus the
+# initial tracking classification, before executing anything. The private
+# child is identified by its exact root, so nested fixture runners must capture
+# their own candidates rather than inheriting a bypass from their parent.
+# Compared physically on both sides: the snapshot's spelling comes from Python
+# and SOURCE_ROOT from `pwd -P`, and under Git Bash those differ for one
+# directory (/tmp/x against /c/Users/<u>/AppData/Local/Temp/x). A mismatch here
+# re-snapshots forever, so the comparison must not depend on spelling.
+_snap_phys=""; [ -z "${TEST_HW_SNAPSHOT_ROOT:-}" ] || _snap_phys="$(cd "$TEST_HW_SNAPSHOT_ROOT" 2>/dev/null && pwd -P || true)"
+if [ "$_snap_phys" != "$SOURCE_ROOT" ]; then
+  exec python3 "$HERE/test-hw-snapshot.py" "$SOURCE_ROOT"
+fi
+TESTS="$HERE/tests"
+. "$HERE/fast-gate-budget.sh"
+[ -d "$TESTS" ] || { printf 'not ok - runner: %s does not exist\n' "$TESTS" >&2; exit 1; }
+
+# THE GLOB IS THE CONTRACT, SO PROVE NOTHING FELL OUTSIDE IT. A subject file
+# named `browser.sh` instead of `13-browser.sh` is not matched, never runs, and
+# takes its assertions with it — the suite stays green with less coverage,
+# which is the exact failure this whole file exists to make impossible. So
+# every *.sh in tests/ is either _common.sh or numbered, and anything else is a
+# hard error rather than a silent skip.
+#
+# TWO DIGITS OR MORE, since 2026-09-08. The glob was exactly `[0-9][0-9]-` and
+# the directory reached 99, so the next subject file — `100-decisions-…` — was
+# in tests/ and outside the contract. The check above is what said so, which is
+# the check working; widening it here is the fix rather than renaming the
+# subject into a number that is already taken. Ordering is lexicographic either
+# way, so `100-` now sorts before `11-`; the subjects are independent processes
+# with their own $TMP, so nothing reads the order.
+shopt -s nullglob
+FILES=("$TESTS"/[0-9][0-9]*-*.sh)
+ALL=("$TESTS"/*.sh)
+shopt -u nullglob
+[ "${#FILES[@]}" -gt 0 ] || { printf 'not ok - runner: no subject files in %s\n' "$TESTS" >&2; exit 1; }
+if [ "${#ALL[@]}" -ne "$(( ${#FILES[@]} + 1 ))" ]; then
+  for f in "${ALL[@]}"; do
+    case "$(basename "$f")" in
+      _common.sh|[0-9][0-9]*-*.sh) ;;
+      *) printf 'not ok - runner: %s is in tests/ but the NN[N]-<subject>.sh glob does not match it, so it never runs\n' \
+           "$(basename "$f")" >&2 ;;
+    esac
+  done
+  exit 1
+fi
+[ -f "$TESTS/_common.sh" ] || { printf 'not ok - runner: tests/_common.sh is missing\n' >&2; exit 1; }
+
+# ── THE FAST GATE, derived from measurement rather than a hand-kept list ────
+#
+# `HW_TEST_GATE=fast` is what pre-commit passes; unset (or `full`) is every
+# other caller, including pre-push and a bare `bash setup/test-hw`. Default
+# stays `full` so nothing that already depends on this runner's shape —
+# tracked/untracked accounting, the mutation-coverage gate, the guard block —
+# changes unless a caller opts in.
+#
+# THE CLASSIFICATION IS NOT A LIST SOMEONE MAINTAINS. `setup/test-budgets.json`
+# holds a REAL measured duration per subject file (from `setup/measure-tests.sh`)
+# and one owned threshold; "fast" is simply "measured at or under the
+# threshold" — computed here, not authored. What IS committed is the
+# measurement, because deriving it live on every run would mean running the
+# full suite to decide whether to run the full suite.
+#
+# COMPLETENESS IS CHECKED EVERY FAST RUN, not just in a dedicated test: the
+# budgets file's file list must equal the glob's file list EXACTLY. A file that
+# is not in the manifest is not "probably fast" or "probably slow" — it is
+# unclassified, and an unclassified file is refused rather than defaulted into
+# either gate. That is what stops a new test from quietly entering neither gate,
+# or entering the fast one without ever having been measured.
+HW_TEST_GATE="${HW_TEST_GATE:-full}"
+case "$HW_TEST_GATE" in
+  full|fast) ;;
+  *) printf 'not ok - runner: HW_TEST_GATE must be full or fast (got: %s)\n' "$HW_TEST_GATE" >&2; exit 1 ;;
+esac
+FAST_THRESHOLD_SECONDS=""
+if [ "$HW_TEST_GATE" = fast ]; then
+  BUDGETS="$HERE/test-budgets.json"
+  [ -f "$BUDGETS" ] || { printf 'not ok - runner: %s is missing — run setup/measure-tests.sh before the fast gate can run\n' "$BUDGETS" >&2; exit 1; }
+  _gate_py_rc=0
+  _gate_py_out="$(python3 - "$BUDGETS" "$TESTS" <<'PY'
+import json, pathlib, sys
+budgets = json.loads(pathlib.Path(sys.argv[1]).read_text())
+tests_dir = pathlib.Path(sys.argv[2])
+on_disk = sorted(p.name for p in tests_dir.glob("[0-9][0-9]*-*.sh"))
+listed = sorted(budgets["files"].keys())
+if on_disk != listed:
+    missing = sorted(set(on_disk) - set(listed))
+    extra = sorted(set(listed) - set(on_disk))
+    print("MISMATCH")
+    if missing:
+        print("missing (on disk, unclassified): " + ", ".join(missing))
+    if extra:
+        print("extra (classified, gone from disk): " + ", ".join(extra))
+    sys.exit(1)
+# THE `exit` FIELD WAS WRITTEN AND NEVER READ, until 2026-09-11. measure-tests
+# has always recorded a per-subject exit status beside the seconds, and nothing
+# in this runner, in 117, or anywhere else ever looked at it. So a subject that
+# FAILED while being measured was committed as its own budget, and the manifest
+# carried "this file does not pass" as a fact no gate objected to. A number
+# derived from a failed run is not a budget; it is the duration of whatever went
+# wrong. That is how a 0.05s entry for a file that never ran reached a commit.
+broken = sorted(n for n in on_disk if budgets["files"][n].get("exit", 0) != 0)
+if broken:
+    # THE FIRST LINE IS DROPPED BY THE CALLER, which slices it off so this block
+    # can lead with a status word. So the content of a refusal starts on the
+    # SECOND line; a message written on the first one is not a message.
+    #
+    # NO APOSTROPHES OR BACKTICKS IN THIS HEREDOC. It sits inside a $( )
+    # substitution, and the shell still tracks quoting while it looks for the
+    # matching paren even though the heredoc is <<'"'"'PY'"'"' quoted. One
+    # possessive apostrophe in a python COMMENT here cost a parse error at the
+    # top of the file on 2026-09-11.
+    print("REFUSED")
+    print("a budget measured from a FAILED run is not a budget: "
+          + ", ".join("%s (exit %s, %ss)" % (n, budgets["files"][n]["exit"], budgets["files"][n]["seconds"])
+                      for n in broken))
+    print("fix the subject, then re-measure it: bash setup/measure-tests.sh " + " ".join(broken))
+    sys.exit(1)
+threshold = budgets["fast_gate_threshold_seconds"]
+fast = [n for n in on_disk if budgets["files"][n]["seconds"] <= threshold]
+print("OK")
+print("threshold:%s" % threshold)
+print("fast:" + ",".join(fast))
+for n in on_disk:
+    print("own:%s=%s" % (n, budgets["files"][n]["seconds"]))
+PY
+)" || _gate_py_rc=$?
+  if [ "$_gate_py_rc" -ne 0 ]; then
+    printf 'not ok - runner: setup/test-budgets.json does not match %s 1:1 — %s\nRegenerate with: bash setup/measure-tests.sh\n' \
+      "$TESTS" "$(printf '%s\n' "$_gate_py_out" | tail -n +2 | tr '\n' '; ')" >&2
+    exit 1
+  fi
+  FAST_THRESHOLD_SECONDS="$(printf '%s\n' "$_gate_py_out" | sed -n 's/^threshold://p')"
+  _fast_names="$(printf '%s\n' "$_gate_py_out" | sed -n 's/^fast://p')"
+  _FG_OWN="$(printf '%s\n' "$_gate_py_out" | sed -n 's/^own://p')"
+  _narrowed=()
+  IFS=',' read -r -a _fast_arr <<< "$_fast_names"
+  for f in "${FILES[@]}"; do
+    bn="$(basename "$f")"
+    for want in "${_fast_arr[@]}"; do
+      if [ "$bn" = "$want" ]; then _narrowed+=("$f"); break; fi
+    done
+  done
+  FILES=("${_narrowed[@]}")
+  [ "${#FILES[@]}" -gt 0 ] || { printf 'not ok - runner: the fast gate classified zero files as fast — check fast_gate_threshold_seconds in %s\n' "$BUDGETS" >&2; exit 1; }
+fi
+
+# ── WHETHER A SUBJECT IS IN THE COMMIT, AND WHY THE TALLY NOW ASKS ──────────
+#
+# THE INSTRUMENT HAD THE DISEASE IT WAS MEASURING. Today this suite closed four
+# instances of one failure — a green that only held for whoever measured it: an
+# uncommitted `${AGENT:-}` fix, a leaked pane environment, fifteen mutation arms
+# nothing evaluated, and an untracked file a tracked subject required. Then the
+# result was reported as a single integer produced by THIS file, which globs
+# `[0-9][0-9]*-*.sh` and never asks git anything. Measured 2026-09-02 by the
+# second-vendor reviewer: `47-unattended-gate-stall.sh` and
+# `48-plain-opencode-is-not-plain.sh` are UNTRACKED and absent from e8f7d23, and
+# the 1187 everyone had been quoting silently included their 20 ok.
+#
+# A HEADLINE NUMBER'S JOB IS TO BE QUOTED, and that is the whole argument. Every
+# failure above happened because a number travelled away from the context that
+# qualified it. The tracked count is the only one a reader can RE-DERIVE FROM THE
+# SHA; a mixed count becomes unverifiable the moment it leaves this terminal. So
+# the headline is tracked-only.
+#
+# BUT A BARE TRACKED INTEGER IS ALSO UNSAFE, because it hides that untracked
+# subjects ran at all. So the untracked line is MANDATORY — including when the
+# count is zero, since a qualification that disappears when it is not needed is
+# how the unqualified number comes back.
+#
+# UNTRACKED SUBJECTS STILL RUN, deliberately. They are how anyone writes a new
+# one, and refusing them would push work-in-progress to a filename outside the
+# glob — which is the silent-skip failure the glob contract above exists to make
+# impossible. Run them, count them apart, name them.
+#
+# FAILURE SEMANTICS ARE DELIBERATELY UNCHANGED: a red subject still stops the
+# run, tracked or not. An untracked red is still a red, and making it
+# non-blocking would let a broken work-in-progress hide behind a green headline —
+# a different instance of this very disease. If that trade is ever wanted it is
+# its own decision, not a side effect of counting.
+TRACKED_OK=0
+UNTRACKED_OK=0
+UNKNOWN_OK=0
+UNTRACKED_NAMES=""
+UNKNOWN_NAMES=""
+
+# AN ABORTED RUN SAYS SO ON STDOUT, and this goes beyond the reported finding.
+# On every abort the diagnosis is on stderr and the summary never prints, so
+# there is no number to quote — the opus reviewer verified exactly that. What a
+# `2>/dev/null | tail` reader still sees is a tail of `ok -` lines and nothing
+# marking the end, which reads like a completed green run. Each of those lines is
+# individually true, so this is not the same defect; it is one line of cheap
+# insurance against the same misreading. It changes no exit code and prints no
+# number.
+abort_marker() { printf '\nRUN ABORTED — no number for this run. See stderr for the failure.\n'; }
+
+# `unknown` IS A REAL ANSWER AND IS NEVER FOLDED INTO `tracked`. Outside a git
+# work tree — an exported tarball, a copied directory — tracking cannot be
+# established, and claiming it can is the same unverified-absence mistake this
+# whole file is about. It is reported as its own bucket instead.
+GIT_USABLE=0
+if [ "$_snap_phys" = "$SOURCE_ROOT" ]; then
+  GIT_USABLE="${TEST_HW_GIT_USABLE:?snapshot tracking classification missing}"
+elif command -v git >/dev/null 2>&1 && git -C "$TESTS" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GIT_USABLE=1
+fi
+tracking_of() { # <path> → tracked | untracked | unknown
+  if [ "$GIT_USABLE" != 1 ]; then printf 'unknown'; return 0; fi
+  if [ "$_snap_phys" = "$SOURCE_ROOT" ]; then
+    python3 - "$TEST_HW_TRACKING_MANIFEST" "$SOURCE_ROOT" "$1" <<'PY'
+import json, pathlib, sys
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+name = str(pathlib.Path(sys.argv[3]).relative_to(sys.argv[2]))
+print('tracked' if name in manifest['tracked'] else 'untracked', end='')
+PY
+    return
+  fi
+  if git -C "$TESTS" ls-files --error-unmatch -- "$1" >/dev/null 2>&1; then
+    printf 'tracked'
+  else
+    printf 'untracked'
+  fi
+}
+# count_into <path> <output file> — attribute a run's `ok -` lines to its bucket
+count_into() {
+  local _n
+  _n="$(grep -c '^ok - ' "$2" 2>/dev/null || true)"
+  case "${_n:-0}" in ''|*[!0-9]*) _n=0 ;; esac
+  case "$(tracking_of "$1")" in
+    tracked)   TRACKED_OK=$((TRACKED_OK + _n)) ;;
+    untracked) UNTRACKED_OK=$((UNTRACKED_OK + _n))
+               UNTRACKED_NAMES="$UNTRACKED_NAMES
+      $(basename "$1")  ($_n ok)" ;;
+    *)         UNKNOWN_OK=$((UNKNOWN_OK + _n))
+               UNKNOWN_NAMES="$UNKNOWN_NAMES
+      $(basename "$1")  ($_n ok)" ;;
+  esac
+}
+
+# ── ONE MACHINE, ONE POOL OF WORKERS, AND THE SUBJECTS THAT RUN ALONE ───────
+#
+# TWO FULL RUNS AT ONCE WERE TWELVE WORKERS ON A MACHINE MEASURED FOR SIX. The
+# per-run cap below (JOBS) says nothing about a SECOND run started from another
+# worktree or by another agent. Measured 2026-09-22/23: five verify-for-push runs
+# aborted on timing subjects, every one of them with another full suite running
+# beside it, and every one green alone.
+#
+# THE FIRST ANSWER WAS ONE FULL SUITE PER MACHINE (a lock, 2026-09-23), and it
+# made every verify-for-push wait 20-40 minutes behind whoever was first. What
+# it protected was two things, and neither needs a whole suite to wait:
+#
+#   · THE MACHINE'S LOAD. So every job, of every suite, now takes a WORKER SLOT
+#     from one pool per machine: `$WORK/.locks/suite-pool/slot.<k>`, k below
+#     MACHINE_JOBS. Two suites share the slots; neither waits for the other to
+#     finish, only for a slot to free.
+#   · THE TIMING SUBJECTS. A subject that asserts inside a wall-clock budget it
+#     did not set DECLARES it, in its own header:
+#
+#         # suite-lane: exclusive — <why, and what was measured>
+#
+#     and runs with NO OTHER JOB BESIDE IT, OF ANY SUITE. It holds
+#     `$WORK/.locks/suite-pool/exclusive` and starts only when every slot on the
+#     machine is empty. A runner that wants it leaves `wait.<pid>` first; while
+#     any live waiter or holder exists, no runner starts a new pooled job — so
+#     the machine drains and the waiter's turn comes. Pool jobs claim their slot
+#     BEFORE they look for a waiter, and a waiter announces itself BEFORE it
+#     looks at the slots, so one of the two always sees the other.
+#
+# AND WHAT THE LOCK WAS SAID TO PROTECT THAT IT DID NOT. setup/decisions
+# (2026-09-16) credited it with keeping fixture tokens off live panes. The one
+# time that happened (2026-09-15) it was a SINGLE run writing onto the pane of
+# the agent running it — no lock between two suites could have stopped it. What
+# stops it is tests/_common.sh (every HERDR_* swept, the socket pointed at a
+# path that does not exist, a HOME of the run's own), pinned by tests/145, and
+# the witness below, which every full run now carries.
+#
+# ALL OF IT IS ONE DIRECTORY UNDER $WORK, the same per-machine root the lock
+# used. bin/hw is not involved: this file is the only thing that starts setup
+# subjects in parallel, so it is the only thing that has to agree with itself.
+#
+# WHAT DOES NOT TAKE A SLOT, each on purpose:
+#   · a subject run alone (`bash setup/tests/NN-*.sh`) — it never enters here.
+#   · a NESTED runner (TEST_HW_NESTED): 55, 84, 117 and 131 drive copies of this
+#     file from inside a job that already holds a slot — or the exclusive, which
+#     a child waiting for a slot would deadlock against.
+#
+# AND THE FAST GATE DOES TAKE ONE, which the lock deliberately did not ("a commit
+# must not queue behind a twenty-minute run"). The queue it can meet now is not a
+# run but a job: at most one slot's worth of waiting, or — while another suite
+# runs a timing subject alone — that subject plus the drain before it (the
+# longest in-flight job, the guard arm's ~170s at worst). The trade is taken on
+# purpose: "alone" has to mean alone from every suite, and a pre-commit fast
+# gate beside a timing subject is exactly the neighbour its budget cannot
+# afford. A subject run by hand, or a brief that pins one bare, takes no slot
+# and is not coordinated — pin it through the runner if it must be.
+#
+# AND ONE RACE THAT IS STATED RATHER THAN CLOSED. Reclaiming an orphan is
+# look-then-remove, so two runners that judge the same dead holder at the same
+# moment can, in the window between, remove a slot a third runner has just
+# claimed afresh — one job too many, for one job. It needs a SIGKILLed holder to
+# exist at all; bin/hw's lane lock has had the same window since it was written.
+#
+# A HOLDER WHOSE PROCESS IS GONE IS RECLAIMED AT ONCE AND SAID OUT LOUD — pid
+# AND process start time, the rule bin/hw's locks use. A wait always says who
+# it is waiting for, once per change of who that is. Nothing is ever killed.
+# WORK IS RESOLVED THE WAY bin/hw RESOLVES IT: the caller's WORK, else the
+# lane table's `work` with a leading ~ as $HOME (bin/project-spaces.sh,
+# lane_config_load). The same directory, or the pool is two pools. A tree with
+# no readable table (a fixture runner) and no WORK takes no slot, and says so.
+SUITE_WORK="${WORK:-}"
+if [ -z "$SUITE_WORK" ]; then
+  SUITE_WORK="$(jq -r '.work // empty' "$SOURCE_ROOT/projects.json" 2>/dev/null || true)"
+  case "$SUITE_WORK" in
+    "~") SUITE_WORK="$HOME" ;;
+    "~/"*) SUITE_WORK="$HOME/${SUITE_WORK#"~/"}" ;;
+  esac
+fi
+POOL_DIR="${SUITE_WORK:+$SUITE_WORK/.locks/suite-pool}"
+POOL_ROOT="${TEST_HW_LIVE_ROOT:-$SOURCE_ROOT}"
+POOL_ON=0
+POOL_EXCL_MINE=0     # this runner holds $POOL_DIR/exclusive
+POOL_WAITING=0       # this runner has $POOL_DIR/wait.$$ on disk
+POOL_SAID=""         # the last wait announced, so it is said once per change
+POOL_BACKOFF=0       # poll ticks to skip after a failed claim
+if [ -z "${TEST_HW_NESTED:-}" ]; then
+  if [ -z "$POOL_DIR" ]; then
+    printf 'runner: no WORK and no `work` in %s — this run takes NO machine worker slots, so it is not coordinated with other suites\n' \
+      "$SOURCE_ROOT/projects.json" >&2
+  elif mkdir -p "$POOL_DIR" 2>/dev/null; then
+    POOL_ON=1
+  else
+    printf 'runner: could not create %s — this run takes NO machine worker slots, so it is not coordinated with other suites\n' \
+      "$POOL_DIR" >&2
+  fi
+fi
+
+_pool_proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' || true; }
+# 0 = the holder recorded in <dir> is alive and is the SAME process. An absent
+# owner is a claim in progress until the directory is a minute old — reaping it
+# earlier would let two runners into one slot.
+_pool_dir_alive() { # <dir>
+  local owner start
+  owner="$(cat "$1/owner.pid" 2>/dev/null || true)"
+  case "$owner" in
+    ''|*[!0-9]*)
+      # A failed `find` prints nothing, the same bytes as "not old yet", and
+      # both land on LIVE-and-wait — the safe direction.
+      [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null || true)" ] || return 0  # lint-shell: measured-elsewhere
+      return 1 ;;
+  esac
+  kill -0 "$owner" 2>/dev/null || return 1
+  start="$(cat "$1/owner.start" 2>/dev/null || true)"
+  [ -n "$start" ] || return 0
+  [ "$(_pool_proc_start "$owner")" = "$start" ]
+}
+_pool_mine() { [ "$(cat "$1/owner.pid" 2>/dev/null || true)" = "$$" ]; }  # lint-shell: measured-elsewhere
+_pool_write_owner() { # <dir> <job>
+  printf '%s\n' "$$"                  > "$1/owner.pid"   2>/dev/null || true
+  _pool_proc_start "$$"               > "$1/owner.start" 2>/dev/null || true
+  date +%s                            > "$1/owner.at"    2>/dev/null || true
+  printf '%s\n' "$POOL_ROOT"          > "$1/owner.root"  2>/dev/null || true
+  printf '%s\n' "${HW_TASK:-<not an hw task>}" > "$1/owner.task" 2>/dev/null || true
+  printf '%s\n' "$2"                  > "$1/owner.job"   2>/dev/null || true
+}
+_pool_holder_line() { # <dir>
+  local owner at root job age=""
+  owner="$(cat "$1/owner.pid" 2>/dev/null || true)"
+  at="$(cat "$1/owner.at" 2>/dev/null || true)"
+  root="$(cat "$1/owner.root" 2>/dev/null || true)"
+  job="$(cat "$1/owner.job" 2>/dev/null || true)"
+  case "$at" in ''|*[!0-9]*) : ;; *) age="$(( $(date +%s) - at ))s" ;; esac
+  printf 'pid %s, worktree %s%s%s' "${owner:-<none recorded>}" "${root:-<not recorded>}" \
+    "${job:+, running $job}" "${age:+, for $age}"
+}
+# A waiter is ONE FILE, written aside and renamed in, so it is never read half
+# written: its name carries the pid, its content the process start time.
+_pool_waiter_alive() { # <file>
+  local pid="${1##*.}" start
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  start="$(cat "$1" 2>/dev/null || true)"
+  [ -n "$start" ] || return 0
+  [ "$(_pool_proc_start "$pid")" = "$start" ]
+}
+_pool_say() { # <signature> <message> — once per change of who is being waited for
+  [ "$1" != "$POOL_SAID" ] || return 0
+  POOL_SAID="$1"
+  printf 'runner: %s\n' "$2" >&2
+}
+_pool_reclaim() { # <dir> <what>
+  printf 'runner: reclaiming an ORPHANED %s — %s is not running any more\n' "$2" "$(_pool_holder_line "$1")" >&2
+  rm -rf "$1" 2>/dev/null || true
+}
+# 0 = somebody ELSE holds or is waiting for the exclusive, so no new pooled job
+# may start on this machine. Dead holders and dead waiters are cleared here.
+_pool_blocked() {
+  local w
+  if [ -d "$POOL_DIR/exclusive" ] && [ "$POOL_EXCL_MINE" != 1 ]; then
+    if _pool_dir_alive "$POOL_DIR/exclusive"; then
+      _pool_say "x:$(cat "$POOL_DIR/exclusive/owner.pid" 2>/dev/null || true):$(cat "$POOL_DIR/exclusive/owner.job" 2>/dev/null || true)" \
+        "WAITING — a timing subject is running ALONE on this machine: $(_pool_holder_line "$POOL_DIR/exclusive"). Nothing is being killed."
+      return 0
+    fi
+    _pool_reclaim "$POOL_DIR/exclusive" "exclusive slot"
+  fi
+  for w in "$POOL_DIR"/wait.*; do
+    [ -e "$w" ] || continue
+    [ "$w" != "$POOL_DIR/wait.$$" ] || continue
+    case "$w" in *.part) continue ;; esac
+    if _pool_waiter_alive "$w"; then
+      _pool_say "w:${w##*.}" "WAITING — pid ${w##*.} is waiting to run a timing subject alone, so this run starts nothing new until it has. Nothing is being killed."
+      return 0
+    fi
+    rm -f "$w" 2>/dev/null || true
+  done
+  return 1
+}
+# _pool_take_slot <idx> — 0 and JOB_SLOT[idx] set when a slot was claimed.
+_pool_take_slot() {
+  local idx="$1" k=0 d reclaimed=0
+  _pool_blocked && return 1
+  while [ "$k" -lt "$MACHINE_JOBS" ]; do
+    d="$POOL_DIR/slot.$k"
+    if mkdir "$d" 2>/dev/null; then
+      _pool_write_owner "$d" "$(basename "${JOB_PATH[$idx]}")"
+      # CLAIM, THEN LOOK. A waiter that arrived while this slot was being taken
+      # has already written its wait file, or it will see this slot when it
+      # looks — one of the two is always true, never neither.
+      if _pool_blocked; then rm -rf "$d" 2>/dev/null || true; return 1; fi
+      JOB_SLOT[$idx]="$d"
+      POOL_SAID=""
+      return 0
+    fi
+    if [ "$reclaimed" -lt "$MACHINE_JOBS" ] && ! _pool_dir_alive "$d"; then
+      _pool_reclaim "$d" "worker slot"
+      reclaimed=$((reclaimed + 1))
+      continue
+    fi
+    k=$((k + 1))
+  done
+  _pool_say "full" "WAITING for a machine worker — all $MACHINE_JOBS are busy (e.g. $(_pool_holder_line "$POOL_DIR/slot.0")). Nothing is being killed."
+  return 1
+}
+_pool_release_slot() { # <idx>
+  local d="${JOB_SLOT[$1]:-}"
+  [ -n "$d" ] || return 0
+  if _pool_mine "$d"; then rm -rf "$d" 2>/dev/null || true; fi
+  JOB_SLOT[$1]=""
+}
+# _pool_excl_step <idx> — 0 when the exclusive subject may start NOW: this
+# runner holds the exclusive and every slot on the machine is empty.
+_pool_excl_step() {
+  local idx="$1" d busy=""
+  if [ "$POOL_WAITING" != 1 ]; then
+    _pool_proc_start "$$" > "$POOL_DIR/wait.$$.part" 2>/dev/null || true
+    mv -f "$POOL_DIR/wait.$$.part" "$POOL_DIR/wait.$$" 2>/dev/null || true
+    POOL_WAITING=1
+  fi
+  if [ "$POOL_EXCL_MINE" != 1 ]; then
+    if mkdir "$POOL_DIR/exclusive" 2>/dev/null; then
+      _pool_write_owner "$POOL_DIR/exclusive" "$(basename "${JOB_PATH[$idx]}") (waiting for the machine to drain)"
+      POOL_EXCL_MINE=1
+    elif ! _pool_dir_alive "$POOL_DIR/exclusive"; then
+      _pool_reclaim "$POOL_DIR/exclusive" "exclusive slot"
+      return 1
+    else
+      _pool_say "x:$(cat "$POOL_DIR/exclusive/owner.pid" 2>/dev/null || true):$(cat "$POOL_DIR/exclusive/owner.job" 2>/dev/null || true)" \
+        "WAITING to run $(basename "${JOB_PATH[$idx]}") alone — another timing subject has the machine: $(_pool_holder_line "$POOL_DIR/exclusive"). Nothing is being killed."
+      return 1
+    fi
+  fi
+  for d in "$POOL_DIR"/slot.*; do
+    [ -e "$d" ] || continue
+    if _pool_dir_alive "$d"; then
+      busy="$busy $(cat "$d/owner.pid" 2>/dev/null || true)"
+    else
+      _pool_reclaim "$d" "worker slot"
+    fi
+  done
+  if [ -n "$busy" ]; then
+    _pool_say "d:$busy" "WAITING to run $(basename "${JOB_PATH[$idx]}") alone — the machine is draining; still running: $(for d in "$POOL_DIR"/slot.*; do [ -e "$d" ] && printf '[%s] ' "$(_pool_holder_line "$d")"; done). No new job starts on this machine until it has run. Nothing is being killed."
+    return 1
+  fi
+  printf '%s\n' "$(basename "${JOB_PATH[$idx]}")" > "$POOL_DIR/exclusive/owner.job" 2>/dev/null || true
+  POOL_SAID=""
+  return 0
+}
+_pool_excl_release() {
+  if [ "$POOL_EXCL_MINE" = 1 ]; then
+    if _pool_mine "$POOL_DIR/exclusive"; then rm -rf "$POOL_DIR/exclusive" 2>/dev/null || true; fi
+    POOL_EXCL_MINE=0
+  fi
+  if [ "$POOL_WAITING" = 1 ]; then rm -f "$POOL_DIR/wait.$$" 2>/dev/null || true; POOL_WAITING=0; fi
+}
+# Everything this runner holds, on every exit the shell can see. SIGKILL is the
+# one it cannot, which is what the orphan reclaim above is for.
+_pool_release_all() {
+  local i=0
+  [ "$POOL_ON" = 1 ] || return 0
+  while [ "$i" -lt "${#JOB_SLOT[@]}" ]; do _pool_release_slot "$i"; i=$((i + 1)); done
+  _pool_excl_release
+}
+JOB_SLOT=()
+
+TALLY="$(mktemp "${TMPDIR:-/tmp}/hw-test-tally.XXXXXX")"
+trap 'rm -f "$TALLY" "$TALLY.subject"; _pool_release_all' EXIT
+
+# A MUTATION ARM NOBODY RUNS IS NOT COVERAGE, and this is where that is caught.
+#
+# Measured 2026-08-28: a delivered task reported "killed 18 committed-byte
+# mutants". All 18 existed and all 18 died — and none of them ran. Seven subject
+# files had wrapped their arms in `if [ "${<SUBJECT>_MUTATION_TEST:-0}" = 1 ]`,
+# a variable this runner never set, so a 909-ok / 0-not-ok run printed zero
+# mutant lines and read as fully covered.
+#
+# The check belongs HERE and not inside a subject file: the runner already
+# captures every subject's output, so asking "did it exercise what it declares"
+# costs nothing, and it covers every subject rather than the ones someone
+# remembered to list. It reads what a subject PRINTED, never how its source is
+# written — an earlier source-shape scan flagged four innocents, and a check that
+# cries wolf is ignored within a day. The predicate is `setup/mutation-coverage`,
+# one copy, driven against fixtures with its own mutants by tests/46.
+COVERAGE="$HERE/mutation-coverage"
+[ -x "$COVERAGE" ] || { printf 'not ok - runner: %s is missing or not executable, so mutation coverage is unchecked\n' "$COVERAGE" >&2; exit 1; }
+
+# ── HOW MANY AT ONCE, AND THE THREE THINGS THAT STAY ONE AT A TIME ──────────
+#
+# THE SUITE HAD TO FIT IN THE CLOSE BUDGET. `hw` gives a close verification 900s
+# (`_VERIFY_TIMEOUT`, bin/hw) and the subjects measure 1119s of work between them
+# (setup/test-budgets.json, 2026-09-16) — so no brief in this lane could name
+# `bash setup/test-hw` in its own `## Verification` without the timeout killing
+# the close at exit 124 over work that was fine. Raising the clock hides that;
+# running the subjects at the same time is what actually shortens it.
+#
+# IT BUYS NO NEW ISOLATION AND NEEDS NONE. Every subject is ALREADY its own bash
+# process with its own $TMP, its own trap and its own helper names — that is what
+# "it runs each subject file as its own bash process; it does not source them"
+# has always bought. Running several at once is the same isolation with the
+# waiting taken out; it is not a new claim about hermeticity, and where a subject
+# turns out to share state with another the answer is to name it and give it the
+# serial lane below, never to widen what the runner promises.
+#
+# WHAT IS NOT PARALLEL, each for its own reason:
+#
+#   · THE FAST GATE, because its budget check times each subject ON THE RUN THAT
+#     IS PAYING FOR IT (below). A duration measured against thirteen neighbours
+#     is not that subject's duration, and a gate that refuses a file because the
+#     machine was busy is a gate nobody can act on.
+#   · THE GUARDS, one at a time. This lane was built on the belief that
+#     `setup/guards/test-deny-repo-writes.mjs` WRITES `/tmp/deny-repo-writes-out`;
+#     read on 2026-09-23, it only renders that path into the command strings the
+#     guard judges, and both drivers mkdtemp their own sandbox. The mutation arm
+#     now runs its own mutants four at a time for that reason. The lane still
+#     holds exactly one job, which overlaps the subjects: the ~165s mutation arm
+#     is the first thing the POOL starts. First of the pool, not of the run —
+#     the exclusive lane below runs before any of it, alone.
+#   · A NESTED RUNNER. tests/55, 84, 117 and 131 each drive a real copy of THIS
+#     FILE over fixture subjects. A fan-out inside a fan-out multiplies, so
+#     TEST_HW_NESTED pins every runner this one starts to one at a time. It is
+#     deliberately NOT an `HW_*` name: tests/_common.sh sweeps that whole prefix
+#     out of every subject's environment, which is exactly where this has to
+#     survive to reach the runner the subject then starts.
+#
+# AND THE OUTPUT IS BUFFERED PER JOB AND EMITTED IN GLOB ORDER. Interleaved
+# `ok -` lines from fourteen subjects are not a report. Each job's stdout is
+# collected to its own file and replayed when its turn comes, so two runs of the
+# same tree print the same lines in the same order whatever the machine was
+# doing — which is what makes `diff` between a sequential run and a parallel one
+# a comparison rather than a shuffle. Its stderr is buffered the same way and
+# replayed on stderr immediately after, which is where a `fail` already was.
+#
+# AND THE DEFAULT IS HALF THE CORES, CAPPED AT SIX — MEASURED, NOT CHOSEN.
+# Every subject was run twice over the same tree on a 14-core machine, once with
+# fourteen at a time and once with six, and every verdict compared (2026-09-16):
+#
+#   at 14 — 33-killed-sender, 40-nonblocking-set-wait, 43-executor-turn-end,
+#           54-the-suite-is-environment-independent and
+#           99-unverified-publication-through-callers all FLIPPED to red, plus
+#           117 and 131 inside the runner. Every one of them asserts something
+#           inside a wall-clock budget it did not set: a 2s wait that must settle,
+#           a sender that must die at 143 rather than time out first, a 10s
+#           subprocess cap, two runs that must be byte-identical. A busy machine
+#           is not a property of the tree, so those reds were about nothing.
+#   at  6 — none of them flipped.
+#
+# AND IT COSTS NOTHING. The longest single subject is 227s
+# (111-refuse-the-unwinnable-wait.sh) and the whole suite is 1119s, so six
+# workers finish the other 150 in ~190s — under the floor 111 sets on its own.
+# Fourteen workers cannot beat 227s either. The cap buys the honest verdicts for
+# free, which is why it is a cap and not a tuning knob someone should raise.
+# HW_TEST_JOBS overrides it; above six, expect the subjects named above to go red
+# for reasons that have nothing to do with the tree.
+_test_hw_default_jobs() {
+  local n=""
+  if command -v sysctl >/dev/null 2>&1; then n="$(sysctl -n hw.ncpu 2>/dev/null || true)"; fi
+  if [ -z "$n" ] && command -v getconf >/dev/null 2>&1; then n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"; fi
+  case "${n:-}" in ''|*[!0-9]*) n=4 ;; esac
+  n=$((n / 2))
+  [ "$n" -ge 2 ] || n=2
+  [ "$n" -le 6 ] || n=6
+  printf '%s' "$n"
+}
+JOBS="${HW_TEST_JOBS:-}"
+if [ -n "$JOBS" ]; then
+  case "$JOBS" in
+    ''|*[!0-9]*|0) printf 'not ok - runner: HW_TEST_JOBS must be a positive integer (got: %s)\n' "$JOBS" >&2; exit 1 ;;
+  esac
+fi
+[ -n "$JOBS" ] || JOBS="$(_test_hw_default_jobs)"
+if [ -n "${TEST_HW_NESTED:-}" ]; then
+  JOBS=1
+elif [ "$HW_TEST_GATE" = fast ] && [ "$JOBS" != 1 ]; then
+  if [ -n "${HW_TEST_JOBS:-}" ]; then
+    printf 'runner: HW_TEST_JOBS=%s ignored in the fast gate — its per-subject budget check only means something on an uncontended run\n' \
+      "$HW_TEST_JOBS" >&2
+  fi
+  JOBS=1
+fi
+# THE MACHINE'S CAP, shared by every suite running on it (see the pool above).
+# JOBS stays what ONE run may use; MACHINE_JOBS is what all of them together may.
+#
+# THE SAME NUMBER AS ONE RUN'S DEFAULT, AND THAT IS MEASURED, NOT MODEST. Six at
+# once on this 14-core machine is the load at which no timing subject flipped
+# (2026-09-16, above). A first cut of this pool let the machine take three
+# quarters of its cores (10), and two suites filling it turned 22-hw-unstick
+# and 37-chaining-lease red at a load average of 150-200 (2026-09-28) — both
+# green alone, on the same tree, minutes later. So two suites now share the six
+# a single one was measured safe at; what they gain is each other's idle slots
+# (the drained tail, the exclusive lane, the stretches a run spends blocked on
+# its own print order), not a bigger machine.
+_test_hw_default_machine_jobs() { _test_hw_default_jobs; }
+MACHINE_JOBS="${HW_TEST_MACHINE_JOBS:-}"
+if [ -n "$MACHINE_JOBS" ]; then
+  case "$MACHINE_JOBS" in
+    ''|*[!0-9]*|0) printf 'not ok - runner: HW_TEST_MACHINE_JOBS must be a positive integer (got: %s)\n' "$MACHINE_JOBS" >&2; exit 1 ;;
+  esac
+fi
+[ -n "$MACHINE_JOBS" ] || MACHINE_JOBS="$(_test_hw_default_machine_jobs)"
+export TEST_HW_NESTED=1
+
+# ── THE JOB TABLE: every subject, then every guard, in the order they PRINT ──
+#
+# ONE LIST, because the guards are work like any other and the only thing that
+# made them a separate block was that they ran after everything. They are still
+# REPORTED after — this list is the print order — but a 140s arm that starts last
+# is 140s added to the run, and started first it is free.
+#
+# AND THE SUBJECTS THAT RUN ALONE DECLARE IT THEMSELVES. A subject whose
+# verdict depends on a wall-clock budget it did not set carries, in the comment
+# block at the top of its own file (before its first command):
+#
+#     # suite-lane: exclusive — <why, and what was measured>
+#
+# and runs with no other job beside it, from this suite or any other (the pool
+# above). THE DECLARATION LIVES IN THE SUBJECT, not in a list here, so the
+# reason sits next to the budget that needs it and a subject that stops needing
+# it loses it in the same commit that removed the budget. Only the header block
+# is read: a subject that QUOTES the line — a fixture heredoc, an assertion —
+# is not declaring it. tests/176 is what fails if a declared subject ever runs
+# beside another job.
+_lane_of() { # <subject path> → pool | exclusive
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/ { if ($0 ~ /^# suite-lane: exclusive([^A-Za-z0-9_-]|$)/) { print "exclusive"; found = 1; exit } next }
+       /^[[:space:]]*$/ { next }
+       { exit }
+       END { if (!found) print "pool" }' "$1" 2>/dev/null || printf 'pool'
+}
+JOB_PATH=(); JOB_KIND=(); JOB_LANE=(); JOB_HINT=()
+for f in "${FILES[@]}"; do
+  JOB_PATH+=("$f"); JOB_KIND+=("subject"); JOB_LANE+=("$(_lane_of "$f")"); JOB_HINT+=("")
+done
+# THE GUARD JOBS ARE FULL-GATE ONLY. `setup/guards/*` are not `setup/tests/*.sh`
+# subjects, so the fast/slow split's completeness rule (every FILE in tests/ is
+# in exactly one gate) does not apply to them directly — but the read-only
+# guard is the rule CLAUDE.md calls the one that outranks the others, and its
+# mutation arm is deliberately ~140s, which alone would blow past anything the
+# fast gate could stay under. It still runs on every `full` invocation — every
+# bare `bash setup/test-hw` and every mandatory pre-push — so it is never
+# skipped, only deferred to the gate that already has the time budget for it.
+if [ "$HW_TEST_GATE" = full ]; then
+  # The read-only guard is ONE implementation behind eight lane shims (it was
+  # eight independent copies until 2026-09-06, and they had drifted 11.5 KB
+  # apart). Keep its shared vectors outside tests/ so concurrent subject work
+  # cannot silently omit them.
+  # THE GUARDS ARE CLASSIFIED THE SAME WAY, not assumed tracked. They are tracked
+  # today; assuming it is how the subject glob came to assume it too.
+  for _g in test-deny-repo-writes.mjs test-deny-repo-writes-filesystem.mjs \
+            test-opencode-hw-blocked-reason.mjs test-herdr-opencode-background-state.mjs; do
+    JOB_PATH+=("$HERE/guards/$_g"); JOB_KIND+=("guard-node"); JOB_LANE+=("guards"); JOB_HINT+=("1")
+  done
+  # AND THE MUTATION ARMS FOR THAT GUARD, which until 2026-09-02 nothing ran.
+  #
+  # `mutate-deny-repo-writes.sh` existed and worked; it was simply not wired to
+  # anything, so its arms were a file someone had to remember. That is the
+  # "a mutation arm nobody runs is not coverage" failure the per-subject
+  # `mutation-coverage` check below exists to catch — and it could not catch this
+  # one, because it only reads `setup/tests/*.sh` subjects and this is a guard.
+  #
+  # IT IS SLOW ON PURPOSE AND IT IS WORTH IT: ~140s, because each arm re-runs
+  # both drivers against a mutated copy, across all six lanes. This guard is
+  # the enforcement point for the rule CLAUDE.md calls the one that outranks
+  # the others, and every arm here is a hole that was live in some copy at some
+  # point. The hint below is what makes the pool start it first rather than let
+  # it cost 140s at the end.
+  JOB_PATH+=("$HERE/guards/mutate-deny-repo-writes.sh"); JOB_KIND+=("guard-mutate")
+  # 170: its measured wall under the runner on 2026-09-23 was 159-167s with its
+  # mutants running four at a time (it was ~380s one at a time). Still the
+  # longest job, so still started first.
+  JOB_LANE+=("guards"); JOB_HINT+=("170")
+fi
+# THE GUARD JOBS' HOME IS THE GUARD'S, NOT THE CALLER'S (since 2026-09-22).
+# The subjects run under a HOME of their own (tests/_common.sh); the guard jobs
+# are not subjects and never source it. They need HOME to be one specific value:
+# the guard's protected roots come from `guards.json` at brain's root, where a
+# leading `~` is the password-database home, and a vector that redirects into
+# `$HOME/<a protected repo>/...` only names a protected root when $HOME expands
+# to the home those roots live under. Measured the same day:
+# `HOME=$(mktemp -d) bash setup/test-hw` failed 32
+# `redirect-message-states-the-resolved-destination` vectors as ALLOWED. So the
+# home is the one the guard itself expands `~` with (`_policy_home`), read only
+# once `load_policy` has accepted `guards.json` — a fact of the code under test,
+# not a path this runner names — and nothing under it is read or written.
+#
+# ONLY WHEN A GUARD JOB IS QUEUED, which is the full gate. The fast gate queues
+# none, and a fixture tree that copies `setup/` alone (131's) has no
+# `guards.json`: the guard module refuses to import there, by design, and there
+# is no guard job for the value to reach. A tree with no guard module at all
+# (117's fixture runners, whose guard jobs are stubs) keeps the caller's HOME:
+# there is nothing there for the value to be read from. A tree that has the
+# module, queues guard jobs and cannot read its policy stops here, naming the
+# file.
+GUARD_HOME="$HOME"
+_guard_jobs=0
+for _l in ${JOB_LANE[@]+"${JOB_LANE[@]}"}; do [ "$_l" = guards ] && _guard_jobs=1; done
+if [ "$_guard_jobs" = 1 ] && [ -f "$HERE/guards/deny_repo_writes.py" ]; then
+  GUARD_HOME="$(PYTHONDONTWRITEBYTECODE=1 python3 - "$HERE/guards" "$(dirname "$HERE")/guards.json" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import deny_repo_writes as g
+g.load_policy(sys.argv[2])
+print(g._policy_home())
+PY
+)" || GUARD_HOME=""
+  [ -n "$GUARD_HOME" ] || { printf 'not ok - runner: could not read the guard home from %s product_repos (guards/deny_repo_writes.py load_policy)\n' "$(dirname "$HERE")/guards.json" >&2; exit 1; }
+fi
+JOB_TOTAL="${#JOB_PATH[@]}"
+
+JOBDIR="$(mktemp -d "${TMPDIR:-/tmp}/hw-test-jobs.XXXXXX")"
+WITNESS_PID=""
+trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all' EXIT
+
+# ── THE PANE A FULL RUN IS STARTED FROM IS A WITNESS, NOT A TARGET ──────────
+#
+# MEASURED 2026-09-15: a single run of this suite wrote seven
+# `pane.report_metadata` calls carrying fixture tokens onto the LIVE pane of the
+# agent running it, and six more subjects read the live daemon. tests/_common.sh
+# now sweeps every HERDR_* and points the socket at a path that does not exist,
+# and tests/145 pins the write path — but _common.sh itself says the reads were
+# a measurement, not a standing assertion, and the guard jobs never source it:
+# they inherit this runner's environment as it is, and in an executor's pane
+# that environment names the live socket.
+#
+# SO EVERY FULL RUN REPLACES THE PANE IT WAS STARTED FROM WITH A RECORDER. Every
+# job — subject, guard, mutation arm — inherits HERDR_ENV=1, a pane id that names
+# no pane, and HERDR_SOCKET_PATH pointing at a socket this runner listens on and
+# answers nothing. A job that reaches it has reached the one address its
+# environment gave it, which on a live pane is a live session; the run is RED
+# and names what was sent. A job that dials the real socket by a path it built
+# itself is not caught here — the subjects' HOME is their own (_common.sh), so a
+# path built from HOME lands in the run's temp, and bin/ carries no machine
+# literal (tests/173).
+#
+# FULL AND NOT NESTED: a nested runner is inside a subject that already swept
+# this away, and the fast gate is pre-commit's, where seconds matter and whose
+# subjects are the same files the full run witnesses.
+if [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ]; then
+  WITNESS_SOCK="$JOBDIR/herdr-witness.sock"
+  WITNESS_LOG="$JOBDIR/herdr-witness.log"
+  : > "$WITNESS_LOG"
+  python3 -c '
+import os, sys, json
+sys.path.insert(0, os.path.join(sys.argv[3], "tests"))
+try:
+    from _herdr_endpoint import listen   # a unix socket, or the named pipe on Windows
+except ImportError:                      # a fixture tree that carries only this runner
+    import socket
+    def listen(p, n):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(p); s.listen(n); return s
+path, log = sys.argv[1], sys.argv[2]
+s = listen(path, 64)
+while True:
+    c, _ = s.accept()
+    c.settimeout(1.0)
+    data = b""
+    try:
+        while len(data) < 65536:
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+            if b"\n" in chunk:
+                break
+    except Exception:
+        pass
+    with open(log, "a") as f:
+        f.write(json.dumps(data.decode("utf-8", "replace")[:400]) + "\n")
+    c.close()
+' "$WITNESS_SOCK" "$WITNESS_LOG" "$HERE" < /dev/null > /dev/null 2>&1 &
+  WITNESS_PID=$!
+  _w=0
+  while [ ! -e "$WITNESS_SOCK" ] && [ "$_w" -lt 50 ]; do sleep 0.1; _w=$((_w + 1)); done
+  if [ -e "$WITNESS_SOCK" ]; then
+    export HERDR_ENV=1 HERDR_SOCKET_PATH="$WITNESS_SOCK" HERDR_PANE_ID="wWITNESS:pWITNESS" \
+           HERDR_TAB_ID="wWITNESS:tWITNESS" HERDR_WORKSPACE_ID="wWITNESS"
+  else
+    printf 'runner: the herdr witness did not start — this run does NOT check that no job reaches the pane it was started from\n' >&2
+    kill "$WITNESS_PID" 2>/dev/null || true
+    WITNESS_PID=""
+  fi
+fi
+
+# ── THE ORDER THEY START IN IS NOT THE ORDER THEY PRINT IN ──────────────────
+#
+# LONGEST FIRST, or the run is as long as whatever happens to start last.
+# `111-refuse-the-unwinnable-wait.sh` is 227s of the 1119s total; started late it
+# is a tail nobody else is filling. The durations are the ones
+# `setup/measure-tests.sh` already committed in setup/test-budgets.json for the
+# fast gate, read here as a SCHEDULING HINT and nothing else. A stale, missing or
+# unparseable hint costs wall clock and cannot change a verdict, because the
+# print order below is the glob order either way — which is why every failure
+# path here ends in the file order rather than in a refusal.
+SCHED_ORDER=""
+if [ "$JOBS" -gt 1 ]; then
+  _i=0
+  while [ "$_i" -lt "$JOB_TOTAL" ]; do
+    printf '%s\t%s\t%s\n' "$_i" "$(basename "${JOB_PATH[$_i]}")" "${JOB_HINT[$_i]}"
+    _i=$((_i + 1))
+  done > "$JOBDIR/schedule.in"
+  # THE JOB LIST ARRIVES AS A FILE, NOT ON STDIN. `python3 -` already reads its
+  # program from stdin, and the heredoc IS that stdin — a pipe into it is
+  # swallowed and `sys.stdin.read()` returns the empty string, which here would
+  # silently mean "no schedule" and cost the whole point of this block.
+  SCHED_ORDER="$(python3 - "$HERE/test-budgets.json" "$JOBDIR/schedule.in" <<'PY' || true
+import json, pathlib, sys
+try:
+    budgets = json.loads(pathlib.Path(sys.argv[1]).read_text())["files"]
+except Exception:
+    budgets = {}
+rows = []
+for line in pathlib.Path(sys.argv[2]).read_text().splitlines():
+    if not line:
+        continue
+    index, name, hint = line.split("\t")
+    if hint:
+        seconds = float(hint)
+    else:
+        try:
+            seconds = float(budgets[name]["seconds"])
+        except Exception:
+            seconds = 0.0
+    rows.append((-seconds, int(index)))
+print(" ".join(str(index) for _, index in sorted(rows)))
+PY
+)"
+fi
+if [ -z "$SCHED_ORDER" ]; then
+  _i=0
+  while [ "$_i" -lt "$JOB_TOTAL" ]; do SCHED_ORDER="$SCHED_ORDER $_i"; _i=$((_i + 1)); done
+fi
+
+# _run_job <index> — runs one job into its own files and says so by writing
+# <index>.status LAST. Nothing else writes that file: its appearance is the only
+# completion signal the loop below has, and it is moved into place rather than
+# written in place so a half-written status can never be read as a verdict.
+#
+# `set +e` FIRST. This body runs as a background subshell under the runner's
+# `set -euo pipefail`, and a non-zero exit is the NORMAL case here — it is the
+# thing being measured. Without this the subshell dies at the failing command,
+# the status file is never written, and the loop below waits forever for a job
+# that is already gone.
+_run_job() {
+  local idx="$1" f="${JOB_PATH[$1]}" kind="${JOB_KIND[$1]}"
+  local rc=0 cov_rc=0 parse_rc=0 started ended wall_ms=0 cpu_ms=0 first_ms=0 rerun_rc=0
+  set +e
+  started=""; ended=""
+  if [ "$kind" = subject ]; then
+    # A SUBJECT THAT DOES NOT PARSE IS NOT A SUBJECT THAT PASSED, and until
+    # 2026-09-11 this runner could not tell the difference. bash reads a script
+    # INCREMENTALLY: it executes every complete command it has parsed so far, and
+    # only reports the syntax error when it reaches the end. A file broken near
+    # its end therefore prints its whole run of `ok -` lines, dies at EOF, and can
+    # still exit 0 -- measured that day on 124, which went from 2.08s to 0.05s
+    # with `exit=0` recorded in setup/test-budgets.json. The duration collapse was
+    # the only signal and nothing read it.
+    #
+    # BEFORE, NOT AFTER. `bash -n` is the whole file's verdict in one pass and
+    # costs milliseconds; running first and judging the exit code afterwards is
+    # exactly the reckoning that failed.
+    bash -n "$f" > "$JOBDIR/$idx.parse" 2>&1
+    parse_rc=$?
+    if [ "$parse_rc" -eq 0 ]; then
+      # STDIN IS /dev/null, not the terminal. A background job that reads the
+      # terminal in a shell with job control off hangs the whole run against a
+      # prompt nobody can see; the subjects are non-interactive by contract, so
+      # this only makes that contract enforceable.
+      # THE CLOCK STARTS AND STOPS AROUND THE SUBJECT, AND NOTHING ELSE. The
+      # fast gate refuses a subject that overran its OWN budget, so `bash -n`
+      # before it and `mutation-coverage` after it belong outside the window:
+      # neither is the subject's work, and charging them to it would refuse a
+      # file for the runner's own overhead. The old sequential loop bracketed
+      # exactly this, and the bracket is the assertion.
+      started="$(date +%s)"
+      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" bash "$f"
+      rc=$?
+      ended="$(date +%s)"
+      wall_ms="$FG_WALL_MS"; cpu_ms="$FG_CPU_MS"; first_ms="$wall_ms"; rerun_rc=0
+      # THE FAST GATE'S RE-RUNS LIVE IN THE JOB, not in the loop that reads it: the
+      # loop has already let the next subject start, and a re-run beside it would
+      # time both against each other. The minimum of up to three runs is what
+      # the loop judges (setup/fast-gate-budget.sh).
+      if [ "$rc" -eq 0 ] && [ "${HW_TEST_GATE:-}" = fast ] && [ -n "${FAST_THRESHOLD_SECONDS:-}" ] && [ "$kind" = subject ]; then
+        _b_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$(basename "$f")=//p")")"
+        _try=0
+        while [ "$wall_ms" -gt "$_b_ms" ] && [ "$_try" -lt 2 ]; do
+          _try=$((_try + 1))
+          fg_time_cmd "$JOBDIR/$idx.rerun.out" "$JOBDIR/$idx.rerun.err" bash "$f" || { rerun_rc=$?; break; }
+          [ "$FG_WALL_MS" -ge "$wall_ms" ] || wall_ms="$FG_WALL_MS"
+          if [ "$cpu_ms" -le 0 ] || { [ "$FG_CPU_MS" -gt 0 ] && [ "$FG_CPU_MS" -lt "$cpu_ms" ]; }; then cpu_ms="$FG_CPU_MS"; fi
+        done
+      fi
+      # A subject that declares no arm is silent here; only a broken promise
+      # speaks. It reads what the subject PRINTED, which is why it comes after.
+      if [ "$rc" -eq 0 ]; then
+        "$COVERAGE" "$f" "$JOBDIR/$idx.out" > "$JOBDIR/$idx.cov" 2>&1
+        cov_rc=$?
+      fi
+    fi
+  else
+    started="$(date +%s)"
+    "${_JOB_RUNNER[@]}" "$f" > "$JOBDIR/$idx.out" 2> "$JOBDIR/$idx.err" < /dev/null
+    rc=$?
+    ended="$(date +%s)"
+  fi
+  # A subject that never ran because it did not parse timed nothing, and 0 is
+  # the honest answer there rather than the duration of the parse check.
+  if [ -z "$started" ] || [ -z "$ended" ]; then started=0; ended=0; fi
+  printf 'parse_rc=%s\nrc=%s\ncov_rc=%s\nelapsed=%s\nwall_ms=%s\ncpu_ms=%s\nfirst_ms=%s\nrerun_rc=%s\n' \
+    "$parse_rc" "$rc" "$cov_rc" "$((ended - started))" "$wall_ms" "$cpu_ms" "$first_ms" "$rerun_rc" > "$JOBDIR/$idx.status.part"
+  mv -f "$JOBDIR/$idx.status.part" "$JOBDIR/$idx.status"
+}
+
+# _kill_tree <pid> — a failing subject stops the run, and "stops" has to reach
+# the other thirteen too. Killing the background subshell alone would orphan the
+# `bash <subject>` underneath it, which would keep burning a machine whose whole
+# problem was contention, for minutes after the run said it was over.
+_kill_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do _kill_tree "$child"; done
+  kill -TERM "$pid" 2>/dev/null || true
+}
+
+ACTIVE=""; RUNNING=0; GUARD_LANE_BUSY=0; ABORTED=0; NEXT_EMIT=0
+# THE EXCLUSIVE JOBS ARE COUNTED, not searched for on every top-up: while any of
+# them is still owed, NOTHING else may start, so this counter is the gate.
+EXCLUSIVE_OWED=0
+_i=0
+while [ "$_i" -lt "$JOB_TOTAL" ]; do
+  if [ "${JOB_LANE[$_i]}" = exclusive ]; then EXCLUSIVE_OWED=$((EXCLUSIVE_OWED + 1)); fi
+  _i=$((_i + 1))
+done
+JOB_PID=(); JOB_LAUNCHED=()
+_i=0; while [ "$_i" -lt "$JOB_TOTAL" ]; do JOB_PID+=("0"); JOB_LAUNCHED+=("0"); JOB_SLOT+=(""); _i=$((_i + 1)); done
+# EVERY JOB THAT IS NOT EXCLUSIVE, still to be started. The exclusive ones wait
+# for it to reach zero when they run LAST (below).
+NONEXCL_LEFT=$((JOB_TOTAL - EXCLUSIVE_OWED))
+
+# FIRST OR LAST, decided once, from what the machine is doing when this run
+# starts. On an idle machine the subjects that run alone go FIRST, as they
+# always have: nothing has to drain for them. On a machine where other suites
+# are already mid-run, going first would stop every one of them from starting
+# anything new until their longest job ended — the guard mutation arm is ~170s —
+# so this run does its pooled work beside them and asks for the machine at its
+# END instead, when they are likelier to be done.
+EXCL_PHASE=first
+if [ "$POOL_ON" = 1 ] && [ "$EXCLUSIVE_OWED" -gt 0 ]; then
+  for _d in "$POOL_DIR"/slot.*; do
+    [ -e "$_d" ] || continue
+    if _pool_dir_alive "$_d"; then EXCL_PHASE=last; break; fi
+  done
+  if [ "$EXCL_PHASE" = last ]; then
+    printf 'runner: other suites are mid-run on this machine, so this run'"'"'s %s timing subject(s) will run alone at its end, not its start\n' \
+      "$EXCLUSIVE_OWED" >&2
+  fi
+fi
+
+_launch_job() {
+  local idx="$1"
+  if [ "${JOB_KIND[$idx]}" = guard-node ]; then _JOB_RUNNER=(node); else _JOB_RUNNER=(bash); fi
+  # The guard jobs run with the home the guard DECLARES, not this shell's.
+  if [ "${JOB_LANE[$idx]}" = guards ]; then
+    # AND WITH AN ARTIFACTS DIRECTORY OF THEIR OWN, never the caller's. The
+    # guard jobs are not subjects, so nothing sweeps HW_* for them, and
+    # mutate-deny-repo-writes.sh writes its mutants under $HW_ARTIFACTS when
+    # it is set. Measured 2026-09-28: two suites started from one executor
+    # shared that directory, and both died on `rm: .../mutants: Directory not
+    # empty`. The lock kept two suites apart; the pool does not, so the
+    # directory is this run's, per job.
+    mkdir -p "$JOBDIR/artifacts.$idx"
+    _JOB_RUNNER=(env HOME="$GUARD_HOME" HW_ARTIFACTS="$JOBDIR/artifacts.$idx" "${_JOB_RUNNER[@]}")
+  fi
+  _run_job "$idx" &
+  JOB_PID[$idx]=$!
+  JOB_LAUNCHED[$idx]=1
+  if [ "${JOB_LANE[$idx]}" != exclusive ]; then NONEXCL_LEFT=$((NONEXCL_LEFT - 1)); fi
+  ACTIVE="$ACTIVE $idx"
+  RUNNING=$((RUNNING + 1))
+  if [ "${JOB_LANE[$idx]}" = guards ]; then GUARD_LANE_BUSY=1; fi
+}
+
+# _try_launch <idx> — start a pooled job if this machine has a worker for it.
+# 1 when it has none yet: the caller stops filling for this tick, and the next
+# attempt waits POOL_BACKOFF ticks — each attempt reads the holders' pids, and
+# a runner polling ten times a second would otherwise spend a process per slot
+# per tick just asking.
+_try_launch() {
+  if [ "$POOL_ON" = 1 ]; then
+    if [ "$POOL_BACKOFF" -gt 0 ]; then POOL_BACKOFF=$((POOL_BACKOFF - 1)); return 1; fi
+    if ! _pool_take_slot "$1"; then POOL_BACKOFF=5; return 1; fi
+  fi
+  _launch_job "$1"
+}
+
+# _reap — true when at least one job finished since the last call. `wait` is
+# per pid rather than `wait -n`, which bash 3.2 does not have and this file has
+# to run under: the same bash every bin/ script runs under (tests/_common.sh).
+_reap() {
+  local idx rest="" any=1
+  for idx in $ACTIVE; do
+    if [ -f "$JOBDIR/$idx.status" ]; then
+      wait "${JOB_PID[$idx]}" 2>/dev/null || true
+      RUNNING=$((RUNNING - 1))
+      if [ "${JOB_LANE[$idx]}" = guards ]; then GUARD_LANE_BUSY=0; fi
+      if [ "${JOB_LANE[$idx]}" = exclusive ]; then
+        EXCLUSIVE_OWED=$((EXCLUSIVE_OWED - 1))
+        # The machine is handed back once this run's LAST timing subject is
+        # done; between two of them it is kept, so they run back to back.
+        if [ "$POOL_ON" = 1 ] && [ "$EXCLUSIVE_OWED" -eq 0 ]; then _pool_excl_release; fi
+      fi
+      if [ "$POOL_ON" = 1 ]; then _pool_release_slot "$idx"; fi
+      any=0
+    else
+      rest="$rest $idx"
+    fi
+  done
+  ACTIVE="$rest"
+  return "$any"
+}
+
+# _top_up — fill every free slot, and give ONE of them to the job whose turn it
+# is to print.
+#
+# LONGEST FIRST IS RIGHT FOR THE CLOCK AND WRONG FOR THE READER. Ordered purely
+# by duration, `01-task-names-and-models.sh` (0.5s) is the LAST thing to start,
+# so a reader watching a five-minute run sees nothing at all until the short
+# subjects finally run in the last wave, and then the whole suite at once.
+# NEXT_EMIT is the frontier the loop below is blocked on; launching it ahead of
+# the schedule costs at most one slot out of fourteen and is what keeps the
+# report moving while the long tail runs.
+_top_up() {
+  local idx
+  [ "$ABORTED" -eq 0 ] || return 0
+  # ALONE MEANS ALONE, and it means first. Anything still running would make the
+  # exclusive job's own timing readings wrong, which is the only reason it is in
+  # this lane; anything started after it would be measuring a machine it shares.
+  if [ "$EXCLUSIVE_OWED" -gt 0 ] && { [ "$EXCL_PHASE" = first ] || [ "$NONEXCL_LEFT" -eq 0 ]; }; then
+    if [ "$RUNNING" -eq 0 ]; then
+      for idx in $SCHED_ORDER; do
+        if [ "${JOB_LANE[$idx]}" = exclusive ] && [ "${JOB_LAUNCHED[$idx]}" = 0 ]; then
+          # ALONE ON THE MACHINE, not just in this run: see the pool.
+          if [ "$POOL_ON" = 1 ]; then
+            if [ "$POOL_BACKOFF" -gt 0 ]; then POOL_BACKOFF=$((POOL_BACKOFF - 1)); break; fi
+            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; break; fi
+          fi
+          _launch_job "$idx"; break
+        fi
+      done
+    fi
+    return 0
+  fi
+  if [ "$RUNNING" -lt "$JOBS" ] && [ "${NEXT_EMIT:-0}" -lt "$JOB_TOTAL" ] \
+     && [ "${JOB_LAUNCHED[${NEXT_EMIT:-0}]}" = 0 ]; then
+    idx="${NEXT_EMIT:-0}"
+    if [ "${JOB_LANE[$idx]}" = pool ]; then
+      _try_launch "$idx" || return 0
+    elif [ "${JOB_LANE[$idx]}" = guards ] && [ "$GUARD_LANE_BUSY" = 0 ]; then
+      _try_launch "$idx" || return 0
+    fi
+  fi
+  for idx in $SCHED_ORDER; do
+    [ "$RUNNING" -lt "$JOBS" ] || break
+    if [ "${JOB_LAUNCHED[$idx]}" = 0 ]; then
+      if [ "${JOB_LANE[$idx]}" = guards ] && [ "$GUARD_LANE_BUSY" = 1 ]; then continue; fi
+      if [ "${JOB_LANE[$idx]}" = exclusive ]; then continue; fi
+      _try_launch "$idx" || break
+    fi
+  done
+  return 0
+}
+
+_stop_everything() {
+  local idx
+  ABORTED=1
+  for idx in $ACTIVE; do _kill_tree "${JOB_PID[$idx]}"; done
+  for idx in $ACTIVE; do wait "${JOB_PID[$idx]}" 2>/dev/null || true; done
+  ACTIVE=""
+  _pool_release_all
+}
+
+# A KILLED RUNNER MUST KILL ITS RUN. A background job in a shell with job control
+# off does not receive the terminal's interrupt, and a close verification that
+# overruns is killed by signal — so without these the runner would die and leave
+# its subjects running behind it, on a machine whose whole problem was contention.
+trap '_stop_everything; exit 130' INT
+trap '_stop_everything; exit 143' TERM
+
+_top_up
+_i=0
+NEXT_EMIT=0
+while [ "$_i" -lt "$JOB_TOTAL" ]; do
+  # WAIT FOR THE ONE WHOSE TURN IT IS TO PRINT, not for whichever finished
+  # first. Everything else keeps running while this blocks; the only thing
+  # serialised here is the reporting.
+  # AND IT TOPS UP ON EVERY TICK, not only after a job ends: a job refused a
+  # machine worker has nothing of its own to wait on, and the tick is what asks
+  # again.
+  while [ ! -f "$JOBDIR/$_i.status" ]; do
+    if _reap; then _top_up; else _top_up; sleep 0.1; fi
+  done
+  _reap || true
+  _top_up
+  f="${JOB_PATH[$_i]}"
+  parse_rc=0; rc=0; cov_rc=0; elapsed=0; wall_ms=0; cpu_ms=0; first_ms=0; rerun_rc=0
+  . "$JOBDIR/$_i.status"
+  if [ "$parse_rc" -ne 0 ]; then
+    printf '\nnot ok - suite: setup/tests/%s does not parse, so it was never run — its assertions are NOT evidence for anything:\n%s\n' \
+      "$(basename "$f")" "$(cat "$JOBDIR/$_i.parse" 2>/dev/null)" >&2
+    _stop_everything; abort_marker; exit 1
+  fi
+  cat "$JOBDIR/$_i.out"
+  cat "$JOBDIR/$_i.out" >> "$TALLY"
+  [ ! -s "$JOBDIR/$_i.err" ] || cat "$JOBDIR/$_i.err" >&2
+  if [ "$rc" -ne 0 ]; then
+    case "${JOB_KIND[$_i]}" in
+      subject)
+        printf '\nnot ok - suite: setup/tests/%s failed (exit %s) — the run stops here\n' \
+          "$(basename "$f")" "$rc" >&2 ;;
+      guard-mutate)
+        printf '\nnot ok - suite: setup/guards/%s failed (exit %s) — a surviving mutant means the read-only guard has a hole its own suite cannot see\n' \
+          "$(basename "$f")" "$rc" >&2 ;;
+      *)
+        printf '\nnot ok - suite: setup/guards/%s failed (exit %s) — the run stops here\n' \
+          "$(basename "$f")" "$rc" >&2 ;;
+    esac
+    _stop_everything; abort_marker; exit "$rc"
+  fi
+  count_into "$f" "$JOBDIR/$_i.out"
+  # THE FAST GATE'S OWN TIMING IS THE ENFORCEMENT, not the committed manifest.
+  # A file that drifted slow since it was last measured — new fixtures, a
+  # widened vector table, a machine having a bad day — is caught HERE, on the
+  # run that is actually paying for it, rather than trusted from a JSON file
+  # that can go stale the moment it is written. This is what makes "a file that
+  # runs slow cannot quietly stay in the fast gate" true on every commit, not
+  # just on whichever day someone remembers to re-measure. It is also the whole
+  # reason the fast gate stays one at a time: this number has to be the
+  # subject's own, not a reading of how busy the machine was around it.
+  if [ "$HW_TEST_GATE" = fast ] && [ -n "$FAST_THRESHOLD_SECONDS" ] && [ "${JOB_KIND[$_i]}" = subject ]; then
+    _fg_own="$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$(basename "$f")=//p")"
+    _fg_budget_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$_fg_own")"
+    _fg_own_ms="$(fg_ms "$_fg_own")"
+    _fg_wall="$wall_ms"; _fg_cpu="$cpu_ms"; _fg_first="$first_ms"
+    if [ "$rerun_rc" -ne 0 ]; then
+      printf '\nnot ok - runner: setup/tests/%s failed (exit %s) on a timing re-run after passing once — a subject that passes once and fails once is not in the fast gate; its output is %s.rerun.err in the run directory\n' \
+        "$(basename "$f")" "$rerun_rc" "$_i" >&2
+      { cat "$JOBDIR/$_i.rerun.out" "$JOBDIR/$_i.rerun.err" 2>/dev/null | tail -n 40; } >&2
+      _stop_everything; abort_marker; exit 1
+    fi
+    read -r _fg_load _fg_ncpu <<< "$(fg_load_ncpu)"
+    read -r _fg_res _fg_mode _fg_why <<< "$(fg_decide "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "${_fg_load:-}" "${_fg_ncpu:-}")"
+    _fg_ldesc="load1=$(( ${_fg_load:-0} / 100 )).$(printf '%02d' $(( ${_fg_load:-0} % 100 ))) on ${_fg_ncpu:-?} cpus"
+    [ -z "${HW_TEST_LOAD1:-}" ] || _fg_ldesc="$_fg_ldesc [SIMULATED by HW_TEST_LOAD1/HW_TEST_NCPU]"
+    if [ "$_fg_wall" -gt "$_fg_budget_ms" ] || [ "${_fg_first:-0}" -gt "$_fg_budget_ms" ]; then
+      case "$_fg_res $_fg_mode" in
+        "pass wall") printf 'runner: setup/tests/%s read %sms on the first run, over the %sms budget, and %sms at best on re-run — within budget (%s): the first reading was the machine\n' \
+                       "$(basename "$f")" "${_fg_first:-$wall_ms}" "$_fg_budget_ms" "$_fg_wall" "$_fg_ldesc" >&2 ;;
+        "pass cpu")  printf 'runner: setup/tests/%s BUDGET APPLIED TO CPU, NOT WALL: wall %sms (best of re-runs) is over the %sms budget but the machine is saturated (%s); CPU user+sys %sms is within twice that budget\n' \
+                       "$(basename "$f")" "$_fg_wall" "$_fg_budget_ms" "$_fg_ldesc" "$_fg_cpu" >&2 ;;
+      esac
+    fi
+    # BETWEEN 1.5x AND 2x ITS OWN NUMBER a subject that only passes because its
+    # ceiling is relative (setup/fast-gate-budget.sh) is WARNED about, per subject.
+    if [ "$_fg_res" = pass ] && fg_drift_warn "$_fg_wall" "$_fg_own_ms" "$FAST_THRESHOLD_SECONDS"; then
+      printf 'runner: setup/tests/%s DRIFT WARNING (not a failure): %sms is %s%% of its own %sms in test-budgets.json, and it is only inside the gate because its ceiling is twice that number (%s) — re-measure it with setup/measure-tests.sh when the machine is quiet\n' \
+        "$(basename "$f")" "$_fg_wall" "$(( _fg_wall * 100 / _fg_own_ms ))" "$_fg_own_ms" "$_fg_ldesc" >&2
+    fi
+    case "$_fg_res" in
+      refuse)
+        printf '\nnot ok - runner: setup/tests/%s took %sms (best of up to 3 runs, CPU %sms) in the fast gate, over the %sms budget in setup/test-budgets.json — judged on %s (%s; %s) — re-measure with setup/measure-tests.sh and, if it is really this slow, its classification belongs in the slow set\n' \
+          "$(basename "$f")" "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "$_fg_mode" "$_fg_why" "$_fg_ldesc" >&2
+        _stop_everything; abort_marker; exit 1 ;;
+    esac
+  fi
+  # THE BURN-DOWN LIST IS GONE, BECAUSE IT IS EMPTY. It was introduced on
+  # 2026-09-01 naming the ten subjects that certified a mutant kill from a `*)`
+  # catch-all: they were green while carrying the shape, so refusing them
+  # immediately would have turned a known debt into a red suite nobody could act
+  # on. They warned, by name, and the note said to delete the list once the last
+  # name left it. All ten were made positive on 2026-09-02 — each arm now matches
+  # text the MUTANT ITSELF produces, with a third branch naming the absence
+  # VACUOUS — so exit 3 is unconditional again. Do not reintroduce the list to
+  # get past a red run: the whole point of exit 3 is that the arm proves nothing,
+  # and a warning nobody has to act on is how it stayed unproven for a day.
+  if [ "$cov_rc" -ne 0 ]; then
+    printf '\nnot ok - suite: setup/tests/%s failed mutation coverage (exit %s) — a mutant nothing runs, or one nothing can see fail, is not coverage: %s\n' \
+      "$(basename "$f")" "$cov_rc" "$(cat "$JOBDIR/$_i.cov" 2>/dev/null || printf 'mutation-coverage printed no reason')" >&2
+    _stop_everything; abort_marker; exit 1
+  fi
+  rm -f "$JOBDIR/$_i.out" "$JOBDIR/$_i.err" "$JOBDIR/$_i.cov" "$JOBDIR/$_i.parse"
+  _i=$((_i + 1))
+  NEXT_EMIT="$_i"
+done
+rm -f "$TALLY.subject"
+
+# THE WITNESS IS READ LAST, once every job is done: see above.
+if [ -n "$WITNESS_PID" ]; then
+  kill "$WITNESS_PID" 2>/dev/null || true
+  wait "$WITNESS_PID" 2>/dev/null || true
+  WITNESS_PID=""
+  if [ -s "$WITNESS_LOG" ]; then
+    printf '\nnot ok - runner: %s connection(s) reached the herdr WITNESS socket that stood where the live pane'"'"'s address was — some job addressed the pane it was started from, which on a live pane is a write onto somebody'"'"'s session. First request: %s\n' \
+      "$(grep -c . "$WITNESS_LOG")" "$(head -1 "$WITNESS_LOG")" >&2
+    abort_marker; exit 1
+  fi
+fi
+
+# THE SUM IS CHECKED AGAINST THE TALLY, because a split that does not add up is
+# worse than no split: it would put a confident wrong number in the headline.
+TOTAL_OK="$(grep -c '^ok - ' "$TALLY" || true)"
+case "$TOTAL_OK" in ''|*[!0-9]*) TOTAL_OK=0 ;; esac
+if [ "$((TRACKED_OK + UNTRACKED_OK + UNKNOWN_OK))" -ne "$TOTAL_OK" ]; then
+  printf '\nnot ok - runner: the tracked/untracked split does not add up (%s + %s + %s != %s total ok). The headline below cannot be trusted; fix the attribution before quoting any number.\n' \
+    "$TRACKED_OK" "$UNTRACKED_OK" "$UNKNOWN_OK" "$TOTAL_OK" >&2
+  abort_marker; exit 1
+fi
+
+# THE QUALIFICATION TRAVELS ON THE SAME STREAM AS THE CLAIM. THAT IS THE RULE.
+#
+# Found 2026-09-02 by the opus reviewer, in the commit whose whole thesis is that
+# a number must say what it measured. Outside a git work tree this printed
+# `0 tests passed (TRACKED only …)` and `no untracked subjects ran, so this is
+# the whole suite` on STDOUT, and put `neither number above is complete` on
+# STDERR. So `./test-hw 2>/dev/null | tail` showed a confident, complete-sounding
+# number — and it was not merely unqualified but FALSE: two subjects had run and
+# passed, the count said 0, and "whole suite" was asserted while nothing had been
+# classified at all.
+#
+# IT IS THE SAME DEFECT AS 04efe7c, this session's first commit: a caller pipes,
+# the qualification goes to a stream it dropped, and what survives reads as
+# authoritative. Twice in one day, in two different tools, the second time inside
+# the fix for the first. That is not coincidence, it is the shape — a claim and
+# its caveat written to two streams WILL be separated, because separating them is
+# what pipelines are for.
+#
+# So the invariant is structural rather than remembered: every summary line goes
+# to stdout, and where the claim cannot be made honestly there is NO NUMBER ON
+# STDOUT TO QUOTE. Moving the caveat to stdout alone would not have been enough —
+# `0 tests passed` had to stop being printed, because a reader who sees a number
+# quotes the number and not the sentence under it.
+# AND WHAT THE NUMBER STILL DOES NOT CLAIM, written down 2026-09-09 because a
+# run of it was quoted as a guarantee it does not carry.
+#
+# The number counts `ok -` lines. An `ok -` line says a subject's own check
+# concluded; it does not say the check exercised its subject. That gap is not
+# theoretical: on 2026-09-09 a leaked `core.hooksPath` redirected the fixture
+# hooks in tests/105 to a directory with no hook in it, and two `ok -` lines were
+# counted for cases that certified a guard which had not executed. The suite said
+# 2309 in the context it was measured in, and some of those assertions were
+# vacuous in another. Nothing in this headline could have shown that.
+#
+# So the honest reading of the number is CONTEXT-SCOPED: "this many checks
+# concluded, in the environment this run had". Non-vacuity is not the runner's to
+# assert and cannot be — `setup/mutation-coverage` establishes it for declared
+# mutation arms only, and every other assertion is as good as the subject that
+# wrote it. The remedy is per subject and it is the shape tests/105 now uses:
+# make the probe emit proof it ran, and fail when the proof is missing. Do not
+# add a global claim here that this runner cannot support.
+if [ -n "$UNKNOWN_NAMES" ]; then
+  # NO HEADLINE AT ALL. "tracked" was never established here, so any integer
+  # under that label is a count of nothing. The total IS printed, because it is
+  # true and useful — but labelled as unclassified, which is not a release number
+  # and does not read like one.
+  printf '\nNO TRACKED NUMBER — tracking could not be established here (no usable git work tree), so nothing can be attributed to a commit.\n'
+  printf '  %s ok ran in total; %s of it is UNCLASSIFIED and none of it is quotable as a release number:%s\n' \
+    "$TOTAL_OK" "$UNKNOWN_OK" "$UNKNOWN_NAMES"
+  if [ "$TRACKED_OK" != 0 ] || [ "$UNTRACKED_OK" != 0 ]; then
+    # Belt and braces: `unknown` is all-or-nothing today because GIT_USABLE is
+    # decided once per run. If that ever stops being true, the partial split is
+    # stated rather than silently folded into the sentence above.
+    printf '  (partial split, itself incomplete: %s tracked, %s untracked)\n' "$TRACKED_OK" "$UNTRACKED_OK"
+  fi
+  printf '  Run the suite inside the git work tree to get a number that means something.\n'
+else
+  if [ "$HW_TEST_GATE" = fast ]; then
+    printf '\nFAST GATE: %s tests passed  (TRACKED only — %s of %s subject files; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
+      "$TRACKED_OK" "${#FILES[@]}" "$(printf '%s\n' "$TESTS"/[0-9][0-9]*-*.sh | grep -c .)"
+  else
+    printf '\n%s tests passed  (TRACKED only — the number this commit can reproduce)\n' "$TRACKED_OK"
+  fi
+  if [ -n "$UNTRACKED_NAMES" ]; then
+    printf '  + %s ok from UNTRACKED subjects, absent from the commit and NOT in the number above:%s\n' \
+      "$UNTRACKED_OK" "$UNTRACKED_NAMES"
+    printf '  Quote the tracked number for a release; quote both, labelled, for a working tree.\n'
+  elif [ "$HW_TEST_GATE" = fast ]; then
+    printf '  no untracked subjects ran; this is the fast gate only, never the whole suite — see above\n'
+  else
+    # SAID EVEN WHEN THERE IS NOTHING TO SAY. The qualification vanishing when it
+    # is not needed is how an unqualified number comes back.
+    printf '  no untracked subjects ran, so this is the whole suite\n'
+  fi
+fi

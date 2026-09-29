@@ -1,0 +1,6 @@
+# Programs of brain a product executor may run, besides done-invoker,
+# ask-invoker, channel-send, hw, browser-close and herdr-rpc (the brain guard,
+# setup/guards/deny_brain_writes.py, carries those). A line is
+#   <path relative to brain> [via=<interpreter>] [first=<required first arg>]
+# Add the programs your own lanes' executors need to run from brain.
+bin/decisions first=index

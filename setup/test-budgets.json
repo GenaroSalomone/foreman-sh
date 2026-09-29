@@ -1,0 +1,298 @@
+{
+  "fast_gate_threshold_seconds": 2.0,
+  "files": {
+    "01-task-names-and-models.sh": {
+      "exit": 0,
+      "seconds": 2.4
+    },
+    "03-launch-rollback.sh": {
+      "exit": 0,
+      "seconds": 0.23
+    },
+    "100-a-startup-timeout-is-not-a-dead-agent.sh": {
+      "exit": 0,
+      "seconds": 0.07
+    },
+    "100-decisions-rotation-order-and-refusal.sh": {
+      "exit": 0,
+      "seconds": 2.43
+    },
+    "101-invoker-lock-identity.sh": {
+      "exit": 0,
+      "seconds": 31.38
+    },
+    "104-a-failed-rotation-leaves-no-debris.sh": {
+      "exit": 0,
+      "seconds": 0.67
+    },
+    "105-decisions-staged-budget.sh": {
+      "exit": 0,
+      "seconds": 5.84
+    },
+    "106-decisions-entry-linter.sh": {
+      "exit": 0,
+      "seconds": 0.7
+    },
+    "107-decisions-staged-index-rotation.sh": {
+      "exit": 0,
+      "seconds": 0.73
+    },
+    "109-supersede-resolves-by-engram-id.sh": {
+      "exit": 0,
+      "seconds": 0.41
+    },
+    "115-git-c-does-not-reach-fixture-hooks.sh": {
+      "exit": 0,
+      "seconds": 0.65
+    },
+    "117-two-gates-cover-every-subject.sh": {
+      "exit": 0,
+      "seconds": 4.98
+    },
+    "119-the-gate-does-not-break-the-push.sh": {
+      "exit": 0,
+      "seconds": 7.61
+    },
+    "121-installed-hooks-resolve-what-they-source.sh": {
+      "exit": 0,
+      "seconds": 1.82
+    },
+    "127-a-quiet-tracked-dirt-does-not-block-verify.sh": {
+      "exit": 0,
+      "seconds": 0.59
+    },
+    "128-an-ancestors-verdict-can-cover-a-quieter-tip.sh": {
+      "exit": 0,
+      "seconds": 1.39
+    },
+    "129-pre-push-refuses-ai-attribution-in-new-commits.sh": {
+      "exit": 0,
+      "seconds": 0.89
+    },
+    "131-a-subject-that-does-not-parse-did-not-pass.sh": {
+      "exit": 0,
+      "seconds": 12.48
+    },
+    "135-a-message-can-cross-a-shell-that-cannot-touch-it.sh": {
+      "exit": 0,
+      "seconds": 2.08
+    },
+    "141-the-timeout-warning-arrives-while-the-brief-is-free-to-fix.sh": {
+      "exit": 0,
+      "seconds": 2.37
+    },
+    "145-a-test-run-does-not-write-on-a-live-pane.sh": {
+      "exit": 0,
+      "seconds": 0.62
+    },
+    "148-el-repo-no-ve-lo-de-hw-y-odd-ya-no-existe.sh": {
+      "exit": 0,
+      "seconds": 0.27
+    },
+    "152-la-atribucion-muere-en-commit-msg.sh": {
+      "exit": 0,
+      "seconds": 7.75
+    },
+    "166-el-cierre-es-judgment-day.sh": {
+      "exit": 0,
+      "seconds": 0.2
+    },
+    "168-un-hijo-no-cierra-la-tarea-del-padre.sh": {
+      "exit": 0,
+      "seconds": 0.44
+    },
+    "17-herdr-rpc.sh": {
+      "exit": 0,
+      "seconds": 0.45
+    },
+    "175-una-lane-nueva-es-configuracion.sh": {
+      "exit": 0,
+      "seconds": 2.4
+    },
+    "176-dos-suites-comparten-la-maquina.sh": {
+      "exit": 0,
+      "seconds": 126.64
+    },
+    "183-un-fix-prueba-el-rojo.sh": {
+      "exit": 0,
+      "seconds": 0.42
+    },
+    "185-el-analyze-corre-en-contexto-limpio.sh": {
+      "exit": 0,
+      "seconds": 0.44
+    },
+    "187-un-instalador-de-un-comando.sh": {
+      "exit": 0,
+      "seconds": 7.49
+    },
+    "189-la-suite-no-escribe-en-engram.sh": {
+      "exit": 0,
+      "seconds": 0.89
+    },
+    "20-opencode-question-modal.sh": {
+      "exit": 0,
+      "seconds": 0.44
+    },
+    "21-agent-vs-container.sh": {
+      "exit": 0,
+      "seconds": 0.81
+    },
+    "22-close-failures.sh": {
+      "exit": 0,
+      "seconds": 1.07
+    },
+    "22-hw-unstick.sh": {
+      "exit": 0,
+      "seconds": 12.78
+    },
+    "23-invoker-env-file.sh": {
+      "exit": 0,
+      "seconds": 0.29
+    },
+    "24-done-closes-delivered.sh": {
+      "exit": 0,
+      "seconds": 13.4
+    },
+    "26-receiver-preflight.sh": {
+      "exit": 0,
+      "seconds": 6.57
+    },
+    "28-opencode-background-state-drift.sh": {
+      "exit": 0,
+      "seconds": 0.14
+    },
+    "30-state-witness.sh": {
+      "exit": 0,
+      "seconds": 24.49
+    },
+    "34-wait-witness.sh": {
+      "exit": 0,
+      "seconds": 3.91
+    },
+    "41-ruling-refusal.sh": {
+      "exit": 0,
+      "seconds": 5.61
+    },
+    "44-handback-wait-verdict.sh": {
+      "exit": 0,
+      "seconds": 1.31
+    },
+    "45-ask-cap-legal-exit.sh": {
+      "exit": 0,
+      "seconds": 0.79
+    },
+    "46-mutation-arms-are-not-gated.sh": {
+      "exit": 0,
+      "seconds": 4.44
+    },
+    "47-unattended-gate-stall.sh": {
+      "exit": 0,
+      "seconds": 0.36
+    },
+    "48-plain-opencode-is-not-plain.sh": {
+      "exit": 0,
+      "seconds": 1.12
+    },
+    "50-hw-reconcile.sh": {
+      "exit": 0,
+      "seconds": 3.46
+    },
+    "54-the-suite-is-environment-independent.sh": {
+      "exit": 0,
+      "seconds": 69.99
+    },
+    "55-the-runner-number-says-what-it-measured.sh": {
+      "exit": 0,
+      "seconds": 11.79
+    },
+    "60-opencode-subagent-model.sh": {
+      "exit": 0,
+      "seconds": 0.46
+    },
+    "61-blocked-pane-delivery.sh": {
+      "exit": 0,
+      "seconds": 1.45
+    },
+    "66-exit-code-survives-a-pipe.sh": {
+      "exit": 0,
+      "seconds": 7.42
+    },
+    "70-opencode-subagent-effort.sh": {
+      "exit": 0,
+      "seconds": 0.08
+    },
+    "72-blocked-with-no-reason.sh": {
+      "exit": 0,
+      "seconds": 3.36
+    },
+    "74-sol-primary-orchestrates.sh": {
+      "exit": 0,
+      "seconds": 0.14
+    },
+    "75-codex-framework-refusal.sh": {
+      "exit": 0,
+      "seconds": 8.53
+    },
+    "76-close-guard-holes.sh": {
+      "exit": 0,
+      "seconds": 2.34
+    },
+    "77-held-reply-ingestion.sh": {
+      "exit": 0,
+      "seconds": 0.97
+    },
+    "80-codex-brief-delivery.sh": {
+      "exit": 0,
+      "seconds": 9.16
+    },
+    "81-codex-reply-command.sh": {
+      "exit": 0,
+      "seconds": 0.94
+    },
+    "82-agent-registration-readiness.sh": {
+      "exit": 0,
+      "seconds": 0.23
+    },
+    "85-codex-report-route.sh": {
+      "exit": 0,
+      "seconds": 0.04
+    },
+    "86-status-report-units.sh": {
+      "exit": 0,
+      "seconds": 0.08
+    },
+    "87-usage-sections.sh": {
+      "exit": 0,
+      "seconds": 0.11
+    },
+    "90-a-verdict-that-could-not-be-measured.sh": {
+      "exit": 0,
+      "seconds": 3.14
+    },
+    "92-a-clean-bill-covers-only-what-was-read.sh": {
+      "exit": 0,
+      "seconds": 0.67
+    },
+    "94-the-hook-measures-its-own-cost.sh": {
+      "exit": 0,
+      "seconds": 18.17
+    },
+    "95-a-discarded-stderr-does-not-decide.sh": {
+      "exit": 0,
+      "seconds": 1.97
+    },
+    "98-wait-agent-requires-a-matching-event.sh": {
+      "exit": 0,
+      "seconds": 0.36
+    },
+    "99-publish-requires-readable-tokens.sh": {
+      "exit": 0,
+      "seconds": 0.54
+    },
+    "99-unverified-publication-through-callers.sh": {
+      "exit": 0,
+      "seconds": 8.15
+    }
+  },
+  "measured_at": "2026-09-29T15:27:13Z"
+}

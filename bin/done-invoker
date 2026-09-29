@@ -1,0 +1,834 @@
+#!/usr/bin/env bash
+#
+# done-invoker — an executor tells its brainer it has finished.
+#
+#   done-invoker "one paragraph: what you established, and the headline"
+#   done-invoker --blocked "what stopped you, and what would unblock it"
+#
+# Why this exists: an executor that finishes and says nothing leaves the brainer
+# holding a task it thinks is still running. Observed directly — an executor
+# wrote its deliverables and went quiet, and the operator had to notice and ask.
+# A brainer cannot poll, and it should not be watching the other pane.
+#
+# THE SUMMARY IS A POINTER, NOT THE REPORT. Say what you established and name the
+# engram observation ids. The findings live in engram and the brainer reads them
+# there, on its own schedule. Pasting them here puts operational detail into the
+# context the brainer needs for intent — the same reason ask-invoker is capped.
+#
+# Call this exactly once, as the last thing you do.
+#
+# Like ask-invoker, it takes HW_INVOKER_PANE from the environment first and from
+# `<workdir>/.hw/<run>/env` second (walked up from $PWD), so an executor that
+# came back from a herdr restart with no environment can still report.
+#
+# HOW THE COMPLETION IS DELIVERED
+#
+# The prompt is no longer the only record that the task ended, and its exit
+# status is no longer treated as proof of delivery — it is not proof: `agent
+# prompt` succeeds for text it merely drew. A prompt sent while the brainer is
+# `working` is not lost either (measured 2026-08-25 on claude 2.1.245, it is
+# always acted on); it is answered at a point the sender does not choose, which
+# for a completion report means the brainer may act on it mid-thought about
+# something else. So: publish the completion into herdr's own state, notify
+# the operator, and only then prompt, gated on the brainer being idle. See
+# invoker-common.sh for the rationale and the wait budget.
+#
+# EXIT CODES — DELIVERY AND CLOSE ARE TWO FACTS, SO THEY GET TWO CODES
+#
+# `bin/channel-send` already split its exits this way (1 not delivered, 4
+# delivered but the receiver's turn failed, 5 admitted but persistence
+# unconfirmed, 6 receiver structurally unusable) precisely because collapsing
+# them made callers act on a lie. done-invoker sits one layer up and had the
+# same collapse: a report the brainer was holding, whose owned tab merely
+# failed to close, exited 1 — indistinguishable from a report that never
+# landed. A caller reading 1 correctly concludes "retry, nothing was lost", and
+# for a delivered report that is false and produces a duplicate.
+#
+#   0  DELIVERED, and the owned task tab/workspace closed (or none was owed,
+#      because chaining is enabled).
+#   1  NOT DELIVERED — nothing was reported, no marker was written, the pane is
+#      the only copy. Retryable. Also every refusal that happens BEFORE any
+#      report is attempted, for the same reason: nothing moved.
+#   4  DELIVERED AND SAFE, but `hw done` could not close the owned task
+#      tab/workspace. The report IS in the brainer's session and the done
+#      marker IS written; only the close failed, and the pane is preserved.
+#      Do NOT re-run done-invoker on a 4 — it would be a second report for one
+#      task. Close the tab by hand, or diagnose it.
+#   6  HELD FOR A RULING — a correction queued with `hw ruling` was waiting.
+#      It is printed on stdout and stderr and consumed; NOTHING was reported.
+#      Act on it, then run done-invoker again. Not 1, because 1 says "retry
+#      the identical command", and that is the one wrong move here.
+#
+# 4 mirrors channel-send's 4 on purpose: in both, the message landed and the
+# step AFTER delivery is what failed. done-invoker consumes channel-send's own
+# 4 and maps it to 0 (see the DELIVERY_RC branch), so the two never collide on
+# one exit.
+#
+set -euo pipefail
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
+# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
+# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
+# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
+case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
+
+MAX_CHARS=900
+
+# A completion should outlive the working session that produced it — it is what
+# a later `hw status` or a human scrolling the agent list reads to tell a task
+# that ended from a task that died. 24h is herdr's ceiling for ttl_ms.
+DONE_TTL_MS=86400000
+
+die() { printf 'done-invoker: %s\n' "$*" >&2; exit 1; }
+
+# -- THE EXIT CODE A PIPE SWALLOWS -------------------------------------------
+#
+# Same defect and same fix as `bin/channel-send`, whose header carries the full
+# incident: a brainer ran `channel-send … | tail -4`, read `exit 0`, and reported
+# a delivery that never happened — the `0` was TAIL's, because the shell's `$?`
+# after a pipeline is the LAST command's status. done-invoker has the identical
+# shape: long explanatory output, so `| tail` is the obvious thing to do, and an
+# exit code that is the only machine-readable statement of whether the brainer was told.
+#
+# INLINE IN ALL THREE FILES ON PURPOSE, not sourced from a sibling. The natural
+# home is `bin/invoker-common.sh`, and this suite's fixtures copy an explicit
+# list of siblings beside each binary (tests 05, 24, 33, 35, 41, 45, 64). A new
+# MANDATORY sibling would make every one of those copies die on a missing file
+# before reaching the code under test — which is exactly the vacuous-mutant
+# failure `saw_mutant` was written for. Ten duplicated lines cost less than that.
+#
+# WHY STDERR. `cmd | tail` redirects only stdout, so stderr still reaches the
+# terminal the caller is reading; and under `cmd 2>&1 | tail -4` this is the LAST
+# thing written, so a 4-line window still shows it. stdout is left byte-identical
+# because hw and these invokers capture and parse each other's stdout.
+#
+# `[ ! -t 1 ]` cannot tell a pipe from a file or a command substitution, so the
+# wording is true in all three: it names the pipe case conditionally, and tells a
+# caller that already captured the status that it now holds it.
+_INV_EXIT_SPOKEN=0
+_inv_exit_meaning() {
+  case "$1" in
+    1) printf 'NOT DELIVERED — nothing was reported, no marker written, this pane is the only copy; retry the identical command' ;;
+    4) printf 'DELIVERED AND SAFE, but the owned tab/workspace could not be closed — do NOT re-run this, close it by hand' ;;
+    6) printf 'HELD FOR A RULING — nothing was reported; act on the ruling printed above, THEN run done-invoker again (not before)' ;;
+    *) printf 'a failure, not a report' ;;
+  esac
+}
+_inv_exit_guard() {
+  local rc="$1"
+  [ "$_INV_EXIT_SPOKEN" = 0 ] || return 0
+  _INV_EXIT_SPOKEN=1
+  [ "$rc" -ne 0 ] 2>/dev/null || return 0
+  [ ! -t 1 ] || return 0
+  printf 'done-invoker: ══ MY EXIT CODE IS %s: %s ══\n' "$rc" "$(_inv_exit_meaning "$rc")" >&2
+  printf 'done-invoker: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `done-invoker … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: read `${PIPESTATUS[0]}` or drop the pipe. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the report fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2
+  return 0
+}
+trap '_inv_exit_guard "$?"' EXIT
+
+# THE ONE CASE THAT IS NOT `die`. `die` means "nothing happened, retry"; this
+# means "it happened, and the step after it did not". They must not share an
+# exit code, so they do not share a function either.
+EXIT_DELIVERED_NOT_CLOSED=4
+EXIT_HELD_FOR_RULING=6
+die_delivered_not_closed() { printf 'done-invoker: %s\n' "$*" >&2; exit "$EXIT_DELIVERED_NOT_CLOSED"; }
+
+# ── locate the real brain/bin, through the ~/bin symlink ──────────────────
+#
+# ask-invoker and done-invoker are symlinked into ~/bin INDIVIDUALLY, so
+# ${BASH_SOURCE[0]} is the LINK (~/bin/done-invoker) while the shared library
+# and herdr-rpc live beside the TARGET (brain/bin/). Resolve the chain by hand:
+# `readlink -f` is a GNU-ism that only reached macOS in 12.3, and this has to
+# keep working if someone ever links a link. `dirname` is re-evaluated on each
+# hop because a relative link is relative to the directory of the link itself,
+# not to the cwd.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+INVOKER_PROG=done-invoker
+[ -r "$INVOKER_BIN_DIR/invoker-common.sh" ] \
+  || die "cannot find invoker-common.sh beside $_src — this brain/bin is incomplete"
+# shellcheck source=invoker-common.sh
+. "$INVOKER_BIN_DIR/invoker-common.sh"
+
+STATUS=done
+RETASK=0
+# A LOOP, not a single `case`: --retask has to compose with --blocked, and a
+# re-tasked executor that ends up blocked is exactly the case that needs both.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --blocked) STATUS=blocked; shift ;;
+    --done)    shift ;;
+    --retask)  RETASK=1; shift ;;
+    *) break ;;
+  esac
+done
+
+# AN UNKNOWN FLAG MUST NOT BECOME PART OF THE SUMMARY.
+#
+# It used to. `$*` swallowed anything that was not --blocked/--done, so an
+# executor that invented `--status blocked` was filed as DONE — the default —
+# while believing it had reported a blocker. Measured, not imagined:
+# setup:channel-probe called `done-invoker --status done --artifacts a,b <text>`
+# and those flags were published verbatim inside the `sum` tokens, which is the
+# summary a human reads in `herdr agent list`.
+#
+# A real summary never starts with a dash. `--` ends option parsing, for the
+# one case where it might.
+case "${1:-}" in
+  --) shift ;;
+  -) : ;;  # a lone '-' is the stdin sentinel handled below, not an unknown option
+  -*) die "unknown option: $1 — this invoker takes NO flags but [--blocked] and [--retask], and the status is that flag, not a value. Silently folding it into the summary is how a blocked task gets filed as done. Usage: done-invoker [--blocked] [--retask] \"<one paragraph>\" (artifacts are counted from \$HW_ARTIFACTS, do not pass them)" ;;
+esac
+
+# THE SUMMARY MAY BE '-' INSTEAD OF ARGV WORDS, read whole from stdin — the
+# same sentinel channel-send's endpoint slot already documents. Use it for
+# anything a shell would expand out of a double-quoted argv word (backticks,
+# `$`, embedded quotes, newlines) by piping the text in instead, e.g. with a
+# single-quoted heredoc: done-invoker - <<'EOF' ... EOF. Three distinct
+# refusals below, because they are three distinct mistakes.
+if [ "${1:-}" = "-" ]; then
+  [ $# -eq 1 ] || die "the summary was given on argv AND as '-' for stdin — pass it ONE way, not both"
+  [ ! -t 0 ] || die "'-' reads the summary from stdin, but stdin is a terminal — pipe or redirect the text in"
+  SUMMARY="$(cat -)" || die "could not read the summary from stdin"
+  case "$SUMMARY" in
+    *[![:space:]]*) ;;
+    *) die "stdin for '-' produced no bytes — an empty summary delivered would be worse than this refusal. NOTHING was sent or marked." ;;
+  esac
+else
+  [ $# -ge 1 ] || die "usage: done-invoker [--blocked] [--retask] \"<one paragraph>\" | done-invoker [--blocked] [--retask] - (reads the paragraph from stdin)"
+  SUMMARY="$*"
+  case "$SUMMARY" in
+    *[![:space:]]*) ;;
+    *) die "summary is empty. A completion report needs a substantive one-paragraph pointer to what was established and its engram ids; zero artifacts is valid, an empty summary is not. NOTHING was sent or marked." ;;
+  esac
+fi
+
+# ENVIRONMENT FIRST, THEN THE RUN'S ENV FILE — same fallback as ask-invoker, and
+# it matters more here: a completion that cannot be reported is work that looks
+# unfinished forever. See invoker-common.sh.
+
+# -- AN EMPTY HW_INVOKER_PANE MEANS NO BRAINER, AND IT IS HONOURED ----------
+#
+# THE INCIDENT, 2026-09-02, and it is mine. Smoke-testing this binary's own exit
+# guard, I ran `HW_INVOKER_PANE= done-invoker "<probe text>"` believing the blank
+# address made the call inert. It did not. `invoker_adopt_env_file` fills every
+# variable that is "unset OR EMPTY" (invoker-common.sh:296,
+# `[ -n "${!key:-}" ] && continue`), so the blank was read as absent and the REAL
+# brainer pane was recovered from `.hw/<run>/env`. The probe reached a live
+# brainer: it spent an ask and delivered a one-word report.
+#
+# THAT FALLBACK IS RIGHT FOR THE CASE IT WAS BUILT FOR — a pane that came back
+# from a herdr restart with no environment at all, where the file is the only
+# copy of the address. It is wrong for a caller that SET the variable and set it
+# to nothing: that is not a missing address, it is a stated one, and the stated
+# one is "none". Environment-first is the documented rule; treating an explicit
+# empty as absent is the one place it was not followed.
+#
+# SO A TEST SURFACE NOW HAS A ONE-TOKEN GUARANTEE. `HW_INVOKER_PANE=` in front
+# of the command makes the live channel unreachable, with no stub PATH, no
+# fixture and nothing to remember beyond the token itself — and it refuses
+# BEFORE the run lock, any counter read, any metadata write and any delivery, so
+# a smoke run cannot spend an ask or write a marker either.
+#
+# IT IS NOT A CHANGED DEFAULT. An UNSET variable still falls back to the env
+# file exactly as before, which is the restart case that fallback exists for.
+# `${VAR+set}` is what separates the two; `${VAR:-}` cannot.
+#
+# WHAT IT DOES NOT COVER, stated rather than implied: an operator who runs this
+# binary with the real address still reaches the real brainer, because that is
+# the binary's job. This closes the accident, not the intent.
+if [ -n "${HW_INVOKER_PANE+set}" ] && [ -z "${HW_INVOKER_PANE:-}" ]; then
+  die "HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (\`unset HW_INVOKER_PANE\`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean."
+fi
+
+invoker_adopt_env_file
+
+# Serialise invokers of this run before any counter is read. See invoker-common.sh.
+invoker_run_lock
+
+# RE-ARM THE PIPE GUARD, because `invoker_run_lock` just took the EXIT trap.
+#
+# It installs `trap invoker_release_run_lock EXIT` and holds it for the whole
+# invocation (invoker-common.sh) — bash keeps ONE handler per signal, so that
+# call silently removes the guard installed at the top of this file, for every
+# exit from here on. Which is every exit that matters: the lock is taken before
+# any delivery is attempted, so without this line the swallowed-exit-code
+# warning would exist only for the argument checks above it.
+#
+# The lock release is kept, in the same order and through the same function
+# `invoker_run_lock` installed, and `$?` is read FIRST because the release
+# clobbers it.
+#
+# IT CALLS `invoker_release_run_lock`, NOT `rmdir`. This line used to be a
+# literal `rmdir '<path>'`, which releases by PATH: after a successor reaped our
+# aged lock and took it, our own exit deleted the successor's LIVE lock and let a
+# third invoker in. Measured 2026-09-08; the identity check now lives in the
+# library, and both callers have to go through it or the fix is only half
+# installed. The library is no longer off-limits — the note about uncommitted
+# work from another author was true when this was written and is not now.
+if [ -n "${INVOKER_RUN_LOCK:-}" ]; then
+  trap '_inv_rc=$?; [ -z "${REPORTING_MARKER:-}" ] || rm -f "$REPORTING_MARKER" 2>/dev/null || true; invoker_release_run_lock; _inv_exit_guard "$_inv_rc"' EXIT
+  invoker_arm_lock_signals
+fi
+
+[ -n "${HW_INVOKER_PANE:-}" ] || die "no HW_INVOKER_PANE — this pane was not launched by hw with --here, so there is no brainer to notify. Report to ${HW_OPERATOR:-the operator} in this pane instead."
+[ -n "${HERDR_PANE_ID:-}" ]   || die "no HERDR_PANE_ID — not running inside a herdr pane."
+
+TASK="${HW_TASK:-unknown}"
+PROJECT="${HW_PROJECT:-unknown}"
+WORKDIR="${HW_WORKDIR:-<unknown>}"
+ARTIFACTS_ROOT="${HW_ARTIFACTS:-$WORKDIR}"
+
+LEN="$(printf '%s' "$SUMMARY" | wc -c | tr -d ' ')"
+[ "$LEN" -le "$MAX_CHARS" ] || die "summary is $LEN chars, limit is $MAX_CHARS. This is a pointer, not the report — mem_save the report and name its id here."
+case "$SUMMARY" in
+  *'```'*) die "no code fences. The findings belong in engram, not in this message." ;;
+esac
+
+# -- A COMPLETION NAMES AN OBSERVATION THAT EXISTS, UNDER THIS LANE ----------
+#
+# MEASURED 2026-09-28: two product-lane executors reported done with no engram id at
+# all, because every mem_save they tried was refused (the session hw registered
+# was in a foreign serve's store, and the fallback `manual-save-<label>` is owned
+# by `brain`). The preamble had told them to pass session_id; nothing checked
+# that the save landed, so the brainer got a report pointing at nothing.
+#
+# So, for a run hw registered an engram session for (the receipt's
+# `engram_session` is an `hw-` id), a DONE report must name at least one
+# observation as `#<id>`, and at least one named id must exist, undeleted, with
+# the lane's engram label as its project — checked against the serve only after
+# that serve is proven to be this machine's store (bin/engram-serve.sh).
+#
+# NOT GATED: `--blocked` (engram itself may be the blocker, and a blocker is
+# still a report), and a run with no registered session (engram was down at
+# launch; the receipt already says so, and demanding an id would strand a
+# finished task on a fact nobody can fix from this pane).
+if [ "$STATUS" = done ]; then
+  _eng_sess="$(jq -r 'select(.key=="engram_session") | .value' "$(invoker_run_dir)/receipt.jsonl" 2>/dev/null | tail -1 || true)"
+  case "$_eng_sess" in
+    hw-*)
+      _eng_label="${ENGRAM_PROJECT:-}"
+      if [ -z "$_eng_label" ] && command -v lane_get >/dev/null 2>&1; then
+        _eng_label="$(lane_get "${HW_PROJECT:-}" engram 2>/dev/null)" || _eng_label=""
+      fi
+      : "${_eng_label:=${HW_PROJECT:-unknown}}"
+      # shellcheck source=engram-serve.sh
+      . "$INVOKER_BIN_DIR/engram-serve.sh" \
+        || die "cannot find engram-serve.sh beside $INVOKER_BIN_DIR — this brain/bin is incomplete. NOTHING was sent or marked."
+      _eng_ids="$(printf '%s' "$SUMMARY" | grep -oE '#[0-9]+' | tr -d '#' | awk '!seen[$0]++' || true)"
+      [ -n "$_eng_ids" ] \
+        || die "the summary names no engram observation. Name each one as #<id> (the id mem_save returned, saved with project: $_eng_label and session_id: $_eng_sess). If every save was refused, that is a blocker: report it with --blocked and quote the refusal. NOTHING was sent or marked."
+      _eng_url="$(engram_serve_url)"
+      _eng_rc=0; _eng_verdict="$(engram_serve_verdict "$_eng_url")" || _eng_rc=$?
+      [ "$_eng_rc" = 0 ] \
+        || die "cannot verify the observations you named: $_eng_verdict. A report whose engram ids cannot be checked is not accepted as done — report it with --blocked, naming this line. NOTHING was sent or marked."
+      _eng_ok=""; _eng_seen=""
+      for _eng_id in $_eng_ids; do
+        _eng_proj="$(engram_observation_project "$_eng_id" "$_eng_url")"
+        if [ "$_eng_proj" = "$_eng_label" ]; then _eng_ok="$_eng_id"; break; fi
+        _eng_seen="$_eng_seen #$_eng_id=${_eng_proj:-missing}"
+      done
+      [ -n "$_eng_ok" ] \
+        || die "none of the observations you named exists under project $_eng_label:$_eng_seen. A save that landed elsewhere (manual-save-*, another project) is not this lane's report. Save again with project: $_eng_label and session_id: $_eng_sess, name the returned id as #<id>, and re-run. NOTHING was sent or marked."
+      ;;
+  esac
+fi
+
+# -- A TASK WHOSE BRIEF DECLARED A BOUNDARY CLOSES ON AN APPROVED DESIGN ------
+#
+# `boundary:` in a build brief means the approach is where it can go wrong
+# (setup/decisions.md, "Judgment Day juzga el diseño"), so hw recorded it in the
+# receipt as `design_boundary_t<task>` and told the executor to judge its design
+# before the code. A DONE report is held to that: $ARTIFACTS_ROOT/design-judgment.md
+# must name the same boundary, a design file that still hashes to the recorded
+# sha256, and end on `JUDGMENT: APPROVED`.
+#
+# NOT GATED: `--blocked` — an ESCALATED design is reported exactly that way.
+# NOT CHECKABLE HERE: that the judgment came BEFORE the code. The file proves a
+# judged, approved design exists; the order is the executor's to keep.
+if [ "$STATUS" = done ]; then
+  _dz_key="design_boundary_t$(invoker_task_seq)"
+  _dz_boundary="$(jq -r --arg k "$_dz_key" 'select(.key==$k) | .value' "$(invoker_run_dir)/receipt.jsonl" 2>/dev/null | tail -1 || true)"
+  if [ -n "$_dz_boundary" ]; then
+    _dz_file="$ARTIFACTS_ROOT/design-judgment.md"
+    _dz_how="Judge the design first (judgment-day, design mode: references/design-mode.md), then write $_dz_file with the lines  boundary: $_dz_boundary  /  design: <file>  /  design_sha256: <sha256>  /  JUDGMENT: APPROVED. An ESCALATED design is reported with --blocked. NOTHING was sent or marked."
+    [ -f "$_dz_file" ] \
+      || die "this task's brief declared a boundary, and there is no $_dz_file. $_dz_how"
+    _dz_field() { sed -n "s/^$1:[[:space:]]*//p" "$_dz_file" | tail -1 | sed 's/[[:space:]]*$//'; }
+    [ "$(_dz_field boundary)" = "$_dz_boundary" ] \
+      || die "design-judgment.md judges boundary '$(_dz_field boundary)', and this task's brief declared '$_dz_boundary'. A verdict about another boundary is not this task's. $_dz_how"
+    _dz_verdict="$(_dz_field JUDGMENT)"
+    case "$_dz_verdict" in
+      APPROVED*) ;;
+      ESCALATED*) die "the design judgment is ESCALATED. That is a blocker, not a done: report it with done-invoker --blocked, naming the bypass classes the judges found. NOTHING was sent or marked." ;;
+      *) die "design-judgment.md has no 'JUDGMENT: APPROVED' line (last verdict: '${_dz_verdict:-none}'). $_dz_how" ;;
+    esac
+    _dz_design="$(_dz_field design)"
+    case "$_dz_design" in ""|/*) ;; *) _dz_design="$ARTIFACTS_ROOT/$_dz_design" ;; esac
+    [ -n "$_dz_design" ] && [ -f "$_dz_design" ] \
+      || die "design-judgment.md names no design file that exists ('$(_dz_field design)'). $_dz_how"
+    _dz_want="$(_dz_field design_sha256)"
+    _dz_have="$(shasum -a 256 "$_dz_design" 2>/dev/null | awk '{print $1}')"
+    [ -n "$_dz_want" ] && [ "$_dz_want" = "$_dz_have" ] \
+      || die "the design file $_dz_design hashes to ${_dz_have:-<unreadable>}, and the verdict judged ${_dz_want:-<no design_sha256>}. The approved design is not the one on disk: judge the current one. NOTHING was sent or marked."
+  fi
+fi
+
+# -- AN ODD RUN CLOSES ON A CHECK AGAINST WHAT IS DEPLOYED ------------------
+#
+# MEASURED 2026-09-28/29: the 8 `--sdd gentle` runs of the salón release
+# never verified against staging (no QA account, session_reauth_failed,
+# tenant_seed_missing), ODD wrote it down as pending, and every one reported
+# done (setup/decisions.md, 2026-09-29). hw records `deployed_check_t<task>` for a gentle run:
+#
+#   required               a DONE needs $ARTIFACTS_ROOT/deployed-check.md with
+#                          a non-local `target:`, an `evidence:` file that
+#                          exists, and `RESULT: PASSED`. Otherwise the run is a
+#                          HOLD (ask-invoker naming what is missing) or --blocked.
+#   out-of-scope: <why>    the brief took it out; the report is prefixed with
+#                          that line here, so no executor can leave it out.
+#
+# NOT GATED: `--blocked`. NOT CHECKABLE HERE: that the run in `evidence:` is the
+# one that produced PASSED. The file makes the claim explicit and names its
+# proof; it cannot replay it.
+if [ "$STATUS" = done ]; then
+  _dc="$(jq -r --arg k "deployed_check_t$(invoker_task_seq)" 'select(.key==$k) | .value' "$(invoker_run_dir)/receipt.jsonl" 2>/dev/null | tail -1 || true)"
+  case "$_dc" in
+    "") ;;
+    out-of-scope:*)
+      SUMMARY="DEPLOYED CHECK OUT OF SCOPE (brief: ${_dc#out-of-scope: }).
+$SUMMARY" ;;
+    *)
+      _dc_file="$ARTIFACTS_ROOT/deployed-check.md"
+      _dc_how="Write $_dc_file with the lines  target: <the deployed https URL you verified>  /  evidence: <file under $ARTIFACTS_ROOT with the run's result>  /  RESULT: PASSED. If the check cannot run (no QA account, no seed, no session), this run is a HOLD: ask-invoker naming exactly what is missing, and wait for the reply. If it cannot be lifted, report done-invoker --blocked. NOTHING was sent or marked."
+      [ -f "$_dc_file" ] \
+        || die "this is an ODD run (--sdd gentle) and its brief did not take the deployed check out of scope, and there is no $_dc_file: nothing deployed was verified, so this is not a done. $_dc_how"
+      _dc_field() { sed -n "s/^$1:[[:space:]]*//p" "$_dc_file" | tail -1 | sed 's/[[:space:]]*$//'; }
+      _dc_target="$(_dc_field target)"
+      _dc_host="$(printf '%s' "$_dc_target" | sed -nE 's#^[Hh][Tt][Tt][Pp][Ss]?://([^/?#]*).*#\1#p' | sed -E 's/^[^@]*@//' | tr '[:upper:]' '[:lower:]')"
+      case "$_dc_host" in
+        \[*) _dc_host="$(printf '%s' "$_dc_host" | sed -E 's/^\[([^]]*)\].*/\1/')" ;;
+        *)   _dc_host="${_dc_host%%:*}" ;;
+      esac
+      # A denylist of spellings leaks (`localhost.`, `0`, `::ffff:127.0.0.1` all reach
+      # the loopback), so the host is normalised and judged by what it IS: a
+      # trailing dot is dropped; any IPv4 spelling but a canonical dotted quad
+      # outside 0/8 and 127/8 (`0`, `127.1`, `0x7f.1`, `2130706433`) is refused; an
+      # IPv6 literal is refused when it is unspecified, loopback or v4-mapped.
+      while [ "${_dc_host%.}" != "$_dc_host" ]; do _dc_host="${_dc_host%.}"; done
+      _dc_local=0
+      case "$_dc_host" in
+        ""|localhost|*.localhost) _dc_local=1 ;;
+        *:*)
+          _dc_host="${_dc_host%%\%*}"
+          case "$_dc_host" in
+            *[!0-9a-f:.]*) _dc_local=1 ;;
+            *) if printf '%s' "$_dc_host" | grep -Eq '^[0:]*:0*ffff:'; then _dc_local=1; fi ;;
+          esac
+          case "$_dc_host" in
+            *) [ -z "$(printf '%s' "$_dc_host" | tr -d '0:')" ] && _dc_local=1
+               [ -z "$(printf '%s' "$_dc_host" | sed -E 's/^[0:]*:0*1$//')" ] && _dc_local=1 ;;
+          esac ;;
+        *)
+          if printf '%s' "$_dc_host" | grep -Eq '^(0x[0-9a-f]+|[0-9]+)(\.(0x[0-9a-f]+|[0-9]+))*$'; then
+            if printf '%s' "$_dc_host" | grep -Eq '^([1-9][0-9]{0,2}|0)(\.([1-9][0-9]{0,2}|0)){3}$'; then
+              case "$_dc_host" in 0.*|127.*) _dc_local=1 ;; esac
+            else
+              _dc_local=1
+            fi
+          fi ;;
+      esac
+      case "$_dc_local" in
+        1)
+          die "deployed-check.md names target '${_dc_target:-<none>}', which is not a deployed target: a check against a local server proves the code, not the deploy. $_dc_how" ;;
+      esac
+      _dc_verdict="$(_dc_field RESULT)"
+      case "$_dc_verdict" in
+        PASSED*) ;;
+        FAILED*) die "the deployed check against $_dc_target is FAILED ('$_dc_verdict'). That is not a done: fix it and re-run the check, or report done-invoker --blocked naming the failure. NOTHING was sent or marked." ;;
+        *) die "deployed-check.md has no 'RESULT: PASSED' line (last verdict: '${_dc_verdict:-none}'). $_dc_how" ;;
+      esac
+      _dc_ev="$(_dc_field evidence)"
+      case "$_dc_ev" in ""|/*) ;; *) _dc_ev="$ARTIFACTS_ROOT/$_dc_ev" ;; esac
+      [ -n "$_dc_ev" ] && [ -f "$_dc_ev" ] \
+        || die "deployed-check.md names no evidence file that exists ('$(_dc_field evidence)'). A PASSED with nothing on disk behind it is the pending line again. $_dc_how" ;;
+  esac
+fi
+
+# Only once. A second call means the task did not actually finish the first time,
+# and the brainer should not be told twice.
+# Keyed on the RUN, not the directory. `hw done` keeps a repo-less work
+# directory and the next run reuses it, so directory-keyed state leaked across
+# runs: an executor could start already at the ask cap, or be unable to report
+# done because a previous run had.
+#
+# The gate covers BOTH paths — `--done` and `--blocked` are different messages
+# but the same once-only fact: this run has told its brainer how it ended. A
+# blocked run that later succeeds is a new run, not a second completion.
+# The marker is still written only when a prompt actually lands on an idle
+# brainer, so a gate that timed out can be retried; see the timeout branch.
+#
+# THE COUNTER HAS EXACTLY ONE WRITER, AND IT IS NOT ALWAYS THE ONE WHO RE-TASKED.
+#
+# `hw next` is the only thing that advances `<run>/task`. A brainer that
+# re-tasks its executor any other way — typing into the pane, `channel-send`,
+# `herdr agent prompt`, just talking to it — leaves the counter frozen on the
+# task that already reported, and this gate then refuses the SECOND task's
+# completion as a duplicate. Observed 2026-08-24: a product-lane executor finished a
+# worktree cleanup, called done-invoker exactly once, and was told it had
+# already reported. It had not. Its brainer had re-tasked it out of band.
+#
+# So `--retask` exists, and it is the executor's own escape hatch: it claims the
+# next task number, which is the fact only the executor can observe, because it
+# is the one that received the new instruction. The brainer is TOLD this
+# happened (see RETASK_NOTE) and gets to arbitrate — a duplicate report and a
+# genuine second task look identical from here, and the brainer knows which it
+# sent. A dead end does not: it strands finished work.
+#
+# It refuses when the current task has NOT reported, which is also what makes a
+# retry after a failed delivery safe: the first --retask moved the counter, so
+# the second finds no marker and says to drop the flag instead of bumping again.
+RETASK_NOTE=""
+if [ "$RETASK" = 1 ]; then
+  RUN_DIR="$(invoker_run_dir)"
+  SEQ="$(invoker_task_seq)"
+  [ -f "$(invoker_state_dir)/done" ] \
+    || die "--retask claims the NEXT task number, and task $SEQ has not reported yet — so there is nothing to move past. Drop the flag: plain done-invoker is what reports this task. (If you already ran --retask and only the delivery failed, the counter moved then; re-run WITHOUT it.)"
+  NEXTSEQ="$((SEQ + 1))"
+  mkdir -p "$RUN_DIR/t$NEXTSEQ" \
+    || die "cannot create $RUN_DIR/t$NEXTSEQ, so --retask cannot claim task $NEXTSEQ"
+  printf '%s\n' "$NEXTSEQ" > "$RUN_DIR/task" \
+    || die "cannot write $RUN_DIR/task, so --retask cannot claim task $NEXTSEQ"
+  RETASK_NOTE="NOTE — this executor claimed task $NEXTSEQ itself with \`done-invoker --retask\`,
+because task $SEQ had already reported and the counter had not moved. That means
+the re-task did not go through \`hw next\`. If you did re-task it, this report is
+task $NEXTSEQ and everything is consistent again. If you did NOT, this is a
+duplicate report for task $SEQ — say so and ignore it. Re-task with
+\`hw next <pane> \"…\"\` and the counter moves on its own.
+
+"
+fi
+
+STATE_DIR="$(invoker_state_dir)"
+mkdir -p "$STATE_DIR"
+# A `reopened` marker beside `done` is `hw revive`'s: the run reported, was
+# closed, and was brought back in a new pane. Its old report stands and THIS
+# one is the new task's, so it is accepted plainly — no --retask, because the
+# counter did not need to move: nothing was re-tasked, the same task was
+# reopened. The marker is cleared when the new report lands (below).
+[ -f "$STATE_DIR/done" ] && [ ! -f "$STATE_DIR/reopened" ] && die "already notified the brainer for this task. If your brainer re-tasked you AFTER that report and this is the new task's completion, the task counter never moved — only \`hw next\` advances it, and your brainer used something else. Claim it yourself and report: done-invoker --retask \"<same paragraph>\". Otherwise this is a second completion for one task: that is a message for ${HW_OPERATOR:-the operator}, not a report."
+
+# ── A QUEUED RULING IS DELIVERED BEFORE THE TASK CAN CLOSE ─────────────────
+#
+# THE DEFECT, setup/decisions.md 2026-09-21 and again 2026-09-28: `hw ruling`
+# queued a correction for "the next turn end", the executor's next move was
+# THIS command, and the turn end that followed found the task already reported
+# and returned before it looked for the ruling. The brainer was told "queued";
+# the executor never saw it; a whole new task was the price.
+#
+# So the report waits for the ruling. The order is the whole mechanism:
+#   1. write `reporting` (this pid and its start time) in the task's state dir;
+#   2. THEN claim every queued ruling (`pending-ruling*`) with `mv`.
+# `hw ruling` does the mirror: write its ruling, THEN look for a live
+# `reporting` or a done marker, and retract with its own `mv` if it finds one.
+# Whichever lands first, one side sees the other, so an accepted ruling is
+# delivered here or at a turn end — never left where nothing reads it. A
+# `reporting` whose process is gone is not live (state-witness.sh), so a
+# crashed report cannot refuse corrections forever; the EXIT trap removes it.
+REPORTING_MARKER="$STATE_DIR/reporting"
+{ printf '%s\n' "$$"; _invoker_proc_start "$$"; } > "$REPORTING_MARKER" 2>/dev/null \
+  || die "could not write $REPORTING_MARKER, so a ruling queued now could not be told this task is closing. Nothing was reported; retry."
+RULING_RUN_DIR="$(invoker_run_dir)"
+# EVERY queued ruling, oldest first: the report waits for all of them, not
+# only the one at the head (state-witness.sh, THE RULING QUEUE).
+[ -r "$INVOKER_BIN_DIR/state-witness.sh" ] \
+  || die "cannot find state-witness.sh beside $INVOKER_BIN_DIR, so queued rulings cannot be checked before this task closes. Nothing was reported; this brain/bin is incomplete."
+# shellcheck source=state-witness.sh
+. "$INVOKER_BIN_DIR/state-witness.sh"
+if RULING_TEXT="$(ruling_queue_claim_all "$RULING_RUN_DIR" done-invoker)"; then
+  # stdout AND stderr: whichever the caller shows, the ruling is in it.
+  RULING_MSG="NOT REPORTED — RULING FROM YOUR BRAINER, queued with \`hw ruling\` while you were working. It changes the premise of your work, so your report was held and NOTHING was sent. Read it, act on it — and if it contradicts what you have already done, say so rather than quietly redoing it — then run done-invoker again.
+
+$RULING_TEXT"
+  printf '%s\n' "$RULING_MSG"
+  printf 'done-invoker: %s\n' "$RULING_MSG" >&2
+  # 6, not 1: 1 means "retry the identical command", and retrying before
+  # reading the ruling is the one thing this exit exists to prevent.
+  exit "$EXIT_HELD_FOR_RULING"
+fi
+
+# ── the close precondition, CHECKED BEFORE ANYTHING IS REPORTED ───────────
+#
+# The delivered path closes the owned task tab/workspace by shelling out to
+# `hw done` (see section 5). That made `hw` a hard dependency of done-invoker,
+# and the dependency was discovered at the very END — after the tokens were
+# published, after the toast, after the brainer had the report. On 2026-08-26
+# `setup/test-channel-send` built a harness with a `bin/done-invoker` and no
+# `bin/hw` beside it, and the run ended in `No such file or directory` from
+# line 376 with the report already delivered.
+#
+# That is the late-precondition shape: a requirement that could have been
+# checked for free, checked instead at the one moment where failing is most
+# expensive. So it is checked here, before the first irreversible act. Nothing
+# has been published, no marker exists, the pane is intact, and the executor
+# can fix the install and re-run the identical command.
+#
+# It is skipped when chaining is enabled, because then no close is owed and
+# `hw` is genuinely not needed — which is also the escape hatch for an
+# already-running legacy keep contracts; new dispatches require hw because the
+# bounded lease and its detached expiry action are part of delivery accounting.
+CHAINING_LEASE=0
+LEGACY_KEEP=0
+if [ "${HW_CHAINING_ENABLED:-0}" = 1 ] && [ -n "${HW_CHAINING_LEASE_SECONDS:-}" ]; then
+  CHAINING_LEASE=1
+  CLOSE_OWED=0
+elif [ "${HW_CHAINING_ENABLED:-0}" = 1 ] || [ "${HW_DONE_KEEP_PANE:-0}" = 1 ]; then
+  # Compatibility for executors launched before the bounded lease contract.
+  # Never emit or teach this variable as the current interface.
+  LEGACY_KEEP=1
+  CLOSE_OWED=0
+else
+  CLOSE_OWED=1
+fi
+
+if { [ "$CLOSE_OWED" = 1 ] || [ "$CHAINING_LEASE" = 1 ]; } && [ ! -x "$INVOKER_BIN_DIR/hw" ]; then
+  die "REFUSING BEFORE REPORTING — nothing was sent, nothing was marked, this pane still holds the only copy of your report. A delivered report must either close its owned task tab/workspace or establish its bounded chaining lease, and there is no executable \`hw\` beside this invoker ($INVOKER_BIN_DIR/hw). Fix the install so brain/bin is complete, then re-run this exact command."
+fi
+
+# `|| true`: if the work directory was removed, find exits non-zero, pipefail
+# propagates and set -e kills the script before it can report anything — the
+# same silent-exit shape as the bug this file was written to fix.
+FILES="$(find "$ARTIFACTS_ROOT" -type f -not -path '*/.hw/*' 2>/dev/null | wc -l | tr -d ' ' || true)"
+: "${FILES:=0}"
+
+# Built with if/else, NOT with `$( [ test ] && printf … )`. That form returns 1
+# whenever the test is false, an assignment inherits the substitution's status,
+# and `set -e` then kills the script before it ever reaches herdr. This exact
+# construct made done-invoker exit 1 in silence for every task that produced a
+# file — the script written to stop silent finishes, finishing silently, for
+# precisely the tasks with something to show. Found by the 2026-08-20 audit.
+if [ "$FILES" = 0 ]; then
+  FILES_NOTE=" (none, which is correct when the output is a report)"
+else
+  FILES_NOTE=""
+fi
+
+# The engram label is not always the hw project name. Report where the report
+# actually is: the ENGRAM_PROJECT hw exported to this run, else the lane's
+# `engram` in projects.json (loaded by invoker-common.sh when it can be), else
+# the project name.
+ENGRAM_LABEL="${ENGRAM_PROJECT:-}"
+if [ -z "$ENGRAM_LABEL" ] && command -v lane_get >/dev/null 2>&1; then
+  ENGRAM_LABEL="$(lane_get "$PROJECT" engram 2>/dev/null)" || ENGRAM_LABEL=""
+fi
+: "${ENGRAM_LABEL:=$PROJECT}"
+
+if [ "$STATUS" = done ]; then
+  HEAD="[executor finished — $PROJECT:$TASK, pane $HERDR_PANE_ID]"
+  TAIL="Report: in engram under project \`$ENGRAM_LABEL\` — search it, or
+mem_get_observation the ids named above.
+Artifacts: $FILES file(s) in $ARTIFACTS_ROOT$FILES_NOTE
+
+Distil what is decision-grade into decisions.md; the raw report stays in engram.
+After receiver-proved delivery, done-invoker closes the hw-owned task tab or
+workspace through \`hw done\`. If the brainer launched this run with
+\`hw ... --keep-pane [duration] --why "..."\`, a bounded chaining lease keeps the pane
+for \`hw next\` and expiry closes it automatically.
+A failed close leaves the pane open and exits 4 — which means this report is
+delivered and safe and only the close failed, NOT that the report was lost."
+  SOUND=done
+else
+  HEAD="[executor BLOCKED and stopped — $PROJECT:$TASK, pane $HERDR_PANE_ID]"
+  TAIL="Partial output: $FILES file(s) in $ARTIFACTS_ROOT
+
+It stopped rather than working around the blocker, which is correct. Decide
+whether this is yours to unblock or ${HW_OPERATOR:-the operator}'s."
+  SOUND=request
+fi
+
+ENVELOPE_ID="$(invoker_envelope_prefix):done"
+MSG="$HEAD
+Envelope: $ENVELOPE_ID. Process this envelope even if your inbox coalesced it
+with other messages.
+
+$RETASK_NOTE$SUMMARY
+
+$TAIL"
+
+# ── 1. publish, before any keystroke is attempted ─────────────────────────
+#
+# After this the completion exists inside herdr, attached to this pane, readable
+# with `herdr agent list`, whether or not a prompt ever lands. `summary` is the
+# same pointer the brainer gets, so a human reading the token list does not have
+# to go and find the transcript; `engram` names where the real report is. The
+# pane's own status cannot be moved, so these tokens are the only
+# machine-readable trace that this run ended.
+#
+# THE KEY BUDGET, because it is exactly full. herdr allows 16 tokens per call
+# and truncates each VALUE at 80 characters (see invoker-common.sh), so the
+# summary goes in as chunks: 9 fixed keys + 7 chunks = 16. 7 × 80 = 560 of the
+# 900 allowed characters, and a summary longer than that ends in an ellipsis in
+# `sum7` — deliberately, because the summary is a POINTER by contract (say what
+# you established, name the engram ids) and the pointer part is at the front.
+# The full text always reaches the brainer in the prompt; the tokens are the
+# durable trace. There is no `done=1` flag: `done_status` is the flag, and its
+# value says which of the two endings happened.
+DONE_CHUNKS=7
+
+publish_done() {  # $1 = done_state value (delivered | undelivered)
+  local tokens rec
+  local -a chunks=()
+  while IFS= read -r -d '' rec; do chunks+=("$rec"); done \
+    < <(invoker_chunk_tokens sum "$DONE_CHUNKS" "$SUMMARY")
+  tokens="$(invoker_tokens_json \
+    "hw_project=$PROJECT" \
+    "hw_task=$TASK" \
+    "hw_run=${HW_RUN:-norun}" \
+    "hw_invoker=$HW_INVOKER_PANE" \
+    "done_status=$STATUS" \
+    "done_state=$1" \
+    "done_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    "artifacts=$FILES" \
+    "engram=$ENGRAM_LABEL" \
+    "${chunks[@]}")" || die "internal: could not build the done tokens"
+  invoker_publish "$DONE_TTL_MS" "$tokens" \
+    "$(printf '{"idle":"%s: %s","working":"%s: %s","blocked":"%s: %s"}' \
+       "$STATUS" "$TASK" "$STATUS" "$TASK" "$STATUS" "$TASK")"
+}
+
+PUB_RC=0
+publish_done undelivered || PUB_RC=$?
+if [ "$PUB_RC" -ne 0 ]; then
+  # 3 means the socket is gone: neither the record nor the prompt can land, and
+  # a completion nobody can see is worse than an error, so say it plainly. The
+  # once-only marker is NOT written, so this can be retried.
+  if [ "$PUB_RC" -eq 3 ]; then
+    die "cannot reach herdr on \$HERDR_SOCKET_PATH, so neither the record nor the message could be delivered. Nothing was marked; retry, or tell ${HW_OPERATOR:-the operator} in this pane that $PROJECT:$TASK ended $STATUS."
+  fi
+  printf 'done-invoker: warning: completion metadata is unverified (herdr-rpc exit %s); continuing to the brainer without a verified record.\n' "$PUB_RC" >&2
+fi
+PUBLICATION_NOTE="$(invoker_publication_note "$PUB_RC")"
+
+# ── 2. the toast ──────────────────────────────────────────────────────────
+#
+# Before the prompt, not after: the operator learns the task ended even if the
+# brainer is mid-turn and a Herdr route below times out. The config routes this to macOS
+# Notification Center via [ui.toast] delivery = "system".
+herdr notification show "executor $STATUS · $PROJECT:$TASK" \
+  --body "$FILES file(s) in $(basename "$ARTIFACTS_ROOT") — notifying brainer in $HW_INVOKER_PANE" \
+  --sound "$SOUND" >/dev/null 2>&1 || true
+
+# ── 3. route and prove delivery, exactly as in ask-invoker ────────────────
+DELIVERY_ROUTE="$(invoker_route)"
+if invoker_deliver "$MSG" "$STATE_DIR"; then
+  DELIVERY_RC=0
+else
+  DELIVERY_RC=$?
+fi
+
+# EXIT 4 ON A NATIVE ROUTE MEANS DELIVERED. channel-send returns it only after
+# the message is proven present in the receiver's session; what failed is the
+# turn the receiver started, which is the receiver's problem and not evidence
+# that the report was lost. Treating it as a failure would refuse on a message the
+# brainer is holding — the same class of mistake as calling `hw next`'s HTTP 500
+# "not delivered" and closing the executor over it (2026-08-25).
+# Herdr's exit 4 is unrelated (an RPC error), which is why this is keyed on the
+# route as well as the code.
+if [ "$DELIVERY_RC" -eq 4 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
+  printf 'done-invoker: the brainer RECEIVED this (it is in its session) but the turn it started did not complete — see the message above. Counting it as delivered, because it was.\n' >&2
+  DELIVERY_RC=0
+fi
+
+if [ "$DELIVERY_RC" -ne 0 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
+  die "$DELIVERY_ROUTE delivery proof failed (exit $DELIVERY_RC). $PUBLICATION_NOTE The done marker was not written."
+fi
+
+# Exit 3 covers two different things and the message has to say both, because
+# herdr does not distinguish them: an unreachable socket, and a wait naming a
+# pane that does not exist — verified, herdr CLOSES the connection on an unknown
+# pane_id rather than returning an error, so herdr-rpc reports it as exit 3. The
+# marker is NOT written: if it was the socket, a retry works, and if the pane is
+# gone a retry costs one more failed message and says so again.
+if [ "$DELIVERY_RC" -eq 3 ]; then
+  die "could not wait on $HW_INVOKER_PANE: either herdr is unreachable on \$HERDR_SOCKET_PATH or that pane no longer exists — herdr answers both the same way. $PUBLICATION_NOTE The brainer was not told.$(invoker_pane_source_note) Tell ${HW_OPERATOR:-the operator} in this pane."
+fi
+
+if [ "$DELIVERY_RC" -eq 4 ]; then
+  # No delivery means no success marker. Keep the completion retryable in case
+  # the invoker target is corrected or recreated.
+  die "the brainer's pane $HW_INVOKER_PANE no longer exists, so no message was sent. $PUBLICATION_NOTE The done marker was not written. Correct the invoker target, then retry."
+fi
+
+if [ "$DELIVERY_RC" -eq 2 ] && [ "$DELIVERY_ROUTE" = herdr ]; then
+  # TIMEOUT — the brainer is mid-turn. Prompting now would land the report
+  # inside a turn about something else, which is what this gate prevents; it
+  # would not lose it. Metadata visibility is a separate observation; the
+  # once-only marker is NOT written, so this command remains retryable.
+  die "the brainer at $HW_INVOKER_PANE was still working after $((INVOKER_WAIT_MS / 1000))s, so it was NOT told. A prompt sent mid-turn is not dropped — it would be acted on inside the turn the brainer is already in, against context that has nothing to do with your report — which is what this gate prevents. $PUBLICATION_NOTE Re-run the same command to reach the brainer, or give it a longer budget with a matching Bash timeout: HW_INVOKER_WAIT_MS=540000 done-invoker …"
+fi
+if [ "$DELIVERY_RC" -ne 0 ]; then
+  die "Herdr delivery failed (exit $DELIVERY_RC). $PUBLICATION_NOTE The done marker was not written."
+fi
+
+# ── 4. account only after receiver-owned delivery proof ───────────────────
+: > "$STATE_DIR/done"
+rm -f "$STATE_DIR/reopened" 2>/dev/null || true
+publish_done delivered || true
+
+# ── 5. close only after receiver-owned delivery proof ─────────────────────
+#
+# The old ownership split ended here and asked the brainer to run `hw done`.
+# Twenty-one delivered task tabs accumulated because nothing enforced that
+# second manual step. Marking the run and waiting for `hw sweep` would preserve
+# the same failure mode under a different name, so the delivered path invokes
+# the existing owner-aware close path directly. `hw done` is the one close
+# dialect: it reads the run's tab/workspace record, re-lists after the close,
+# and returns non-zero when the owned object survives.
+#
+# This is deliberately AFTER invoker_deliver, the done marker, and the
+# delivered-state publication. Closing this pane first would destroy the only
+# process able to finish delivery. Refusal paths above remain before this block
+# and therefore do not call hw at all: an undelivered pane is still the recovery
+# copy.
+if [ "$CHAINING_LEASE" = 1 ]; then
+  LEASE_RC=0
+  "$INVOKER_BIN_DIR/hw" chaining-lease-start || LEASE_RC=$?
+  if [ "$LEASE_RC" -ne 0 ]; then
+    printf 'done-invoker: THE REPORT IS DELIVERED AND SAFE, but bounded chaining lease setup failed (exit %s). Refusing silent unbounded retention; attempting the normal owner-aware close now.\n' "$LEASE_RC" >&2
+    if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK"; then
+      die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — bounded chaining lease setup failed and the fallback close also failed. The done marker exists, but no retention authority was created. Do NOT re-run done-invoker; close this pane with \`hw done $PROJECT $TASK\`."
+    fi
+    printf 'brainer notified; chaining lease setup failed, so hw closed the owned pane instead of retaining it without a bound.\n'
+    exit 0
+  fi
+  printf 'brainer notified via %s (%s, %s file(s)); receiver proved delivery of envelope %s; bounded chaining lease recorded and scheduled.\n' \
+    "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$ENVELOPE_ID"
+  exit 0
+fi
+if [ "$LEGACY_KEEP" = 1 ]; then
+  printf 'brainer notified via %s (%s, %s file(s)); receiver proved delivery of envelope %s; pane kept because chaining is enabled for compatibility with an already-running legacy dispatch.\n' \
+    "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$ENVELOPE_ID"
+  exit 0
+fi
+
+# A FAILED CLOSE IS NOT A FAILED REPORT, AND IT IS NOT SILENT EITHER.
+#
+# Both halves matter. Swallowing the close failure would recreate the masking
+# fixed in bin/hw the same day — a close that says "already gone" about an
+# object that is demonstrably still there. But exiting 1 said the opposite lie:
+# 1 is "not delivered, retry", and retrying here sends the brainer a second
+# report for one task. Exit 4 says the true thing, and says it in an order a
+# reader cannot misread: delivered and safe FIRST, then what failed.
+if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK"; then
+  die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — the brainer received envelope $ENVELOPE_ID, it is in its session, and this run is marked done. What failed is the CLOSE: \`hw done $PROJECT $TASK\` could not close the owned task tab/workspace, so the pane is still open at $HERDR_PANE_ID (workdir $WORKDIR). Do NOT re-run done-invoker — the report landed, and a second one is a second report for one task. Close it by hand with \`hw done $PROJECT $TASK\` once the cause above is fixed. (Exit $EXIT_DELIVERED_NOT_CLOSED means delivered-but-not-closed; exit 1 would have meant nothing was reported.)"
+fi
+
+# A successful close normally tears down this shell before execution can reach
+# here. Keep a truthful fallback for legacy/no-placement runs: delivery did
+# succeed, but no automatic close is claimed merely because `hw done` returned.
+printf 'brainer notified via %s (%s, %s file(s)); receiver proved delivery of envelope %s; hw done returned without an owned task pane to close.\n' \
+  "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$ENVELOPE_ID"

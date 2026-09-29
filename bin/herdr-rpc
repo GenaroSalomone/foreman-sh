@@ -1,0 +1,860 @@
+#!/usr/bin/env python3
+"""
+herdr-rpc — a socket client for herdr's API-only RPCs.
+
+Standard library only. Speaks newline-delimited JSON over the unix socket at
+$HERDR_SOCKET_PATH (override with --socket) — on Windows, over the named pipe
+herdr serves under that name instead. Twenty-odd lines of python is a
+complete client for this protocol; this file is that client plus four CLI
+verbs that other brain/bin scripts call so they never have to touch a socket
+themselves.
+
+USAGE
+  herdr-rpc call <method> [<json-params>]
+      One request/response. <json-params> defaults to "{}". Prints the
+      `result` object from the response as one line of JSON on stdout. This
+      is the escape hatch for every RPC with no CLI equivalent.
+
+  herdr-rpc wait-agent <pane_id|agent-name> <status>[,<status>...] [--timeout-ms N]
+      Blocks until that agent's status is one of the given statuses. The
+      target is resolved through agent.get first, so a live agent name works
+      exactly as it does for `herdr agent <verb>`, and a pane that no longer
+      exists is named as such instead of surfacing as a socket error.
+      events.wait is level-triggered (verified against herdr 0.8.2 protocol
+      20, see comment on cmd_wait_agent): if the pane is already in an
+      accepted status this returns immediately. Default timeout 60000ms.
+      Prints the matched status on stdout and exits 0. Exits 2 on timeout.
+
+  herdr-rpc subscribe <event_type>[,<event_type>...] [--drain] [--timeout-ms N] [--idle-ms N]
+      Prints one JSON object per line as matching events arrive.
+      --drain reads only the replayed session backlog delivered on connect,
+      then exits 0 — see comment on cmd_subscribe for the termination
+      heuristic and how to tune it.
+
+  herdr-rpc layout-apply <file.json|->
+      Sends layout.apply with the JSON document read from <file.json> (or
+      stdin, for "-") as the request params. Prints the result.
+
+  Every subcommand accepts --socket <path> to target a session other than
+  the one named by $HERDR_SOCKET_PATH.
+
+EXIT CODES
+  0   ok
+  2   timeout / no match (wait-agent didn't reach an accepted status;
+      subscribe in non-drain mode saw zero matching events before its
+      deadline)
+  3   cannot connect to the socket (includes $HERDR_SOCKET_PATH unset with
+      no --socket override)
+  4   the RPC returned an error (herdr's error_response, or an unexpected
+      local failure while talking to it), an unresolvable target, or herdr
+      hanging up mid-request. Those last two used to come out as 3, which
+      blamed the socket for a fault the socket had nothing to do with.
+  64  usage error (bad arguments, invalid JSON, unreadable file)
+
+Every error is one line on stderr, prefixed "herdr-rpc: ". Never a python
+traceback — see main()'s outer try/except.
+
+CONNECTION MODEL: one unix-socket connection per invocation, except
+wait-agent's multi-status case, which opens one connection per requested
+status concurrently (see cmd_wait_agent) because events.wait only matches a
+single AgentStatus per call. Every connection has a socket timeout and every
+read loop has a deadline; nothing here blocks forever.
+
+TRAP (measured directly): `pane read`, `agent read` and `agent explain`
+return plain text over this same socket, not JSON. herdr-rpc never calls
+those methods itself, but `call` will pass through whatever herdr sends —
+piping `call pane.read ...` through `jq` will not work, and that is herdr's
+protocol, not a bug here.
+"""
+
+import json
+import os
+import queue
+import socket
+import sys
+import threading
+import time
+
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh puts bin/ on PYTHONPATH for the
+# entry points it starts; run by hand, this file loads bin/sitecustomize.py
+# itself (a no-op when Python already did). Elsewhere nothing happens.
+if os.name == "nt":
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import sitecustomize  # noqa: E402,F401
+
+PROG = "herdr-rpc"
+
+DEFAULT_CALL_TIMEOUT_MS = 10_000
+DEFAULT_WAIT_TIMEOUT_MS = 60_000
+DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5_000
+DEFAULT_IDLE_MS = 300
+DEFAULT_LAYOUT_TIMEOUT_MS = 15_000
+
+VALID_AGENT_STATUSES = {"idle", "working", "blocked", "done", "unknown"}
+
+
+def die(message, code):
+    print(f"{PROG}: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+class ConnError(Exception):
+    pass
+
+
+class HangupError(ConnError):
+    """herdr closed the connection in the MIDDLE of a request.
+
+    Distinct from ConnError on purpose. `connect()` failing means the socket
+    is unreachable — "cannot connect" is the truth. But herdr also answers
+    some well-formed requests by hanging up instead of returning an
+    error_response: `events.wait` on a `pane_agent_status_changed` whose
+    `pane_id` names no live pane does exactly that, verified 2026-08-25
+    against herdr 0.8.2 for both a malformed id ("probe") and a well-formed
+    absent one ("w99:p9"). Reporting that as "cannot connect" blames the
+    socket for what is a bad target, and the socket is the one thing that
+    demonstrably worked.
+    """
+
+
+class RpcTimeout(Exception):
+    """The read loop's own deadline elapsed with no matching response."""
+
+
+class RpcError(Exception):
+    def __init__(self, code, message):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+def _pipe_name(socket_path):
+    """Windows: herdr's endpoint is the named pipe whose name IS the path it
+    reports. Measured 2026-09-29 on windows-latest with herdr 0.9.1: a pane's
+    HERDR_SOCKET_PATH is `C:\\Users\\<u>\\AppData\\Roaming\\herdr\\herdr.sock`, and the
+    server listens on `\\\\.\\pipe\\` + exactly that string (backslashes)."""
+    p = socket_path
+    if p.replace("/", "\\").lower().startswith("\\\\.\\pipe\\"):
+        return p.replace("/", "\\")
+    try:
+        from sitecustomize import to_native  # bin/sitecustomize.py, under Git Bash
+    except ImportError:
+        def to_native(x):
+            return x
+    return "\\\\.\\pipe\\" + to_native(p).replace("/", "\\")
+
+
+class _UnixTransport:
+    def __init__(self, socket_path, timeout):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(timeout)
+        try:
+            self.sock.connect(socket_path)
+        except OSError as e:
+            raise ConnError(f"cannot connect to {socket_path}: {e}") from e
+        self._rfile = self.sock.makefile("r", encoding="utf-8", newline="\n")
+
+    def send(self, data):
+        try:
+            self.sock.sendall(data)
+        except OSError as e:
+            raise ConnError(f"socket write failed: {e}") from e
+
+    def read_line(self, remaining):
+        self.sock.settimeout(remaining)
+        try:
+            return self._rfile.readline()
+        except socket.timeout as e:
+            raise RpcTimeout() from e
+        except OSError as e:
+            raise ConnError(f"socket read failed: {e}") from e
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+class _PipeTransport:
+    """The same newline-delimited JSON over a Windows named pipe. A pipe handle
+    has no settimeout, so every read is overlapped and waited on with the
+    caller's remaining time — the deadline contract is the socket's."""
+
+    ERROR_BROKEN_PIPE = 109
+    ERROR_PIPE_BUSY = 231
+    ERROR_MORE_DATA = 234
+
+    def __init__(self, socket_path, timeout):
+        import _winapi
+        self._w = _winapi
+        self._buf = b""
+        self._eof = False
+        name = _pipe_name(socket_path)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self._h = _winapi.CreateFile(
+                    name, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE, 0, _winapi.NULL,
+                    _winapi.OPEN_EXISTING, _winapi.FILE_FLAG_OVERLAPPED, _winapi.NULL)
+                return
+            except OSError as e:
+                left = int((deadline - time.monotonic()) * 1000)
+                if getattr(e, "winerror", None) == self.ERROR_PIPE_BUSY and left > 0:
+                    try:
+                        _winapi.WaitNamedPipe(name, left)
+                    except OSError:
+                        pass
+                    continue
+                raise ConnError(f"cannot connect to {socket_path} (pipe {name}): {e}") from e
+
+    def send(self, data):
+        try:
+            ov, _ = self._w.WriteFile(self._h, data, overlapped=True)
+            ov.GetOverlappedResult(True)
+        except OSError as e:
+            raise ConnError(f"pipe write failed: {e}") from e
+
+    def _fill(self, remaining):
+        w = self._w
+        try:
+            ov, err = w.ReadFile(self._h, 65536, overlapped=True)
+        except OSError as e:
+            if getattr(e, "winerror", None) == self.ERROR_BROKEN_PIPE:
+                self._eof = True
+                return
+            raise ConnError(f"pipe read failed: {e}") from e
+        if err == w.ERROR_IO_PENDING:
+            res = w.WaitForMultipleObjects([ov.event], False, max(1, int(remaining * 1000)))
+            if res == w.WAIT_TIMEOUT:
+                ov.cancel()
+                try:
+                    ov.GetOverlappedResult(True)
+                except OSError:
+                    pass
+                raise RpcTimeout()
+        try:
+            _, err = ov.GetOverlappedResult(True)
+        except OSError as e:
+            if getattr(e, "winerror", None) == self.ERROR_BROKEN_PIPE:
+                self._eof = True
+                return
+            raise ConnError(f"pipe read failed: {e}") from e
+        chunk = bytes(ov.getbuffer())
+        if not chunk and err != self.ERROR_MORE_DATA:
+            self._eof = True
+        self._buf += chunk
+
+    def read_line(self, remaining):
+        deadline = time.monotonic() + remaining
+        while b"\n" not in self._buf and not self._eof:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise RpcTimeout()
+            self._fill(left)
+        if b"\n" in self._buf:
+            line, _, self._buf = self._buf.partition(b"\n")
+            return line.decode("utf-8") + "\n"
+        line, self._buf = self._buf, b""
+        return line.decode("utf-8")
+
+    def close(self):
+        try:
+            self._w.CloseHandle(self._h)
+        except (OSError, AttributeError):
+            pass
+
+
+class HerdrConn:
+    """One connection, newline-delimited JSON in both directions: a unix socket,
+    or on Windows the named pipe herdr serves there (_PipeTransport).
+
+    request() matches responses by id so a connection could in principle be
+    shared by concurrent callers, but every subcommand below opens its own
+    connection per logical operation (or, for wait-agent's multi-status
+    case, one per status) — simplest thing that works, stated here so nobody
+    "fixes" it into a shared pool later without re-reading this comment.
+    """
+
+    def __init__(self, socket_path, timeout):
+        transport = _PipeTransport if os.name == "nt" else _UnixTransport
+        self._t = transport(socket_path, timeout)
+        self._next_id = 1
+
+    def _read_line(self, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RpcTimeout()
+        raw = self._t.read_line(remaining)
+        if raw == "":
+            raise HangupError("herdr closed the connection mid-request")
+        return raw
+
+    def request(self, method, params, timeout_s):
+        """Send one request, block for its matching response, or raise.
+
+        Lines on the wire that are not this request's response (a stray
+        event on a connection that never subscribed should not happen, but
+        skip rather than choke on it) are discarded until the deadline.
+        """
+        req_id = str(self._next_id)
+        self._next_id += 1
+        line = json.dumps({"id": req_id, "method": method, "params": params})
+        self._t.send((line + "\n").encode("utf-8"))
+
+        deadline = time.monotonic() + timeout_s
+        while True:
+            raw = self._read_line(deadline)
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ConnError(f"herdr sent non-JSON line: {e}") from e
+            if obj.get("id") != req_id:
+                continue
+            if "error" in obj:
+                err = obj["error"] or {}
+                raise RpcError(err.get("code", "unknown"), err.get("message", ""))
+            return obj.get("result")
+
+    def close(self):
+        self._t.close()
+
+
+def resolve_socket_path(socket_arg):
+    if socket_arg:
+        return socket_arg
+    path = os.environ.get("HERDR_SOCKET_PATH")
+    if not path:
+        die("HERDR_SOCKET_PATH is not set; pass --socket <path> to target a session", 3)
+    return path
+
+
+def connect(socket_arg, timeout_s):
+    path = resolve_socket_path(socket_arg)
+    try:
+        return HerdrConn(path, timeout_s)
+    except ConnError as e:
+        die(str(e), 3)
+
+
+def resolve_agent_pane(socket_arg, target):
+    """Return the pane_id hosting `target`, which may be a name or a pane_id.
+
+    A pane-id-shaped target is still resolved, not trusted: events.wait hangs
+    up on a pane that does not exist, so checking here is what turns "herdr
+    closed the connection" into "that pane has no agent". agent.get is the
+    same resolver `herdr agent <verb>` uses, so a name that works there works
+    here.
+    """
+    conn = connect(socket_arg, DEFAULT_CALL_TIMEOUT_MS / 1000.0)
+    try:
+        res = conn.request(
+            "agent.get", {"target": target}, DEFAULT_CALL_TIMEOUT_MS / 1000.0
+        )
+    except RpcError as e:
+        die(
+            f"cannot wait on {target!r}: agent.get says {e.code}: {e.message}. "
+            f"Nothing was waited on. Pass a live agent name or the pane id "
+            f"hosting it — `herdr agent list` shows both.",
+            4,
+        )
+    except HangupError as e:
+        die(
+            f"agent.get hung up while resolving {target!r}: {e}. The socket "
+            f"answered, so the server is up, but resolution of that target "
+            f"failed. Nothing was waited on.",
+            4,
+        )
+    except (RpcTimeout, ConnError) as e:
+        die(f"cannot resolve {target!r}: {e}", 3)
+    finally:
+        conn.close()
+
+    pane_id = ((res or {}).get("agent") or {}).get("pane_id")
+    if not pane_id:
+        die(
+            f"agent.get resolved {target!r} but reported no pane_id, so there "
+            f"is nothing to wait on. Raw result: {json.dumps(res)}",
+            4,
+        )
+    return pane_id
+
+
+def extract_flag_value(argv, name):
+    """Pull "--name VALUE" out of argv, return (value_or_None, rest_argv)."""
+    out = []
+    value = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == name:
+            if i + 1 >= len(argv):
+                die(f"{name} needs a value", 64)
+            value = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith(name + "="):
+            value = tok[len(name) + 1 :]
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return value, out
+
+
+def extract_bool_flag(argv, name):
+    present = name in argv
+    return present, [a for a in argv if a != name]
+
+
+def parse_timeout_ms(raw, default):
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+    except ValueError:
+        die(f"--timeout-ms must be an integer, got {raw!r}", 64)
+    if val < 0:
+        die("--timeout-ms must not be negative", 64)
+    return val
+
+
+# ── call ─────────────────────────────────────────────────────────────────
+
+
+def cmd_call(argv):
+    socket_arg, argv = extract_flag_value(argv, "--socket")
+    timeout_raw, argv = extract_flag_value(argv, "--timeout-ms")
+    timeout_ms = parse_timeout_ms(timeout_raw, DEFAULT_CALL_TIMEOUT_MS)
+
+    if not argv:
+        die("call requires a <method>", 64)
+    method = argv[0]
+    params_json = argv[1] if len(argv) > 1 else "{}"
+    if len(argv) > 2:
+        die(f"call takes at most 2 arguments, got extra: {argv[2:]}", 64)
+    try:
+        params = json.loads(params_json)
+    except json.JSONDecodeError as e:
+        die(f"invalid JSON params: {e}", 64)
+
+    conn = connect(socket_arg, timeout_ms / 1000.0 + 2.0)
+    try:
+        result = conn.request(method, params, timeout_ms / 1000.0)
+    except RpcTimeout:
+        die(f"{method} timed out after {timeout_ms}ms", 2)
+    except RpcError as e:
+        die(f"{method} returned an error — {e.code}: {e.message}", 4)
+    except HangupError as e:
+        # Exit 4, not 3: the connection was made and the request was sent.
+        # herdr answering a well-formed request by hanging up is herdr
+        # rejecting the request, and "cannot connect to the socket" would be
+        # a false statement about the one thing that provably worked.
+        die(f"{method}: {e}. The socket answered, so the server is up — "
+            f"herdr rejects some requests by hanging up rather than "
+            f"returning an error (events.wait on an absent pane_id does).", 4)
+    except ConnError as e:
+        die(str(e), 3)
+    finally:
+        conn.close()
+    print(json.dumps(result))
+
+
+# ── wait-agent ───────────────────────────────────────────────────────────
+
+
+def cmd_wait_agent(argv):
+    # DESIGN CHOICE (documented per the task brief): in herdr 0.8.2 protocol
+    # 20, events.wait's match_event for pane_agent_status_changed takes a
+    # single AgentStatus, not a list (verified against the API schema: events.wait
+    # currently supports pane agent status matches, one match per call). "idle,done" therefore cannot be
+    # expressed as one events.wait call. Two ways to cover a status set were
+    # considered:
+    #
+    #   (a) agent.get precheck, then one events.wait for whichever status is
+    #       "the" target — wrong once there are >1 acceptable statuses,
+    #       because you would still need to pick one to wait on if the
+    #       precheck says neither matched yet.
+    #   (b) one events.wait per requested status, fired concurrently on its
+    #       own connection, first match wins.
+    #
+    # (b) is what's implemented. It also subsumes the "already in an
+    # accepted status" case for free: events.wait is level-triggered
+    # (verified: asking for the state a pane is already in returns
+    # wait_matched instantly), so if the pane is already `idle` the thread
+    # racing on `idle` matches immediately without any separate precheck.
+    socket_arg, argv = extract_flag_value(argv, "--socket")
+    timeout_raw, argv = extract_flag_value(argv, "--timeout-ms")
+    timeout_ms = parse_timeout_ms(timeout_raw, DEFAULT_WAIT_TIMEOUT_MS)
+
+    if len(argv) < 2:
+        die("wait-agent requires <pane_id> <status>[,<status>...]", 64)
+    pane_id, statuses_raw = argv[0], argv[1]
+    if len(argv) > 2:
+        die(f"wait-agent takes at most 2 positional arguments, got extra: {argv[2:]}", 64)
+
+    statuses = [s.strip() for s in statuses_raw.split(",") if s.strip()]
+    if not statuses:
+        die("wait-agent requires at least one status", 64)
+    for s in statuses:
+        if s not in VALID_AGENT_STATUSES:
+            die(f"invalid agent status {s!r} — must be one of {sorted(VALID_AGENT_STATUSES)}", 64)
+
+    # RESOLVE THE TARGET FIRST. events.wait matches on a pane_id and nothing
+    # else, but every `herdr agent <verb>` accepts a live agent NAME too, and
+    # channel-send's own usage line says "<session-or-pane>" — so callers pass
+    # names. A name reaches events.wait as a pane_id that matches no pane, and
+    # herdr answers by hanging up (see HangupError). Before this resolve step,
+    # `wait-agent probe idle,done` died with "cannot connect: herdr closed the
+    # connection" and exit 3, which channel-send relays as "could not wait on
+    # probe" — three statements about the socket for a fault in the target.
+    # Measured 2026-08-25: by name, exit 3 three times out of three; by
+    # pane_id, exit 0. One agent.get costs a round trip and buys a message
+    # that names the real cause.
+    pane_id = resolve_agent_pane(socket_arg, pane_id)
+
+    results: "queue.Queue" = queue.Queue()
+
+    def worker(status):
+        try:
+            conn = connect(socket_arg, timeout_ms / 1000.0 + 2.0)
+        except SystemExit:
+            # connect() already called die(); still report to the queue so
+            # the collector below doesn't wait out the full deadline for a
+            # thread that will never post.
+            results.put(("connerr", status, "connect failed"))
+            return
+        try:
+            match_event = {
+                "event": "pane_agent_status_changed",
+                "pane_id": pane_id,
+                "agent_status": status,
+            }
+            res = conn.request(
+                "events.wait",
+                {"match_event": match_event, "timeout_ms": timeout_ms},
+                timeout_ms / 1000.0 + 2.0,
+            )
+            # A successful RPC exchange is not a matched event. In particular,
+            # a future server returning an acknowledgment or timeout result
+            # instead of RpcError must not manufacture the requested status.
+            event = res.get("event") if isinstance(res, dict) else None
+            data = event.get("data") if isinstance(event, dict) else None
+            if (isinstance(res, dict) and res.get("type") == "wait_matched"
+                    and isinstance(event, dict) and event.get("event") == "pane_agent_status_changed"
+                    and isinstance(data, dict) and data.get("type") == "pane_agent_status_changed"
+                    and data.get("pane_id") == pane_id and data.get("agent_status") == status):
+                results.put(("ok", status, res))
+            else:
+                results.put(("rpcerr", status, RpcError(
+                    "unproven_match", f"unproven wait match for {pane_id} status {status}; unexpected events.wait result")))
+        except RpcError as e:
+            if e.code == "timeout":
+                results.put(("timeout", status, None))
+            else:
+                results.put(("rpcerr", status, e))
+        except RpcTimeout:
+            results.put(("timeout", status, None))
+        except HangupError as e:
+            results.put(("hangup", status, str(e)))
+        except ConnError as e:
+            results.put(("connerr", status, str(e)))
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=worker, args=(s,), daemon=True) for s in statuses]
+    for t in threads:
+        t.start()
+
+    deadline = time.monotonic() + timeout_ms / 1000.0 + 3.0
+    matched = None
+    rpc_err = None
+    conn_err = None
+    hangup = None
+    seen = 0
+    while seen < len(statuses):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            kind, status, payload = results.get(timeout=remaining)
+        except queue.Empty:
+            break
+        seen += 1
+        if kind == "ok":
+            matched = status
+            break
+        elif kind == "rpcerr":
+            rpc_err = payload
+        elif kind == "connerr":
+            conn_err = payload
+        elif kind == "hangup":
+            hangup = payload
+        # "timeout" from one status thread just means that status didn't
+        # match — keep waiting for the others already in flight.
+
+    if matched is not None:
+        print(matched)
+        return
+
+    # ORDER MATTERS, and the old order was the bug. This block used to read
+    # "Sole failure mode across the whole set: no connection at all" and fire
+    # on `conn_err is not None and seen == len(statuses)` — so ONE thread
+    # erroring while the other merely timed out was announced as "cannot
+    # connect", exit 3, which channel-send turns into "could not wait". A
+    # hang-up is now reported as itself, and a real connect failure is only
+    # claimed when nothing else explains the outcome.
+    if hangup is not None:
+        die(
+            f"herdr hung up on events.wait for {pane_id} "
+            f"({','.join(statuses)}): {hangup}. The socket answered, so this "
+            f"is not a dead server — herdr does this when the pane it is "
+            f"asked about is gone. Nothing was waited on.",
+            4,
+        )
+    if conn_err is not None and seen == len(statuses) and rpc_err is None:
+        die(f"cannot connect: {conn_err}", 3)
+    if rpc_err is not None:
+        die(f"events.wait returned an error — {rpc_err.code}: {rpc_err.message}", 4)
+    die(
+        f"timed out after {timeout_ms}ms waiting for {pane_id} to reach one of: {','.join(statuses)}",
+        2,
+    )
+
+
+# ── subscribe ────────────────────────────────────────────────────────────
+
+
+# Subscription variants that need only {"type": ...} — verified against the
+# API schema's Subscription oneOf. pane.agent_status_changed, pane.scroll_
+# changed and pane.output_matched each additionally REQUIRE a pane_id (and
+# output_matched needs source+match too) — confirmed empirically, not just
+# from the schema: subscribing to pane.agent_status_changed with only a
+# "type" key got the connection silently closed by herdr rather than an
+# error_response. Those three are out of scope for this generic verb; use
+# `herdr-rpc call events.subscribe '{...}'` directly for them, or
+# `wait-agent` / `call events.wait` for per-pane agent status, which already
+# takes a pane_id.
+SUBSCRIBE_SIMPLE_TYPES = {
+    "workspace.created", "workspace.updated", "workspace.metadata_updated",
+    "workspace.renamed", "workspace.moved", "workspace.reordered",
+    "workspace.closed", "workspace.focused",
+    "worktree.created", "worktree.opened", "worktree.removed",
+    "tab.created", "tab.closed", "tab.focused", "tab.renamed", "tab.moved",
+    "pane.created", "pane.closed", "pane.updated", "pane.focused",
+    "pane.moved", "pane.exited", "pane.agent_detected",
+    "layout.updated",
+}
+
+
+def to_dotted_event_type(name):
+    """CLI event names use herdr's underscore form (pane_exited, matching
+    what actually arrives on the wire — see cmd_subscribe). The subscribe
+    request needs the dotted Subscription "type" instead (pane.exited).
+    Empirically every name in both lists follows "prefix_rest" ->
+    "prefix.rest" — only the FIRST underscore becomes a dot
+    (workspace_metadata_updated -> workspace.metadata_updated,
+    pane_agent_status_changed -> pane.agent_status_changed). Already-dotted
+    input passes through unchanged. Not covered: pane_output_changed, whose
+    subscription-side name is pane.output_matched, not a rename — a genuine
+    exception, irrelevant to what this tool subscribes to (pane_exited and
+    agent-status events), so it is deliberately left unhandled here.
+    """
+    if "." in name:
+        return name
+    return name.replace("_", ".", 1)
+
+
+def cmd_subscribe(argv):
+    socket_arg, argv = extract_flag_value(argv, "--socket")
+    timeout_raw, argv = extract_flag_value(argv, "--timeout-ms")
+    idle_raw, argv = extract_flag_value(argv, "--idle-ms")
+    drain, argv = extract_bool_flag(argv, "--drain")
+
+    if not argv:
+        die("subscribe requires <event_type>[,<event_type>...]", 64)
+    types_raw = argv[0]
+    if len(argv) > 1:
+        die(f"subscribe takes at most 1 positional argument, got extra: {argv[1:]}", 64)
+
+    types = [t.strip() for t in types_raw.split(",") if t.strip()]
+    if not types:
+        die("subscribe requires at least one event_type", 64)
+
+    default_timeout = DEFAULT_SUBSCRIBE_TIMEOUT_MS
+    timeout_ms = parse_timeout_ms(timeout_raw, default_timeout)
+    idle_ms = parse_timeout_ms(idle_raw, DEFAULT_IDLE_MS)
+
+    dotted = [to_dotted_event_type(t) for t in types]
+    unsupported = [d for d in dotted if d not in SUBSCRIBE_SIMPLE_TYPES]
+    if unsupported:
+        die(
+            f"event type(s) need params this verb doesn't take: {','.join(unsupported)} "
+            "— use `herdr-rpc call events.subscribe` directly",
+            64,
+        )
+    subscriptions = [{"type": d} for d in dotted]
+    conn = connect(socket_arg, max(timeout_ms, idle_ms) / 1000.0 + 5.0)
+    try:
+        ack = conn.request(
+            "events.subscribe", {"subscriptions": subscriptions}, min(timeout_ms, 5000) / 1000.0 + 2.0
+        )
+    except RpcTimeout:
+        die("events.subscribe did not acknowledge in time", 2)
+    except RpcError as e:
+        die(f"events.subscribe returned an error — {e.code}: {e.message}", 4)
+    except HangupError as e:
+        die(
+            f"events.subscribe: {e}. The socket answered, so the server is up, "
+            f"but the subscription request failed.",
+            4,
+        )
+    except ConnError as e:
+        die(str(e), 3)
+    del ack  # {"type": "subscription_started"} — nothing to act on
+
+    # TERMINATION HEURISTIC for --drain (documented per the task brief):
+    # events.subscribe replays the session's event backlog before going
+    # live (verified directly — historical pane_closed /
+    # pane_agent_detected / pane_exited events arrived, then the stream went
+    # live with no distinguishing marker between "replay" and "live"). There
+    # is no explicit end-of-backlog signal in the protocol. The heuristic
+    # used here is a quiet period: if no line arrives for --idle-ms
+    # (default 300ms, comfortably above the 80-116ms round trips measured
+    # directly), the backlog is considered drained and we exit 0.
+    # --timeout-ms is a hard safety cap on total wait (default 5000ms) in
+    # case the idle period is never reached — this always exits, drain mode
+    # never hangs a caller.
+    got_event = False
+    overall_deadline = time.monotonic() + timeout_ms / 1000.0
+    try:
+        while True:
+            now = time.monotonic()
+            if now >= overall_deadline:
+                break
+            if drain:
+                per_read_timeout = min(idle_ms / 1000.0, overall_deadline - now)
+            else:
+                per_read_timeout = min(idle_ms / 1000.0, overall_deadline - now)
+            per_read_deadline = time.monotonic() + max(per_read_timeout, 0.001)
+            try:
+                raw = conn._read_line(per_read_deadline)
+            except RpcTimeout:
+                if drain:
+                    # Quiet period reached: backlog (or live trickle) has
+                    # gone silent for --idle-ms. That is the signal.
+                    break
+                continue
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if "id" in obj:
+                # A stray response on this connection — not an event line.
+                continue
+            got_event = True
+            print(json.dumps(obj, separators=(",", ":")))
+            sys.stdout.flush()
+    except HangupError as e:
+        die(
+            f"events.subscribe: {e}. The socket answered, so the server is up, "
+            f"but the subscription stream failed.",
+            4,
+        )
+    except ConnError as e:
+        die(str(e), 3)
+    finally:
+        conn.close()
+
+    if drain:
+        return
+    if got_event:
+        return
+    die(f"no {','.join(types)} events arrived within {timeout_ms}ms", 2)
+
+
+# ── layout-apply ─────────────────────────────────────────────────────────
+
+
+def cmd_layout_apply(argv):
+    socket_arg, argv = extract_flag_value(argv, "--socket")
+    timeout_raw, argv = extract_flag_value(argv, "--timeout-ms")
+    timeout_ms = parse_timeout_ms(timeout_raw, DEFAULT_LAYOUT_TIMEOUT_MS)
+
+    if not argv:
+        die("layout-apply requires <file.json|->", 64)
+    src = argv[0]
+    if len(argv) > 1:
+        die(f"layout-apply takes at most 1 argument, got extra: {argv[1:]}", 64)
+
+    if src == "-":
+        raw = sys.stdin.read()
+    else:
+        try:
+            with open(src, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except OSError as e:
+            die(f"cannot read {src}: {e}", 64)
+
+    try:
+        params = json.loads(raw)
+    except json.JSONDecodeError as e:
+        die(f"invalid JSON in {src}: {e}", 64)
+
+    conn = connect(socket_arg, timeout_ms / 1000.0 + 2.0)
+    try:
+        result = conn.request("layout.apply", params, timeout_ms / 1000.0)
+    except RpcTimeout:
+        die(f"layout.apply timed out after {timeout_ms}ms", 2)
+    except RpcError as e:
+        die(f"layout.apply returned an error — {e.code}: {e.message}", 4)
+    except HangupError as e:
+        die(
+            f"layout.apply: {e}. The socket answered, so the server is up, but "
+            f"the layout request failed.",
+            4,
+        )
+    except ConnError as e:
+        die(str(e), 3)
+    finally:
+        conn.close()
+    print(json.dumps(result))
+
+
+# ── dispatch ─────────────────────────────────────────────────────────────
+
+SUBCOMMANDS = {
+    "call": cmd_call,
+    "wait-agent": cmd_wait_agent,
+    "subscribe": cmd_subscribe,
+    "layout-apply": cmd_layout_apply,
+}
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0 if argv and argv[0] in ("-h", "--help") else 64)
+    sub, rest = argv[0], argv[1:]
+    fn = SUBCOMMANDS.get(sub)
+    if fn is None:
+        die(f"unknown subcommand {sub!r} — expected one of {sorted(SUBCOMMANDS)}", 64)
+    fn(rest)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        die("interrupted", 2)
+    except Exception as e:  # noqa: BLE001 — last resort, never a traceback
+        die(f"unexpected error: {e}", 4)

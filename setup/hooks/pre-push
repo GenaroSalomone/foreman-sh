@@ -1,0 +1,500 @@
+#!/usr/bin/env bash
+# The operational brain contains live project intent. Only the local backup
+# and the private off-machine mirror are allowed; anything published is a
+# generated export with a history of its own, never this one.
+set -euo pipefail
+# THE REF LIST ARRIVES ON STDIN AND THERE ARE NOW TWO GATES THAT NEED IT.
+# `cat` in the first gate would consume it and leave the second reading an
+# empty list — which fails OPEN, the worst possible direction for a gate. So
+# stdin is captured exactly once here and both loops read from this variable.
+PUSHED_REFS="$(cat)"
+
+# NO AI ATTRIBUTION LEAVES THIS MACHINE.
+#
+# "Never add Co-Authored-By or AI attribution to commits" is a standing hard
+# rule, and on 2026-09-10 an executor broke it four times in one task. It was
+# caught by hand, and the four commits had to be rebuilt with `commit-tree` to
+# strip the trailer.
+#
+# WHY THIS STILL LIVES IN pre-push NOW THAT setup/hooks/commit-msg EXISTS. The
+# `setup` lane is repo-less and shares this repo's index, so its commits are
+# built with the private-index recipe in setup/CLAUDE.md — `git commit-tree`,
+# which runs NO hooks at all. A commit-msg hook would not have seen a single one
+# of those four, and still would not today. pre-push is the last gate every
+# commit must pass regardless of how it was built, and it is also the only one a
+# clone that never ran setup/install-hooks.sh has at all. commit-msg (added
+# 2026-09-16) catches an ordinary `git commit` at the moment the mistake is free
+# to fix; this gate is what catches everything else. Neither replaces the other.
+#
+# BOTH READ THE SAME DETECTION, from setup/hooks/attribution-pattern.sh. Two
+# inline copies of this regex would drift the moment one was edited, and the
+# copy that matches LESS is the one that lets attribution through. Both also
+# read the same REFUSAL FORMATTER from that file, so a line named here reads
+# exactly as it reads at commit time.
+#
+# A TRAILER IS REFUSED; A QUOTATION IS NOT. Since 2026-09-17 the pattern is
+# anchored at column 0, because this gate was blocking a 55-commit push on two
+# commits whose only offense was pasting the trailer into their own message as
+# EVIDENCE — indented, which is how this lane's rules say to quote it. The full
+# measurement and the search that preceded the change are in
+# setup/hooks/attribution-pattern.sh.
+#
+# ONLY NEW COMMITS ARE CHECKED. 12 commits already in this history carry the
+# trailer from before the rule was enforced; they are pushed and rewriting them
+# would rewrite shared history. `git rev-list <local> --not --remotes=<remote>`
+# is the same reckoning the verdict check below uses for "what is actually new".
+#
+# Override with `git push --no-verify` — deliberately the same escape hatch as
+# every other gate here, because a human may have a reason and a hook may be
+# wrong.
+# Resolved from the repo root for the same reason the suite pattern is, below:
+# git invokes this hook as `.git/hooks/pre-push`, a symlink, so its own dirname
+# is `.git/hooks`, where the shared file is not.
+. "$(git rev-parse --show-toplevel)/setup/hooks/attribution-pattern.sh"
+# A sourced file that defines nothing is the same as silence. An unset pattern
+# makes `grep -E ''` match every line, which would refuse every push — the safe
+# direction, but for the wrong reason and with nothing said. Say it instead.
+[ -n "${ATTRIBUTION_PATTERN:-}" ] || {
+  echo "pre-push: setup/hooks/attribution-pattern.sh did not define ATTRIBUTION_PATTERN — refusing to guess what counts as AI attribution." >&2
+  exit 1
+}
+command -v attribution_offending_lines >/dev/null 2>&1 || {
+  echo "pre-push: setup/hooks/attribution-pattern.sh did not define attribution_offending_lines — refusing rather than reporting an offense it cannot name." >&2
+  exit 1
+}
+attribution_offenders=""
+while read -r _ap_local_ref _ap_local_sha _ap_remote_ref _ap_remote_sha; do
+  [ -n "${_ap_local_ref:-}" ] || continue
+  [ "${_ap_local_sha:-}" != "0000000000000000000000000000000000000000" ] || continue
+  _ap_new="$(git rev-list "$_ap_local_sha" --not --remotes="$1" 2>/dev/null || true)"
+  [ -n "$_ap_new" ] || continue
+  while read -r _ap_c; do
+    [ -n "$_ap_c" ] || continue
+    # `%B` is the message EXACTLY as stored — no indentation of its own, unlike
+    # a bare `git log`, which indents the body by four spaces. With the pattern
+    # now anchored at column 0 that distinction decides the verdict, so the
+    # format specifier here is load-bearing and not a stylistic choice.
+    _ap_lines="$(git log -1 --format='%B' "$_ap_c" 2>/dev/null \
+                 | attribution_offending_lines '        ')"
+    if [ -n "$_ap_lines" ]; then
+      attribution_offenders="$attribution_offenders
+    $_ap_c  $(git log -1 --format='%s' "$_ap_c" 2>/dev/null)
+$_ap_lines"
+    fi
+  done <<EOF
+$_ap_new
+EOF
+done <<EOF
+$PUSHED_REFS
+EOF
+if [ -n "$attribution_offenders" ]; then
+  {
+    echo "pre-push: refusing — these new commits carry AI attribution as a TRAILER."
+    printf '%s\n' "$attribution_offenders"
+    echo
+    echo "Only column 1 is refused: a git trailer begins its own line at column 0."
+    echo "An indented quotation, or one inside a shell example, is evidence and passes."
+    echo
+    echo "The rule is: conventional commits, no Co-Authored-By, no AI attribution."
+    echo "Rebuild the messages, preserving the trees so a cached verdict still applies:"
+    echo "  git log --format=%B -1 <sha> | rg -v '^Co-Authored-By:' | git commit-tree <sha>^{tree} -p <parent>"
+    echo "If you are certain: git push --no-verify"
+  } >&2
+  exit 1
+fi
+
+# THIS HOOK NEVER RUNS THE SUITE. IT NEVER TAKES MORE THAN A FEW FILE READS.
+#
+# It used to run the full suite inline (~1000-1200s) and that broke actual
+# pushes — measured 2026-09-10, pushing for real, not invoking the hook by
+# hand: `git push backup` (local remote) survived it three times; the SAME
+# commit pushed to `github` (SSH) died with `Connection to github.com closed
+# by remote host`, then `exit 141` (SIGPIPE) on retry, even though the suite
+# itself passed both times. git contacts the remote FIRST to hand this hook
+# the ref list over stdin, and only transfers objects AFTER the hook returns
+# — an SSH connection idle for ~19 minutes while a hook runs is not something
+# GitHub keeps open. `git push --no-verify github main` entered in 3 seconds:
+# the transport was never broken, the hook's OWN cost was.
+#
+# So the rule is structural now, not a promise: verification happens in
+# `setup/verify-for-push`, run separately, BEFORE a push is ever attempted,
+# and it writes a cached verdict keyed by the exact tree it verified —
+# `$(git rev-parse --git-common-dir)/hw-push-verified/<tree-sha>`. This hook
+# does exactly one thing: for every tree about to be pushed, check that file
+# exists. No suite runs here, so nothing here can hold a socket open.
+#
+# MANDATORY COVERAGE IS UNCHANGED WHEN THE PUSH CAN INVALIDATE THE SUITE. What
+# is new: a push whose FULL RANGE touches nothing that can invalidate the
+# suite (prose, decisions.md, briefs — anything outside SUITE_TRIGGER_PATTERN)
+# needs no cached verdict at all. A push that touches even one path matching
+# that pattern still requires one, exactly as before.
+#
+# THE PATTERN IS THE SAME ONE setup/hooks/pre-commit USES — one file,
+# setup/hooks/suite-trigger-pattern.sh, so the two gates cannot silently
+# diverge on what counts as "can invalidate the suite".
+#
+# RESOLVED FROM THE REPO ROOT, NOT FROM `dirname $BASH_SOURCE`, and that
+# distinction cost a real push. MEASURED 2026-09-09: git invokes this hook as
+# `.git/hooks/pre-push`, which is a SYMLINK into setup/hooks/, so
+# `dirname "${BASH_SOURCE[0]}"` is `.git/hooks` — where the shared file does not
+# exist. The first real push after deebd4f died with
+#
+#     .git/hooks/pre-push: line 44: .git/hooks/suite-trigger-pattern.sh: No such file or directory
+#
+# and the suite was GREEN the whole time, because the tests exercise fixture
+# hooks rather than the installed one. `pre-commit` had it right from the start
+# (it sources the same file through `--show-toplevel`); this was the one gate
+# that resolved a shared file relative to its own link. Same idiom in both now,
+# so a hook is installable as a bare symlink with nothing beside it.
+. "$(git rev-parse --show-toplevel)/setup/hooks/suite-trigger-pattern.sh"
+# A SOURCED FILE THAT DEFINES NOTHING IS THE SAME AS SILENCE. Relying on
+# `grep -qE "$SUITE_TRIGGER_PATTERN"` to fail safe when the variable is unset
+# only works BY ACCIDENT — an unset/empty pattern makes `grep -E ''` match
+# every line, which happens to require a verdict, but for the wrong reason,
+# and nothing says so. Found by adversarial review 2026-09-09. Check it
+# explicitly, so a broken sourced file is a named refusal, not a lucky grep.
+[ -n "${SUITE_TRIGGER_PATTERN:-}" ] || {
+  echo "pre-push: setup/hooks/suite-trigger-pattern.sh did not define SUITE_TRIGGER_PATTERN — refusing to guess what can invalidate the suite." >&2
+  exit 1
+}
+
+# range_needs_suite <local_sha> <remote_sha> <remote_name> → 0 (yes) or 1 (no)
+#
+# Decides on the FULL RANGE being published, never on the tip alone —
+# criterion 4. A commit of pure prose stacked on one that touches bin/ must
+# still require a verdict, because what reaches the remote is the whole
+# range, not its last commit.
+#
+# ANY git COMMAND THAT FAILS HERE MEANS "REQUIRE A VERDICT", NEVER "NOTHING
+# CHANGED". Found by adversarial review 2026-09-09: an earlier version used
+# `... 2>/dev/null || true` on both git calls below, which folds a genuine
+# git FAILURE (unresolvable object, unreadable repo state) into the same
+# branch as "nothing is new" / "nothing changed" — the unsafe direction. Every
+# git call below is checked for success explicitly; a failure returns 0
+# (needs the suite) rather than 1.
+range_needs_suite() {
+  local local_sha="$1" remote_sha="$2" remote_name="$3"
+  if [ "$remote_sha" != "$zero" ]; then
+    # The remote already has this ref at remote_sha — that IS the boundary
+    # git itself is telling us, straight from the ref list on stdin, not a
+    # guess from a possibly-stale remote-tracking branch.
+    local changed
+    if ! changed="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null)"; then
+      return 0   # could not compute this diff — fail toward requiring a verdict
+    fi
+    printf '%s\n' "$changed" | grep -qE "$SUITE_TRIGGER_PATTERN"
+    return
+  fi
+  # The remote has no such ref (first push of this ref, or we do not know its
+  # state). What is actually NEW is whatever is reachable from local_sha but
+  # not from any ref this repo already knows the remote has —
+  # `--remotes=<name>` restricts that to remote-tracking branches for the
+  # remote actually being pushed to.
+  #
+  # THIS DOES NOT PICK ONE "OLDEST" COMMIT AND DIFF THE ENDPOINTS. An earlier
+  # version did — `git rev-list`'s default order is BY COMMIT DATE, not
+  # topology, so a rebase, a cherry-pick, or plain clock skew can make a
+  # CHILD commit sort as chronologically "older" than its own parent. Picking
+  # that child as "the oldest" and diffing from ITS PARENT (which is the very
+  # commit whose own change should have been counted) silently drops that
+  # commit's change from the range. Found by adversarial review 2026-09-09.
+  # So: check EVERY new commit's OWN change against its OWN parent(s)
+  # directly, with `git diff-tree`. This needs no single base at all, so no
+  # ordering assumption can fool it.
+  local new_commits
+  if ! new_commits="$(git rev-list "$local_sha" --not --remotes="$remote_name" 2>/dev/null)"; then
+    return 0   # could not enumerate what is new — fail toward requiring a verdict
+  fi
+  [ -n "$new_commits" ] || return 1   # nothing new by this reckoning
+  local c changed
+  while read -r c; do
+    [ -n "$c" ] || continue
+    # -m: a merge commit's own change is checked against EVERY parent, not
+    # just the first — a change introduced only relative to a non-first
+    # parent must not go unseen. --root: a commit with no parent (a genuine
+    # history root) diffs against the empty tree instead of erroring.
+    if ! changed="$(git diff-tree --no-commit-id --name-only -r -m --root "$c" 2>/dev/null)"; then
+      return 0   # could not read this commit's own change — fail toward requiring a verdict
+    fi
+    if printf '%s\n' "$changed" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+      return 0
+    fi
+  done <<EOF
+$new_commits
+EOF
+  return 1
+}
+
+# ancestor_verdict_covers <local_sha> → 0 (covers it) or 1 (does not)
+#
+# local_sha's OWN tree may have no cached verdict while still being fully
+# covered: another lane can commit on top of an already-verified commit —
+# setup/decisions.md, a brief — without touching anything SUITE_TRIGGER_PATTERN
+# names. Measured 2026-09-10, four times in one day: the tip changed mid-verify
+# and pre-push refused a tree whose only difference from a verified ancestor
+# was exactly that kind of commit. The tribal workaround was pushing the
+# verified sha explicitly, then the rest; this is the durable version.
+#
+# THE CLAIM IS ABOUT THE LAST TRIGGERING COMMIT, NOT "SOME ANCESTOR". Walk
+# local_sha's history looking for the most recent commit whose OWN change (not
+# its accumulated tree) matches SUITE_TRIGGER_PATTERN. If THAT commit has a
+# cached verdict, nothing capable of invalidating the suite has changed since,
+# so the verdict still describes local_sha's suite-relevant content too — even
+# though local_sha's tree also carries unrelated newer commits verify-for-push
+# never ran against. Read this as "the last commit that touched the pattern
+# has a verdict", not "some ancestor does": stopping at the FIRST match
+# encountered while walking backward is what makes those the same statement.
+#
+# LINEAR HISTORY ONLY (first-parent, no merges anywhere in the walk). A merge
+# can bring in suite-relevant content through a NON-first parent this walk
+# never inspects. Rather than also walking every parent — and risking exactly
+# the wrong direction the brief calls out, a change that could invalidate the
+# suite passing through unverified — a merge anywhere between local_sha and
+# the candidate trigger commit bails out to the caller's own per-tip check,
+# unchanged. This is deliberately narrower than the general case: it covers
+# the "someone else committed on top" scenario measured above, not every
+# topology a merge could create.
+#
+# ANY git FAILURE BAILS OUT TOO — same "fail toward requiring a verdict" rule
+# range_needs_suite uses above; a walk this function could not trust must
+# never be read as "covered".
+ancestor_verdict_covers() {
+  local local_sha="$1" chain c parents trigger_tree
+  if ! chain="$(git rev-list --first-parent "$local_sha" 2>/dev/null)"; then
+    return 1
+  fi
+  while read -r c; do
+    [ -n "$c" ] || continue
+    if ! parents="$(git rev-list --parents -n 1 "$c" 2>/dev/null)"; then
+      return 1
+    fi
+    # "$c parent1 [parent2 ...]" — more than one token after $c is a merge.
+    set -- $parents
+    shift
+    if [ "$#" -gt 1 ]; then
+      return 1   # a merge is in the way; do not guess through it
+    fi
+    local changed
+    if ! changed="$(git diff-tree --no-commit-id --name-only -r -m --root "$c" 2>/dev/null)"; then
+      return 1
+    fi
+    if printf '%s\n' "$changed" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+      trigger_tree="$(git rev-parse "$c^{tree}" 2>/dev/null || true)"
+      [ -n "$trigger_tree" ] && grep -qF "tree=$trigger_tree" "$cache_dir/$trigger_tree" 2>/dev/null
+      return
+    fi
+  done <<EOF
+$chain
+EOF
+  return 1   # nothing in this history ever touched the pattern — do not guess
+}
+
+# docs_only_verdict_covers <tree> → 0 (covered; prints the verdict's tree and
+# commit on stdout) or 1 (not covered)
+#
+# A tree with no verdict of its own is still covered when it differs from SOME
+# tree with a verdict only in lane documentation. Measured 2026-09-23: three
+# full runs in a row for one push, because while each ran another brainer
+# committed a brief or a decisions.md on main, and the tree the merge produced
+# was never the tree verified. ancestor_verdict_covers cannot help there — the
+# merge is exactly what it refuses to walk through. This compares TREES, not
+# history, so the shape of the merge does not matter: the question is only
+# what bytes differ from bytes a full run already passed.
+#
+# THE LIST IS MEASURED AGAINST WHAT THE SUITE READS FROM THE REAL CHECKOUT, not
+# against what "looks like prose". It is:
+#   <lane>/briefs/**        every lane, setup's included: 27 used to read three
+#                           of setup's briefs and now reads fixture copies
+#   <lane>/decisions.md     every lane but setup's, and only when the header
+#                           (everything before the first `---` line) is
+#                           byte-identical: 113 asserts the real header of
+#                           of three lanes' files
+#   <lane>/decisions/**     every lane but setup's
+# setup/decisions.md and setup/decisions/** stay OUT: 151 runs
+# `decisions index setup --all` against the live tree and asserts two titles
+# are still reachable, so editing either CAN flip the verdict. 16 also reads
+# every lane's decisions.md and archives, through `hw status` → `decisions
+# check`, but only compares line counts between two calls that both include
+# that output, so no content in them can flip it.
+#
+# EVERY PATH IN THE DIFFERENCE, BOTH SIDES. `--no-renames` turns a rename into
+# a delete plus an add, so a brief renamed out of the list (or a bin/ file
+# renamed into one) shows its outside path and is refused. A deletion of an
+# outside path is an outside path. One path outside the list, and this
+# candidate does not cover.
+#
+# THE LANE COMPONENT IS A NAMED LIST, NOT `[^/]+`. A bare `[^/]+` accepts ANY
+# top-level directory as a lane, so `bin/briefs/x.sh` or `bin/decisions/x`
+# matched it too, although both are inside SUITE_TRIGGER_PATTERN and walked
+# recursively by 173. The names are the lanes of projects.json, read here, so
+# the hook carries no lane of its own: a directory that is not a lane there
+# fails closed (needs a run), and docs_only_path also refuses anything
+# SUITE_TRIGGER_PATTERN names outright, belt and braces, before the pattern is
+# even consulted. A table that cannot be read, or a key that is not a lowercase
+# word, leaves NO lane: every candidate fails closed and a full run is owed.
+#
+# ANY git FAILURE MEANS "THIS CANDIDATE DOES NOT COVER" — same direction as the
+# two functions above. A candidate this function could not read is skipped, and
+# if none remain the caller refuses.
+docs_only_lanes="$(jq -r '.lanes | keys_unsorted[]' "$(git rev-parse --show-toplevel)/projects.json" 2>/dev/null || true)"
+if [ -z "$docs_only_lanes" ] || printf '%s\n' "$docs_only_lanes" | grep -vqE '^[a-z][a-z0-9-]*$'; then
+  DOCS_ONLY_PATTERN='^/'   # no lane: no pushed path starts with /
+else
+  DOCS_ONLY_PATTERN="^($(printf '%s\n' "$docs_only_lanes" | paste -sd'|' -))/(briefs/.+|decisions\.md|decisions/.+)\$"
+fi
+docs_only_path() { # <path> → 0 when the path is lane documentation the suite does not read
+  case "$1" in
+    setup/decisions.md|setup/decisions/*) return 1 ;;
+  esac
+  printf '%s\n' "$1" | grep -qE "$SUITE_TRIGGER_PATTERN" && return 1
+  printf '%s\n' "$1" | grep -qE "$DOCS_ONLY_PATTERN"
+}
+decisions_header() { # <tree> <path> → the header, or fails if the blob is unreadable
+  local blob
+  blob="$(git cat-file blob "$1:$2" 2>/dev/null)" || return 1
+  printf '%s\n' "$blob" | awk 'NR > 1 && $0 == "---" { exit } { print }'
+}
+docs_only_verdict_covers() {
+  local tree="$1" f vtree diff p status h_old h_new ok
+  [ -d "$cache_dir" ] || return 1
+  for f in "$cache_dir"/*; do
+    vtree="$(basename "$f")"
+    case "$vtree" in
+      *[!0-9a-f]*|'') continue ;;   # a .tmp.<pid> mid-write, or anything not a tree name
+    esac
+    [ "${#vtree}" -eq 40 ] || continue
+    grep -qF "tree=$vtree" "$f" 2>/dev/null || continue
+    git cat-file -e "$vtree^{tree}" 2>/dev/null || continue
+    diff="$(git diff-tree -r --no-renames --name-status "$vtree" "$tree" 2>/dev/null)" || continue
+    [ -n "$diff" ] || continue   # identical trees are the exact-tree check's, not this one's
+    ok=1
+    while IFS="$(printf '\t')" read -r status p; do
+      [ -n "$p" ] || { ok=0; break; }
+      docs_only_path "$p" || { ok=0; break; }
+      case "$p" in
+        */decisions.md)
+          [ "$status" = M ] || { ok=0; break; }   # created or deleted: the header changed
+          h_old="$(decisions_header "$vtree" "$p")" || { ok=0; break; }
+          h_new="$(decisions_header "$tree" "$p")" || { ok=0; break; }
+          [ "$h_old" = "$h_new" ] || { ok=0; break; }
+          ;;
+      esac
+    done <<EOF
+$diff
+EOF
+    if [ "$ok" -eq 1 ]; then
+      printf 'tree %s (commit %s)' "$vtree" \
+        "$(sed -n 's/^commit=//p' "$f" 2>/dev/null | head -1)"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# verified_ahead <local_sha> → one line per cached verdict whose COMMIT contains
+# local_sha ("<commit> <tree>"), newest first by file name order is irrelevant.
+#
+# WHY THE REFUSAL NAMES THEM. Measured 2026-09-29 against a bare remote: the
+# gate is keyed by the tree of the sha git hands it on stdin, never by the
+# checkout or by local main — `git push <remote> <verified-sha>:main` passes on
+# the FIRST attempt. What fails is pushing a REF that is not at the verified
+# sha (a local main still behind it): the refusal then said "run
+# verify-for-push", which is the ~800s wrong answer — the verdict exists, one
+# commit ahead. This only DIAGNOSES; a verdict for a descendant never covers an
+# ancestor (a commit before it may be the one that broke the suite).
+verified_ahead() {
+  local sha="$1" f v c
+  [ -d "$cache_dir" ] || return 0
+  for f in "$cache_dir"/*; do
+    v="$(basename "$f")"
+    case "$v" in *[!0-9a-f]*|'') continue ;; esac
+    [ "${#v}" -eq 40 ] || continue
+    grep -qF "tree=$v" "$f" 2>/dev/null || continue
+    c="$(sed -n 's/^commit=//p' "$f" 2>/dev/null | head -1)"
+    [ -n "$c" ] && [ "$c" != "$sha" ] || continue
+    git cat-file -e "$c^{commit}" 2>/dev/null || continue
+    git merge-base --is-ancestor "$sha" "$c" 2>/dev/null || continue
+    printf '%s %s\n' "$c" "$v"
+  done
+}
+
+# Mandatory coverage is UNCHANGED for anything that CAN invalidate the suite —
+# a tree in range of such a path is refused without a cached verdict, every
+# time, for both allowed remotes. What moved is WHEN the ~1000s is paid for
+# those pushes, and — new here — WHETHER it is owed at all for a push that
+# provably cannot touch the suite's own correctness.
+cache_dir="$(git rev-parse --git-common-dir)/hw-push-verified"
+missing=""
+ahead=""
+checked=0
+zero="0000000000000000000000000000000000000000"
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  # A DELETE (local_sha is all zeros) publishes nothing new — there is no
+  # tree to have verified.
+  [ "$local_sha" != "$zero" ] || continue
+  checked=$((checked + 1))
+  if ! range_needs_suite "$local_sha" "$remote_sha" "$1"; then
+    echo "pre-push: $local_ref's pushed range touches nothing matching SUITE_TRIGGER_PATTERN — no cached verdict required." >&2
+    continue
+  fi
+  tree="$(git rev-parse "$local_sha^{tree}" 2>/dev/null || true)"
+  # EXISTENCE IS NOT ENOUGH — the file's own content must name this exact
+  # tree too. The filename already IS the tree-sha, so this looks redundant
+  # and is the point: a zero-byte or truncated file (a write caught mid-way,
+  # a stray touch, anything that is not verify-for-push's real output) passes
+  # a bare `-f` check while proving nothing. Requiring `tree=$tree` inside the
+  # file costs one more `grep` and closes that gap for free.
+  if [ -n "$tree" ] && grep -qF "tree=$tree" "$cache_dir/$tree" 2>/dev/null; then
+    continue
+  fi
+  if ancestor_verdict_covers "$local_sha"; then
+    echo "pre-push: $local_ref has no verdict of its own, but no commit since the last one that touches SUITE_TRIGGER_PATTERN does either — that ancestor's cached verdict covers it." >&2
+    continue
+  fi
+  if [ -n "$tree" ] && covered_by="$(docs_only_verdict_covers "$tree")"; then
+    echo "pre-push: $local_ref has no verdict of its own, but differs only in lane documentation from $covered_by, which has one — accepted against that verdict." >&2
+    continue
+  fi
+  missing="$missing
+    $local_ref  $local_sha  (tree ${tree:-unresolvable})"
+  while read -r _va_c _va_t; do
+    [ -n "${_va_c:-}" ] || continue
+    # The cache is shared by every worktree of this repository, so the commit may be
+    # another executor's unmerged tip: name the branches it is on and say so.
+    _va_refs="$(git for-each-ref --contains "$_va_c" --format='%(refname:short)' refs/heads 2>/dev/null | head -3 | paste -sd, -)" || _va_refs=""
+    ahead="$ahead
+    $local_ref is BEHIND a verified commit: $_va_c (tree $_va_t) contains $local_sha and has a cached verdict.
+      it is on: ${_va_refs:-no local branch} — the verdict cache is shared by every worktree here; push it only if that is the work you meant."
+    ahead="$ahead
+      push that sha:  git push $1 $_va_c:${remote_ref:-refs/heads/main}   (or advance the ref: git merge --ff-only $_va_c)"
+  done <<VA
+$(verified_ahead "$local_sha")
+VA
+done <<EOF
+$PUSHED_REFS
+EOF
+if [ -n "$missing" ]; then
+  {
+    echo "pre-push: no cached full-suite verdict for what you are about to push to '$1'."
+    printf '%s\n' "$missing"
+    echo
+    echo "Coverage is still mandatory — it is just not run BY this hook, because running it"
+    echo "here held the SSH connection open long enough for the remote to close it out from"
+    echo "under a real push (measured 2026-09-10; see this file's own comment for the incident)."
+    echo
+    if [ -n "$ahead" ]; then
+      echo "A verdict already exists one step ahead of what you named — do NOT re-run the suite:"
+      printf '%s\n' "$ahead"
+      echo
+    fi
+    echo "Otherwise run it yourself, then push again:  bash setup/verify-for-push"
+    echo "If you are certain: git push --no-verify"
+  } >&2
+  exit 1
+fi
+if [ "$checked" -eq 0 ]; then
+  echo "pre-push: nothing new is being pushed to '$1' (no non-deletion ref updates) — nothing to check." >&2
+else
+  echo "pre-push: cached full-suite verdict found for every tree being pushed to '$1' — proceeding." >&2
+fi

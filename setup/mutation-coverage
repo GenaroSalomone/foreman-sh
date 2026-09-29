@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+#
+# mutation-coverage — did a subject file actually EXERCISE the mutation arms it
+# declares?
+#
+# WHY THIS EXISTS, measured 2026-08-28. A delivered task reported "killed 18
+# committed-byte mutants". All 18 existed and all 18 died — and none of them ran.
+# Every one of the new subject files wrapped its arms in
+# `if [ "${<SUBJECT>_MUTATION_TEST:-0}" = 1 ]`, and `setup/test-hw` sets no such
+# variable, so a 909-ok / 0-not-ok working-tree run printed zero mutant lines.
+# Seven subject files were in that shape: every mutation-carrying subject added
+# since the convention appeared one session earlier had inherited it.
+#
+# WHY THE CHECK READS OUTPUT AND NOT SOURCE. The first attempt scanned for the
+# gate idiom and flagged four innocents (31, 34 and 36 gate an optional LIVE arm
+# and kill their mutants regardless; a fixture heredoc matched too). A check that
+# cries wolf is ignored within a day, which is worse than no check. What matters
+# is not how a subject reads but what it PRINTED, and that has no false
+# positives and no idiom to keep up with: any future way of skipping an arm —
+# a variable, a `return`, a commented-out block, an early exit — fails it.
+#
+# AND THE SECOND WAY AN ARM LIES, measured 2026-09-01 (commit 8f5c8ef): an arm that RUNS, prints `ok - mutant killed`, and never executed the
+# mutated code. 45-ask-cap-legal-exit.sh copied bin/ask-invoker without the
+# sibling library it sources, so the mutant died on an environment error before
+# reaching the mutated line — and its assertion was
+#
+#     case "$out" in *'original text'*) fail ;; *) pass "mutant killed" ;; esac
+#
+# which reads "no evidence of survival" as proof of death. Absence of evidence is
+# exactly what a broken mutant produces, so that shape certifies EVERY mutant
+# that cannot run. The output check above cannot see it: the arm printed the
+# marker. So this predicate also reads the SOURCE for that one shape — a kill
+# marker certified by a `*)` catch-all branch — and refuses it. The shape has no
+# innocent reading: a kill sitting in the catch-all is by construction "pass
+# unless the original's text appeared", and a positive check (`*"the mutant's
+# own text"*) pass`) is always available instead. Every other vacuity (an exit
+# code a crash also produces, `! grep original`) needs a reader, and the helper
+# `saw_mutant` in tests/_common.sh is the shape that reader should find.
+#
+# WHAT IT HONESTLY CLAIMS, and it is narrow: this subject declares a mutation
+# arm, this run exercised at least one, and no kill is certified by a catch-all.
+# It does not check that every declared arm ran, that a mutant is a good mutant,
+# that a positive-looking assertion is actually mutant-specific, or that the
+# claim it pins is the right claim. A subject with three arms that runs one
+# passes here — the coverage lines each subject prints are what carry that, and
+# a human reads those.
+#
+# USAGE
+#   mutation-coverage <subject-file> <output-file>
+#     exit 0  either the subject declares no mutation arm, or its output shows
+#             at least one exercised and no kill is catch-all certified
+#     exit 1  the subject declares arms and the run exercised none
+#     exit 2  usage / unreadable input, which is never a silent pass
+#     exit 3  a kill marker sits in a `*)` catch-all branch — the arm passes on
+#             the ABSENCE of the original, so a mutant that never ran passes it
+#     exit 4  the output file is EMPTY — the subject printed nothing, so nothing
+#             about its arms can be established. Checked before everything else,
+#             because an empty capture used to fall through as a pass
+#
+set -uo pipefail
+
+SUBJECT="${1:-}"
+OUTPUT="${2:-}"
+
+if [ -z "$SUBJECT" ] || [ -z "$OUTPUT" ]; then
+  printf 'mutation-coverage: usage: mutation-coverage <subject-file> <output-file>\n' >&2
+  exit 2
+fi
+if [ ! -r "$SUBJECT" ]; then
+  printf 'mutation-coverage: cannot read subject %s\n' "$SUBJECT" >&2
+  exit 2
+fi
+if [ ! -r "$OUTPUT" ]; then
+  printf 'mutation-coverage: cannot read output %s\n' "$OUTPUT" >&2
+  exit 2
+fi
+
+# AN EMPTY OUTPUT FILE IS NEVER A PASS, AND THIS IS THE FIRST GATE.
+#
+# Measured 2026-09-02 by the opus Judgment Day reviewer: this predicate exited 0
+# for `mutation-coverage <subject> <empty file>`. Every branch below reads the
+# output only to look for evidence IN it, so "nothing was printed" fell through
+# the declaration gate and out the bottom as a pass. That is the `*)` catch-all
+# one level up — certifying on the absence of evidence — inside the tool written
+# to refuse exactly that shape.
+#
+# A subject that printed nothing did not run: every subject in this suite emits
+# `ok -` lines, and the runner sums them. So there is no innocent reading of an
+# empty capture, and it gets its own status rather than being folded into 1
+# ("declares arms and exercised none"), which would be a claim about arms this
+# cannot support when it has no output at all.
+if ! grep -q '[^[:space:]]' "$OUTPUT" 2>/dev/null; then
+  printf 'mutation-coverage: %s produced NO OUTPUT AT ALL (%s is empty), so nothing about its arms can be established — a subject that printed nothing did not run, and an empty capture must never read as coverage\n' \
+    "$(basename "$SUBJECT")" "$OUTPUT" >&2
+  exit 4
+fi
+
+# THE MARKER COVERS THREE CONVENTIONS, because this suite has three and a
+# predicate that knew only one would have missed a file silently — which is the
+# defect this script exists to stop. Measured across setup/tests/*.sh:
+#   41 × `mutant killed`   — `pass "mutant killed: M01 …"`, printed as `ok - …`
+#   35 × `mutant_killed`   — a per-file helper CALL
+#    3 × `mutant-killed`   — what that helper prints: `mutant-killed - M01 …`
+# So one character class spans all three, present and future mixes included.
+MARKER='mutant[ _-]killed'
+
+# AND THE HELPER CALL, WHICH THIS COULD NOT SEE. Measured 2026-09-02 by the opus
+# Judgment Day reviewer: `saw_mutant` — the positive shape tests/_common.sh
+# added, and the one this file's own header recommends — puts NO marker in the
+# subject's SOURCE. Its `pass "mutant killed: …"` line appears only in the
+# OUTPUT. So the declaration gate below found nothing to enforce and returned 0,
+# and SIXTEEN arms across subjects 66, 67 and 68 were never evaluated: they
+# passed because nothing looked. Those three subjects are the ones that prove
+# the exit-code-survives-a-pipe, one-way-chaining and empty-pane fixes, so the
+# release's own evidence was the unchecked part.
+#
+# TWO PATTERNS NOW, BECAUSE THE TWO QUESTIONS ARE DIFFERENT and collapsing them
+# is what caused this. DECLARATION is asked of the SOURCE — "does this file
+# promise an arm" — and a promise can be written either as the marker or as a
+# `saw_mutant` call. EVIDENCE is asked of the OUTPUT — "did one run" — and there
+# the marker is the whole vocabulary, because `saw_mutant` PRINTS `mutant
+# killed:` when it passes. A single pattern cannot answer both.
+# DERIVED FROM $MARKER, NEVER RESTATED. The first version of this spelled the
+# pattern out again — and that silently split "marker breadth" across two
+# literals, so 46's M05 mutant (which narrows $MARKER to one convention) only
+# narrowed half of it and its claim stopped holding. Breadth is one property and
+# it lives in one place; this adds the helper call to it and nothing else.
+DECLARE_MARKER="$MARKER|saw_mutant"
+
+# NOT EXTENDED TO THE CATCH-ALL SHAPE CHECK BELOW, deliberately. That check
+# refuses a kill certified by a `*)` branch because such a kill passes on the
+# ABSENCE of the original text. `saw_mutant` cannot do that: it fails unless one
+# of the mutant's OWN needles is present, so a `*)` branch calling it is still
+# positively certified. Adding it there would refuse a correct shape, and a
+# check that cries wolf is ignored within a day — this file's header says so
+# about its own first draft.
+
+# DECLARATION: a marker on a line that is not a comment. Excluding comments is
+# what keeps prose about mutants — including this file's own header — from being
+# read as a promise the subject never made.
+#
+# TWO GREPS, NOT ONE PATTERN, and the reason is a bug this file had for one
+# revision: `^[[:space:]]*[^#[:space:]].*MARKER` consumes the line's FIRST
+# character with the negated class, so a line that BEGINS with the marker —
+# `mutant_killed "M01 …"`, which is how 35 of the calls in this suite are
+# written — never matched. grep -E has no lookahead, so the comment exclusion
+# and the marker search are two steps.
+COMMENT='^[[:space:]]*#'
+
+# THE CATCH-ALL SHAPE IS REFUSED FIRST, before the declaration gate, and on a
+# WIDER net than $MARKER: `pass "mutation: …"` and `pass "mutant: …"` are arms
+# too (05, 12, 15, 31, 36 write them that way), they just never joined the
+# marker convention. Three spellings of the same shape, all read line by line:
+#
+#     *) pass "mutant killed: M07 …" ;;          catch-all and kill on one line
+#     *)                                         catch-all alone …
+#       pass "mutant killed: M07 …" ;;           … kill on the next line
+#     … fail ;; *) pass "mutant killed: …" ;; esac   a one-line case
+#
+# awk, not grep: the second spelling needs the previous line, and BSD awk on the
+# machines this runs on has no gawk extensions, so only POSIX classes are used.
+catchall="$(awk '
+  {
+    line = $0
+    if (line ~ /^[[:space:]]*#/) next
+    if (line ~ /^[[:space:]]*$/) next
+    if (line ~ /mutant_killed[[:space:]]+["'"'"']/ || line ~ /pass[[:space:]]+["'"'"'][^"'"'"']*[Mm]uta(nt|tion)/) {
+      if (line ~ /^[[:space:]]*\*\)[[:space:]]*(pass|mutant_killed)/) print NR ": " line
+      else if (line ~ /;;[[:space:]]*\*\)[[:space:]]*(pass|mutant_killed)/) print NR ": " line
+      else if (prev ~ /^[[:space:]]*\*\)[[:space:]]*$/) print NR ": " line
+    }
+    prev = line
+  }' "$SUBJECT")"
+if [ -n "$catchall" ]; then
+  printf 'mutation-coverage: %s certifies a mutant kill from a `*)` catch-all branch — that arm passes on the ABSENCE of the original text, so a mutant that died before running the mutated line passes it too (8f5c8ef). Match the mutant'"'"'s OWN text in a positive branch, or use saw_mutant:\n' \
+    "$(basename "$SUBJECT")" >&2
+  printf '%s\n' "$catchall" | sed 's/^/    /' >&2
+  exit 3
+fi
+
+if ! grep -Ev "$COMMENT" "$SUBJECT" | grep -Eq "$DECLARE_MARKER"; then
+  exit 0
+fi
+
+# EVIDENCE: any of the three forms, anywhere in what the run printed. Looser
+# than the declaration on purpose — `ok - mutant killed: …`, `mutant-killed - …`
+# and a `coverage -` summary all mean an arm ran, and any one is enough for the
+# narrow claim above.
+if grep -Eq "$MARKER" "$OUTPUT"; then
+  exit 0
+fi
+
+printf 'mutation-coverage: %s declares mutation arms and this run exercised none\n' \
+  "$(basename "$SUBJECT")" >&2
+exit 1

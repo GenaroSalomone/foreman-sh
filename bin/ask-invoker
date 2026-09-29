@@ -1,0 +1,539 @@
+#!/usr/bin/env bash
+#
+# ask-invoker — an executor asks its brainer one decision-class question.
+#
+#   ask-invoker "the brief says X but the repo is at Y — which one is current?"
+#
+# The channel exists so a blocked executor does not sit waiting for a human to
+# act as a copy-paste relay. It is deliberately narrow, because two agents that
+# can prompt each other are one bad loop away from talking forever.
+#
+# WHAT GOES THROUGH HERE — questions only the brainer can answer:
+#   · the brief contradicts what you actually found
+#   · two sources disagree and the brief does not say which wins
+#   · the work has left the brief's scope; continue or stop
+#
+# WHAT DOES NOT — anything a human must supply or approve:
+#   · credentials and access. Those come as a RESOLVER in the brief
+#     (`security find-generic-password -s <handle> -w`), never as a value and
+#     never through a chat. If the brief has no handle for it, that is a gap in
+#     the brief: report it blocked and say which handle you needed.
+#   · authorization for something expensive or irreversible
+#   · anything physical, or on the operator's own accounts
+#
+# Set by `hw` on the executor's pane: HW_INVOKER_PANE, HW_TASK, HW_PROJECT,
+# HW_WORKDIR. hw also writes them to `<workdir>/.hw/<run>/env`, which is the
+# fallback when the environment is gone — which is the state a restarted
+# terminal-multiplexer pane can leave a resumed session in. Environment first,
+# then that file, found by walking up from $PWD. Only if NEITHER yields a
+# brainer pane does this refuse, and then it refuses in the same words as
+# before, because that message is the instruction to report to the operator
+# instead.
+#
+# HOW THE QUESTION IS DELIVERED
+#
+# It used to be one `herdr agent prompt` whose exit status was taken as proof of
+# delivery. It is not proof: `agent prompt` succeeds for text it merely drew.
+# It is ALSO not a loss — measured 2026-08-25 on claude 2.1.245, a prompt
+# delivered to a `working` pane is always acted on, immediately or when that
+# turn ends. The problem is WHEN: an answer that arrives inside the brainer's
+# current turn is answered against a state the executor never saw, and
+# `working` is precisely when a blocked executor asks. So now: PUBLISH the
+# question, choose the receiver-owned route, and
+# account only after receiver-owned delivery proof. Herdr routes still wait for
+# idle; native OpenCode/Codex routes do not. See invoker-common.sh.
+#
+set -euo pipefail
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
+# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
+# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
+# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
+case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
+
+MAX_ASKS=3
+# A challenge is cheap but not free: two is enough to name a wrong prohibition
+# and a wrong exception, and past that the brief needs a human, not a round trip.
+MAX_CHALLENGES=2
+MAX_CHARS=600
+
+# How long the published question stays readable via `herdr agent list`. One
+# hour: long enough that a stalled ask is still visible when the operator next
+# looks at the sidebar, short enough that yesterday's question is not still
+# sitting there claiming to be open.
+ASK_TTL_MS=3600000
+
+die() { printf 'ask-invoker: %s\n' "$*" >&2; exit 1; }
+
+# -- THE EXIT CODE A PIPE SWALLOWS -------------------------------------------
+#
+# Same defect and same fix as `bin/channel-send`, whose header carries the full
+# incident: a brainer ran `channel-send … | tail -4`, read `exit 0`, and reported
+# a delivery that never happened — the `0` was TAIL's, because the shell's `$?`
+# after a pipeline is the LAST command's status. ask-invoker has the identical
+# shape: long explanatory output, so `| tail` is the obvious thing to do, and an
+# exit code that is the only machine-readable statement of whether the question reached the brainer.
+#
+# INLINE IN ALL THREE FILES ON PURPOSE, not sourced from a sibling. The natural
+# home is `bin/invoker-common.sh`, and this suite's fixtures copy an explicit
+# list of siblings beside each binary (tests 05, 24, 33, 35, 41, 45, 64). A new
+# MANDATORY sibling would make every one of those copies die on a missing file
+# before reaching the code under test — which is exactly the vacuous-mutant
+# failure `saw_mutant` was written for. Ten duplicated lines cost less than that.
+#
+# WHY STDERR. `cmd | tail` redirects only stdout, so stderr still reaches the
+# terminal the caller is reading; and under `cmd 2>&1 | tail -4` this is the LAST
+# thing written, so a 4-line window still shows it. stdout is left byte-identical
+# because hw and these invokers capture and parse each other's stdout.
+#
+# `[ ! -t 1 ]` cannot tell a pipe from a file or a command substitution, so the
+# wording is true in all three: it names the pipe case conditionally, and tells a
+# caller that already captured the status that it now holds it.
+_INV_EXIT_SPOKEN=0
+_inv_exit_meaning() {
+  case "$1" in
+    1) printf 'NOT DELIVERED — no ask was spent and no marker written, so nothing was lost; retry the identical command' ;;
+    4) printf 'DELIVERED and provably in the brainer session, but its TURN failed — do NOT re-ask' ;;
+    *) printf 'a failure, not a delivery' ;;
+  esac
+}
+_inv_exit_guard() {
+  local rc="$1"
+  [ "$_INV_EXIT_SPOKEN" = 0 ] || return 0
+  _INV_EXIT_SPOKEN=1
+  [ "$rc" -ne 0 ] 2>/dev/null || return 0
+  [ ! -t 1 ] || return 0
+  printf 'ask-invoker: ══ MY EXIT CODE IS %s: %s ══\n' "$rc" "$(_inv_exit_meaning "$rc")" >&2
+  printf 'ask-invoker: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `ask-invoker … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: read `${PIPESTATUS[0]}` or drop the pipe. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the delivery fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2
+  return 0
+}
+trap '_inv_exit_guard "$?"' EXIT
+
+# ── locate the real brain/bin, through the ~/bin symlink ──────────────────
+#
+# ask-invoker and done-invoker are symlinked into ~/bin INDIVIDUALLY, so
+# ${BASH_SOURCE[0]} is the LINK (~/bin/ask-invoker) while the shared library
+# and herdr-rpc live beside the TARGET (brain/bin/). Resolve the chain by hand:
+# `readlink -f` is a GNU-ism that only reached macOS in 12.3, and this has to
+# keep working if someone ever links a link. `dirname` is re-evaluated on each
+# hop because a relative link is relative to the directory of the link itself,
+# not to the cwd.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+INVOKER_PROG=ask-invoker
+[ -r "$INVOKER_BIN_DIR/invoker-common.sh" ] \
+  || die "cannot find invoker-common.sh beside $_src — this brain/bin is incomplete"
+# shellcheck source=invoker-common.sh
+. "$INVOKER_BIN_DIR/invoker-common.sh"
+
+# This invoker takes no flags at all, so `$*` used to absorb anything that
+# looked like one and publish it as part of the QUESTION. done-invoker had the
+# same hole and there it was worse (an invented `--status blocked` was filed as
+# done), so both are closed the same way. `--` escapes, for the question that
+# genuinely opens with a dash.
+# ONE FLAG, AND IT IS NOT A QUESTION.
+#
+# A brief can carry a wrong prohibition: one that blocks a route which in fact
+# works and was already documented elsewhere. An executor that hits this has
+# no good option without a third move — obeying wastes the task, and silently
+# disobeying is worse. It was right to report blocked, but that cost a whole
+# executor session before a human caught the mismatch.
+#
+# `--challenge` is the third move. It is deliberately NOT an ask:
+#   · it does not spend the ask budget, because it is not a question about the
+#     work — it is a defect report about the contract, and charging for it makes
+#     an executor weigh "is this worth one of my three" against staying silent.
+#   · it has its own small cap, so it cannot become a way around the ask cap.
+#   · it REQUIRES evidence. "I think this is wrong" is an opinion; the brainer
+#     needs the observation. Hence the `::` — the prohibition on the left, what
+#     was actually observed on the right — which is checkable, unlike a request
+#     to "be specific".
+CHALLENGE=0
+case "${1:-}" in
+  --challenge) CHALLENGE=1; shift ;;
+  --) shift ;;
+  -) : ;;  # a lone '-' is the stdin sentinel handled below, not an unknown option
+  -*) die "unknown option: $1 — ask-invoker takes only the question, or --challenge. A flag left in the text becomes part of what the brainer is asked. Usage: ask-invoker \"<one question>\" | ask-invoker --challenge \"<what the brief forbids> :: <what you observed>\" (budget: HW_INVOKER_WAIT_MS in the environment)" ;;
+esac
+
+# THE QUESTION MAY BE '-' INSTEAD OF ARGV WORDS, read whole from stdin — the
+# same sentinel channel-send's endpoint slot already documents. Use it for
+# anything a shell would expand out of a double-quoted argv word (backticks,
+# `$`, embedded quotes, newlines) by piping the text in instead, e.g. with a
+# single-quoted heredoc: ask-invoker - <<'EOF' ... EOF. Three distinct
+# refusals below, because they are three distinct mistakes.
+if [ "${1:-}" = "-" ]; then
+  [ $# -eq 1 ] || die "the question was given on argv AND as '-' for stdin — pass it ONE way, not both"
+  [ ! -t 0 ] || die "'-' reads the question from stdin, but stdin is a terminal — pipe or redirect the text in"
+  QUESTION="$(cat -)" || die "could not read the question from stdin"
+  [ -n "$QUESTION" ] || die "stdin for '-' produced no bytes — an empty question delivered would be worse than this refusal"
+else
+  [ $# -ge 1 ] || die "usage: ask-invoker \"<one question>\" | ask-invoker - (reads the question from stdin)"
+  QUESTION="$*"
+fi
+
+# ENVIRONMENT FIRST, THEN THE RUN'S ENV FILE. A resumed executor has no `HW_*`
+# at all — the terminal multiplexer restores the pane and the conversation and
+# re-injects only its own environment — so refusing on an empty environment
+# refused exactly the pane that most needs to reach its brainer. This fills in
+# only what is missing,
+# from `<workdir>/.hw/<run>/env` found by walking up from $PWD. It never
+# overwrites: a live pane's `--env` values win. See invoker-common.sh for the
+# roots, the ownership and permission refusals, and the one thing a file cannot
+# fix (a brainer that was recreated has a different pane id).
+
+# -- AN EMPTY HW_INVOKER_PANE MEANS NO BRAINER, AND IT IS HONOURED ----------
+#
+# THE INCIDENT, 2026-09-02, and it is mine. Smoke-testing this binary's own exit
+# guard, I ran `HW_INVOKER_PANE= ask-invoker "<probe text>"` believing the blank
+# address made the call inert. It did not. `invoker_adopt_env_file` fills every
+# variable that is "unset OR EMPTY" (invoker-common.sh:296,
+# `[ -n "${!key:-}" ] && continue`), so the blank was read as absent and the REAL
+# brainer pane was recovered from `.hw/<run>/env`. The probe reached a live
+# brainer: it spent an ask and delivered a one-word report.
+#
+# THAT FALLBACK IS RIGHT FOR THE CASE IT WAS BUILT FOR — a pane that came back
+# from a herdr restart with no environment at all, where the file is the only
+# copy of the address. It is wrong for a caller that SET the variable and set it
+# to nothing: that is not a missing address, it is a stated one, and the stated
+# one is "none". Environment-first is the documented rule; treating an explicit
+# empty as absent is the one place it was not followed.
+#
+# SO A TEST SURFACE NOW HAS A ONE-TOKEN GUARANTEE. `HW_INVOKER_PANE=` in front
+# of the command makes the live channel unreachable, with no stub PATH, no
+# fixture and nothing to remember beyond the token itself — and it refuses
+# BEFORE the run lock, any counter read, any metadata write and any delivery, so
+# a smoke run cannot spend an ask or write a marker either.
+#
+# IT IS NOT A CHANGED DEFAULT. An UNSET variable still falls back to the env
+# file exactly as before, which is the restart case that fallback exists for.
+# `${VAR+set}` is what separates the two; `${VAR:-}` cannot.
+#
+# WHAT IT DOES NOT COVER, stated rather than implied: an operator who runs this
+# binary with the real address still reaches the real brainer, because that is
+# the binary's job. This closes the accident, not the intent.
+if [ -n "${HW_INVOKER_PANE+set}" ] && [ -z "${HW_INVOKER_PANE:-}" ]; then
+  die "HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (\`unset HW_INVOKER_PANE\`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean."
+fi
+
+invoker_adopt_env_file
+
+# Serialise invokers of this run before any counter is read. See invoker-common.sh.
+invoker_run_lock
+
+# RE-ARM THE PIPE GUARD, because `invoker_run_lock` just took the EXIT trap.
+#
+# It installs `trap invoker_release_run_lock EXIT` and holds it for the whole
+# invocation (invoker-common.sh) — bash keeps ONE handler per signal, so that
+# call silently removes the guard installed at the top of this file, for every
+# exit from here on. Which is every exit that matters: the lock is taken before
+# any delivery is attempted, so without this line the swallowed-exit-code
+# warning would exist only for the argument checks above it.
+#
+# The lock release is kept, in the same order and through the same function
+# `invoker_run_lock` installed, and `$?` is read FIRST because the release
+# clobbers it.
+#
+# IT CALLS `invoker_release_run_lock`, NOT `rmdir`. This line used to be a
+# literal `rmdir '<path>'`, which releases by PATH: after a successor reaped our
+# aged lock and took it, our own exit deleted the successor's LIVE lock and let a
+# third invoker in. Measured 2026-09-08; the identity check now lives in the
+# library, and both callers have to go through it or the fix is only half
+# installed. The library is no longer off-limits — the note about uncommitted
+# work from another author was true when this was written and is not now.
+if [ -n "${INVOKER_RUN_LOCK:-}" ]; then
+  trap '_inv_rc=$?; invoker_release_run_lock; _inv_exit_guard "$_inv_rc"' EXIT
+  invoker_arm_lock_signals
+fi
+
+[ -n "${HW_INVOKER_PANE:-}" ] || die "no HW_INVOKER_PANE — this pane was not launched by hw, so there is no brainer to ask. Report the blocker to ${HW_OPERATOR:-the operator} in this pane instead."
+[ -n "${HERDR_PANE_ID:-}" ]   || die "no HERDR_PANE_ID — not running inside a herdr pane, so the brainer would have nowhere to reply."
+
+TASK="${HW_TASK:-unknown}"
+PROJECT="${HW_PROJECT:-unknown}"
+
+# One question, not a transcript. If output could travel this way, the brainer's
+# context would fill with operational detail — the exact thing the brief-as-
+# interface design exists to prevent.
+if [ "$CHALLENGE" = 1 ]; then
+  case "$QUESTION" in
+    *" :: "*) ;;
+    *) die "a challenge needs both halves, separated by ' :: ': what the brief forbids, and what you OBSERVED that contradicts it. Example: ask-invoker --challenge \"the brief forbids substituting another host :: the prod host answers /health 200 and brief X documented that path\". Without the evidence the brainer has only your opinion, which is not enough to change a contract." ;;
+  esac
+  case "${QUESTION#* :: }" in
+    "") die "the evidence half of the challenge is empty" ;;
+  esac
+fi
+
+LEN="$(printf '%s' "$QUESTION" | wc -c | tr -d ' ')"
+[ "$LEN" -le "$MAX_CHARS" ] || die "question is $LEN chars, limit is $MAX_CHARS. Ask the question, do not paste the output. Summarise what you saw in one sentence."
+case "$QUESTION" in
+  *'```'*) die "no code fences. Describe what you found; the brainer does not need the raw output." ;;
+esac
+
+# The cap is the loop-breaker. It lives beside the task's own work so it resets
+# per task and survives nothing else.
+# Keyed on the RUN, not the directory. `hw done` keeps a repo-less work
+# directory and the next run reuses it, so directory-keyed state leaked across
+# runs: an executor could start already at the ask cap, or be unable to report
+# done because a previous run had.
+#
+# STILL 3, DELIBERATELY. The cap's rationale is weakened by
+# this change: the cap existed partly because each ask was an intrusion into the
+# brainer's turn, and a deferred ask is not an intrusion. That is an argument for
+# raising it, not for raising it blind — and it says so explicitly: do not remove
+# it in the same change, measure first. So the number stays until there is data
+# on how often a real executor hits it. Do not touch this without that data.
+STATE_DIR="$(invoker_state_dir)"
+mkdir -p "$STATE_DIR"
+if [ "$CHALLENGE" = 1 ]; then
+  COUNT_FILE="$STATE_DIR/challenge-count"
+  MAX_ASKS="$MAX_CHALLENGES"
+else
+  COUNT_FILE="$STATE_DIR/ask-count"
+fi
+COUNT="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
+case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+
+if [ "$COUNT" -ge "$MAX_ASKS" ]; then
+  if [ "$CHALLENGE" = 1 ]; then
+    die "already challenged this brief $COUNT times (limit $MAX_ASKS). A brief that is wrong in more than $MAX_ASKS places is not a brief to negotiate. Your legal exit is: done-invoker --blocked \"the brief needs another contract correction; include the unresolved prohibition and evidence\"."
+  fi
+  die "already asked the brainer $COUNT times on this task (limit $MAX_ASKS). Repeated round-trips mean the brief was wrong. Your legal exit is: done-invoker --blocked \"<the unresolved question and what would unblock it>\". The cap never requires a silent turn."
+fi
+ASK_SEQ=$((COUNT + 1))
+
+# NOTE ON THE COUNTER, which is the reverse of what this script used to do.
+# It used to increment, prompt, and roll the counter back if the prompt failed.
+# Now the counter is written only after a prompt has actually been delivered to
+# an idle brainer. Same property — an attempt that never reached anyone is not
+# spent — expressed without a rollback path, because with a wait in the middle
+# there are now three ways to not deliver, and three rollbacks is three bugs.
+ASK_LABEL="$ASK_SEQ/$MAX_ASKS"
+
+# ── 1. publish, before any keystroke is attempted ─────────────────────────
+#
+# After this call the question exists inside herdr, attached to this pane,
+# readable with `herdr agent list`, whether or not a prompt ever lands. There is
+# no way to make the sidebar row go blocked, so these tokens are the ONLY thing
+# that tells the operator what this executor is waiting on — they carry the
+# whole question, not a pointer to it.
+#
+# THE KEY BUDGET, because it is exactly full. herdr allows 16 tokens per call
+# and truncates each VALUE at 80 characters (see invoker-common.sh), so the
+# question goes in as chunks: 7 fixed keys + 8 chunks = 15, and 8 × 80 = 640
+# covers the whole 600-char MAX_CHARS with nothing clipped. If you add a fixed
+# token here, take a chunk away and lower MAX_CHARS to match.
+ASK_CHUNKS=8
+
+publish_ask() {  # $1 = ask_state value
+  local tokens rec
+  local -a chunks=()
+  while IFS= read -r -d '' rec; do chunks+=("$rec"); done \
+    < <(invoker_chunk_tokens ask "$ASK_CHUNKS" "$QUESTION")
+  tokens="$(invoker_tokens_json \
+    "hw_project=$PROJECT" \
+    "hw_task=$TASK" \
+    "hw_run=${HW_RUN:-norun}" \
+    "hw_invoker=$HW_INVOKER_PANE" \
+    "ask_seq=$ASK_LABEL" \
+    "ask_state=$1" \
+    "ask_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    "${chunks[@]}")" || die "internal: could not build the ask tokens"
+  if [ "$1" = delivered ]; then
+    invoker_publish "$ASK_TTL_MS" "$tokens" clear
+  else
+    invoker_publish "$ASK_TTL_MS" "$tokens" \
+      "$(printf '{"working":"asking brainer (%s)","blocked":"asking brainer (%s)","idle":"asked brainer (%s)"}' \
+         "$ASK_LABEL" "$ASK_LABEL" "$ASK_LABEL")"
+  fi
+}
+
+# Published as `undelivered` from the start, and flipped to `delivered` only
+# when the selected route proves delivery. That way EVERY failure
+# path below — timeout, dead pane, dead socket, pane closed mid-flight — leaves
+# the truthful state behind without each one having to remember to write it.
+PUB_RC=0
+publish_ask undelivered || PUB_RC=$?
+if [ "$PUB_RC" -ne 0 ]; then
+  # 3 means the socket is gone: the record did not land AND the prompt cannot
+  # either, so stop here rather than pretending. Anything else is degraded but
+  # not fatal — say so on stderr and carry on to delivery.
+  if [ "$PUB_RC" -eq 3 ]; then
+    die "cannot reach herdr on \$HERDR_SOCKET_PATH, so the question could not be recorded and the brainer cannot be prompted. Nothing was spent; report the blocker to ${HW_OPERATOR:-the operator} in this pane."
+  fi
+  printf 'ask-invoker: warning: question metadata is unverified (herdr-rpc exit %s); continuing to the brainer without a verified record.\n' "$PUB_RC" >&2
+fi
+PUBLICATION_NOTE="$(invoker_publication_note "$PUB_RC")"
+
+if [ "$CHALLENGE" = 1 ]; then
+  ENVELOPE_ID="$(invoker_envelope_prefix):challenge:$ASK_SEQ"
+else
+  ENVELOPE_ID="$(invoker_envelope_prefix):ask:$ASK_SEQ"
+fi
+PENDING_REPLY="$STATE_DIR/pending-reply-$ASK_SEQ"
+if [ "$CHALLENGE" = 1 ]; then
+  # Intent is declared by the caller, never inferred from the opaque ruling
+  # text. channel-send can therefore refuse an unsafe mid-work correction
+  # without changing reports, ordinary answers, redirects, or hw next.
+  REPLY_COMMAND="$(invoker_reply_command "$ENVELOPE_ID:reply" ruling "$PENDING_REPLY")"
+else
+  REPLY_COMMAND="$(invoker_reply_command "$ENVELOPE_ID:reply" answer "$PENDING_REPLY")"
+fi
+if [ "$CHALLENGE" = 1 ]; then
+  # A DIFFERENT MESSAGE, because it asks for a different thing. An ask wants an
+  # answer; a challenge wants a RULING on the brief, and the two failure modes
+  # are opposite: an unanswered ask stalls the work, an unruled challenge lets
+  # the work proceed under a rule that may be wrong.
+  read -r -d '' MSG <<EOF || true
+[CONTRACT CHALLENGE — $PROJECT:$TASK, pane $HERDR_PANE_ID, challenge $ASK_LABEL]
+Envelope: $ENVELOPE_ID. Process this envelope even if your inbox coalesced it
+with other messages; each envelope needs its own reply.
+
+This is NOT a question about the work. The executor believes the BRIEF is wrong
+and has brought evidence:
+
+$QUESTION
+
+Rule on it, in one of exactly two ways, and reply straight to the executor:
+
+  $REPLY_COMMAND
+
+  · "the prohibition stands, because <why the evidence does not overturn it>"
+  · "the prohibition is lifted for this task: <what is now permitted>"
+
+Do not answer with a discussion. Until you rule, the executor is holding, which
+is the correct thing for it to do and an expensive place for it to sit. If the
+brief is wrong, fix the brief too — the next task inherits it.
+EOF
+else
+  read -r -d '' MSG <<EOF || true
+[executor blocked — $PROJECT:$TASK, pane $HERDR_PANE_ID, ask $ASK_LABEL]
+Envelope: $ENVELOPE_ID. Process this envelope even if your inbox coalesced it
+with other messages; each envelope needs its own reply.
+
+$QUESTION
+
+Answer it or say it is not yours to answer. Reply straight to the executor:
+
+  $REPLY_COMMAND
+
+Do not open its work in your window. If the answer needs a credential, send the
+resolver command, never the value. If it needs ${HW_OPERATOR:-the operator}, say so — they are watching
+both panes.
+EOF
+fi
+
+# ── the measurement the cap decision needs ────────────────────────────────
+#
+# THE CAP STAYS AT 3, deliberately: a deferred ask is not the
+# intrusion the cap was partly built to prevent, so half its rationale is gone —
+# but the instruction on record is to MEASURE FIRST, not to relax it in the same
+# change that removed the intrusion. This is that measurement, and without it the
+# question cannot be revisited: `ask-count` is a bare number and the metadata
+# tokens carry a 1h TTL, so nothing durable records what actually happened.
+#
+# One append-only line per attempt, beside the run's own state. Append-only
+# because the interesting number is how often an ask TIMED OUT versus landed, and
+# a counter cannot tell you that. `|| true` throughout: losing a log line must
+# never cost a delivery.
+ASK_LOG="$STATE_DIR/ask-log"
+ASK_T0="$(date +%s 2>/dev/null || echo 0)"
+log_ask() {  # $1 = outcome
+  local now elapsed
+  now="$(date +%s 2>/dev/null || echo 0)"
+  elapsed=$(( now - ASK_T0 ))
+  printf '%s\t%s\t%s\t%s\twaited=%ss\tbudget=%ss\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)" \
+    "$ASK_LABEL" "$1" "$HW_INVOKER_PANE" "$elapsed" \
+    "$((INVOKER_WAIT_MS / 1000))" >> "$ASK_LOG" 2>/dev/null || true
+}
+
+# ── 2. route and prove delivery ───────────────────────────────────────────
+#
+# Prompting a `working` brainer lands the question at a point the sender does
+# not choose, and it is not simply lost either — see channel-send's gate
+# comment — so wait for it to be idle. Level-triggered, so
+# an already-idle brainer costs ~0.14s.
+DELIVERY_ROUTE="$(invoker_route)"
+if invoker_deliver "$MSG"; then
+  DELIVERY_RC=0
+else
+  DELIVERY_RC=$?
+fi
+
+# EXIT 4 ON A NATIVE ROUTE MEANS DELIVERED. channel-send returns it only after
+# the message is proven present in the receiver's session; what failed is the
+# turn the receiver started, which is the receiver's problem and not evidence
+# that the question was lost. Treating it as a failure would refuse on a message the
+# brainer is holding — the same class of mistake as calling `hw next`'s HTTP 500
+# "not delivered" and closing the executor over it (2026-08-25).
+# Herdr's exit 4 is unrelated (an RPC error), which is why this is keyed on the
+# route as well as the code.
+if [ "$DELIVERY_RC" -eq 4 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
+  printf 'ask-invoker: the brainer RECEIVED this (it is in its session) but the turn it started did not complete — see the message above. Counting it as delivered, because it was.\n' >&2
+  DELIVERY_RC=0
+fi
+
+if [ "$DELIVERY_RC" -ne 0 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
+  log_ask "${DELIVERY_ROUTE}-failed"
+  die "$DELIVERY_ROUTE delivery proof failed (exit $DELIVERY_RC). $PUBLICATION_NOTE No ask was spent."
+fi
+
+# Exit 3 covers two different things and the message has to say both, because
+# herdr does not distinguish them: an unreachable socket, and a wait naming a
+# pane that does not exist — verified, herdr CLOSES the connection on an unknown
+# pane_id rather than returning an error, so herdr-rpc reports it as exit 3.
+if [ "$DELIVERY_RC" -eq 3 ]; then
+  log_ask unreachable
+  die "could not wait on $HW_INVOKER_PANE: either herdr is unreachable on \$HERDR_SOCKET_PATH or that pane no longer exists — herdr answers both the same way. Either way the question was NOT delivered and no ask was spent. $PUBLICATION_NOTE$(invoker_pane_source_note) Report the blocker to ${HW_OPERATOR:-the operator} in this pane."
+fi
+
+if [ "$DELIVERY_RC" -eq 4 ]; then
+  log_ask rejected
+  die "herdr rejected the wait on $HW_INVOKER_PANE, so the question was not delivered and no ask was spent. $PUBLICATION_NOTE Report the blocker to ${HW_OPERATOR:-the operator} in this pane."
+fi
+
+if [ "$DELIVERY_RC" -eq 2 ] && [ "$DELIVERY_ROUTE" = herdr ]; then
+  # TIMEOUT — a normal outcome, not a crash. The brainer is still mid-turn, so
+  # firing the prompt now would get it answered wherever that turn happens to
+  # be, which is the misdelivery this script exists to prevent. What is left
+  # behind depends on the publication read-back, reported separately below.
+  # No ask is consumed, regardless of whether metadata could be established.
+  log_ask timeout
+  herdr notification show "executor waiting · $PROJECT:$TASK" \
+    --body "brainer still busy after $((INVOKER_WAIT_MS / 1000))s — $PUBLICATION_NOTE" \
+    --sound request >/dev/null 2>&1 || true
+  die "the brainer at $HW_INVOKER_PANE was still working after $((INVOKER_WAIT_MS / 1000))s, so the question was NOT sent. Sending it mid-turn would not lose it — it would get answered somewhere inside the turn the brainer is already in, against context you never saw, which is the whole point of this gate. $PUBLICATION_NOTE No ask was spent ($COUNT of $MAX_ASKS used). Either re-run the same command, or give it a longer budget with a matching Bash timeout: HW_INVOKER_WAIT_MS=540000 ask-invoker \"…\". If it keeps failing, stop and report the blocker to ${HW_OPERATOR:-the operator} in this pane."
+fi
+if [ "$DELIVERY_RC" -ne 0 ]; then
+  log_ask herdr-failed
+  die "Herdr delivery failed (exit $DELIVERY_RC). $PUBLICATION_NOTE No ask was spent."
+fi
+
+# ── 3. account only after receiver-owned delivery proof ───────────────────
+python3 - "$PENDING_REPLY" <<'PY' || die "the brainer received the request, but its pending-reply fact could not be activated at $PENDING_REPLY"
+import os
+import sys
+
+path = sys.argv[1]
+rows = open(path, encoding="utf-8").read().splitlines()
+assert rows.count("state=undelivered") == 1
+rows[rows.index("state=undelivered")] = "state=delivered"
+temporary = path + ".tmp"
+with open(temporary, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(rows) + "\n")
+os.replace(temporary, path)
+PY
+printf '%s' "$ASK_SEQ" > "$COUNT_FILE"
+log_ask delivered
+publish_ask delivered || true
+herdr notification show "executor blocked · $PROJECT:$TASK" \
+  --body "asked the brainer (${ASK_LABEL}) via $DELIVERY_ROUTE" \
+  --sound request >/dev/null 2>&1 || true
+printf 'asked the brainer (%s) via %s. The receiver proved delivery of envelope %s; wait for the reply in this pane.\n' \
+  "$ASK_LABEL" "$DELIVERY_ROUTE" "$ENVELOPE_ID"

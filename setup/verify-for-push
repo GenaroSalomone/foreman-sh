@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Runs the FULL suite against HEAD and, on green, caches the verdict keyed by
+# HEAD's exact tree — the only thing `setup/hooks/pre-push` checks before
+# letting a push through.
+#
+# WHY VERIFICATION LIVES HERE AND NOT INSIDE THE HOOK. Measured 2026-09-10,
+# pushing for real: `git push backup` (a local remote) entered fine three
+# times with the full suite running INSIDE pre-push, ~1120-1150s each. The
+# same commit pushed to `github` (SSH) died every time with `Connection to
+# github.com closed by remote host`, then `exit 141` (SIGPIPE) on retry. git's
+# own protocol contacts the remote FIRST — it needs the ref list to hand the
+# pre-push hook over stdin — and only transfers objects AFTER the hook
+# returns. An SSH connection sitting idle for ~19 minutes while a hook runs is
+# not something GitHub keeps open for you; the suite passing does not matter
+# if the transport is already gone by the time it finishes. `git push
+# --no-verify github main` entered in 3 seconds — the transport was never the
+# problem.
+#
+# So the rule this script exists to satisfy: nothing that holds a remote
+# socket open may take minutes. The hook must stay a fast, local file check;
+# the ~1000s of real work happens HERE, run by a human or an executor before
+# they push, never by git's own transport handshake.
+#
+# Run it yourself:
+#     bash setup/verify-for-push
+set -euo pipefail
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# A DIRTY WORKING TREE CANNOT BE VERIFIED, on purpose. The cache is keyed by
+# an exact tree — HEAD's — and that identity is only meaningful if the
+# checkout actually IS that tree. Anything uncommitted in a TRACKED file
+# means the bytes that just ran are not the bytes any commit will carry, so
+# there is nothing honest to cache them against.
+#
+# UNTRACKED FILES ARE NOT PART OF THIS CHECK. `--untracked-files=no`, not a
+# bare `git status --porcelain`. This repo is shared by several concurrent
+# agents (setup/CLAUDE.md) and its working tree carries other agents'
+# in-progress briefs and files at almost every moment — a bare
+# `git status --porcelain` is realistically NEVER empty here, which would
+# make this refuse always, not just when it should. Untracked content plays
+# no part in `git rev-parse HEAD^{tree}` and none in what the suite is
+# actually testing (the suite already has its own tracked/untracked
+# accounting for exactly this kind of file — see setup/test-hw). What must
+# be clean is TRACKED content: staged or unstaged changes to a file git
+# already knows about, because those are what would make HEAD's tree not
+# match what is actually on disk.
+dirty="$(git status --porcelain --untracked-files=no)"
+if [ -n "$dirty" ]; then
+  # NOT EVERY DIRTY TRACKED FILE BLOCKS THIS. The same sharing that makes
+  # `--untracked-files=no` necessary also dirties TRACKED files this suite
+  # does not test: setup/decisions.md is tracked, and five lanes append to it
+  # constantly. Measured 2026-09-10: this refused verify-for-push mid-task,
+  # a step from the end, for a dirty decisions.md nobody's suite run reads.
+  #
+  # The cache is honest as long as everything that could make the suite
+  # BEHAVE differently — everything matching SUITE_TRIGGER_PATTERN, the same
+  # one file setup/hooks/pre-push and pre-commit both source — is exactly
+  # HEAD's bytes. A dirty file OUTSIDE that pattern changes nothing the
+  # suite reads, so a verdict cached against HEAD's tree stays honest
+  # regardless of it. So the SCOPE of this check narrows to only those
+  # paths; the check itself — dirty tracked content aborts a run — does not
+  # go away.
+  . "$ROOT/setup/hooks/suite-trigger-pattern.sh"
+  [ -n "${SUITE_TRIGGER_PATTERN:-}" ] || {
+    echo "verify-for-push: setup/hooks/suite-trigger-pattern.sh did not define SUITE_TRIGGER_PATTERN — refusing to guess what can invalidate the suite." >&2
+    exit 1
+  }
+  # ANY GIT FAILURE HERE MEANS "TREAT AS DIRTY-AND-TRIGGERING" — same
+  # fail-toward-refusing rule setup/hooks/pre-push uses for its own git
+  # calls: a computation this script could not trust must never be read as
+  # "nothing relevant changed".
+  if ! dirty_paths="$(git diff --name-only HEAD 2>&1)"; then
+    {
+      echo "verify-for-push: could not compute which tracked paths are dirty — refusing rather than guessing."
+      printf '%s\n' "$dirty_paths" | sed 's/^/    /'
+    } >&2
+    exit 1
+  fi
+  if printf '%s\n' "$dirty_paths" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+    {
+      echo "verify-for-push: the working tree has uncommitted changes to a path that can invalidate the suite (matches SUITE_TRIGGER_PATTERN), so there is no single commit whose tree this run would verify."
+      echo "$dirty" | sed 's/^/    /'
+      echo "Commit or stash first, then re-run this."
+    } >&2
+    exit 1
+  fi
+  echo "verify-for-push: the working tree has uncommitted tracked changes, but none of them match SUITE_TRIGGER_PATTERN (nothing here can invalidate the suite) — verifying HEAD's tree anyway." >&2
+  echo "$dirty" | sed 's/^/    /' >&2
+fi
+
+commit="$(git rev-parse HEAD)"
+tree="$(git rev-parse HEAD^{tree})"
+cache_dir="$(git rev-parse --git-common-dir)/hw-push-verified"
+mkdir -p "$cache_dir"
+cache_file="$cache_dir/$tree"
+
+echo "verify-for-push: running the full suite against $commit (tree $tree) — this is the ~1000s cost, run here, never inside pre-push." >&2
+started="$(date +%s)"
+rc=0
+# STREAMED, NOT CAPTURED THEN PRINTED. setup/test-hw waits for the machine's
+# suite lock when another full run holds it, and says who holds it; captured
+# with $( ), that notice sat invisible until the run ended — a silent wait of
+# twenty minutes. `tee` shows it live and still keeps the bytes for the
+# headline below; pipefail makes the status test-hw's, not tee's.
+log="$(mktemp "${TMPDIR:-/tmp}/verify-for-push.XXXXXX")"
+trap 'rm -f "$log"' EXIT
+bash setup/test-hw 2>&1 | tee "$log" || rc=$?
+out="$(cat "$log")"
+elapsed=$(( $(date +%s) - started ))
+if [ "$rc" -ne 0 ]; then
+  echo "verify-for-push: FAILED after ${elapsed}s — no verdict cached; setup/hooks/pre-push will refuse this tree." >&2
+  exit 1
+fi
+headline="$(printf '%s\n' "$out" | grep -E '^[0-9]+ tests passed' | tail -1 || true)"
+# WRITE THEN RENAME, NOT A DIRECT >. `pre-push` reads this file for existence
+# AND content (its own comment says why); a direct redirect truncates the
+# target to zero bytes before writing a single line, so a reader racing the
+# write could see a file that exists but is momentarily empty — passing the
+# existence half of the check on content that was never actually verified.
+# `mv` within the same directory is atomic on every filesystem this runs on.
+tmp_cache_file="$cache_file.tmp.$$"
+{
+  echo "commit=$commit"
+  echo "tree=$tree"
+  echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "elapsed_seconds=$elapsed"
+  echo "headline=$headline"
+  echo "host=$(hostname)"
+} > "$tmp_cache_file"
+mv -f "$tmp_cache_file" "$cache_file"
+echo "verify-for-push: PASSED in ${elapsed}s — cached for tree $tree. setup/hooks/pre-push will now let this exact tree through instantly." >&2

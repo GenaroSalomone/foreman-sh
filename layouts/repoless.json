@@ -1,0 +1,22 @@
+{
+  "_lane": "a lane with no repo — so no dev server. Two panes, not three.",
+  "tab_id": "${HW_TAB}",
+  "focus": false,
+  "root": {
+    "type": "split",
+    "direction": "right",
+    "ratio": 0.4,
+    "first": {
+      "_role": "the executor. hw runs `herdr agent start` on this pane by label.",
+      "type": "pane",
+      "label": "agent",
+      "cwd": "${HW_WORKDIR}"
+    },
+    "second": {
+      "_role": "a human's shell in the work directory",
+      "type": "pane",
+      "label": "shell",
+      "cwd": "${HW_WORKDIR}"
+    }
+  }
+}

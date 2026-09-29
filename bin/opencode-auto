@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# opencode-auto — opencode with permissions auto-approved and background
+# subagents on: what `hw` launches for an opencode executor, as a command a
+# person can type.
+#
+#   opencode-auto [opencode options]
+#   opencode-auto [opencode options] --resume <session-id>   # = --session <id>
+#
+# hw does not call this: it passes `--auto` itself and sets the variable below
+# in the pane (bin/hw, _hw_env), so the two stay equal by construction and the
+# manifest says so ("identical to `opencode-auto`"). install.sh links this file
+# onto PATH.
+set -eu
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
+# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
+# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
+# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
+case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
+
+args=()
+resume_seen=false
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--resume" ]; then
+    if [ "$resume_seen" = true ] || [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#-}" != "$2" ]; then
+      echo "Usage: opencode-auto [opencode options] --resume <session-id>" >&2
+      exit 2
+    fi
+    args+=(--session "$2")
+    resume_seen=true
+    shift; shift   # the flag and its id, both checked above
+    continue
+  fi
+  args+=("$1")
+  shift
+done
+
+export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+# `${args[@]+...}`: bash 3.2 treats an empty array as unbound under `set -u`.
+exec opencode --auto ${args[@]+"${args[@]}"}

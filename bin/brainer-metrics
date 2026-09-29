@@ -1,0 +1,731 @@
+#!/usr/bin/env python3
+"""
+brainer-metrics — turn "does the brainer save attention or relocate it?"
+from an ad-hoc analysis into a repeatable command.
+
+WHY THIS EXISTS: a one-off measurement on 2026-08-20 found that the brainer
+half of this stack (a brain/<project> session where a human plans work, which
+then launches `hw` executors to do it) does not save the human's attention,
+it relocates it — the human types far more, and a much larger share of what
+they type is a "repair" (the agent misread, over-asked, or acted without
+understanding) than when the human just does the work directly. Numbers this
+script must be able to reproduce (within rounding — transcripts keep growing,
+so a re-run days later will not match exactly; see the header of cmd_report):
+
+  - hw executor tasks (launched with a brief): median 1 human message after
+    launch, 3 of 7 needed zero.
+  - one lane's brainer: 74 typed messages for 5 launched tasks (14.8/task).
+  - human msgs per 100 agent turns: hw 3.6 vs direct work 4.1.
+  - repair rate: brainer 41% (31/76) vs direct 14% (164/1208).
+  - median agent answer length (chars): brainer 608, direct 225, executor 122.
+
+The working hypothesis is that the brainer's answers are too long to verify
+at a glance, which produces "no entiendo" round trips. So median answer
+length and repair rate are the two numbers this script must get right even
+if everything else drifts.
+
+DATA SOURCE: Claude Code writes one JSONL transcript per session under
+~/.claude/projects/<mangled-cwd>/<session-uuid>.jsonl — one JSON object per
+line. This script reads ONLY the top-level *.jsonl files directly under each
+project directory (the main transcript); it does not descend into a
+session's own <uuid>/subagents/*.jsonl, because those are Task-tool
+subagents replying to the main agent, not the human typing — counting them
+would silently inflate every arm's turn count.
+
+KNOWN TRAPS (do not rediscover them):
+  - Records are NOT in timestamp order within a file, and a session can be
+    resumed across MULTIPLE files in the same directory after a restart, so
+    every record from every file in a directory is pooled and sorted before
+    segmenting. A missing/None timestamp sorts first via `ts or ""` — do not
+    hand mixed None/str to sort(key=...), Python 3 raises on that.
+  - `<local-command` text is a slash-command echo, not the human deciding
+    something. Excluded before counting.
+  - promptSource seen in this corpus: "typed" (human), "system" (injected),
+    "sdk" (the session itself was launched by an agent, not a human), and
+    also "queued" (typed while the agent was busy) and None (a tool result).
+    Only "typed" counts as the human paying attention. "queued" is NOT typed
+    in this script — the spec that commissioned this tool named exactly four
+    values and "queued" was not one of them; if that turns out wrong, it is
+    a one-line fix in _is_human_typed, not a reason to guess silently.
+  - In an EXECUTOR transcript the FIRST typed record is the brief `hw`
+    itself delivered, not the human. It is excluded from the human's cost
+    and its count is reported separately (never silently dropped).
+
+REPAIR CLASSIFIER: one regex list, marked below, applied IDENTICALLY to
+every arm. It is a heuristic over conversational Spanish, not a semantic
+judgment — applying it unevenly between arms would make the comparison
+meaningless, which is worse than a slightly-wrong number applied evenly.
+
+Stdlib only. Targets python3.9 (the system python) — no match-statements,
+no X | Y union syntax, no walrus-required constructs.
+"""
+
+import argparse
+import glob
+import json
+import os
+import re
+import statistics
+import sys
+
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh puts bin/ on PYTHONPATH for the
+# entry points it starts; run by hand, this file loads bin/sitecustomize.py
+# itself (a no-op when Python already did). Elsewhere nothing happens.
+if os.name == "nt":
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import sitecustomize  # noqa: E402,F401
+from collections import Counter, defaultdict
+
+HOME = os.path.expanduser("~")
+PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
+
+# ── the repair classifier — ONE place, applied identically to every arm ────
+#
+# HEURISTIC, not ground truth. These are terms that actually recur in this
+# corpus when a human is repairing a misunderstanding rather than making a
+# fresh request: confusion ("no entiendo", "no me quedo claro", "???"),
+# correcting the agent's read of the ask ("malinterpret", "que te estoy
+# pidiendo", "no nos podemos entender"), pushing back on unrequested
+# behavior ("no tenes que", "no hace falta", "eliminalo", "no me traigas"),
+# and re-litigating length/quality ("demasiadas", "mas brev", "consis",
+# "estaba mal", "acaso no recordas", "corregi", "repasa", "por que decidis",
+# "no veo", "deberias", "delir", "muchas preguntas"). Keep this the ONLY
+# place these strings live; a second copy drifting from this one is exactly
+# how a heuristic quietly stops meaning the same thing in two arms.
+REPAIR_PATTERNS = [
+    "no entiendo", "no me quedo claro", "malinterpret", "delir",
+    "no nos podemos entender", "que te estoy pidiendo", "no tenes que",
+    "deberias", "demasiadas", "estaba mal", "acaso no recordas",
+    "no hace falta", "corregi", "repasa", r"\?\?\?", "por que decidis",
+    "no veo", "mas brev", "consis", "eliminalo", "muchas preguntas",
+    "no me traigas",
+]
+REPAIR_RE = re.compile("|".join(REPAIR_PATTERNS), re.IGNORECASE)
+
+# Task names that are test launches, not real work. Excluded from headline
+# numbers; the exclusion count is always printed, never silent.
+TEST_TASK_RE = re.compile(r"(?i)\bsmoke\b|\bprobe\b|\bverify\b|\be2e\b|\benvcheck\b")
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _config(name):
+    """-> the JSON object in <brain root>/<name>, or {} when it is absent or bad."""
+    try:
+        with open(os.path.join(_ROOT, name), encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _lane_table(table):
+    """-> the `lanes` object of projects.json, or {}.
+
+    Every lane-shaped list below is read from it, so a lane added to the table
+    is counted here without an edit. No table means no lanes: the report still
+    runs, and every directory it cannot place lands in `unknown`/`other`.
+    """
+    lanes = table.get("lanes")
+    return {k: (v if isinstance(v, dict) else {}) for k, v in lanes.items()} if isinstance(lanes, dict) else {}
+
+
+_TABLE = _config("projects.json")
+LANES = _lane_table(_TABLE)
+
+# Every lane, longest name first, used to split a mangled "<project>-<task>"
+# remainder into its two parts — longest first so a lane whose name prefixes
+# another's can never take its tasks.
+KNOWN_PROJECTS = sorted(LANES, key=len, reverse=True)
+
+
+def _mangled(path):
+    """A directory the way ~/.claude/projects names it: every / and . is a -."""
+    return re.sub(r"[/.]", "-", os.path.expanduser(path))
+
+
+# Direct work: a session started in a product checkout. The table's product
+# repos, by their checkout, plus `metrics_direct` — checkouts that are counted
+# as direct work but are not lanes, {name: path}.
+DIRECT_DIRS = {_mangled(v["checkout"]): k for k, v in LANES.items()
+               if v.get("product_repo") is True and v.get("checkout")}
+_extra = _TABLE.get("metrics_direct")
+for _name, _path in (_extra.items() if isinstance(_extra, dict) else ()):
+    if isinstance(_path, str) and _path:
+        DIRECT_DIRS[_mangled(_path)] = _name
+
+def _mark(path):
+    """A directory as it appears INSIDE a ~/.claude/projects name: mangled, and
+    relative to the home when it is under it. Matched anywhere in the name,
+    because a scratchpad or a probe HOME nests the whole path inside a longer
+    one, under a home that is not necessarily this one."""
+    full, home = _mangled(path), _mangled("~")
+    return full[len(home):] if full.startswith(home + "-") else full
+
+
+# Where a session's directory says which role it played. An executor runs in
+# the table's `work` root, or in the flat `worktrees` root beside it that
+# preceded it; a brainer runs in the brain root guards.json names.
+_WORK = _TABLE.get("work") if isinstance(_TABLE.get("work"), str) else ""
+_BRAIN = _config("guards.json").get("brain_root")
+EXECUTOR_MARKS = [_mark(p) + "-" for p in (
+    [_WORK, os.path.join(os.path.dirname(os.path.expanduser(_WORK)), "worktrees")] if _WORK else [])]
+BRAIN_MARK = _mark(_BRAIN) if isinstance(_BRAIN, str) and _BRAIN else ""
+
+DIRECT_GAP_SECONDS = 90 * 60  # >90 minutes between typed messages starts a new work item
+
+# An hw launch names a lane or one of its hw_aliases, as typed. Longest first,
+# so an alternation never stops on a shorter word that prefixes a longer one.
+_LAUNCH_WORDS = sorted(set(LANES) | {a for v in LANES.values() for a in (v.get("hw_aliases") or [])},
+                       key=len, reverse=True)
+HW_LAUNCH_RE = re.compile(
+    r"(?<![\w./-])hw\s+(" + "|".join(map(re.escape, _LAUNCH_WORDS)) + r")\s+"
+    r"([A-Za-z0-9._-]+)"
+) if _LAUNCH_WORDS else re.compile(r"(?!)")
+HW_LAUNCH_SKIP_SUBCMDS = {"status", "done", "handle"}
+
+
+# ── transcript loading ──────────────────────────────────────────────────────
+
+def _iter_jsonl(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return
+
+
+def _text_of(content):
+    """A message's content is a string, or a list of blocks; join text blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text") or "")
+        return "".join(parts)
+    return ""
+
+
+def _is_human_typed(rec):
+    # See the module docstring's KNOWN TRAPS: only "typed" is a human at the
+    # keyboard. "queued", "system", "sdk" and None are all excluded here.
+    if rec.get("type") != "user":
+        return False
+    if rec.get("promptSource") != "typed":
+        return False
+    text = _text_of((rec.get("message") or {}).get("content"))
+    if text.strip().startswith("<local-command"):
+        return False
+    return True
+
+
+def load_session_dir(dir_path):
+    """Pool every top-level *.jsonl in a project directory into one sorted
+    list of records. Does NOT descend into <uuid>/subagents/ — those are
+    Task-tool subagents, not the human.
+    """
+    records = []
+    for f in glob.glob(os.path.join(dir_path, "*.jsonl")):
+        for rec in _iter_jsonl(f):
+            rec["_file"] = f
+            records.append(rec)
+    # `ts or ""` avoids sorting None against str, which throws in py3.
+    records.sort(key=lambda r: r.get("timestamp") or "")
+    return records
+
+
+# ── directory classification ────────────────────────────────────────────────
+
+def classify_dir(basename):
+    """Returns (kind, project, task_or_None)."""
+    for mark in EXECUTOR_MARKS:
+        if mark in basename:
+            rest = basename.split(mark, 1)[1]
+            proj, task = _split_project_task(rest)
+            return ("executor", proj, task)
+    if "--claude-worktrees-" in basename or "--worktrees-" in basename:
+        return ("native_worktree", None, None)
+    if basename in DIRECT_DIRS:
+        return ("direct", DIRECT_DIRS[basename], None)
+    if BRAIN_MARK and BRAIN_MARK in basename:
+        if basename.endswith(BRAIN_MARK):
+            return ("brainer", "brain", None)
+        proj = basename.split(BRAIN_MARK + "-", 1)[-1]
+        return ("brainer", proj, None)
+    return ("other", None, None)
+
+
+def _split_project_task(rest):
+    for proj in KNOWN_PROJECTS:
+        if rest == proj:
+            return proj, ""
+        if rest.startswith(proj + "-"):
+            return proj, rest[len(proj) + 1 :]
+    return "unknown", rest
+
+
+def is_test_task(task_name):
+    return bool(task_name) and TEST_TASK_RE.search(task_name) is not None
+
+
+# ── per-unit stats primitive ────────────────────────────────────────────────
+
+class Unit:
+    """One comparable unit of work: an executor task, a direct-work segment
+    split on a >90min gap, or a brainer's span leading up to one hw launch.
+    """
+
+    def __init__(self, label):
+        self.label = label
+        self.human_msgs = []       # list of (timestamp, text, is_repair)
+        self.agent_answer_lens = []
+        self.agent_turns = 0
+        self.excluded_brief = None  # text of the excluded first-typed brief, if any
+
+
+def collect_answers_and_turns(records, unit, since_ts=None, until_ts=None):
+    for rec in records:
+        if rec.get("type") != "assistant":
+            continue
+        ts = rec.get("timestamp") or ""
+        if since_ts is not None and ts <= since_ts:
+            continue
+        if until_ts is not None and ts > until_ts:
+            continue
+        unit.agent_turns += 1
+        text = _text_of((rec.get("message") or {}).get("content"))
+        if text.strip():
+            unit.agent_answer_lens.append(len(text))
+
+
+# ── arm builders ─────────────────────────────────────────────────────────────
+
+def build_executor_units(dir_path, basename, excluded_test_counter):
+    kind, proj, task = classify_dir(basename)
+    records = load_session_dir(dir_path)
+    if not records:
+        return None
+    if is_test_task(task):
+        excluded_test_counter["executor"] += 1
+        return None
+
+    typed = [r for r in records if _is_human_typed(r)]
+    unit = Unit("%s/%s" % (proj, task or "?"))
+
+    if typed:
+        first = typed[0]
+        unit.excluded_brief = _text_of((first.get("message") or {}).get("content"))
+        rest = typed[1:]
+    else:
+        rest = []
+
+    for r in rest:
+        text = _text_of((r.get("message") or {}).get("content"))
+        unit.human_msgs.append((r.get("timestamp") or "", text, bool(REPAIR_RE.search(text))))
+
+    collect_answers_and_turns(records, unit)
+    return unit
+
+
+def build_direct_units(dir_path, project, excluded_test_counter):
+    records = load_session_dir(dir_path)
+    typed = [r for r in records if _is_human_typed(r)]
+    if not typed:
+        return []
+
+    # Segment on a >90 minute gap between consecutive typed messages.
+    segments = []
+    current = [typed[0]]
+    from datetime import datetime
+
+    def parse_ts(s):
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    prev_dt = parse_ts(typed[0].get("timestamp") or "")
+    for r in typed[1:]:
+        dt = parse_ts(r.get("timestamp") or "")
+        if prev_dt is not None and dt is not None and (dt - prev_dt).total_seconds() > DIRECT_GAP_SECONDS:
+            segments.append(current)
+            current = []
+        current.append(r)
+        if dt is not None:
+            prev_dt = dt
+    segments.append(current)
+
+    units = []
+    for i, seg in enumerate(segments):
+        unit = Unit("%s#%d" % (project, i))
+        for r in seg:
+            text = _text_of((r.get("message") or {}).get("content"))
+            unit.human_msgs.append((r.get("timestamp") or "", text, bool(REPAIR_RE.search(text))))
+        units.append(unit)
+    # Agent turns/answers are pooled ONCE for the whole directory by the
+    # caller (scan()), not per segment: calling collect_answers_and_turns
+    # once per segment here would count every one of the directory's
+    # assistant turns once PER segment, inflating the turns denominator by a
+    # factor of len(segments) — found while verifying against the target
+    # numbers (it silently cratered msgs-per-100-turns for the direct arm).
+    return units
+
+
+def build_brainer_units(dir_path, project, excluded_test_counter):
+    records = load_session_dir(dir_path)
+    typed = [r for r in records if _is_human_typed(r)]
+    if not typed:
+        return [], []
+
+    # Find hw launches: a Bash tool_use whose command matches HW_LAUNCH_RE,
+    # deduped by (project, task), in chronological order (records are
+    # already sorted).
+    launches = []  # (timestamp, proj, task)
+    seen = set()
+    for rec in records:
+        if rec.get("type") != "assistant":
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
+                continue
+            cmd = (block.get("input") or {}).get("command") or ""
+            m = HW_LAUNCH_RE.search(cmd)
+            if not m:
+                continue
+            lproj, ltask = m.group(1), m.group(2)
+            if lproj in HW_LAUNCH_SKIP_SUBCMDS or ltask in HW_LAUNCH_SKIP_SUBCMDS:
+                continue
+            key = (lproj, ltask)
+            if key in seen:
+                continue
+            seen.add(key)
+            launches.append((rec.get("timestamp") or "", lproj, ltask))
+
+    units = []
+    boundaries = [None] + [ts for ts, _, _ in launches]
+    real_launches = [(p, t) for _, p, t in launches if not is_test_task(t)]
+    excluded_test_counter["brainer"] += len(launches) - len(real_launches)
+
+    for i, (ts, lproj, ltask) in enumerate(launches):
+        if is_test_task(ltask):
+            continue
+        since = boundaries[i]
+        until = ts
+        unit = Unit("%s/%s" % (lproj, ltask))
+        for r in typed:
+            rts = r.get("timestamp") or ""
+            if (since is None or rts > since) and rts <= until:
+                text = _text_of((r.get("message") or {}).get("content"))
+                unit.human_msgs.append((rts, text, bool(REPAIR_RE.search(text))))
+        units.append(unit)
+
+    # Everything typed after the last launch (or, if there were no launches
+    # at all, everything) is a "pending" bucket: real human cost, but not
+    # attributable to a completed launched task, so it is kept OUT of the
+    # per-task median/mean (which is defined as cost-per-launch) and instead
+    # folded into the arm-wide repair-rate / answer-length pools below by the
+    # caller, which pools ALL typed records regardless of unit membership.
+    last_ts = launches[-1][0] if launches else None
+    pending = [r for r in typed if last_ts is None or (r.get("timestamp") or "") > last_ts]
+
+    # One "pool" unit carrying every typed record (used only for the
+    # arm-wide repair-rate / answer-length pooling, never for the n/median
+    # task-cost stat) — arm callers use `all_typed` below directly instead.
+    return units, typed
+
+
+# ── arm aggregation ──────────────────────────────────────────────────────────
+
+class Arm:
+    def __init__(self, name):
+        self.name = name
+        self.units = []          # for n / median / mean / zero-intervention
+        self.all_typed = []      # (text, is_repair) pooled, for repair rate
+        self.all_answer_lens = []
+        self.all_agent_turns = 0
+        self.excluded_briefs = 0
+
+    def add_unit(self, unit):
+        self.units.append(unit)
+        for _, text, is_repair in unit.human_msgs:
+            self.all_typed.append((text, is_repair))
+        self.all_answer_lens.extend(unit.agent_answer_lens)
+        self.all_agent_turns += unit.agent_turns
+        if unit.excluded_brief is not None:
+            self.excluded_briefs += 1
+
+    def add_typed_pool(self, typed_records):
+        for r in typed_records:
+            text = _text_of((r.get("message") or {}).get("content"))
+            self.all_typed.append((text, bool(REPAIR_RE.search(text))))
+
+    def n(self):
+        return len(self.units)
+
+    def msg_counts(self):
+        return [len(u.human_msgs) for u in self.units]
+
+    def zero_count(self):
+        return sum(1 for c in self.msg_counts() if c == 0)
+
+    def median_msgs(self):
+        c = self.msg_counts()
+        return statistics.median(c) if c else float("nan")
+
+    def mean_msgs(self):
+        c = self.msg_counts()
+        return statistics.mean(c) if c else float("nan")
+
+    def repair_rate(self):
+        total = len(self.all_typed)
+        if total == 0:
+            return float("nan"), 0, 0
+        repairs = sum(1 for _, is_repair in self.all_typed if is_repair)
+        return repairs / total, repairs, total
+
+    def median_answer_len(self):
+        return statistics.median(self.all_answer_lens) if self.all_answer_lens else float("nan")
+
+    def msgs_per_100_turns(self):
+        if self.all_agent_turns == 0:
+            return float("nan")
+        return 100.0 * len(self.all_typed) / self.all_agent_turns
+
+
+# ── scan everything ──────────────────────────────────────────────────────────
+
+def scan():
+    arms = {
+        "executor": Arm("executor"),
+        "brainer": Arm("brainer"),
+        "direct": Arm("direct"),
+    }
+    excluded_test = Counter()
+    native_wt = {"dirs": 0, "sdk_only": 0, "human_touched": 0, "typed_total": 0}
+    brainer_by_dir = {}  # basename -> (units, project)
+
+    if not os.path.isdir(PROJECTS_DIR):
+        return arms, excluded_test, native_wt, brainer_by_dir
+
+    for basename in sorted(os.listdir(PROJECTS_DIR)):
+        dir_path = os.path.join(PROJECTS_DIR, basename)
+        if not os.path.isdir(dir_path):
+            continue
+        kind, proj, task = classify_dir(basename)
+
+        if kind == "executor":
+            unit = build_executor_units(dir_path, basename, excluded_test)
+            if unit is not None:
+                arms["executor"].add_unit(unit)
+
+        elif kind == "direct":
+            units = build_direct_units(dir_path, proj, excluded_test)
+            for u in units:
+                arms["direct"].add_unit(u)
+            # Turns/answers pooled once per directory — see the comment in
+            # build_direct_units on why per-segment pooling double-counts.
+            records = load_session_dir(dir_path)
+            pool_unit = Unit(basename)
+            collect_answers_and_turns(records, pool_unit)
+            arms["direct"].all_answer_lens.extend(pool_unit.agent_answer_lens)
+            arms["direct"].all_agent_turns += pool_unit.agent_turns
+
+        elif kind == "brainer":
+            units, all_typed = build_brainer_units(dir_path, proj, excluded_test)
+            for u in units:
+                arms["brainer"].add_unit(u)
+            arms["brainer"].add_typed_pool(all_typed)
+            # Also collect agent turns/answers for the whole brainer dir,
+            # pooled (per-launch attribution of assistant turns is not
+            # meaningful — most of a brainer's own analysis happens between
+            # launches, not "for" any one of them).
+            records = load_session_dir(dir_path)
+            pool_unit = Unit(basename)
+            collect_answers_and_turns(records, pool_unit)
+            arms["brainer"].all_answer_lens.extend(pool_unit.agent_answer_lens)
+            arms["brainer"].all_agent_turns += pool_unit.agent_turns
+            brainer_by_dir[basename] = (units, proj)
+
+        elif kind == "native_worktree":
+            records = load_session_dir(dir_path)
+            typed = [r for r in records if _is_human_typed(r)]
+            native_wt["dirs"] += 1
+            if not typed:
+                native_wt["sdk_only"] += 1
+            else:
+                native_wt["human_touched"] += 1
+                native_wt["typed_total"] += len(typed)
+
+    return arms, excluded_test, native_wt, brainer_by_dir
+
+
+# ── output ───────────────────────────────────────────────────────────────────
+
+C_OK = "\033[32m"
+C_WARN = "\033[33m"
+C_DIM = "\033[2m"
+C_B = "\033[1m"
+C_0 = "\033[0m"
+
+
+def fmt(x, nd=1):
+    if isinstance(x, float) and (x != x):  # NaN
+        return "n/a"
+    if isinstance(x, float):
+        return "%.*f" % (nd, x)
+    return str(x)
+
+
+def print_report(arms, excluded_test, native_wt):
+    print("\n%sbrainer-metrics%s — brainer vs executor vs direct work\n" % (C_B, C_0))
+    header = "%-10s %4s %8s %8s %8s %9s %10s" % (
+        "arm", "n", "med.msg", "mean.msg", "zero", "repair%", "med.ans")
+    print(header)
+    print("-" * len(header))
+    for key in ("executor", "brainer", "direct"):
+        a = arms[key]
+        rate, repairs, total = a.repair_rate()
+        print("%-10s %4d %8s %8s %8s %9s %10s" % (
+            key,
+            a.n(),
+            fmt(a.median_msgs()),
+            fmt(a.mean_msgs()),
+            "%d/%d" % (a.zero_count(), a.n()) if a.n() else "n/a",
+            ("%.0f%% (%d/%d)" % (rate * 100, repairs, total)) if total else "n/a",
+            fmt(a.median_answer_len(), 0),
+        ))
+    print()
+    hw_norm = arms["executor"].msgs_per_100_turns()
+    direct_norm = arms["direct"].msgs_per_100_turns()
+    # THE COMBINED NUMBER IS THE DECISION-RELEVANT ONE, so it is printed rather
+    # than left to be derived. Comparing the EXECUTOR arm against direct work
+    # flatters hw by hiding the brainer: the whole cost of the architecture is
+    # executor + brainer, because the brainer is the thing hw adds. Leaving it
+    # out is how "1.3 vs 4.2" gets read as a win when the honest figure is the
+    # sum. Pooled by turns, not averaged, so a low-traffic arm cannot dominate.
+    ex, br = arms["executor"], arms["brainer"]
+    ex_turns, br_turns = ex.all_agent_turns, br.all_agent_turns
+    if ex_turns + br_turns:
+        hw_all = 100.0 * (len(ex.all_typed) + len(br.all_typed)) / (ex_turns + br_turns)
+    else:
+        hw_all = None
+    print("  %shuman msgs per 100 agent turns:%s executor %s, brainer %s, "
+          "%shw combined %s%s, direct %s" % (
+        C_DIM, C_0, fmt(hw_norm), fmt(br.msgs_per_100_turns()),
+        C_B, fmt(hw_all), C_0, fmt(direct_norm)))
+    if hw_all is not None and direct_norm:
+        if hw_all > direct_norm:
+            print("  %shw costs %.0f%% MORE human messages per unit of agent work than doing it directly%s" % (
+                C_WARN, 100 * (hw_all / direct_norm - 1), C_0))
+        else:
+            print("  %shw costs %.0f%% fewer human messages per unit of agent work%s" % (
+                C_DIM, 100 * (1 - hw_all / direct_norm), C_0))
+    if arms["executor"].excluded_briefs:
+        print("  %sexcluded %d hw-delivered brief(s) from executor human-cost (reported, not counted)%s" % (
+            C_DIM, arms["executor"].excluded_briefs, C_0))
+    total_excluded = sum(excluded_test.values())
+    if total_excluded:
+        print("  %sexcluded %d smoke/probe/verify/e2e/envcheck-style task(s): %s%s" % (
+            C_WARN, total_excluded, dict(excluded_test), C_0))
+    else:
+        print("  %sexcluded 0 smoke/probe/verify/e2e/envcheck-style tasks%s" % (C_DIM, C_0))
+    if native_wt["dirs"]:
+        print("  %snative worktree sessions (not in the arms above): %d dirs, %d sdk-only "
+              "(excluded), %d human-touched (%d typed msgs, not scored)%s" % (
+                  C_DIM, native_wt["dirs"], native_wt["sdk_only"],
+                  native_wt["human_touched"], native_wt["typed_total"], C_0))
+    print()
+
+
+def print_json(arms, excluded_test, native_wt):
+    out = {}
+    for key in ("executor", "brainer", "direct"):
+        a = arms[key]
+        rate, repairs, total = a.repair_rate()
+        out[key] = {
+            "n": a.n(),
+            "median_msgs": a.median_msgs(),
+            "mean_msgs": a.mean_msgs(),
+            "zero_intervention": a.zero_count(),
+            "repair_rate": rate,
+            "repairs": repairs,
+            "typed_total": total,
+            "median_answer_len": a.median_answer_len(),
+            "msgs_per_100_agent_turns": a.msgs_per_100_turns(),
+            "excluded_briefs": a.excluded_briefs,
+        }
+    out["excluded_test_tasks"] = dict(excluded_test)
+    out["native_worktree"] = native_wt
+
+    def clean(o):
+        if isinstance(o, float) and o != o:
+            return None
+        if isinstance(o, dict):
+            return {k: clean(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [clean(v) for v in o]
+        return o
+
+    print(json.dumps(clean(out), indent=2, sort_keys=True))
+
+
+def print_brainer_detail(basename, brainer_by_dir, arms):
+    dir_path = os.path.join(PROJECTS_DIR, basename)
+    if not os.path.isdir(dir_path):
+        sys.stderr.write("brainer-metrics: no such directory: %s\n" % dir_path)
+        return 1
+    kind, proj, _ = classify_dir(basename)
+    if kind != "brainer":
+        sys.stderr.write("brainer-metrics: %s does not classify as a brainer dir (got %s)\n" % (basename, kind))
+        return 1
+    excluded_test = Counter()
+    units, all_typed = build_brainer_units(dir_path, proj, excluded_test)
+
+    print("\n%s%s%s — project %s" % (C_B, basename, C_0, proj))
+    print("  %d launched task(s), %d typed message(s) total\n" % (len(units), len(all_typed)))
+    for rec in all_typed:
+        text = _text_of((rec.get("message") or {}).get("content"))
+        ts = rec.get("timestamp") or "?"
+        is_repair = bool(REPAIR_RE.search(text))
+        mark = "%sREPAIR%s" % (C_WARN, C_0) if is_repair else "      "
+        one_line = " ".join(text.split())[:100]
+        print("  %s  %s  %s" % (mark, ts, one_line))
+    if units:
+        print("\n  per launched task:")
+        for u in units:
+            print("    %-40s %d human msg(s)" % (u.label, len(u.human_msgs)))
+    return 0
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="brainer-metrics", add_help=True)
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--brainer", metavar="DIR", help="report one brainer directory (basename under ~/.claude/projects) in detail")
+    args = ap.parse_args(argv)
+
+    arms, excluded_test, native_wt, brainer_by_dir = scan()
+
+    if args.brainer:
+        return print_brainer_detail(args.brainer, brainer_by_dir, arms)
+
+    if args.json:
+        print_json(arms, excluded_test, native_wt)
+    else:
+        print_report(arms, excluded_test, native_wt)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,1869 @@
+#!/usr/bin/env python3
+"exec" "python3" "$0" "$@"  # a shell that is handed this file re-execs python; python sees a bare string
+__doc__ = """decisions — index, size-check and archive the per-project decisions.md files.
+
+WHY THIS EXISTS. Every project CLAUDE.md said "read this before proposing
+anything" about a file that grows append-only. Measured 2026-08-24:
+
+    lane-a/decisions.md             2097 lines / 120K   72 entries
+    setup/decisions.md              1416 lines / 144K   41 entries, all since 07-25
+    lane-b/decisions.md              716 lines /  48K   11 entries
+    lane-c/decisions.md              253 lines /  16K   14 entries
+
+setup gained 41 entries in 30 days. Extrapolated that is ~500/year and ~1.7MB —
+a file no agent can be told to read, so the instruction would quietly become one
+that gets ignored, which is worse than a large file. Nothing loads decisions.md
+automatically (no @-import, no hook); the cost is paid by whoever is told to
+read it, once per session, per executor.
+
+So: the instruction becomes SEEK, not READ (`decisions index`), and the file
+gets rotated before it outgrows a seek (`decisions archive`).
+
+    decisions check                     # sizes and what is over the threshold
+    decisions index [project] [-n N]     # the last N decisions, newest first
+    decisions archive <project> [--keep N | --before YYYY-MM-DD] [--apply]
+    decisions supersede <project> [--apply]   # retire the rulings a later one reverses
+
+AN ENTRY IS A RULING: four fields, one sentence each, and the narrative in
+engram rather than in the file. Measured 2026-09-08, this is where the size
+actually comes from — three lanes ran 38-53 physical lines
+per entry while another, which had already settled on a fixed set of fields, ran
+17.8 for MORE entries than any of them. The file was never big because the
+project takes many decisions.
+
+    ## YYYY-MM-DD — <title>
+    **Ruling:** one sentence.
+    **Rules out:** what is now off the table.
+    **Reverses:** #<the engram id of the ruling this replaces> | none
+    **Evidence:** engram #NNNNN
+
+AND `Reverses` IS WHAT MAKES THE FILE STOP GROWING. Until it existed, a decision
+that had been overturned stayed in the live file next to the one that overturned
+it, because nothing could read the reversal out of prose. `supersede` moves the
+loser to the archive, `index` marks it, and `check` names the ones still sitting
+live. Growth is no longer monotonic in the number of decisions taken.
+
+A RULING IS NAMED BY ITS ENGRAM ID, WHICH IS WHY `Evidence` IS MANDATORY. That
+field is not provenance any more; it is the identity `Reverses` points at. The
+identity was the title until 2026-09-08, and a title cannot carry it: titles are
+prose, they get edited, they are not unique, and an em dash and a hyphen read as
+two different titles. An entry with `Evidence: none` — every entry predating
+this format — is readable and standing, but it cannot be reversed, only
+rewritten. `decisions check` names those.
+
+Archiving and superseding are both dry runs unless --apply. Entries move to
+`<project>/decisions/<YYYY>-Q<n>.md`; the live file keeps its preamble, its
+newest KEEP_DEFAULT entries, and a pointer to the archive. Rotation is by count,
+not by calendar: one lane put 67 entries into one quarter, so a quarterly cutoff
+would have moved nothing while the file was already twice the threshold. The
+archive files are still named by quarter, because a name that stops changing is
+what makes an old link keep working. Nothing is deleted: an entry is
+either in the live file or in exactly one archive file, and `decisions index`
+reads both.
+
+TWO RULES THIS TOOL NOW ENFORCES, because it broke both of them in the field.
+
+ORDER IS MEASURED, NEVER ASSUMED. These files are append-only, so the newest
+entry is at the BOTTOM. `archive` selected the leading N entries in file order
+and therefore kept the OLDEST and archived the NEWEST — measured on the real
+setup file 2026-09-08 (live kept 09-01/03/06, the archive took 09-07/08) and
+reverted in 2d831ff. Its count check, 136 entries in and 136 out, was blind to
+it: a verdict about an ordered file has to look at the order. Selection now runs
+over an explicitly chronological list, and a `## YYYY-MM-DD HH:MM` clock in the
+heading orders same-day entries instead of leaving them in append order.
+
+WHAT IT DOES NOT RECOGNISE, IT REFUSES — it does not drop it. A `## ` heading
+without a date in it was not an entry to the rotator, so fourteen of them were
+rewritten out of BOTH files while the command printed
+`25 entries stay, 18 move / wrote / rewrote` and exited 0 (recovered from git,
+formats fixed in efae689). The sentinel skip made it worse: anything below a
+rotation pointer was read as this tool's own bookkeeping, so an undated entry
+there was invisible to `index` — the only path any CLAUDE.md points at — and
+deleted by the next rotation. An unrecognised heading is now a third value with a
+name: `check` fails on it and `index` says which headings it cannot list, so it
+stops being silently absent. Rotation CARRIES it — as body text of the entry
+above it, into whichever file that entry lands in — and proves it arrived, which
+is the next paragraph. Refusing to rotate on one was tried first and reverted the
+same day: 77 of them sit in the four projects' archive files and every project's
+merge target is the same quarter, so the refusal blocked all four while
+`hw status` went on telling brainers to rotate. And a `## ` inside a fenced code
+block is example text, not an entry; the old parser wrote a `2099-Q1.md` archive
+file out of one.
+
+AND IT RE-READS WHAT IT WROTE. The counts used to be announced from an in-memory
+budget estimate taken BEFORE the write, and the estimate's escape hatch was a
+hardcoded `len(entries) // 5` — a fraction, not a measurement. One oversized
+entry got `nothing to archive`, exit 0, on a file `check` called OVER in the same
+breath. Retention is now chosen by RENDERING the prospective file and counting
+its actual lines. Every output is then STAGED, and the whole entry multiset —
+heading and body across the live file and every archive, not a total — is
+compared against the inputs before a single file is installed; a rotation that
+would lose or duplicate anything writes nothing at all. The installed files are
+re-read afterwards, and that re-read is the only thing this command prints as a
+result.
+"""
+
+import datetime
+import json
+import os
+import re
+import sys
+import tempfile
+
+# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh puts bin/ on PYTHONPATH for the
+# entry points it starts; run by hand, this file loads bin/sitecustomize.py
+# itself (a no-op when Python already did). Elsewhere nothing happens.
+if os.name == "nt":
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import sitecustomize  # noqa: E402,F401
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _lanes():
+    """-> (projects, aliases): every lane with a decisions.md, and its spellings.
+
+    Read from the lane table, projects.json at the brain root, so a new lane
+    reaches this tool by having a decisions.md — nothing here names one. The
+    order is the table's `lanes` order, the one hw names lanes in. The aliases
+    are each lane's hw_aliases and brain_aliases, plus `brain` for the lane
+    whose checkout IS the brain root.
+
+    A tree with no readable table (a test fixture holding only bin/ and one
+    lane directory) takes every directory beside bin/ that has a decisions.md,
+    sorted, and no aliases: the directory is the only fact available there.
+    """
+    try:
+        with open(os.path.join(ROOT, "projects.json"), encoding="utf-8") as fh:
+            table = json.load(fh).get("lanes")
+    except (OSError, ValueError, AttributeError):
+        table = None
+    aliases = {}
+    if isinstance(table, dict):
+        names = list(table)
+        for lane, spec in table.items():
+            spec = spec if isinstance(spec, dict) else {}
+            for alias in (spec.get("hw_aliases") or []) + (spec.get("brain_aliases") or []):
+                aliases.setdefault(alias, lane)
+            if spec.get("checkout") == "{brain}":
+                aliases.setdefault("brain", lane)
+    else:
+        try:
+            # A lane's old name left behind as a symlink to its new directory
+            # is not a second lane.
+            names = sorted(n for n in os.listdir(ROOT)
+                           if not os.path.islink(os.path.join(ROOT, n)))
+        except OSError:
+            names = []
+    projects = tuple(n for n in names if os.path.isfile(os.path.join(ROOT, n, "decisions.md")))
+    return projects, aliases
+
+
+PROJECTS, ALIASES = _lanes()
+
+# The threshold is a seek budget, not an aesthetic. `decisions index` on a file
+# this size is ~90 headings, which is still one screen of scrolling and one cheap
+# read for an agent. Past it, the index itself starts costing what the file used
+# to.
+WARN_LINES = 1200
+
+# How many entries stay in the live file when `archive` runs with no cutoff.
+# Sized so the live file stays under WARN_LINES at this repo's observed ~30
+# lines per entry, with room for the next few weeks of appends.
+KEEP_DEFAULT = 25
+
+# A heading is an entry when the DATE is in the heading, and the optional clock
+# after it is what orders two entries written on the same day. Without it,
+# `index` fell back to append order for same-day rows, so the tool had two
+# separate broken notions of order (see the docstring). The clock is optional
+# because most existing entries do not carry one; it is never invented.
+ENTRY_RE = re.compile(
+    r"^## (\d{4})-(\d{2})-(\d{2})"
+    r"(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?"
+    r"\b(.*)$"
+)
+
+# Any level-2 heading at all. The difference between this and ENTRY_RE is the
+# whole "third value" rule: a `## ` that is not an entry and not this tool's own
+# pointer heading is neither, and neither means REFUSE, not drop.
+H2_RE = re.compile(r"^## ")
+
+# A fenced block's contents are literal text, including a line that looks like a
+# dated heading. The old parser had no fence state, so a `## 2099-03-01` inside
+# a ```markdown example was an entry, and rotation wrote a 2099-Q1.md archive
+# file out of it.
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+# The pointer `archive` appends to the live file has no date, so `split` would
+# read it as the body of the OLDEST KEPT entry and the next rotation would carry
+# it into the archive. Measured on a copy, 2026-08-24: it did exactly that. The
+# sentinel marks that block so it can be SKIPPED while parsing, and rotation
+# stays idempotent.
+#
+# It used to CUT the text at the sentinel instead, which is the same thing only
+# while the pointer is the last thing in the file. It is not, for long: these
+# files are append-only and a new entry goes at the bottom, below a pointer a
+# previous rotation left behind. Measured on the live files 2026-09-01 — one lane
+# hid 32 of its 58 entries, another 9 of 40, the whole pilot — and
+# `index` is the ONLY way any CLAUDE.md tells an agent to reach these files, so
+# the newest decisions were unreachable by the supported path. Rotation would
+# then have deleted them, because it rebuilds the live file from what `split`
+# returned. Skip the block; never cut the file.
+#
+# And the block ENDS at the next `## ` heading of any kind, not only at a dated
+# one. Ending it only on a date is what let an undated entry below a pointer be
+# swallowed as bookkeeping: measured 2026-09-08, `index` could not see it and
+# the next rotation deleted it while reporting success.
+POINTER_MARK = "<!-- decisions:archive-pointer -->"
+POINTER_HEADING = "## Older quarters are archived"
+# The two per-project lines of the block `pointer_block()` writes, anchored end
+# to end. Anchored on purpose: see `carried_from_region`.
+GENERATED_POINTER_LINE = re.compile(
+    r"^(?:"
+    r"Closed quarters live in `[^`/]+/decisions/`\. They are not superseded — a"
+    r"|`Rules out` line in there still rules it out\. `decisions index [^`]+ --all`"
+    r")$"
+)
+
+
+def die(msg):
+    print("decisions: %s" % msg, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def resolve(name):
+    name = ALIASES.get(name, name)
+    if name not in PROJECTS:
+        die("unknown project %r — one of: %s" % (name, ", ".join(PROJECTS)))
+    return name
+
+
+def project_of(path):
+    """-> the project a decisions file belongs to, or None.
+
+    Needed because the pointer block is per-project, and only THIS project's
+    block may be subtracted from THIS file's pointer region. A verbatim quote of
+    another project's block is somebody's text.
+    """
+    real = os.path.realpath(path)
+    for project in PROJECTS:
+        if real.startswith(os.path.realpath(os.path.join(ROOT, project)) + os.sep):
+            return project
+    return None
+
+
+def live_path(project):
+    return os.path.join(ROOT, project, "decisions.md")
+
+
+def archive_dir(project):
+    return os.path.join(ROOT, project, "decisions")
+
+
+def stray_temps(project):
+    """-> staged temp files left in a project's archive directory.
+
+    THE REASON THESE WERE INVISIBLE is one line up: `archive_files` filters on
+    `.md`, so a `.decisions-*.tmp` is not merely unreported, it is unreachable
+    by every command that walks a project's files.
+
+    The rotation now cleans up after its own failures, and this is still not
+    redundant: a process that is KILLED — SIGKILL, a full disk mid-write, the
+    machine going down — never runs its cleanup at all. Nothing the writer does
+    can cover that case, so something has to be able to NAME what it left.
+    """
+    d = archive_dir(project)
+    if not os.path.isdir(d):
+        return []
+    return sorted(
+        os.path.join(d, f) for f in os.listdir(d)
+        if f.startswith(".decisions-") and f.endswith(".tmp")
+    )
+
+
+def archive_files(project):
+    d = archive_dir(project)
+    if not os.path.isdir(d):
+        return []
+    return sorted(
+        (os.path.join(d, f) for f in os.listdir(d) if f.endswith(".md")),
+        reverse=True,
+    )
+
+
+def entry_key(m):
+    """-> (Y, M, D, h, m, s), or None when the heading's date is not a real date.
+
+    An untimed entry sorts at 00:00:00 of its day and its ties are broken by
+    position, not by a clock this tool made up.
+    """
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    hh = int(m.group(4)) if m.group(4) else 0
+    mm = int(m.group(5)) if m.group(5) else 0
+    ss = int(m.group(6)) if m.group(6) else 0
+    try:
+        datetime.datetime(y, mo, d, hh, mm, ss)
+    except ValueError:
+        return None
+    return (y, mo, d, hh, mm, ss)
+
+
+# ── the ruling format ───────────────────────────────────────────────────────
+#
+# An entry used to be prose with whatever emphasis its author felt like. That is
+# why these files grew: measured 2026-09-08, three lanes run
+# 38-53 physical lines per entry while another — which had already settled on a
+# fixed set of bolded fields — runs 17.8 for MORE entries than any of them. The
+# file is not big because the project takes many decisions; it is big because
+# each one was written at forty lines instead of five.
+#
+# So an entry is now a RULING: four named fields, one sentence each.
+#
+#     ## YYYY-MM-DD — <title>
+#     **Ruling:** one sentence.
+#     **Rules out:** what is now off the table.
+#     **Reverses:** #<the engram id of the ruling this replaces> | none
+#     **Evidence:** engram #NNNNN
+#
+# The narrative — the measurement, the argument, the two attempts that failed —
+# goes to engram, which is where a full account belongs and where nobody pays
+# for it on every seek. `Evidence` is the pointer back to it, which is why it is
+# a field and not a footnote.
+#
+# THE FIELDS ARE READ ONE LINE AT A TIME, DELIBERATELY. setup/hooks/decisions-check.py
+# lints them with a single-line `fullmatch`, and a parser that accepted a
+# wrapped value would disagree with the linter about what a file says — the
+# reader and the gate would then be enforcing two different formats, which is
+# worse than either format. A value that does not fit on one line is a value
+# that belongs in engram.
+RULING_KEYS = ("Ruling", "Rules out", "Reverses", "Evidence")
+
+# `**Key:** value`, anchored on both ends so a bolded phrase MID-SENTENCE is not
+# read as a field. The linter builds the same shape per key; this is the general
+# form, and `ruling_fields` filters it down to RULING_KEYS so the two agree.
+FIELD_RE = re.compile(r"^\*\*([^:*]+):\*\*\s*(.+)$")
+
+# `Reverses:` NAMES A RULING BY ITS ENGRAM ID, and `none` is the ordinary case.
+#
+# It named the target by TITLE until 2026-09-08, and that was wrong by
+# measurement rather than by taste: a title is prose. It gets edited for clarity
+# long after the ruling is settled, it is not unique across a project's history,
+# and the dash inside it is not one character — a title written with an em dash
+# did not resolve against the same title typed with a hyphen, so the reversal
+# pointed at nothing and said nothing about it. An engram id is stable, unique
+# and immutable, and it is the one identity a decision already has.
+#
+# THE CONSEQUENCE, STATED BECAUSE IT CHANGES WHAT `Evidence` IS FOR. `Evidence`
+# used to be provenance: a pointer a curious reader could follow. It is now the
+# IDENTITY by which another ruling reverses this one, so it is load-bearing. An
+# entry with no engram observation behind it cannot be reversed at all — see
+# `entry_id`, which is where that gap is handled rather than hidden.
+NO_REVERSE = "none"
+
+# `#NNNNN`, `NNNNN` and `engram #NNNNN` are one id. Accepting all three is not
+# laxity: `Evidence:` is written `engram #NNNNN` while `Reverses:` is written
+# `#NNNNN`, so a tool that read those as different identities would never match
+# a single reversal to its target.
+# `[0-9]`, NOT `\d`. `\d` matches Unicode digits, so a fullwidth id parsed
+# successfully, resolved to nothing, and escaped `unreadable_reverses` precisely
+# BECAUSE it parsed — a silent no-op that no message named. Found by review on
+# 2026-09-08.
+ID_RE = re.compile(r"^(?:engram[ \t]+)?#?([0-9]+)$", re.IGNORECASE)
+
+
+def as_id(value):
+    """-> the digits of an engram id, or None when `value` is not one.
+
+    Normalised to the digits alone so the spellings above are one key. Leading
+    zeros are kept: engram issues the id, and deciding that two spellings of a
+    number are the same number is engram's call, not this tool's.
+    """
+    if value is None:
+        return None
+    m = ID_RE.match(value.strip())
+    return m.group(1) if m else None
+
+
+def entry_title(heading):
+    """-> an entry heading's title, or None when the heading carries none.
+
+    A LABEL FOR READERS, NOT AN IDENTITY. Every message this tool prints names
+    an entry by its title, because that is what a person recognises — but
+    nothing RESOLVES by it any more, for the reasons on `NO_REVERSE` above. The
+    leading dash is stripped because `## DATE — Title` is the house style and
+    the dash is punctuation, not part of the name.
+    """
+    m = ENTRY_RE.match(heading)
+    if not m:
+        return None
+    t = m.groups()[-1].strip().lstrip("\u2014\u2013- ").strip()
+    return t or None
+
+
+def ruling_fields(body):
+    """-> {key: value} for the RULING_KEYS present in an entry body.
+
+    Fence-aware, because a fenced example of the ruling format is example text:
+    the same reason `split` tracks fences. Without it, this file's own docstring
+    block above would be parsed as a ruling by any tool that read this file.
+
+    A repeated key keeps the FIRST occurrence. Not the last: an entry that
+    quotes a previous ruling below its own would otherwise be read as being
+    that previous ruling, and the quote is commentary.
+    """
+    fields = {}
+    fence = None
+    for line in body:
+        fm = FENCE_RE.match(line)
+        if fence is not None:
+            if fm and fm.group(1)[0] == fence[0] and len(fm.group(1)) >= len(fence):
+                fence = None
+            continue
+        if fm:
+            fence = fm.group(1)
+            continue
+        m = FIELD_RE.match(line)
+        if m:
+            key = m.group(1).strip()
+            if key in RULING_KEYS and key not in fields:
+                fields[key] = m.group(2).strip()
+    return fields
+
+
+def entry_id(body):
+    """-> the engram id this entry is identified BY, read from its `Evidence`.
+
+    None when the entry cites no observation. THAT IS A REAL STATE, NOT AN
+    ERROR: every entry written before the ruling format existed cites nothing a
+    tool can resolve, and `Evidence: none` says so honestly. Such an entry
+    cannot be the TARGET of a `Reverses` — it has no name to be called by — and
+    `check` reports which ones those are rather than minting an id for them. A
+    minted id would point at no observation, and a pointer to nothing is worse
+    than an admitted gap: the gap is closed by saving the observation, whereas
+    the invented id cannot be detected as wrong by anything at all.
+    """
+    return as_id(ruling_fields(body).get("Evidence"))
+
+
+def reverses_target(body):
+    """-> the engram id this entry reverses, or None when it reverses nothing.
+
+    `none`, an absent field and a value that is not an id all answer None, and
+    the first two are the same answer on purpose: a ruling that reverses nothing
+    is the ordinary case, and distinguishing "declared none" from "said nothing"
+    would put a difference into the data that means nothing to a reader.
+
+    A MALFORMED value answering None is the one that deserves justifying, since
+    it is the difference between doing nothing and doing something wrong. This
+    function decides which ENTRIES MOVE between files. A value it cannot resolve
+    is a value it must not act on, so it declines — and `supersede` reports the
+    unresolvable ones separately (`unreadable_reverses`) so declining stays
+    visible instead of looking like a file with no reversals in it.
+    """
+    value = ruling_fields(body).get("Reverses", NO_REVERSE).strip()
+    if value.lower() == NO_REVERSE:
+        return None
+    return as_id(value)
+
+
+def unreadable_reverses(entries):
+    """-> complaints for entries whose `Reverses` is neither `none` nor an id.
+
+    Split out from `reverses_target` because silence and refusal look identical
+    from the outside, and only one of them should. See its docstring.
+    """
+    out = []
+    for e in entries:
+        value = ruling_fields(e[2]).get("Reverses")
+        if value is None or value.strip().lower() == NO_REVERSE:
+            continue
+        if as_id(value) is None:
+            out.append("  %s: Reverses %r is not an engram id (#NNNNN) or %s"
+                       % (e[1][3:][:44], value[:32], NO_REVERSE))
+    return out
+
+
+def order_problems(entries, archive, label):
+    """-> complaints when `entries`, in the file's own convention, is not chronological.
+
+    THIS IS THE ASSERTION A COUNT CANNOT MAKE, and it is here because a count
+    was trusted instead. On 2026-09-08 a rotation moved the NEWEST entries to
+    the archive and left the oldest live; every count matched — 136 in, 136 out,
+    zero duplicates — and the file was wrecked. The multiset is summed across
+    the live file and every archive, so moving entries BETWEEN them cannot
+    change it. Order is a separate property and it needs a separate guard.
+
+    Ties pass. Two entries sharing a key are genuinely unordered by their own
+    headings, so an assertion about their relative position would be an
+    assertion about append order, which is not a fact this tool owns.
+    """
+    seq = list(reversed(entries)) if archive else list(entries)
+    out = []
+    for i in range(len(seq) - 1):
+        if seq[i][0] > seq[i + 1][0]:
+            out.append(
+                "  %s is not in chronological order: %s comes before %s"
+                % (label, seq[i][1][3:][:48], seq[i + 1][1][3:][:48])
+            )
+    return out
+
+
+def split(path, strict=False, with_pointer_anchor=False):
+    """-> (preamble, entries, unknown headings, carried text[, later entries]).
+
+    The preamble is everything before the first entry heading, kept verbatim: it
+    carries the file's own contract and the `last-listen` marker, and rewriting
+    it is not this tool's business — including an ARCHIVE file's preamble, which
+    the old writer regenerated over the top of whatever a human had put there.
+
+    The third return value is the headings this tool does not recognise. It is a
+    value, not an exception, so `check` can report them and `index` can warn;
+    `strict=True` is for `archive`, which must refuse before it writes.
+
+    THE FOURTH IS THE POINTER REGION'S CARRIED TEXT, and it exists because this
+    function used to DROP it. Everything below the `POINTER_MARK` sentinel was
+    skipped, so a note a person or a script appended at the bottom of the live
+    file — which is exactly where things get appended — was discarded here and
+    lost by the next rotation, under a printed `VERIFIED by re-reading` that
+    only ever counted ENTRIES. Measured 2026-09-08:
+
+        NOTE-A-HUMAN-APPENDED-HERE  ->  gone from every file, exit 0
+
+    The region is skipped for one real reason: the block this tool writes is
+    regenerated on every rotation, so echoing it back would duplicate it. That
+    is a reason to drop THAT BLOCK, not the region. So the generated block is
+    subtracted by matching it, and whatever is left is carried.
+
+    The subtraction is deliberately conservative. If the block's wording ever
+    drifts, an old line stops matching and gets CARRIED — which duplicates it
+    next to the new block, and duplication is visible, reported by the staged
+    conservation check, and recoverable. The other way round loses text
+    silently. When the two errors are not symmetric, lean on the loud one.
+
+    When `with_pointer_anchor` is true, the fifth value is every dated entry
+    after the pointer, in file order. Rotation uses the first one that remains
+    live, preserving carried text relative to entries appended below a previous
+    pointer even when earlier such entries are archived. The default four-value
+    contract is retained for consumers of this parser.
+    """
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    preamble, entries, unknown = [], [], []
+    region = []          # the pointer region's lines, verbatim
+    pointer_followers = []
+    following_pointer = False
+    entry_now = None
+    in_pointer = False
+    fence = None
+    for n, line in enumerate(lines, 1):
+        fm = FENCE_RE.match(line)
+        if fence is not None:
+            # Inside a fence nothing is a heading. Only the matching fence
+            # character closes it, so a ``` inside a ~~~ block stays literal.
+            if fm and fm.group(1)[0] == fence[0] and len(fm.group(1)) >= len(fence):
+                fence = None
+        elif fm:
+            fence = fm.group(1)
+        if fence is None and H2_RE.match(line):
+            m = ENTRY_RE.match(line)
+            key = entry_key(m) if m else None
+            if key is not None:
+                in_pointer = False
+                if entry_now:
+                    entries.append(entry_now)
+                entry_now = (key, line, [])
+                if following_pointer:
+                    pointer_followers.append(entry_now)
+                continue
+            if in_pointer and line.strip() == POINTER_HEADING:
+                # The one heading this tool writes itself. Exact match, not a
+                # substring: a quoted mention of it must not switch the parser
+                # into skipping mode. Recorded rather than dropped on sight —
+                # the subtraction below is what removes it.
+                region.append(line)
+                continue
+            # Third value. Not an entry, not our bookkeeping — named, never
+            # dropped. A heading whose date is not a real date lands here too,
+            # rather than being parsed into a month 13.
+            in_pointer = False
+            unknown.append((n, line))
+            if entry_now is None:
+                preamble.append(line)
+            else:
+                entry_now[2].append(line)
+            continue
+        if fence is None and POINTER_MARK in line:
+            in_pointer = True
+            following_pointer = True
+            continue
+        if in_pointer:
+            region.append(line)
+            continue
+        if entry_now is None:
+            preamble.append(line)
+        else:
+            entry_now[2].append(line)
+    if entry_now:
+        entries.append(entry_now)
+    if strict and fence is not None:
+        # The one thing that is genuinely ambiguous rather than merely
+        # unrecognised: if the fence never closes, this tool cannot tell example
+        # text from entries, and guessing is how the 2099-Q1 archive file got
+        # written.
+        die("%s: unterminated `%s` fence — refusing to guess where it ends"
+            % (os.path.relpath(path, ROOT), fence))
+    result = (preamble, entries, unknown,
+              carried_from_region(region, project_of(path)))
+    return result + (pointer_followers,) if with_pointer_anchor else result
+
+
+def carried_from_region(region, project=None):
+    """-> the pointer region's lines with the block THIS TOOL generates removed.
+
+    Blank lines and the generated body are dropped; everything else is kept
+    verbatim, including blanks INSIDE what is kept, so a multi-paragraph note
+    survives as it was written. Trailing blanks go, because `render` normalises
+    the end of the file anyway.
+    """
+    # Every non-blank line the generator can emit, from any project: the body is
+    # per-project only in the project name, so match on the invariant part.
+    generated = {POINTER_HEADING}
+    if project is not None:
+        # ONLY THIS PROJECT'S BLOCK. A verbatim quote of another project's block
+        # is a person's text, and subtracting it lost it — measured 2026-09-08
+        # on "Closed quarters live in `<lane>/decisions/`. ..." sitting in
+        # setup's file. With no project known, nothing per-project is
+        # subtracted: carrying costs a duplicate, dropping costs the line.
+        for line in pointer_block(project):
+            if line.strip():
+                generated.add(line)
+    def is_generated(line):
+        # BLANKS ARE NOT "GENERATED". Treating them as such dropped every blank
+        # in the region, which silently reflowed a multi-paragraph note into one
+        # block — a smaller loss than the one being fixed, but the same kind.
+        # They are kept here and trimmed at the ends below.
+        t = line.strip()
+        if not t:
+            return False
+        if t in generated or t == POINTER_MARK:
+            return True
+        # THE WHOLE GENERATED LINE, NOT A PREFIX OF IT. A `startswith` here ate
+        # a human sentence that merely began the same way — measured
+        # 2026-09-08 on "Closed quarters live in `somewhere-else/` and this is
+        # a person talking." The staged check then refused, so the file became
+        # unrotatable instead of losing the line; both are wrong, and the cause
+        # was a match looser than the thing it was matching.
+        #
+        # These two lines are per-project only in the project name, so the
+        # pattern pins everything else and lets the name vary. A sentence that
+        # differs anywhere else is somebody's, and it is carried.
+        return False
+    # INSIDE A FENCE NOTHING IS OURS. Measured 2026-09-08, on a fenced example
+    # that quoted this tool's own pointer block: the three inner lines were
+    # classified as generated and dropped, leaving an empty ``` pair. The
+    # staged conservation check REFUSED before writing — which is the guard
+    # working, and why nothing was lost — but the result was a legitimate file
+    # that could no longer be rotated at all. That is the same shape as the
+    # heading refusal that blocked all four projects and was reverted on this
+    # same day: a refusal over ordinary content is not a safe default either.
+    #
+    # `split` already tracks fences for exactly this reason. So does this.
+    kept = []
+    fence = None
+    for ln in region:
+        fm = FENCE_RE.match(ln)
+        if fence is not None:
+            kept.append(ln)
+            if fm and fm.group(1)[0] == fence[0] and len(fm.group(1)) >= len(fence):
+                fence = None
+            continue
+        if fm:
+            fence = fm.group(1)
+            kept.append(ln)
+            continue
+        if not is_generated(ln):
+            kept.append(ln)
+    # Keep interior blanks, drop the ones at either end.
+    keep_from, keep_to = 0, len(kept)
+    while keep_from < keep_to and not kept[keep_from].strip():
+        keep_from += 1
+    while keep_to > keep_from and not kept[keep_to - 1].strip():
+        keep_to -= 1
+    return kept[keep_from:keep_to]
+
+
+def is_archive(path):
+    return os.path.dirname(os.path.realpath(path)).endswith(os.sep + "decisions")
+
+
+def in_order(path, entries):
+    """-> the file's entries OLDEST FIRST, by the file's own convention.
+
+    The live file is append-only, so its file order IS chronological; archive
+    files are written newest-first, so theirs is reversed. The sort is stable,
+    so entries sharing a key keep that chronology instead of being reshuffled.
+    This function exists because the bug it replaces was selecting `entries[:n]`
+    and calling the result "the newest".
+    """
+    seq = list(reversed(entries)) if is_archive(path) else list(entries)
+    return sorted(seq, key=lambda e: e[0])
+
+
+def quarter(date):
+    return "%d-Q%d" % (date[0], (date[1] - 1) // 3 + 1)
+
+
+def line_count(text):
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def canon(body):
+    """An entry's body with its trailing blank separator lines removed.
+
+    The writer puts one blank line between entries, so a body read back from a
+    written file has one the input did not. Comparing bodies is the point of the
+    conservation check — a total was not enough, twice — so the separator has to
+    be normalised out and nothing else.
+    """
+    out = list(body)
+    while out and not out[-1].strip():
+        out.pop()
+    return tuple(out)
+
+
+def multiset(paths):
+    """-> {(key, heading, body): count} across the given files.
+
+    An entry belongs in exactly one place across a project, so this is counted
+    over the live file AND every archive together, and a count of 2 is as much a
+    failure as a count of 0.
+    """
+    bag = {}
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        _pre, entries, _unknown, _carried = split(path)
+        for key, heading, body in entries:
+            k = (key, heading, canon(body))
+            bag[k] = bag.get(k, 0) + 1
+    return bag
+
+
+def render(preamble, entries, trailer=(), trailer_before=None):
+    out = list(preamble)
+    trailer_written = False
+    for entry in entries:
+        if entry is trailer_before:
+            out.extend(trailer)
+            if trailer and out and out[-1].strip():
+                out.append("")
+            trailer_written = True
+        _key, heading, body = entry
+        out.append(heading)
+        out.extend(body)
+        if out[-1].strip():
+            out.append("")
+    if not trailer_written:
+        out.extend(trailer)
+    return "\n".join(out).rstrip() + "\n"
+
+
+def pointer_block(project):
+    return [
+        "",
+        POINTER_MARK,
+        "",
+        POINTER_HEADING,
+        "",
+        "Closed quarters live in `%s/decisions/`. They are not superseded — a" % project,
+        "`Rules out` line in there still rules it out. `decisions index %s --all`" % project,
+        "lists every entry across both, and `rg` reads them together.",
+        "",
+    ]
+
+
+def archive_preamble(project, q):
+    return [
+        "# %s — decisions, %s (archive)" % (project, q),
+        "",
+        "Closed quarter, newest first. Same contract as `../decisions.md`: a",
+        "decision and what it rules out are the same entry. Nothing here was",
+        "reversed by being archived — find it with `decisions index %s --all`," % project,
+        "or `rg` this directory.",
+        "",
+        "---",
+        "",
+    ]
+
+
+def stage(path, text):
+    """Write `text` beside `path`, fsync it, read the bytes back, return the temp path.
+
+    Nothing is installed here. The read-back is the point: a staged file whose
+    bytes are not what we rendered never reaches its destination.
+    """
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".decisions-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        with open(tmp, encoding="utf-8") as fh:
+            if fh.read() != text:
+                raise IOError("staged bytes differ from what was rendered")
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return tmp
+
+
+def cmd_check(argv):
+    over, broken, strays, pending, nameless = [], [], [], [], []
+    for project in PROJECTS:
+        path = live_path(project)
+        if not os.path.exists(path):
+            continue
+        _, entries, unknown, _carried = split(path)
+        ordered = in_order(path, entries)
+        pairs, bad, unresolved = superseded_pairs(ordered)
+        bad = bad + ["  %s: Reverses #%s, which is in no live entry — check the archives, "
+                     "and if it is nowhere the id is a typo" % (h[3:][:44], t)
+                     for t, h in unresolved]
+        if pairs:
+            pending.append((project, pairs))
+        bad = unreadable_reverses(ordered) + bad
+        if bad:
+            # SAID HERE BECAUSE `supersede` REFUSES ON IT. A reader who runs
+            # check first should learn that the project cannot be superseded
+            # before the command that cannot do it tells them.
+            pending.append((project, None, bad))
+        # An entry whose `Evidence` is not an engram id has no identity, so no
+        # future ruling can reverse it — it can only be rewritten in place. That
+        # is the honest cost of keying on the id, and it is reported rather than
+        # papered over with a minted id that would point at no observation.
+        no_id = [e for e in ordered if entry_id(e[2]) is None]
+        if no_id:
+            nameless.append((project, len(no_id), len(ordered)))
+        with open(path, encoding="utf-8") as fh:
+            n = sum(1 for _ in fh)
+        arch = archive_files(project)
+        flag = "  OVER" if n > WARN_LINES else ""
+        found = [(path, unknown)] if unknown else []
+        for a in arch:
+            _p, _e, au, _ac = split(a)
+            if au:
+                found.append((a, au))
+        if found:
+            flag += "  %d UNRECOGNISED HEADING(S)" % sum(len(u) for _f, u in found)
+            broken.append((project, found))
+        print(
+            "%-20s %5d lines  %3d entries%s%s"
+            % (
+                project,
+                n,
+                len(entries),
+                "  (+%d archive file(s))" % len(arch) if arch else "",
+                flag,
+            )
+        )
+        if n > WARN_LINES:
+            over.append(project)
+        st = stray_temps(project)
+        if st:
+            strays.append((project, st))
+            flag += "  %d STRAY TEMP(S)" % len(st)
+    if strays:
+        print()
+        print("staged temporary files left in an archive directory —")
+        print("a rotation cleans up after its own failures, so these are from a")
+        print("process that was KILLED before it could. They are not decisions and")
+        print("nothing reads them:")
+        for project, found in strays:
+            for f in found:
+                print("    %s" % os.path.relpath(f, ROOT))
+        print("check that the file beside them is intact, then delete them.")
+    if pending:
+        # NOT AN EXIT CODE. `hw status` prints one sentence per code and its
+        # reader was already given the wrong remedy once by a code that meant
+        # two things (see the split of 1 and 2 below). Supersession debt is not
+        # a reason to stop anybody, so it is said and not signalled.
+        print()
+        print("rulings that a later ruling reverses and that are still in the live file —")
+        print("they are read as standing decisions until they move:")
+        for row in pending:
+            if len(row) == 3:
+                continue
+            project, pairs = row
+            for loser, winner in pairs:
+                print("    %-18s %s" % (project, loser[1][3:][:56]))
+                print("    %-18s   ^ reversed by %s" % ("", winner[1][3:][:52]))
+        for row in pending:
+            if len(row) == 2:
+                print("    decisions supersede %s --apply" % row[0])
+        for row in pending:
+            if len(row) != 3:
+                continue
+            project, _none, bad = row
+            print()
+            print("%s cannot be superseded until these resolve:" % project)
+            for line in bad:
+                print("  %s" % line.strip())
+    if nameless:
+        print()
+        print("live entries with no engram id in **Evidence:** — standing and readable,")
+        print("but nothing can reverse them, because an id is the only name a ruling has:")
+        for project, n, total in nameless:
+            print("    %-20s %d of %d" % (project, n, total))
+    if over:
+        print()
+        print("over %d lines — rotate the oldest quarter out:" % WARN_LINES)
+        for project in over:
+            print("    decisions archive %s --apply    # keeps the newest %d, archives the rest" % (project, KEEP_DEFAULT))
+    if broken:
+        # Not cosmetic: until they are fixed `index` cannot see them. (`archive`
+        # does NOT refuse over them — that was tried on 2026-09-08 and reverted
+        # the same day because 77 of them blocked all four projects; it carries
+        # them as body text of the entry above. This comment said "refuses" and
+        # was left behind by that revert.)
+        print()
+        print("headings that are neither entries nor the archive pointer —")
+        print("`index` cannot list them, and `archive` carries them as body text")
+        print("of the entry above rather than as entries of their own:")
+        for project, found in broken:
+            for f, unknown in found:
+                rel = os.path.relpath(f, ROOT)
+                for n, heading in unknown:
+                    print("    %s:%d  %s" % (rel, n, heading))
+        print("give each one its date — `## YYYY-MM-DD[ HH:MM] <title>` — or demote")
+        print("it to `### ` if it is a section inside an entry rather than one.")
+    # TWO DIFFERENT ANSWERS, TWO DIFFERENT CODES. `hw status`'s only consumer
+    # printed "a decisions.md is past the seek budget" for ANY nonzero exit, so
+    # a file comfortably inside the budget with one undated heading was reported
+    # as over it, on every hw status. A warning that is wrong is worse than none,
+    # and one that is always on is one nobody reads. Judgment Day 2026-09-08.
+    #   1 = over the seek budget (rotate it)
+    #   2 = inside the budget, but headings this tool cannot read (fix them)
+    # THREE ANSWERS, THREE CODES, for the same reason 1 and 2 were split on
+    # 2026-09-08: `hw status` prints one sentence per code, so a code that means
+    # two things makes it name the wrong remedy.
+    #   1 = over the seek budget (rotate it)
+    #   2 = headings this tool cannot read (fix them)
+    #   3 = staged temporary files from a killed rotation (check, then delete)
+    if over:
+        return 1
+    if broken:
+        return 2
+    return 3 if strays else 0
+
+
+def cmd_index(argv):
+    n = 25
+    projects = []
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("-n", "--count"):
+            if i + 1 >= len(argv):
+                die("%s needs a number" % argv[i])
+            n = int(argv[i + 1])
+            i += 2
+        elif argv[i] == "--all":
+            n = 0
+            i += 1
+        else:
+            projects.append(resolve(argv[i]))
+            i += 1
+    if not projects:
+        projects = list(PROJECTS)
+    for project in projects:
+        paths = [live_path(project)] + archive_files(project)
+        rows = []
+        missed = []
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            _, entries, unknown, _carried = split(path)
+            rel = os.path.relpath(path, ROOT)
+            for lineno, heading in unknown:
+                missed.append((rel, lineno, heading))
+            # rank is the entry's chronological position within its own file, so
+            # same-key rows come out newest-first instead of in append order,
+            # and a live entry outranks an archived one on a tie.
+            ordered = in_order(path, entries)
+            live = 1 if not is_archive(path) else 0
+            for rank, (key, heading, body) in enumerate(ordered):
+                rows.append((key, live, rank, rel, heading, body))
+        rows.sort(key=lambda r: r[:3], reverse=True)
+        # WHAT A LATER RULING REVERSED, MARKED WHERE IT IS READ. Supersession
+        # moves the loser out of the live file, so most reversed entries are in
+        # an archive — and an archive is exactly where a reader has no way to
+        # tell a standing ruling from a dead one. The pointer block promises
+        # that archiving does not reverse anything, which is true and is not the
+        # same as promising nothing in there was reversed. This is the
+        # difference, said per row instead of left to be discovered.
+        reversed_by = {}
+        for _k, _l, _r, _rel, heading, body in rows:
+            target = reverses_target(body)
+            if target:
+                reversed_by[target] = heading[3:]
+        # Keyed on the ENGRAM ID, and across the live file and every archive at
+        # once, because that is where the reader is: a reversal usually lives in
+        # the live file while its loser has already been archived, so a lookup
+        # confined to one file would mark nothing in exactly the common case.
+        shown = rows if n == 0 else rows[:n]
+        print("# %s — %d decision(s), newest first" % (project, len(rows)))
+        for _key, _live, _rank, rel, heading, _body in shown:
+            print("  %-28s %s" % (rel, heading[3:]))
+            killer = reversed_by.get(entry_id(_body))
+            if killer:
+                print("  %-28s   ^ REVERSED by %s" % ("", killer))
+        if len(shown) < len(rows):
+            print("  … %d older — decisions index %s --all" % (len(rows) - len(shown), project))
+        if missed:
+            print("  ! %d heading(s) are not listed above because this tool does not"
+                  % len(missed))
+            print("  ! recognise them as entries. Not empty — UNREACHABLE by index:")
+            for rel, lineno, heading in missed:
+                print("  !     %s:%d  %s" % (rel, lineno, heading))
+        print()
+    return 0
+
+
+def stage_everything(buckets, targets, project, path, preamble, keep,
+                     carried, pointer_followers, staged):
+    """Stage every archive file and the live file. Appends to `staged`.
+
+    Extracted so a failure anywhere inside it has ONE cleanup boundary. The
+    caller unlinks whatever landed in `staged` and refuses; that is the whole
+    reason this is a function and not the loop it used to be.
+    """
+    for q in sorted(buckets, reverse=True):
+        target = targets[q]
+        existing_pre, existing = [], []
+        if os.path.exists(target):
+            existing_pre, existing, _u, _c = split(target)
+            existing = in_order(target, existing)
+        pre = existing_pre if existing_pre else archive_preamble(project, q)
+        # SORT OLDEST-FIRST, THEN REVERSE. NOT `reverse=True`.
+        #
+        # This is the same defect this whole file was rewritten to fix, and it
+        # was sitting inside the fix — found by Judgment Day 2026-09-08. Python's
+        # sort is stable, so `reverse=True` keeps ties in INPUT order while
+        # putting keys newest-first, and the input is oldest-first. Two entries
+        # sharing a key (the common case: every undated entry collapses to
+        # 00:00) therefore landed oldest-first inside a newest-first file, and
+        # `in_order`, which reverses an archive file, read them back inverted:
+        #     file order   ['A-older', 'B-newer']
+        #     in_order     ['B-newer', 'A-older']   <- INVERTED
+        # Sorting ascending and reversing the whole list moves the ties too.
+        #
+        # `existing` before `buckets[q]`: on a tie the already-archived entry
+        # arrived first, so it is the older of the two.
+        merged = list(reversed(sorted(existing + buckets[q], key=lambda e: e[0])))
+        staged.append((target, stage(target, render(pre, merged))))
+    # THE CARRIED TEXT GOES BACK AFTER THE REGENERATED BLOCK AND BEFORE THE
+    # FIRST SURVIVING DATED ENTRY THAT ORIGINALLY FOLLOWED IT. Appended decisions
+    # can sit below an older pointer; moving them ahead of this text changes
+    # authored order while every count still passes. If none remain live, render
+    # falls back to the existing end-of-file placement.
+    trailer = list(pointer_block(project)) + list(carried)
+    trailer_before = next((entry for entry in pointer_followers
+                           if any(entry is live for live in keep)), None)
+    staged.append((path, stage(path, render(preamble, keep, trailer,
+                                            trailer_before=trailer_before))))
+
+
+
+def cmd_archive(argv):
+    if not argv:
+        die("usage: decisions archive <project> [--keep N | --before YYYY-MM-DD] [--apply]")
+    project = resolve(argv[0])
+    before = None
+    keep_n = None
+    apply_it = False
+    i = 1
+    while i < len(argv):
+        if argv[i] == "--keep":
+            if i + 1 >= len(argv):
+                die("--keep needs a number")
+            keep_n = int(argv[i + 1])
+            if keep_n < 1:
+                die("--keep must be at least 1 — an empty live file is not a rotation")
+            i += 2
+        elif argv[i] == "--before":
+            if i + 1 >= len(argv):
+                die("--before needs YYYY-MM-DD")
+            m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", argv[i + 1])
+            if not m:
+                die("--before wants YYYY-MM-DD, got %r" % argv[i + 1])
+            before = tuple(int(x) for x in m.groups())
+            i += 2
+        elif argv[i] == "--apply":
+            apply_it = True
+            i += 1
+        else:
+            die("unknown option: %s" % argv[i])
+
+    path = live_path(project)
+    if not os.path.exists(path):
+        die("no %s" % path)
+
+    # AN UNRECOGNISED HEADING IS CARRIED, AND THE CARRYING IS PROVED — it is not
+    # refused, and it is certainly not dropped.
+    #
+    # Refusing was the first fix here and it was wrong, measured the same day.
+    # There are 77 undated `## ` headings across the four projects' archive
+    # files — section headings inside long entries, written as H2 — and every
+    # project's merge target is 2026-Q3, so a rotation that refuses on them
+    # refuses for ALL FOUR projects. `hw status` tells brainers to rotate an
+    # over-budget file; a tool that cannot run stops guarding anything, and the
+    # files keep growing.
+    #
+    # So an unrecognised heading stays what the parser makes it: body content of
+    # the entry above it, or preamble. It travels with that entry into whichever
+    # file the entry lands in, and the check below proves it arrived by
+    # comparing entry bodies across the STAGED output before anything is
+    # installed. `check` and `index` name these headings so they can be demoted
+    # to `### ` or given a date — that is a formatting job, not this command's.
+    inputs = [path] + archive_files(project)
+    preamble, entries, _unknown, carried, pointer_followers = split(
+        path, strict=True, with_pointer_anchor=True)
+    if not entries:
+        die("no dated entries in %s — nothing this tool can safely move" % path)
+
+    # OLDEST FIRST, explicitly, by the file's own convention — see in_order.
+    # Everything below slices this list from the END to keep the newest.
+    ordered = in_order(path, entries)
+    with open(path, encoding="utf-8") as fh:
+        current_lines = sum(1 for _ in fh)
+
+    # DEFAULT CUTOFF: the newest KEEP_DEFAULT entries stay, everything older
+    # moves. By COUNT, deliberately — the calendar is not what makes these files
+    # big. Measured 2026-08-24: 67 of one lane's 69 entries were in one quarter, so a
+    # quarterly cutoff would have archived 2 entries off a file already at 2097
+    # lines. `--before` is still there for a deliberate calendar split.
+    refuse = None
+    if before is not None:
+        if keep_n is not None:
+            die("pass --keep or --before, not both — they are two different cutoffs")
+        keep = [e for e in ordered if e[0] >= before]
+        move = [e for e in ordered if e[0] < before]
+        # The same invariant --keep enforces, on the other cutoff. Without it a
+        # --before later than every entry left keep empty and the plan line died
+        # on keep[0] with a traceback instead of this file's own refusal.
+        if not keep:
+            die("--before %s is later than every entry, so it would leave the live "
+                "file empty — an empty live file is not a rotation"
+                % ("%04d-%02d-%02d" % before[:3]))
+    elif keep_n is not None:
+        keep = ordered[len(ordered) - keep_n:] if keep_n < len(ordered) else list(ordered)
+        move = ordered[:len(ordered) - keep_n] if keep_n < len(ordered) else []
+    else:
+        # COUNT **AND** LINES, because the two disagreed. `check` flags a file on
+        # lines; the rotation cut on entries alone, so one lane sat at
+        # 1371 lines with 19 entries — under KEEP_DEFAULT, therefore "nothing to
+        # archive" while hw went on nagging about it.
+        #
+        # The fix for that estimated each entry's cost and then, when the
+        # estimate said everything fit on a file `check` called OVER, dropped a
+        # hardcoded `len(entries) // 5`. A fraction is not a measurement, and the
+        # estimate itself was the thing that was wrong. So: RENDER the
+        # prospective live file and count its real lines, and take one more entry
+        # out until it fits. No slack constant, no fraction, no estimate.
+        if current_lines <= WARN_LINES and len(ordered) <= KEEP_DEFAULT:
+            # Already inside both budgets. Stop here rather than adding a pointer
+            # block that would push a file just under WARN_LINES back over it.
+            keep, move = list(ordered), []
+        else:
+            n = min(KEEP_DEFAULT, len(ordered))
+            while n >= 1:
+                cut = len(ordered) - n
+                keep, move = ordered[cut:], ordered[:cut]
+                text = render(preamble, keep, pointer_block(project) if move else ())
+                if line_count(text) <= WARN_LINES:
+                    break
+                n -= 1
+            if n < 1:
+                newest = ordered[-1:]
+                text = render(preamble, newest, pointer_block(project))
+                refuse = (
+                    "%s: the newest entry alone renders %d lines against a %d-line budget "
+                    "(%d of them preamble).\nrefusing: there is no retention this tool can "
+                    "write that leaves the file inside the budget, and reporting a rotation "
+                    "that does not is the bug this branch keeps reintroducing.\nsplit the "
+                    "entry, or raise WARN_LINES deliberately."
+                    % (os.path.relpath(path, ROOT), line_count(text), WARN_LINES, len(preamble))
+                )
+    if refuse:
+        die(refuse)
+
+    if not move:
+        if current_lines > WARN_LINES:
+            # The old tool printed this same line and exited 0 on a file `check`
+            # called OVER in the same breath. It is not a success.
+            die("%s is %d lines, over the %d-line budget, and all %d entries are in "
+                "the kept range — nothing this tool can move.\nthat is a refusal, not a "
+                "rotation: the file is still over budget."
+                % (os.path.relpath(path, ROOT), current_lines, WARN_LINES, len(keep)))
+        print("nothing to archive: all %d entries are in the kept range" % len(keep))
+        return 0
+
+    buckets = {}
+    for e in move:
+        buckets.setdefault(quarter(e[0]), []).append(e)
+
+    # Parse the quarter files this rotation merges into before the plan is
+    # printed, so an unterminated fence in one of them is a refusal rather than
+    # a plan for something --apply cannot do.
+    targets = {q: os.path.join(archive_dir(project), "%s.md" % q) for q in buckets}
+    for q in sorted(targets, reverse=True):
+        if os.path.exists(targets[q]):
+            split(targets[q], strict=True)
+
+    print("%s: %d entries stay, %d move" % (os.path.relpath(path, ROOT), len(keep), len(move)))
+    print("  keeping   %s .. %s" % (keep[0][1][3:][:48], keep[-1][1][3:][:48]))
+    for q in sorted(buckets, reverse=True):
+        print("  %s/decisions/%s.md  <- %d entry(ies)" % (project, q, len(buckets[q])))
+    if not apply_it:
+        print()
+        print("this is the PLAN, not a result. re-run with --apply to write it.")
+        return 0
+
+    # WHAT IS EXPECTED AFTER THE WRITE, computed from the files as they are now.
+    # The comparison is over entry CONTENT rather than a total, so it catches a
+    # write that LOSES or DUPLICATES an entry, which a count cannot.
+    #
+    # AND IT DOES NOT CATCH THE 2026-09-08 INVERSION. An earlier version of this
+    # comment claimed it did, and Judgment Day was right to call that a
+    # contradiction: the bag is summed over the live file plus every archive, so
+    # an inversion moves the same entries between those files and leaves the bag
+    # unchanged — bag-in equals bag-out, exactly as 136 equalled 136. Order
+    # correctness rests on `in_order` and on the tie handling in the merge, each
+    # with its own driven arms in
+    # setup/tests/100-decisions-rotation-order-and-refusal.sh. Two guards, two
+    # properties; crediting one with the other's job is how the count came to be
+    # trusted in the first place.
+    before_bag = multiset(inputs)
+    # The same inputs, line for line, for the conservation check in `audit`
+    # that does not consult the region classifier. Blank lines are excluded:
+    # `render` normalises separators, so they are formatting, not content.
+    before_lines = {}
+    for src_path in inputs:
+        if not os.path.exists(src_path):
+            continue
+        with open(src_path, encoding="utf-8") as fh:
+            for line in fh.read().splitlines():
+                if line.strip():
+                    before_lines[line] = before_lines.get(line, 0) + 1
+    # The headings that were ALREADY unrecognised going in, keyed by TEXT and by
+    # nothing else. Not by file: an unrecognised heading is body content of the
+    # entry above it, so a rotation moves it between files on purpose, and keying
+    # on the path made that legitimate travel look like corruption. Not by line
+    # either — every line number in a rewritten file moves.
+    #
+    # The check below asks "did this write make something unreadable that was
+    # readable before", not "does this project have formatting debt". `check` and
+    # `index` own the second question.
+    before_unknown = set()
+    for src_path in inputs:
+        if os.path.exists(src_path):
+            _p, _e, u, _c = split(src_path)
+            for _n, heading in u:
+                before_unknown.add(heading)
+
+    os.makedirs(archive_dir(project), exist_ok=True)
+    staged = []
+
+    def drop_staged():
+        """Unlink every temp staged so far. Safe to call twice."""
+        for _target, tmp in staged:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        del staged[:]
+
+    # A ROTATION THAT FAILS HALFWAY LEAVES NOTHING BEHIND. `stage()` cleans only
+    # its OWN temp, so a multi-quarter rotation that failed on the second file
+    # left the first one sitting beside the archives — and because it does not
+    # end in `.md`, `archive_files()` ignores it and no command reported it.
+    # Measured 2026-09-08 by injecting a failure into the second stage():
+    #     setup/decisions/.decisions-u5r5llb_.tmp     and nothing named it
+    #
+    # The bare traceback goes too. This file refuses in its own words
+    # everywhere else; a rotation that could not stage its files is not the one
+    # place to print a Python stack at an operator.
+    try:
+        stage_everything(buckets, targets, project, path, preamble, keep,
+                         carried, pointer_followers, staged)
+    except SystemExit:
+        drop_staged()
+        raise
+    except BaseException as exc:
+        drop_staged()
+        die("%s: could not stage the rotation (%s: %s). NOTHING was written and "
+            "no temporary files were left behind."
+            % (os.path.relpath(path, ROOT), type(exc).__name__, exc))
+    def audit(paths, live):
+        """-> (problems, live line count) for `paths`, a list of (file, label).
+
+        The label is the DESTINATION's name even when the file is still a staged
+        temp, so a problem reads the same before and after installation.
+        """
+        bag = multiset(f for f, _rel in paths)
+        out = []
+        for k, want in sorted(before_bag.items()):
+            got = bag.get(k, 0)
+            if got != want:
+                out.append("  %s: was in %d place(s), would be in %d" % (k[1][:60], want, got))
+        for k, got in sorted(bag.items()):
+            if k not in before_bag:
+                out.append("  %s: appeared out of nowhere (%d)" % (k[1][:60], got))
+        for src_path, rel in paths:
+            _pre, _ents, unknown, _c = split(src_path)
+            for lineno, heading in unknown:
+                if heading in before_unknown:
+                    continue
+                out.append("  %s:%d became unrecognisable: %s" % (rel, lineno, heading))
+        # THE CARRIED TEXT IS CHECKED HERE, which is BEFORE the install. The
+        # entry multiset cannot see it — it is not an entry — so a rotation
+        # could drop it and still print "all N input entries accounted for
+        # exactly once", which is exactly what happened until 2026-09-08. Two
+        # different kinds of content need two checks; one of them was missing.
+        with open(live, encoding="utf-8") as fh:
+            live_lines = fh.read().splitlines()
+        # LINE CONSERVATION, AND IT DOES NOT TRUST THE CLASSIFIER.
+        #
+        # The check below this one verifies that the CARRIED lines survive. That
+        # is not enough, and finding out why is the most useful thing this
+        # rotation learned: the subtraction runs BEFORE `carried` exists, so a
+        # line wrongly classified as "the block we generate" is gone before the
+        # check can look for it. A guard that consults the same classifier it is
+        # guarding cannot see a classifier bug. Measured 2026-09-08: a fenced
+        # example quoting this tool's own block was gutted and the carried-line
+        # check passed it.
+        #
+        # So this compares the MULTISET OF NON-BLANK LINES across the live file
+        # and every archive, before against after, and it knows nothing about
+        # pointer regions. Two exemptions, both for text this tool writes on
+        # purpose: the generated pointer block, which is rewritten every time,
+        # and an archive preamble, which appears when a new quarter file is
+        # created. Everything else must be conserved line for line.
+        exempt = set()
+        for line in pointer_block(project):
+            if line.strip():
+                exempt.add(line)
+        for q in list(buckets) + [quarter(e[0]) for e in move]:
+            for line in archive_preamble(project, q):
+                if line.strip():
+                    exempt.add(line)
+        after_lines = {}
+        for src_path, _rel in paths:
+            with open(src_path, encoding="utf-8") as fh:
+                for line in fh.read().splitlines():
+                    if line.strip():
+                        after_lines[line] = after_lines.get(line, 0) + 1
+        # EXEMPT ONE OCCURRENCE, NOT THE TEXT. Exempting by membership was the
+        # difference between a guard and a blind spot: a file that QUOTES this
+        # tool's own block — a fenced example, say — has that line twice, and
+        # exempting the text excused both copies. So exactly one occurrence is
+        # forgiven on each side, which is the one this rotation rewrites, and
+        # every further copy is ordinary content that has to be conserved.
+        def outside_the_block(counts):
+            return {ln: (c - 1 if ln in exempt else c)
+                    for ln, c in counts.items()
+                    if (c - 1 if ln in exempt else c) > 0}
+        want_lines = outside_the_block(before_lines)
+        got_lines = outside_the_block(after_lines)
+        for line, n_before in sorted(want_lines.items()):
+            n_after = got_lines.get(line, 0)
+            if n_after < n_before:
+                out.append("  a line would be LOST: on %d line(s) before, %d after: %s"
+                           % (n_before, n_after, line.strip()[:60]))
+        # COUNT WHAT WAS THERE, DO NOT ASSUME ONE. `n_before = 1` was wrong for
+        # any line that legitimately repeats — a fence marker, a blank-ish
+        # separator, a repeated bullet — and it reported "was on 1, would be on
+        # 2" about a file that was perfectly correct. Measured 2026-09-08 on a
+        # fenced example, whose ``` appears twice by construction.
+        want_counts = {}
+        for want in carried:
+            if want.strip():
+                want_counts[want] = want_counts.get(want, 0) + 1
+        for want, n_before in sorted(want_counts.items()):
+            n_after = live_lines.count(want)
+            if n_after < n_before:
+                out.append("  text below the archive pointer: was on %d line(s), "
+                           "would be on %d: %s" % (n_before, n_after, want.strip()[:60]))
+        return out, len(live_lines)
+
+    # VERIFY THE STAGED BYTES, BEFORE ANYTHING IS INSTALLED. This is the whole
+    # guard: an unrecognised heading is carried as body content rather than
+    # refused, so what makes that safe is proving the content arrived — by
+    # comparing the entry multiset, heading AND body, against the inputs. A
+    # total was the signal that missed the real incident; it rotated 136 entries
+    # into 136 entries and inverted them.
+    #
+    # The archive files this rotation does not open are part of the comparison
+    # too: an entry must end up in exactly ONE place across the whole project.
+    untouched = [a for a in archive_files(project) if a not in targets.values()]
+    staged_view = [(tmp, os.path.relpath(dest, ROOT)) for dest, tmp in staged] \
+        + [(a, os.path.relpath(a, ROOT)) for a in untouched]
+    live_tmp = staged[-1][1]
+
+    # THE CUT WENT THE RIGHT WAY, ASSERTED. This is the 2026-09-08 incident's
+    # own property and nothing above tests it: the multiset is summed over the
+    # live file and every archive together, so a rotation that archived the
+    # NEWEST entries and kept the oldest leaves it identical — 136 in, 136 out,
+    # zero duplicates, file wrecked. What separates the two outcomes is that
+    # everything moved must be OLDER than everything kept, and that is a
+    # statement about order, so it takes an assertion about order.
+    #
+    # Ties are allowed through: two entries sharing a key are not ordered by
+    # their own headings, so a cut between them is not this tool's to refuse.
+    def cut_and_order(written):
+        """-> complaints about the ORDER of what this rotation writes.
+
+        Only the files it writes. An untouched archive with pre-existing
+        disorder is somebody else's formatting debt, and refusing over it would
+        block every rotation in the project — the shape that was tried with
+        undated headings on this same day and reverted within hours.
+        """
+        out = []
+        for src, rel in written:
+            # `is_archive` reads the DIRECTORY, so it is right for a staged temp
+            # too: `stage()` writes each temp beside its destination.
+            _p, ents, _u, _c = split(src)
+            out += order_problems(ents, is_archive(src), rel)
+        if move and keep and max(e[0] for e in move) > min(e[0] for e in keep):
+            out.append("  the cut inverted the file: the newest entry moved (%s) is "
+                       "later than the oldest entry kept (%s)"
+                       % (max(move, key=lambda e: e[0])[1][3:][:40],
+                          min(keep, key=lambda e: e[0])[1][3:][:40]))
+        return out
+
+    problems, planned_lines = audit(staged_view, live_tmp)
+    written_view = [(tmp, os.path.relpath(dest, ROOT)) for dest, tmp in staged]
+    problems += cut_and_order(written_view)
+    explicit = keep_n is not None or before is not None
+    if not problems and planned_lines > WARN_LINES and not explicit:
+        # Default mode chose the retention itself, so an over-budget result means
+        # its own arithmetic was wrong. That is the bug, not a note.
+        problems.append("  %s would be %d lines, over the %d-line budget"
+                        % (os.path.relpath(path, ROOT), planned_lines, WARN_LINES))
+    if problems:
+        for _dest, tmp in staged:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        die("refusing to install: the files this rotation would write do not carry "
+            "what the inputs do.\n%s\nnothing was written; the live file and the "
+            "archives are untouched." % "\n".join(problems))
+
+    # ARCHIVES FIRST, LIVE LAST. There is no multi-file atomicity here: an
+    # interruption between the two leaves entries in both places, which `index`
+    # shows twice and the re-read below names. The other order loses them.
+    installed = []
+    try:
+        for target, tmp in staged:
+            os.replace(tmp, target)
+            installed.append(target)
+    except OSError as exc:
+        for _t, tmp in staged:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        die("installing %s failed: %s\ninstalled so far: %s"
+            % (target, exc, ", ".join(os.path.relpath(t, ROOT) for t in installed) or "none"))
+    for target in installed:
+        print("wrote %s" % os.path.relpath(target, ROOT))
+
+    # AND RE-READ WHAT IS NOW ON DISK. The staged audit is about the bytes this
+    # process rendered; this one is about the files anyone else will open, and it
+    # is the only statement `archive` is entitled to print as a result.
+    after_paths = [path] + archive_files(project)
+    problems, final_lines = audit(
+        [(a, os.path.relpath(a, ROOT)) for a in after_paths], path)
+    problems += cut_and_order(
+        [(t, os.path.relpath(t, ROOT)) for t in installed])
+    _pre, final_entries, _u, _c = split(path)
+    if problems:
+        die("the installed files do not carry what the inputs did:\n%s\n"
+            "the originals are recoverable from git; this tool wrote only the files "
+            "named above." % "\n".join(problems))
+    print("VERIFIED by re-reading: %s is %d lines / %d entries, %d entries across %d "
+          "archive file(s), all %d input entries accounted for exactly once."
+          % (os.path.relpath(path, ROOT), final_lines, len(final_entries),
+             sum(len(split(a)[1]) for a in archive_files(project)),
+             len(archive_files(project)), sum(before_bag.values())))
+    if explicit and final_lines > WARN_LINES:
+        # An explicit cutoff is an override, so it is honoured — but a file left
+        # over budget by it is said out loud, never implied by silence.
+        print("WARNING: --keep/--before is your cutoff and it leaves %s at %d lines, "
+              "over the %d-line budget. `decisions check` will keep flagging it."
+              % (os.path.relpath(path, ROOT), final_lines, WARN_LINES))
+    return 0
+
+
+def line_counts(paths):
+    """-> {non-blank line: how many times it appears} across `paths`.
+
+    Blank lines are excluded because `render` normalises the separators between
+    entries: a blank is formatting this tool owns, not content anyone wrote.
+    """
+    counts = {}
+    for src in paths:
+        if not os.path.exists(src):
+            continue
+        with open(src, encoding="utf-8") as fh:
+            for line in fh.read().splitlines():
+                if line.strip():
+                    counts[line] = counts.get(line, 0) + 1
+    return counts
+
+
+def conserved(before_bag, before_lines, after_paths, exempt_lines, live_after, carried):
+    """-> complaints when `after_paths` does not carry what the inputs did.
+
+    THE BEFORE STATE ARRIVES AS A SNAPSHOT, NEVER AS A PATH LIST, and that is
+    not a style preference. This function is called twice — once on the staged
+    temps and once on the installed files — and the second call happens after
+    the inputs have been overwritten. Given paths it would re-read them and
+    compare the result against itself, which passes no matter what was written.
+    Measured while building this command: the second call reported the archived
+    entry as having "appeared out of nowhere", because by then the live file it
+    was re-reading no longer contained it.
+
+    The same two comparisons `archive` makes, as a function both commands can
+    call, and for the same reason: entries are compared by IDENTITY (key,
+    heading and body, as a multiset over every file of the project at once) and
+    everything else by LINE, so a class of content that is not an entry cannot
+    fall through the gap between them. That gap is not hypothetical — text below
+    the archive pointer went through it on 2026-09-08 under a printed
+    conservation verdict.
+
+    `exempt_lines` is the text this tool writes itself and rewrites on every
+    run: the pointer block, and an archive preamble for a quarter file it
+    creates. Exactly ONE occurrence of each is forgiven, never the text, so a
+    file that quotes the block still has to conserve its copy.
+    """
+    out = []
+    after_bag = multiset(after_paths)
+    for k, want in sorted(before_bag.items()):
+        got = after_bag.get(k, 0)
+        if got != want:
+            out.append("  %s: was in %d place(s), would be in %d" % (k[1][:60], want, got))
+    for k, got in sorted(after_bag.items()):
+        if k not in before_bag:
+            out.append("  %s: appeared out of nowhere (%d)" % (k[1][:60], got))
+
+    def outside_the_block(counts):
+        # EXEMPT ONE OCCURRENCE, NOT THE TEXT. A file that quotes this tool's
+        # own pointer block has that line twice; forgiving the text would excuse
+        # both copies, and only one of them is ours to rewrite.
+        return {ln: (c - 1 if ln in exempt_lines else c)
+                for ln, c in counts.items()
+                if (c - 1 if ln in exempt_lines else c) > 0}
+
+    want_lines = outside_the_block(before_lines)
+    got_lines = outside_the_block(line_counts(after_paths))
+    for line, n_before in sorted(want_lines.items()):
+        n_after = got_lines.get(line, 0)
+        if n_after < n_before:
+            out.append("  a line would be LOST: on %d line(s) before, %d after: %s"
+                       % (n_before, n_after, line.strip()[:60]))
+    with open(live_after, encoding="utf-8") as fh:
+        live_lines = fh.read().splitlines()
+    want_counts = {}
+    for want in carried:
+        if want.strip():
+            want_counts[want] = want_counts.get(want, 0) + 1
+    for want, n_before in sorted(want_counts.items()):
+        if live_lines.count(want) < n_before:
+            out.append("  text below the archive pointer: was on %d line(s), would be on "
+                       "%d: %s" % (n_before, live_lines.count(want), want.strip()[:60]))
+    return out
+
+
+def superseded_pairs(entries):
+    """-> ([(loser, winner)], [complaint]) for the live entries of one project.
+
+    A ruling that carries `Reverses: <title>` replaces the ruling with that
+    title, and the replaced one leaves the live file. That is the whole reason
+    this exists: without it the live file only ever grows, because a decision
+    that has been overturned is still a `## ` heading with a body, and `index`
+    still lists it. Measured 2026-09-08 across the four projects, with the
+    reversal declared in prose that no tool could read.
+
+    IT RESOLVES BY ENGRAM ID, which is the whole reason `Evidence` is mandatory:
+    the id is the entry's name, and `Reverses: #NNNNN` is another entry saying
+    that name out loud. It used to resolve by title and that could not be made
+    safe — see `NO_REVERSE`.
+
+    IT RESOLVES WITHIN THE LIVE FILE ONLY. A `Reverses` naming something already
+    in an archive has nothing to do: the entry is out of the live file, which is
+    what the field is for. That is silence, not a complaint — otherwise running
+    this command twice would refuse the second time, and an operation that
+    cannot be repeated is one nobody can safely re-run after an interruption.
+
+    What IS a complaint: a self-reference, an id carried by two live entries,
+    and one entry reversed by two. All three are ambiguous rather than merely
+    unusual, and this tool MOVES FILES — guessing here would archive the wrong
+    entry and print a conservation verdict over the top of it, which is the
+    exact failure this whole file is a reaction to.
+
+    A duplicate id is worth its own case even though engram will not issue one
+    twice: the id in the file is typed by a person, and two entries citing the
+    same observation is a typo with no safe reading. Refusing names it; picking
+    one buries it.
+    """
+    by_id = {}
+    for e in entries:
+        i = entry_id(e[2])
+        if i:
+            by_id.setdefault(i, []).append(e)
+    pairs, problems, claimed, unresolved = [], [], {}, []
+    for e in entries:
+        target = reverses_target(e[2])
+        if target is None:
+            continue
+        mine = entry_id(e[2])
+        if mine is not None and target == mine:
+            problems.append("  %s: Reverses names its own evidence (#%s)"
+                            % (e[1][3:][:52], target))
+            continue
+        matches = by_id.get(target, [])
+        if len(matches) > 1:
+            problems.append("  %s: Reverses #%s, and %d live entries cite that id"
+                            % (e[1][3:][:44], target, len(matches)))
+            continue
+        if not matches:
+            # NOT IN THE LIVE FILE. Either it is already archived — which is the
+            # whole point of the field, and must stay silent so the command can
+            # be re-run after an interruption — or the id is a typo and names
+            # nothing anywhere. Those two are indistinguishable here and only one
+            # is benign, so the caller is handed the id and looks in the
+            # archives. Until 2026-09-08 both simply `continue`d, and a mistyped
+            # id produced "nothing to supersede" with exit 0 over a reversal the
+            # author believed had happened — the exact no-op-wearing-a-success
+            # this whole command exists to keep out.
+            unresolved.append((target, e[1]))
+            continue
+        if target in claimed:
+            problems.append("  #%s is reversed by two live rulings: %s and %s"
+                            % (target, claimed[target][3:][:30], e[1][3:][:30]))
+            continue
+        claimed[target] = e[1]
+        pairs.append((matches[0], e))
+    return pairs, problems, unresolved
+
+
+def cmd_supersede(argv):
+    if not argv:
+        die("usage: decisions supersede <project> [--apply]")
+    project = resolve(argv[0])
+    apply_it = False
+    for a in argv[1:]:
+        if a == "--apply":
+            apply_it = True
+        else:
+            die("unknown option: %s" % a)
+
+    path = live_path(project)
+    if not os.path.exists(path):
+        die("no %s" % path)
+    inputs = [path] + archive_files(project)
+    # THE SNAPSHOT, TAKEN BEFORE ANYTHING IS WRITTEN. Both verdicts below
+    # compare against these two values, never against the files: the second
+    # verdict runs after the inputs have been replaced.
+    before_bag = multiset(inputs)
+    before_lines = line_counts(inputs)
+    preamble, entries, _unknown, carried, pointer_followers = split(
+        path, strict=True, with_pointer_anchor=True)
+    if not entries:
+        die("no dated entries in %s — nothing this tool can safely move" % path)
+
+    ordered = in_order(path, entries)
+    pairs, problems, unresolved = superseded_pairs(ordered)
+    # AN ID THAT IS IN NO FILE OF THIS PROJECT IS A TYPO, AND IT REFUSES. An id
+    # sitting in an archive is the ordinary already-done case and stays silent,
+    # so the command remains safe to re-run. Splitting the two is the whole
+    # point: before this, both were silence, and a typo read as success.
+    if unresolved:
+        known = set()
+        for src in [path] + archive_files(project):
+            _p, ents, _u, _c = split(src)
+            for e in ents:
+                i = entry_id(e[2])
+                if i:
+                    known.add(i)
+        nowhere = [(t, h) for t, h in unresolved if t not in known]
+        if nowhere:
+            problems += ["  %s: Reverses #%s, and no entry of this project — live "
+                         "or archived — carries that id" % (h[3:][:44], t)
+                         for t, h in nowhere]
+    # A `Reverses` this tool cannot read is refused rather than ignored. Ignoring
+    # it would leave a file whose author believes a reversal happened and whose
+    # live entries say it did not, and that disagreement is invisible: the
+    # command would print "nothing to supersede" and exit 0.
+    problems = unreadable_reverses(ordered) + problems
+    if problems:
+        die("refusing: `Reverses` does not resolve to exactly one live ruling by "
+            "engram id.\n%s\nnothing was written." % "\n".join(problems))
+    losers = [loser for loser, _winner in pairs]
+    loser_ids = {id(e) for e in losers}
+    keep = [e for e in ordered if id(e) not in loser_ids]
+
+    if not losers:
+        print("nothing to supersede: no live ruling reverses another live ruling")
+        return 0
+    if not keep:
+        die("every live entry is superseded — an empty live file is not a rotation")
+
+    print("%s: %d ruling(s) stay, %d superseded move to the archive"
+          % (os.path.relpath(path, ROOT), len(keep), len(losers)))
+    for loser, winner in pairs:
+        print("  %s" % loser[1][3:][:66])
+        print("    reversed by  %s" % winner[1][3:][:64])
+
+    buckets = {}
+    for e in losers:
+        buckets.setdefault(quarter(e[0]), []).append(e)
+    targets = {q: os.path.join(archive_dir(project), "%s.md" % q) for q in buckets}
+    for q in sorted(targets, reverse=True):
+        if os.path.exists(targets[q]):
+            split(targets[q], strict=True)
+        print("  %s/decisions/%s.md  <- %d entry(ies)" % (project, q, len(buckets[q])))
+    if not apply_it:
+        print()
+        print("this is the PLAN, not a result. re-run with --apply to write it.")
+        return 0
+
+    os.makedirs(archive_dir(project), exist_ok=True)
+    staged = []
+
+    def drop_staged():
+        for _target, tmp in staged:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        del staged[:]
+
+    try:
+        stage_everything(buckets, targets, project, path, preamble, keep,
+                         carried, pointer_followers, staged)
+    except SystemExit:
+        drop_staged()
+        raise
+    except BaseException as exc:
+        drop_staged()
+        die("%s: could not stage the supersession (%s: %s). NOTHING was written and "
+            "no temporary files were left behind."
+            % (os.path.relpath(path, ROOT), type(exc).__name__, exc))
+
+    exempt = set()
+    for line in pointer_block(project):
+        if line.strip():
+            exempt.add(line)
+    for q in buckets:
+        for line in archive_preamble(project, q):
+            if line.strip():
+                exempt.add(line)
+
+    untouched = [a for a in archive_files(project) if a not in targets.values()]
+    staged_files = [tmp for _dest, tmp in staged] + untouched
+    live_tmp = staged[-1][1]
+
+    def verdict(after_paths, live_file):
+        """-> every complaint about `after_paths`, identity AND sequence.
+
+        THE SEQUENCE HALF IS NOT DECORATION, and it is the reason this function
+        exists rather than a count. `conserved` sums its bag over the live file
+        and every archive together, so an operation that moved the WRONG entries
+        — the newest instead of the oldest, say — leaves that bag untouched and
+        passes. That is not a hypothetical: it happened on 2026-09-08, 136
+        entries in and 136 out, and the file was wrecked.
+        """
+        out = conserved(before_bag, before_lines, after_paths, exempt,
+                        live_file, carried)
+        for src in after_paths:
+            _p, ents, _u, _c = split(src)
+            out += order_problems(ents, is_archive(src),
+                                  os.path.relpath(src, ROOT))
+        # THE EXACT LIVE SEQUENCE, BY IDENTITY. Not "the same number of entries
+        # stayed" and not "the survivors are in some chronological order" —
+        # the survivors, named, in the order this command planned. An assertion
+        # that a different set of entries could also satisfy is not an
+        # assertion about THIS operation.
+        _p, live_ents, _u, _c = split(live_file)
+        want = [(e[0], e[1], canon(e[2])) for e in keep]
+        got = [(e[0], e[1], canon(e[2])) for e in live_ents]
+        if want != got:
+            out.append("  the live file's sequence is not the one planned: "
+                       "%d heading(s) expected, %d written, first difference at %s"
+                       % (len(want), len(got),
+                          next((w[1][3:][:48] for w, g in zip(want, got) if w != g),
+                               "the end of the file")))
+        # AND THE LOSERS ARE ACTUALLY OUT, by engram id — the same identity the
+        # move was decided on, so this cannot pass by resolving differently from
+        # the decision it is checking. The multiset above proves each entry is in
+        # exactly one place; this proves that place is not the live file.
+        live_ids = {entry_id(e[2]) for e in live_ents} - {None}
+        for loser, _winner in pairs:
+            if entry_id(loser[2]) in live_ids:
+                out.append("  %s was superseded and is still in the live file"
+                           % loser[1][3:][:60])
+        return out
+
+    problems = verdict(staged_files, live_tmp)
+    if problems:
+        drop_staged()
+        die("refusing to install: the files this supersession would write do not carry "
+            "what the inputs do.\n%s\nnothing was written; the live file and the "
+            "archives are untouched." % "\n".join(problems))
+
+    installed = []
+    try:
+        for target, tmp in staged:
+            os.replace(tmp, target)
+            installed.append(target)
+    except OSError as exc:
+        drop_staged()
+        die("installing %s failed: %s\ninstalled so far: %s"
+            % (target, exc, ", ".join(os.path.relpath(t, ROOT) for t in installed) or "none"))
+    for target in installed:
+        print("wrote %s" % os.path.relpath(target, ROOT))
+
+    problems = verdict([path] + archive_files(project), path)
+    if problems:
+        die("the installed files do not carry what the inputs did:\n%s\n"
+            "the originals are recoverable from git; this tool wrote only the files "
+            "named above." % "\n".join(problems))
+    with open(path, encoding="utf-8") as fh:
+        final_lines = sum(1 for _ in fh)
+    print("VERIFIED by re-reading: %s is %d lines / %d rulings, the %d superseded one(s) "
+          "are in the archive, and every entry is in exactly one place, in order."
+          % (os.path.relpath(path, ROOT), final_lines, len(keep), len(losers)))
+    return 0
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "check":
+        return cmd_check(rest)
+    if cmd == "index":
+        return cmd_index(rest)
+    if cmd == "archive":
+        return cmd_archive(rest)
+    if cmd == "supersede":
+        return cmd_supersede(rest)
+    die("unknown command %r — check | index | archive | supersede" % cmd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

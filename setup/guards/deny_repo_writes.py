@@ -409,6 +409,7 @@ def config(lane):
     # boundary question of every absolute path in a command, and re-realpath'ing
     # the two roots for each of them would be the same syscalls over and over.
     cfg["resolved_roots"] = _resolve_roots(cfg["roots"])
+    cfg["root_ids"] = _root_ids(cfg["roots"])
     return cfg
 
 
@@ -546,15 +547,68 @@ def _candidates(path):
     return tuple(out)
 
 
+def _root_ids(roots):
+    """(st_dev, st_ino) of every protected root that exists. Windows folds case
+    in `_canon` instead, so this stays empty there."""
+    ids = set()
+    if _WINPATHS:
+        return frozenset(ids)
+    for root in roots:
+        try:
+            st = os.stat(root)
+        except OSError:
+            continue
+        ids.add((st.st_dev, st.st_ino))
+    return frozenset(ids)
+
+
+def _same_tree(cfg, cand):
+    """True when the deepest EXISTING ancestor of `cand`, or any directory above
+    it, IS a protected root: the same inode, whatever the spelling.
+
+    A SPELLING IS NOT AN IDENTITY. APFS keeps two spellings of a name that differ
+    only in case, under one parent, as one directory, and `realpath` does
+    not fold the case, so every text comparison above saw two trees. Measured
+    2026-09-29: a redirect into the case-variant spelling of a protected root
+    was ALLOWED while the lower-case spelling was denied, by the Python guard,
+    the JavaScript one and Codex's. Asking the filesystem is the only answer
+    that is right on both kinds of filesystem: on ext4 the variant names
+    nothing, its ancestors match no root and it stays allowed. Only ADDS
+    matches, like the other candidates. A root that does not exist has no
+    identity to match, and the text comparison is all there is for it.
+    """
+    # A cfg built elsewhere (the brain guard's own, which reuses `_inside_any`)
+    # carries `roots` but not `root_ids`: derive and cache them rather than
+    # raise, because a raise here turned every absolute path into a denial.
+    if "root_ids" not in cfg:
+        cfg["root_ids"] = _root_ids(cfg.get("roots", ()))
+    ids = cfg["root_ids"]
+    if not ids or not _is_abs(cand):
+        return False
+    p = os.path.normpath(cand)
+    while True:
+        try:
+            st = os.stat(p)
+        except OSError:
+            st = None
+        if st is not None and (st.st_dev, st.st_ino) in ids:
+            return True
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False
+        p = parent
+
+
 def _inside_any(cfg, path):
     """True when `path` lands on or under a protected root, however spelled."""
     if not path:
         return False
-    for cand in _candidates(path):
+    cands = _candidates(path)
+    for cand in cands:
         for root in cfg["resolved_roots"]:
             if cand == root or cand.startswith(root + "/"):
                 return True
-    return False
+    return any(_same_tree(cfg, cand) for cand in cands)
 
 
 # Absolute-path-looking runs in a command. Deliberately crude: it is used only

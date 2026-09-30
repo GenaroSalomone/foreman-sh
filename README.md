@@ -3,17 +3,46 @@
 **Plan with one agent. Build with many. Keep your repository out of the
 planner's hands.**
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 foreman-sh is a small shell harness that runs coding agents over your own
 repositories in two roles: a long-lived **brainer** that thinks and writes
 briefs but cannot touch your code, and disposable **executors** that each take
 one brief, work in a git worktree of their own, and report back when they are
 done. The commands are `hw` and `brain`.
 
-> **Release candidate — 0.1.0-rc.1.** Interfaces may still change. Read
-> [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md) before installing; what is new
-> is in [`RELEASE-NOTES.md`](RELEASE-NOTES.md) and
-> [`CHANGELOG.md`](CHANGELOG.md). MIT licensed. Not related to Ruby's
-> `foreman`.
+> **Release candidate.** Interfaces may still change. What is new is in
+> [`RELEASE-NOTES.md`](RELEASE-NOTES.md) and [`CHANGELOG.md`](CHANGELOG.md);
+> known limitations are in [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md).
+> Not related to Ruby's `foreman`.
+
+## Quickstart
+
+With [herdr](https://herdr.dev) and [Claude Code](https://claude.com/claude-code)
+installed (see [Requirements](#requirements)):
+
+```sh
+git clone <this repository> foreman-sh && cd foreman-sh
+./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp
+brain myapp        # opens the lane's brainer in herdr
+```
+
+Then describe the work to the brainer. [Your first task](#your-first-task)
+walks a throwaway lane end to end.
+
+## Features
+
+- **A planner that cannot write.** A guard refuses the brainer's writes into
+  your repositories: the line between deciding and doing is enforced.
+- **One worktree and branch per task.** Executors never share a checkout.
+- **Reports that arrive.** `done-invoker` delivers each report into the
+  brainer's session; nothing is polled.
+- **Briefs with a contract.** Front-matter that `hw` checks before building
+  anything, and a verification command it re-runs when the task closes.
+- **Several agents at once.** Claude Code by default, OpenCode for a lane's
+  executors, Codex as a reduced dispatch target.
+- **Decisions on record.** `decisions.md` keeps what was ruled out, so a
+  rejected idea is found before it is proposed again.
 
 ## Contents
 
@@ -21,11 +50,11 @@ done. The commands are `hw` and `brain`.
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Install](#install)
+- [Recommended setup](#recommended-setup)
 - [Your first task](#your-first-task)
 - [Concepts](#concepts)
 - [Everyday commands](#everyday-commands)
 - [Configuration](#configuration)
-- [Limitations](#limitations)
 - [Repository layout](#repository-layout)
 - [Tests](#tests)
 - [Feedback and contributing](#feedback-and-contributing)
@@ -96,16 +125,13 @@ A task, end to end:
 
 ## Requirements
 
-| Platform | Status |
+| Platform | How |
 |---|---|
-| macOS | Developed and tested here. |
-| Linux | Installer and full suite measured in a Debian container; a live herdr and a live agent on Linux are not yet exercised. |
-| Windows, WSL2 | Behaves as Linux. The recommended way on Windows. |
-| Windows, Git Bash | Runs natively under Git for Windows, measured on a CI runner only; a real Windows machine is not yet verified. Needs Developer Mode, a native Windows `python3` first on `PATH`, and `core.autocrlf false`. |
+| macOS | Native. |
+| Linux | Native. |
+| Windows | Through WSL2 (recommended), or natively under Git Bash. Git Bash needs Developer Mode, a native Windows `python3` first on `PATH`, and `core.autocrlf false`; see `INSTALL.md`, Windows. |
 
-The details, and every test skipped by name on each platform, are in
-[`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md) (L1, L1b) and in `INSTALL.md`,
-Windows.
+Per-platform details are in [`INSTALL.md`](INSTALL.md).
 
 You also need:
 
@@ -118,8 +144,8 @@ You also need:
 - `git`, `jq` 1.7 or newer, `python3`. On Linux also `sd`, `fd`, `rg` and
   Node 22.7 or newer. On Git Bash, Windows builds of `jq`, `rg`, `fd` and
   `sd`, which Git for Windows does not ship.
-- Optional: **engram** for memory across sessions (without it the harness
-  runs, but reports reach no memory), `fzf` for `hw`'s pickers.
+- Recommended: **engram** for memory across sessions (see
+  [Recommended setup](#recommended-setup)); optional: `fzf` for `hw`'s pickers.
 
 Agents other than Claude Code:
 
@@ -164,6 +190,31 @@ The installer checks both and prints these commands when one is missing.
 [`INSTALL.md`](INSTALL.md) has the full reference: every option, what each
 file it writes is for, OpenCode lanes, engram and Windows.
 
+## Recommended setup
+
+Two pieces turn the harness from working into dependable.
+
+**engram, persistent memory across sessions.** [engram](https://github.com/Gentleman-Programming/engram)
+is an MIT-licensed memory server for coding agents (a Go binary with SQLite and
+an MCP server). With it, every `done-invoker` report is saved to memory, and a
+brainer recovers earlier decisions and findings instead of starting cold. The
+harness runs without it, but reports then reach no memory.
+
+```sh
+brew install gentleman-programming/tap/engram
+engram setup claude-code
+```
+
+Other platforms are covered in engram's
+[installation guide](https://github.com/Gentleman-Programming/engram/blob/main/docs/INSTALLATION.md).
+
+**Judgment Day, review before "done".** Two judges read the same diff blind,
+and only a severe defect both confirm is fixed, in at most two rounds. It ships
+in `_skills/judgment-day/` with its three agents in `_agents/`, derived from
+[Gentle AI](https://github.com/Gentleman-Programming/gentle-ai): the skill under
+the Apache License 2.0, the agents under the MIT License. Activation is three commands, in
+[`INSTALL.md`](INSTALL.md), Judgment Day.
+
 ## Your first task
 
 [`examples/demo/`](examples/demo/README.md) is a lane made to be thrown away.
@@ -192,7 +243,7 @@ later its report arrives in the brainer.
 `hw` has to know which pane to report to, and it learns that from the pane it
 runs in. From a plain terminal a dry run stops at `HW_INVOKER_PANE is
 UNRESOLVED`; add `--no-report` there to see the manifest anyway
-([`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md) L7).
+(see [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md)).
 
 ## Concepts
 
@@ -275,20 +326,6 @@ The mechanism in `bin/` is the same for every lane; what differs is data.
   brief must cite the request it answers. A new lane asks for these in a
   terminal and keeps the defaults in a script. See `INSTALL.md`.
 
-## Limitations
-
-The register is [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md): each entry
-with its scope, impact, evidence (measured or not) and workaround. The ones
-most likely to decide whether this fits you:
-
-- herdr is a hard requirement.
-- Native Windows is measured on a CI runner, not on a real machine; WSL2 is
-  the recommended path there. Linux has not met a live herdr and agent yet.
-- The guards are a tripwire, not a sandbox. Codex's own patch/write tool is
-  not covered by its guard at all.
-- The test suite is hermetic, with herdr stubbed: a green suite does not
-  prove a live pane worked. The demo lane exercises the real path by hand.
-
 ## Repository layout
 
 | Path | What it is |
@@ -317,8 +354,7 @@ with herdr stubbed and every dispatch a dry run. It touches nothing of yours.
 
 ## Feedback and contributing
 
-This candidate exists to find what breaks on machines other than the one it
-was built on. The most useful reports are the smallest ones: a failing
+The most useful reports are the smallest ones: a failing
 `install.sh --check`, a `hw --dry-run` that names the wrong thing, a guard
 that refuses something harmless or lets something through. Open an issue with
 the command, its full output, your platform and the versions of herdr and

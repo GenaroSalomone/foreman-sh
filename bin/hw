@@ -5443,6 +5443,20 @@ cwd, where nobody looks for it.' "$HW_BIN_DIR" "$HW_BIN_DIR" "${BRIEF:-<no brief
   if [ -n "$specialists" ]; then
     preamble="$(printf '%s\n\nSpecialist subagents available here: %s. If one of them is the job, delegate\nrather than doing it inline — they carry the access and the conventions for it,\nand reconstructing those in your own session is how a mechanism gets improvised.' "$preamble" "$specialists")"
   fi
+  # CODEX LOADS NO CLAUDE.md, so the executor rules of CLAUDE.shared.md that it
+  # cannot see are stated here, one line each; the project on every mem_save and
+  # the closing are already in the preamble above. Gated on the executor's
+  # vendor (HW_EXECUTOR_VENDOR, persisted for a re-task; AGENT at launch) because
+  # Claude Code and OpenCode read those rules from the file and would pay twice.
+  # Held by setup/tests/220-codex-recibe-las-reglas-de-executor.sh.
+  case "${HW_EXECUTOR_VENDOR:-${AGENT:-}}" in
+    codex)
+      preamble="$(printf '%s\n\n%s' "$preamble" "RULES CODEX DOES NOT LOAD (shared rules, one line each):
+- Secrets: never print, copy into a new file, paste or commit .env, *.db, *.credentials or secrets/; report key names, never values.
+- A brief names a Keychain handle for a credential; no handle is a gap, report it with done-invoker --blocked.
+- Browser: close it with $HW_BIN_DIR/browser-close, and never retry a failed launch (a failed launch is a blocked report).
+- Artifacts (audio, exports, captures, generated files) go to \$HW_ARTIFACTS, never into git status.")" ;;
+  esac
   # THE POLICY A LANE'S DEV-SERVER DEFAULT EXISTS TO ENFORCE, STATED ONCE, ON
   # EVERY DISPATCH OF THAT LANE (`brief_note` in projects.json) — not just the
   # ones with no dev server, so an executor launched with --dev-server does not
@@ -10650,6 +10664,7 @@ _next_message() {
     # an unrelated `case`, naming a file and a construct with nothing wrong.
     HW_REVIEW_BASE_REF="$(_run_env_value "$rundir" HW_REVIEW_BASE_REF 2>/dev/null || true)"
     HW_REVIEW_BASE_BRANCH="$(_run_env_value "$rundir" HW_REVIEW_BASE_BRANCH 2>/dev/null || true)"
+    HW_EXECUTOR_VENDOR="$(_run_env_value "$rundir" HW_EXECUTOR_VENDOR 2>/dev/null || true)"
     # THE LANE THIS RUN WAS ACTUALLY LAUNCHED FOR, read back the same way
     # ENGRAM_PROJECT is above — never the brainer's own $PROJ, which on a
     # --report-to re-task belongs to a different lane entirely. This is what

@@ -190,6 +190,24 @@ live headless herdr, and the exported installer on a Windows 11 ARM64 VM. Not ve
 Claude Code, a brainer and an executor reporting back. The numbers and every
 skip are in `KNOWN-LIMITATIONS.md`, L1b.
 
+## Judgment Day (recommended)
+
+Judgment Day is a blind review by two judges of a diff before it counts as
+finished: both read the same target, neither sees the other's findings, and only
+a severe defect both confirm is fixed, in at most two rounds. It ships in
+`_skills/judgment-day/` with its three agents in `_agents/`, derived from Gentle
+AI: the skill under the Apache License 2.0, the agents under the MIT License
+(`_skills/judgment-day/LICENSE`, `LICENSE-MIT` and `NOTICE`). The installer does not copy it; to activate it for Claude Code:
+
+```sh
+mkdir -p ~/.claude/skills ~/.claude/agents
+cp -R _skills/judgment-day ~/.claude/skills/
+cp _agents/jd-*.md ~/.claude/agents/
+```
+
+Then ask a session for "judgment day" over a diff. The judges use engram to
+recall context when it is registered (see Memory above).
+
 ## Limits, stated
 
 - **Claude Code or OpenCode executors.** Codex lanes are not installed: nothing

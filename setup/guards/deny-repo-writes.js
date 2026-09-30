@@ -24,7 +24,7 @@
 // KEEP THIS FILE AND THE PYTHON IN STEP. `setup/guards/` holds the conformance
 // suite that proves you did, and it now compares lanes as well as runtimes.
 
-import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -216,7 +216,7 @@ export function config(lane) {
   }
   // Resolved once, not once per token: `decide` now asks the boundary question
   // of every absolute path in a command.
-  return { ...raw, lane, roots, resolvedRoots: resolveRoots(roots) };
+  return { ...raw, lane, roots, resolvedRoots: resolveRoots(roots), rootIds: rootIds(roots) };
 }
 
 // ── DETECTION ──────────────────────────────────────────────────────────────
@@ -410,14 +410,51 @@ function candidates(p) {
   return out;
 }
 
+// dev:ino of every protected root that exists. Windows folds case in `canon`
+// instead, so this stays empty there.
+const idOf = (p) => {
+  const st = statSync(p, { bigint: true, throwIfNoEntry: false });
+  return st ? `${st.dev}:${st.ino}` : null;
+};
+function rootIds(roots) {
+  const ids = new Set();
+  if (WINPATHS) return ids;
+  for (const root of roots) {
+    let id = null;
+    try { id = idOf(root); } catch { /* not statable: no identity */ }
+    if (id !== null) ids.add(id);
+  }
+  return ids;
+}
+
+// True when the deepest EXISTING ancestor of `cand`, or any directory above it,
+// IS a protected root: the same inode, whatever the spelling. See `_same_tree`
+// in `deny_repo_writes.py`: APFS keeps two spellings of a name that differ
+// only in case as one directory and no text comparison sees it
+// (measured 2026-09-29, allowed by every driver). Only adds matches; a root
+// that does not exist has no identity to match.
+function sameTree(cfg, cand) {
+  if (cfg.rootIds.size === 0 || !isAbs(cand)) return false;
+  let p = normPath(cand);
+  for (;;) {
+    let id = null;
+    try { id = idOf(p); } catch { /* not statable: keep climbing */ }
+    if (id !== null && cfg.rootIds.has(id)) return true;
+    const parent = dirname(p);
+    if (parent === p) return false;
+    p = parent;
+  }
+}
+
 function insideAny(cfg, p) {
   if (!p) return false;
-  for (const cand of candidates(p)) {
+  const cands = candidates(p);
+  for (const cand of cands) {
     for (const root of cfg.resolvedRoots) {
       if (cand === root || cand.startsWith(root + "/")) return true;
     }
   }
-  return false;
+  return cands.some((cand) => sameTree(cfg, cand));
 }
 
 // Absolute-path-looking runs in a command. Deliberately crude: it is used only

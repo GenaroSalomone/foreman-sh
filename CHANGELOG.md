@@ -4,7 +4,37 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
-## [0.1.0-rc.1] — unreleased
+## [0.1.0-rc.2] — unreleased
+
+Second pre-release. It closes a write-guard gap found after rc.1 and ships
+Judgment Day.
+
+### Fixed
+- Write guards on macOS: a path that spells a protected repository with
+  different letter case (`~/Code/MyApp` for `~/code/myapp`) reached the
+  repository, because APFS folds case and the guard compared text. The Python
+  guard (Claude Code, Codex) and the JavaScript guard (OpenCode) now compare a
+  path's filesystem identity, device and inode, against each protected root.
+- The OpenCode guard follows a symlink whose target does not exist yet, with
+  the Python guard's verdict; before, a write through such a link into a
+  protected repository was allowed. Measured on macOS, on Linux (Ubuntu 24.04
+  under WSL2) and on Windows under Git Bash, before the case-variant change
+  above; the guards as shipped are measured on macOS only (see
+  `KNOWN-LIMITATIONS.md`, L1b).
+
+### Added
+- Judgment Day (`_skills/judgment-day/`, agents in `_agents/`): a blind review
+  by two judges before a diff counts as finished. Not installed by default;
+  activation is in `INSTALL.md`.
+- A Codex executor's brief states the executor rules Codex cannot load from a
+  file (secrets, credential handles, closing the browser, where artifacts go).
+
+### Changed
+- Every release candidate is run once end to end before it is published: a
+  real herdr server, a real Claude Code executor and a real OpenCode executor
+  asking, challenging and reporting through the return channel.
+
+## [0.1.0-rc.1] — 2026-09-29
 
 First public pre-release. It is a snapshot of a harness that has been used
 day to day on real repositories; the history that produced it is not part of

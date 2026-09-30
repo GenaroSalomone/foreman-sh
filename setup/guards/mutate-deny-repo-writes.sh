@@ -27,6 +27,9 @@ copy_tree() {
   mkdir -p "$dst/brain/setup/guards"
   cp "$ROOT/setup/guards/deny_repo_writes.py" "$dst/brain/setup/guards/"
   cp "$ROOT/setup/guards/deny-repo-writes.js" "$dst/brain/setup/guards/"
+  # The third driver of the vectors: Codex resolves its own lane, and the
+  # decision suite runs every vector through it.
+  cp "$ROOT/setup/guards/deny-repo-writes-codex.py" "$dst/brain/setup/guards/"
   cp "$ROOT/setup/guards/deny-repo-writes-vectors.json" "$dst/brain/setup/guards/"
   # THE POLICY THE MODULES READ, from `<root>/guards.json` beside `setup/`. A
   # copy without it would not load at all, and every arm would read VACUOUS.
@@ -270,6 +273,18 @@ mutate python-content-only-preservation-pointer "$GUARD_PY" \
 mutate js-content-only-preservation-pointer "$GUARD_JS" \
   '        `this trigger. If you are instead trying to PRESERVE data by ` +' \
   '        `this trigger. If you are instead trying to sleep ` +'
+
+# ── A spelling is not an identity ──────────────────────────────────────────
+# The filesystem answer to "is this path the protected tree?" — same inode,
+# whatever the case — is what keeps a case-flipped root spelling out on APFS. Dropping
+# it leaves every text comparison intact and every lower-case vector green, so
+# only the sandbox case vectors can see it.
+mutate python-same-tree-identity "$GUARD_PY" \
+    '    return any(_same_tree(cfg, cand) for cand in cands)' \
+    '    return False'
+mutate js-same-tree-identity "$GUARD_JS" \
+    '  return cands.some((cand) => sameTree(cfg, cand));' \
+    '  return false;'
 
 # ── The shims, the only per-lane code left ─────────────────────────────────
 # A shim that names the wrong lane guards the wrong trees; a shim that cannot

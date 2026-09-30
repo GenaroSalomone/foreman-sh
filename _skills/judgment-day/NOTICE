@@ -1,0 +1,29 @@
+Judgment Day (skill `judgment-day`, agents `jd-judge-a`, `jd-judge-b`, `jd-fix-agent`)
+
+Both parts come from Gentle AI, https://github.com/Gentleman-Programming/gentle-ai,
+author gentleman-programming, under two different licences:
+
+- The skill, `_skills/judgment-day/` — derived from
+  internal/assets/skills/judgment-day, which declares `license: Apache-2.0` in
+  its SKILL.md. Licensed under the Apache License, Version 2.0 (the text is in
+  LICENSE next to this file).
+- The agents, `_agents/jd-judge-a.md`, `_agents/jd-judge-b.md` and
+  `_agents/jd-fix-agent.md` — derived from
+  internal/assets/claude/agents/jd-judge-a.md, jd-judge-b.md and
+  jd-fix-agent.md, which carry no licence of their own and so fall under Gentle
+  AI's repository licence, the MIT License, Copyright (c) 2025 Gentleman
+  Programming (the text is in LICENSE-MIT next to this file).
+
+Changes made in this distribution to the skill: references to Gentle AI's
+review lifecycle were removed; the round-one question goes through
+`ask-invoker` inside an executor; a rebase is compared with `hw review-delta`;
+findings only one judge raised are verified and listed; a defect already at the
+base does not block; a design mode was added; background judges are awaited
+without `ScheduleWakeup`. The method is unchanged. Each SKILL.md keeps its
+upstream author line.
+
+Changes made to the agents: the model is fixed per agent instead of templated
+(`jd-judge-b` runs on a different model than `jd-judge-a` on purpose); the
+refuter and multi-lens review text, which belongs to Gentle AI's review
+lifecycle, was replaced by Judgment Day's own two-judge verification; a defect
+already at the base does not block.

@@ -1,4 +1,4 @@
-# Known limitations — 0.1.0-rc.1
+# Known limitations — 0.1.0-rc.2
 
 This is the register of what this pre-release does not do, or does only
 partly. Each entry says its **scope** (where it applies), its **impact**, its
@@ -56,8 +56,14 @@ release candidate.
   not follow a symlink whose target is missing, so a write through it into a
   protected repository was allowed where the Python half refused it. This
   release closes it (the JavaScript half now follows the dangling link, with
-  the Python half's verdict); the fix is `measured` on macOS; on Linux and
-  Windows it is `(unverified)`. The export itself, installed on a
+  the Python half's verdict); the fix is `measured` on macOS, on Linux
+  (Ubuntu 24.04 under WSL2) and on Windows under Git Bash: in one CI run the
+  OpenCode guard's vector suite passes 1722 of 1722 on both, 250 lines that
+  name a symlink (100 of them dangling) included, Python, JavaScript and
+  parity halves alike, with the filesystem suite at 42 of 42. There is no
+  native-Linux workflow: the Linux figure is WSL2's. That run predates this
+  release's case-variant change to the same guards (L5); the guards as shipped
+  are `measured` on macOS and `unverified` on WSL2 and Git Bash. The export itself, installed on a
   Windows 11 ARM64 VM under Git Bash from an empty home with the real herdr
   and Claude Code: `--check`, an install, a second identical run that writes
   nothing, and `hw <lane> probe --dry-run`, `measured`. An install from an empty home
@@ -138,11 +144,23 @@ release candidate.
   - Where a write's destination cannot be resolved with confidence, the guard
     refuses on the command's content; it therefore may refuse a harmless
     command that merely names a protected path.
+  - A path computed at run time (`eval`, `$(printf …)`, a script, a
+    `while read` loop) is not resolved by the reverse guard.
+  - Letter case: on a case-insensitive filesystem (macOS APFS by default) a
+    path is matched to a protected repository by its filesystem identity, so
+    `~/Code/MyApp` is refused like `~/code/myapp`. A protected root that does
+    not exist yet has no identity to compare, and a different-case spelling of
+    it is compared as text only.
 - **Evidence:** the shell and write-tool paths for Claude Code and OpenCode are
   `measured` by conformance and mutation tests plus live refusals; the Codex
   write-tool gap is `measured` as absent; the trust-hash behaviour is
-  `unverified`. The reverse guard's live behaviour on OpenCode is [confirm at
-  cut].
+  `unverified`. The reverse guard was probed live on Claude Code and on
+  OpenCode executors, which refused writes into the brain, a `cd` into it,
+  relative paths and a path read from an environment variable (`measured`).
+  The case-variant identity check is `measured` on macOS (APFS) for all three
+  guards. On Windows under Git Bash the guards do not use it: they fold case
+  in the path's text instead (L1b). On a case-insensitive Linux mount the
+  identity check is `unverified`.
 - **Workaround:** keep protected repositories on a filesystem account or mount
   that the agent user cannot write, if you need a hard boundary.
 
@@ -193,4 +211,7 @@ release candidate.
   observes, not that a real pane, agent and return channel worked.
 - **Evidence:** by design.
 - **Workaround:** the demo lane (`examples/demo/`) exercises the real path once
-  by hand.
+  by hand. Before each release candidate is published the maintainer runs one
+  end-to-end pass with a real herdr server and real Claude Code and OpenCode
+  executors (ask, challenge and report through the return channel); that run
+  is not part of this repository.

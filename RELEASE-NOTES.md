@@ -1,9 +1,31 @@
-# foreman-sh 0.1.0-rc.1
+# foreman-sh 0.1.0-rc.2
 
 **A release candidate.** It is meant for early feedback, and it ships with a
 register of what it does not do: read
 [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md) before installing. It is not a
 stable release; the interfaces below may still change.
+
+## What changed since 0.1.0-rc.1
+
+- **A write-guard gap is closed.** On macOS, a path that spelled a protected
+  repository with different letter case reached it, because the filesystem
+  folds case and the guards compared text. All three guards (Claude Code,
+  OpenCode, Codex) now compare a path's filesystem identity with each
+  protected root.
+- **The OpenCode guard follows a dangling symlink**, with the same verdict as
+  the Python guard. It was measured on macOS, Linux (Ubuntu 24.04 under WSL2)
+  and Windows under Git Bash before the case-variant change; the guards as
+  shipped are measured on macOS, and on the other two not yet (L1b in
+  `KNOWN-LIMITATIONS.md`).
+- **Judgment Day ships with it**: a blind two-judge review of a diff before it
+  counts as finished. It is opt-in; `INSTALL.md` has the three commands.
+- **Codex executors are told the rules they cannot load** from a file:
+  secrets, credential handles, closing the browser, where artifacts go.
+- **Each release candidate is run once for real** before it is published: a
+  real herdr server with real Claude Code and OpenCode executors asking,
+  challenging and reporting back.
+
+The full list is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it is
 

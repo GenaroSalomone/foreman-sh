@@ -20,26 +20,47 @@
 //   <lane> parity      python and javascript agree            (runtime parity)
 //   cross-lane         every lane agrees with every other     (LOGIC parity)
 //
+// THREE DRIVERS, NOT TWO (2026-09-29). Codex's guard is a third entry point,
+// `deny-repo-writes-codex.py`, that resolves its OWN cwd and lane from the
+// payload and the environment before it asks the shared core anything. Until
+// today none of the vectors reached it, so the audit's measured 80 x 2 drivers
+// left the only guard that scopes itself untested by the suite that claims to
+// test "the guards". It runs every vector below, with one difference that is
+// the design and not a gap: a brain-ROOT session is guarded only when the
+// payload's cwd is inside brain (a launch-time variable naming the bare root is
+// deliberately not trusted, see `main` there), so for the `brain` lane a vector
+// whose cwd is outside brain EXPECTS `allow` under Codex, and says so in its
+// name. Nothing is skipped.
+//
+// A SECOND ARM RUNS ON A SANDBOX POLICY (`"sandbox"` vectors). A vector that
+// needs a protected root to exist, or to be absent, cannot lean on the machine
+// it runs on: the brain's has every root and the export's has none, and that is
+// how a hole in the JavaScript guard was found by the export and not here. The
+// sandbox arm writes its own `guards.json` under a temporary HOME, copies the
+// guards beside it, and builds exactly the tree each vector needs.
+//
 // Cross-lane is the new one, and it is what makes "one implementation" a
 // measured claim instead of a filesystem observation. A vector marked
 // `lane_specific` is exempt and must instead declare `expect_with_worktree_roots`
 // (or, for a difference no policy field carries, `expect_by_lane`) — that is
 // how a deliberate per-lane difference (the spent-worktree teardown) stays
 // visible as an assertion rather than becoming the next silent drift.
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { dirname, basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = process.env.DENY_GUARD_ROOT ?? fileURLToPath(new URL("../..", import.meta.url));
-const vectors = JSON.parse(readFileSync(new URL("./deny-repo-writes-vectors.json", import.meta.url)))
+const allVectors = JSON.parse(readFileSync(new URL("./deny-repo-writes-vectors.json", import.meta.url)))
   .filter((v) => !v._comment);
+const vectors = allVectors.filter((v) => !v.sandbox);
+const sandboxVectors = allVectors.filter((v) => v.sandbox);
 
 // THE LANE ROOTS COME FROM THE GUARD, NOT FROM A COPY OF THEM HERE. This file
 // used to carry its own table of the four lanes' repo/worktrees pairs, which is
 // one more place for the thing being tested and the test to disagree.
-const { LANES } = await import(
+const { LANES, BRAIN_ROOT } = await import(
   pathToFileURL(`${root}/setup/guards/deny-repo-writes.js`).href);
 const laneNames = Object.keys(LANES);
 
@@ -125,9 +146,9 @@ const render = (value, r) => value
   .replaceAll("{{outside}}", outside)
   .replaceAll("{{out}}", `${outside}/copy`);
 
-function python(path, command, cwd) {
+function python(path, command, cwd, env) {
   const payload = JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd });
-  const r = spawnSync("python3", [path], { input: payload, encoding: "utf8" });
+  const r = spawnSync("python3", [path], { input: payload, encoding: "utf8", env: env ?? process.env });
   if (r.status !== 0) return { crashed: `${r.status}: ${r.stderr}` };
   const out = r.stdout.trim();
   if (!out) return { allowed: true, reason: "" };
@@ -144,9 +165,77 @@ async function javascript(path, sessionDir, command, cwd) {
   } catch (error) { return { allowed: false, reason: String(error.message ?? error) }; }
 }
 
+// CODEX'S PROTOCOL IS ITS OWN: exit 0 allows, exit 2 refuses with the reason on
+// stderr (Claude's JSON on stdout would print a blob and allow). The lane comes
+// from the payload's cwd or from `CODEX_PROJECT_DIR`, so the environment is
+// built here rather than inherited: `PWD` and `CLAUDE_PROJECT_DIR` are what an
+// operator's own shell leaves lying around, and either one naming a lane would
+// guard a case the vector meant to leave unguarded.
+function codexEnv(laneDir, neutralDir, home) {
+  const env = { ...process.env, CODEX_PROJECT_DIR: laneDir, PWD: neutralDir };
+  delete env.CLAUDE_PROJECT_DIR;
+  if (home) env.HOME = home;
+  return env;
+}
+
+function codex(path, command, cwd, env, neutralDir, toolName = "Bash") {
+  const payload = JSON.stringify({ tool_name: toolName, tool_input: { command }, cwd });
+  const r = spawnSync("python3", [path], { input: payload, encoding: "utf8", env, cwd: neutralDir });
+  if (r.status === 0) return { allowed: true, reason: "" };
+  if (r.status === 2) return { allowed: false, reason: r.stderr.trim() };
+  return { crashed: `${r.status}: ${r.stderr}` };
+}
+
 let pass = 0, fail = 0;
 const ok = (name) => { pass++; console.log(`ok - ${name}`); };
 const notOk = (name, detail = "") => { fail++; console.log(`not ok - ${name}${detail ? ` :: ${detail}` : ""}`); };
+
+// Per-driver tally, so the conformance count says how many assertions EACH of
+// the three drivers ran, and a driver that quietly ran none shows as a zero.
+const driverTally = { python: { pass: 0, fail: 0 }, javascript: { pass: 0, fail: 0 }, codex: { pass: 0, fail: 0 } };
+const tally = (runtime, good) => { driverTally[runtime][good ? "pass" : "fail"]++; };
+
+// One verdict against one vector: the deny/allow shape, its category and
+// trigger, and the two wording assertions a vector may carry. Shared by the
+// lane arm and the sandbox arm so a check added to one cannot miss the other.
+function judge(label, runtime, vector, expect, result) {
+  const good = !result.crashed && result.allowed === (expect === "allow") &&
+    (expect === "allow" || (category(result.reason) === vector.category && triggerMatches(result.reason, vector.trigger)));
+  tally(runtime, good);
+  if (good) ok(label);
+  else notOk(label, result.crashed ?? `${result.allowed ? "allowed" : `${category(result.reason)} ${result.reason}`}`);
+  // `content_only: true` marks a vector whose ONLY signal is a protected
+  // path sitting inside a quoted argument — the guard cannot confirm
+  // that is the command's actual destination, and the message must say
+  // so rather than assert a destination it never resolved (2026-09-09:
+  // "the command names a protected root" used to read as a confirmed
+  // target even when the match came from inside `-m "..."` prose).
+  if (vector.content_only && expect !== "allow") {
+    const g = !result.crashed && !result.allowed && /could not confirm/.test(result.reason);
+    tally(runtime, g);
+    if (g) ok(`${label} names its own uncertainty`);
+    else notOk(`${label} names its own uncertainty`, result.crashed ?? result.reason);
+  }
+  // `message_contains: [...]` asserts every listed substring appears in
+  // the denial's reason — for wording the vector's ALLOW/DENY shape and
+  // category/trigger cannot express on their own (e.g. that a redirect
+  // denial names the RESOLVED destination, not just that it denied).
+  if (vector.message_contains && expect !== "allow") {
+    const missing = result.crashed ? vector.message_contains
+      : vector.message_contains.filter((s) => !result.reason.includes(s));
+    const g = !result.crashed && missing.length === 0;
+    tally(runtime, g);
+    if (g) ok(`${label} message contains expected text`);
+    else notOk(`${label} message contains expected text`,
+      result.crashed ?? `missing ${JSON.stringify(missing)} in: ${result.reason}`);
+  }
+}
+
+const verdictOf = (r) => r.crashed ? "crashed" : r.allowed ? "allow" : category(r.reason);
+
+const codexPath = `${root}/setup/guards/deny-repo-writes-codex.py`;
+// Codex guards a brain-ROOT session only from the payload's cwd (see the header).
+const underBrain = (dir) => dir === BRAIN_ROOT || dir.startsWith(`${BRAIN_ROOT}/`);
 
 // shape[vectorId][lane] = "allow" | "deny:<category>" | "crashed"
 const shape = Object.create(null);
@@ -166,6 +255,11 @@ try {
     const laneDir = laneName === "brain" ? root : `${root}/${laneName}`;
     const pyPath = `${laneDir}/.claude/hooks/deny-repo-writes.py`;
     const jsPath = `${laneDir}/.opencode/plugin/deny-repo-writes.js`;
+    // Where a Codex session of this lane stands: the lane's own directory under
+    // BRAIN, which is where `hw` starts it. The worktree this suite runs from
+    // is not under BRAIN, so the lane cannot be read off `root`.
+    const codexLaneDir = laneName === "brain" ? BRAIN_ROOT : `${BRAIN_ROOT}/${laneName}`;
+    const cEnv = codexEnv(codexLaneDir, base);
     for (const vector of vectors) {
       const command = render(vector.command, r);
       const cwd = render(vector.cwd, r);
@@ -176,44 +270,16 @@ try {
         ?? (vector.expect_with_worktree_roots && LANES[laneName].worktreeRoots?.length
           ? vector.expect_with_worktree_roots : vector.expect);
       (expected[vector.id] ??= Object.create(null))[laneName] = expect;
+      const codexUnguarded = laneName === "brain" && !underBrain(cwd);
       const results = [
-        ["python", python(pyPath, command, cwd)],
-        ["javascript", await javascript(jsPath, laneDir, command, cwd)],
+        ["python", python(pyPath, command, cwd), expect, ""],
+        ["javascript", await javascript(jsPath, laneDir, command, cwd), expect, ""],
+        ["codex", codex(codexPath, command, cwd, cEnv, base),
+          codexUnguarded ? "allow" : expect,
+          codexUnguarded ? " (by design: a brain-root session is guarded only from a cwd inside brain)" : ""],
       ];
-      for (const [runtime, result] of results) {
-        const good = !result.crashed && result.allowed === (expect === "allow") &&
-          (expect === "allow" || (category(result.reason) === vector.category && triggerMatches(result.reason, vector.trigger)));
-        if (good) ok(`${laneName}/${runtime} ${vector.id}`);
-        else notOk(`${laneName}/${runtime} ${vector.id}`,
-          result.crashed ?? `${result.allowed ? "allowed" : `${category(result.reason)} ${result.reason}`}`);
-        // `content_only: true` marks a vector whose ONLY signal is a protected
-        // path sitting inside a quoted argument — the guard cannot confirm
-        // that is the command's actual destination, and the message must say
-        // so rather than assert a destination it never resolved (2026-09-09:
-        // "the command names a protected root" used to read as a confirmed
-        // target even when the match came from inside `-m "..."` prose).
-        if (vector.content_only && expect !== "allow") {
-          if (!result.crashed && !result.allowed && /could not confirm/.test(result.reason)) {
-            ok(`${laneName}/${runtime} ${vector.id} names its own uncertainty`);
-          } else {
-            notOk(`${laneName}/${runtime} ${vector.id} names its own uncertainty`,
-              result.crashed ?? result.reason);
-          }
-        }
-        // `message_contains: [...]` asserts every listed substring appears in
-        // the denial's reason — for wording the vector's ALLOW/DENY shape and
-        // category/trigger cannot express on their own (e.g. that a redirect
-        // denial names the RESOLVED destination, not just that it denied).
-        if (vector.message_contains && expect !== "allow") {
-          const missing = result.crashed ? vector.message_contains
-            : vector.message_contains.filter((s) => !result.reason.includes(s));
-          if (!result.crashed && missing.length === 0) {
-            ok(`${laneName}/${runtime} ${vector.id} message contains expected text`);
-          } else {
-            notOk(`${laneName}/${runtime} ${vector.id} message contains expected text`,
-              result.crashed ?? `missing ${JSON.stringify(missing)} in: ${result.reason}`);
-          }
-        }
+      for (const [runtime, result, wanted, note] of results) {
+        judge(`${laneName}/${runtime} ${vector.id}${note}`, runtime, vector, wanted, result);
       }
       // A DENIAL MUST BE IN ITS OWN LANE'S VOICE.
       //
@@ -237,12 +303,18 @@ try {
         }
       }
 
-      const [py, js] = results.map(([, result]) => result);
+      const [py, js, cx] = results.map(([, result]) => result);
       const same = !py.crashed && !js.crashed && py.allowed === js.allowed &&
         (py.allowed || category(py.reason) === category(js.reason));
       if (same) ok(`${laneName} parity ${vector.id}`);
-      else notOk(`${laneName} parity ${vector.id}`,
-        `py=${py.crashed ?? (py.allowed ? "allow" : category(py.reason))} js=${js.crashed ?? (js.allowed ? "allow" : category(js.reason))}`);
+      else notOk(`${laneName} parity ${vector.id}`, `py=${verdictOf(py)} js=${verdictOf(js)}`);
+      // Codex agrees with Python wherever Codex is guarding at all.
+      if (!codexUnguarded) {
+        const cxSame = !py.crashed && !cx.crashed && py.allowed === cx.allowed &&
+          (py.allowed || category(py.reason) === category(cx.reason));
+        if (cxSame) ok(`${laneName} codex parity ${vector.id}`);
+        else notOk(`${laneName} codex parity ${vector.id}`, `py=${verdictOf(py)} codex=${verdictOf(cx)}`);
+      }
 
       (shape[vector.id] ??= Object.create(null))[laneName] =
         py.crashed ? "crashed" : py.allowed ? "allow" : `deny:${category(py.reason)}`;
@@ -300,6 +372,149 @@ try {
     if (shapes.length === 1) ok(`cross-lane ${vector.id} (${shapes[0]} in all ${laneNames.length} lanes)`);
     else notOk(`cross-lane ${vector.id}`,
       `lanes disagree — ${JSON.stringify(byLane)}. Undeclared drift is what the eight-copy split cost; declare it with lane_specific or fix it`);
+  }
+
+  // ── WHAT ONLY CODEX DECIDES ────────────────────────────────────────────
+  // Where a session is a brainer is Codex's own question (the other two vendors
+  // answer it with per-directory registration), so the lane-resolution edges get
+  // their own assertions instead of borrowing a vector's cwd.
+  {
+    // The root lane's own repo: every lane protects it, and a lane's extra trees
+    // (a Cowork store) are not the root's to guard.
+    const repo = LANES.brain.repo;
+    const cmd = `rm -rf ${repo}/deny-guard-x`;
+    const rootEnv = codexEnv(BRAIN_ROOT, base);
+    const codexCases = [
+      ["a session standing in the brain root is guarded", codex(codexPath, cmd, BRAIN_ROOT, rootEnv, base), "deny"],
+      ["a session in a brain subdirectory that is no lane gets the root lane", codex(codexPath, cmd, `${BRAIN_ROOT}/bin`, rootEnv, base), "deny"],
+      ["an executor's worktree outside brain is never guarded", codex(codexPath, cmd, outside, rootEnv, base), "allow"],
+      ["a tool that is not Bash is none of this guard's business", codex(codexPath, cmd, BRAIN_ROOT, rootEnv, base, "apply_patch"), "allow"],
+    ];
+    for (const [name, result, want] of codexCases) {
+      const good = !result.crashed && result.allowed === (want === "allow");
+      tally("codex", good);
+      if (good) ok(`codex ${name}`); else notOk(`codex ${name}`, result.crashed ?? result.reason);
+    }
+  }
+
+  // ── THE SANDBOX ARM ────────────────────────────────────────────────────
+  // Every tree a `"sandbox"` vector names is built here, under a HOME of its
+  // own, from a policy written here: no verdict below depends on which roots
+  // the machine running it happens to have. `sandbox: "exist"` builds the roots,
+  // `"absent"` leaves them out, `"both"` runs the vector against each.
+  //
+  // POSIX only. A relative climb to `/` and a case-insensitive spelling of a
+  // drive have no Windows twin here; Windows folds every path to one lowercase
+  // spelling in the guard itself, and the vector says nothing new there.
+  if (process.platform === "win32") {
+    ok("sandbox arm: not run on win32 (the guard folds drive paths to one spelling there; the sandbox vectors are POSIX filesystem shapes)");
+  } else {
+    const lane = laneNames.find((n) => n !== "brain");
+    if (!lane) throw new Error("guards.json names no lane besides brain — the sandbox arm has no non-root lane to drive Codex through");
+    const realPolicy = JSON.parse(readFileSync(`${root}/guards.json`, "utf8"));
+    const flip = (name) => name.replace(/[a-z]/gi, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+
+    function buildSandbox(rootsExist) {
+      const sb = realpathSync(mkdtempSync(join(base, "sb-")));
+      const home = `${sb}/home`;
+      const wsRoot = `${home}/Workspace`;
+      const brainDir = `${wsRoot}/brain`;
+      const repoName = basename(LANES.brain.repo);
+      const repo = `${wsRoot}/${repoName}`;
+      const worktrees = `${wsRoot}/worktrees`;
+      const out = `${sb}/out`;
+      mkdirSync(home);
+      mkdirSync(out);
+      if (rootsExist) { mkdirSync(repo, { recursive: true }); mkdirSync(worktrees); mkdirSync(brainDir); }
+      const laneRow = (writeHere) => ({ repo, worktrees, write_here: writeHere, where: "the sandbox repo" });
+      writeFileSync(`${sb}/guards.json`, JSON.stringify({
+        brain_root: brainDir,
+        product_repos: [repo],
+        defaults: realPolicy.defaults,
+        lanes: { brain: laneRow(`${brainDir}/<project>/`), [lane]: laneRow(`${brainDir}/${lane}/`) },
+      }, null, 2));
+      const place = (rel) => {
+        mkdirSync(dirname(`${sb}/${rel}`), { recursive: true });
+        copyFileSync(`${root}/${rel}`, `${sb}/${rel}`);
+      };
+      for (const f of ["deny_repo_writes.py", "deny-repo-writes.js", "deny-repo-writes-codex.py"]) place(`setup/guards/${f}`);
+      place(`${lane}/.claude/hooks/deny-repo-writes.py`);
+      place(`${lane}/.opencode/plugin/deny-repo-writes.js`);
+      // What a link to each protected shape looks like, all built OUTSIDE the
+      // repo. `dl_*` dangle when the roots are absent and point at a directory
+      // (or a not-yet-created child of one) when they exist; the verdict is the
+      // same, which is the claim.
+      const link = (name, target) => { symlinkSync(target, `${out}/${name}`); return `${out}/${name}`; };
+      const mid = link("dl-chain-mid", `${repo}/x`);
+      const climb = "../".repeat(out.split("/").filter(Boolean).length);
+      // A link whose target spells a protected root in the WRONG CASE.
+      const caseRepo = `${wsRoot}/${flip(repoName)}`;
+      const r = {
+        repo, worktrees, home,
+        dl_root: link("dl-root", repo),
+        dl_deep: link("dl-deep", `${repo}/a/b/c`),
+        dl_chain: link("dl-chain", mid),
+        dl_rel: link("dl-rel", `${climb}${repo.slice(1)}/x`),
+        dl_outside: link("dl-outside", `${out}/absent-target`),
+        case_link: link("case-link", caseRepo),
+        case_repo: caseRepo,
+        case_ancestor: `${home}/${flip("Workspace")}/${repoName}`,
+        case_sibling: `${wsRoot}/${flip(repoName)}-deny-guard-sibling`,
+        sibling: `${repo}-deny-guard-sibling`,
+      };
+      // Whether THIS filesystem treats two spellings as one. APFS and NTFS do,
+      // ext4 does not, and a case-variant path means the protected tree only on
+      // the first kind; on the second it is another, nonexistent path.
+      mkdirSync(`${sb}/case-probe`);
+      const caseInsensitive = existsSync(`${sb}/CASE-PROBE`);
+      return { sb, brainDir, r, caseInsensitive };
+    }
+
+    const renderSb = (value, t) => value
+      .replaceAll("{{repo}}", t.r.repo).replaceAll("{{worktrees}}", t.r.worktrees)
+      .replaceAll("{{dl_root}}", t.r.dl_root).replaceAll("{{dl_deep}}", t.r.dl_deep)
+      .replaceAll("{{dl_chain}}", t.r.dl_chain).replaceAll("{{dl_rel}}", t.r.dl_rel)
+      .replaceAll("{{dl_outside}}", t.r.dl_outside).replaceAll("{{case_link}}", t.r.case_link)
+      .replaceAll("{{case_repo}}", t.r.case_repo).replaceAll("{{case_ancestor}}", t.r.case_ancestor)
+      .replaceAll("{{case_sibling}}", t.r.case_sibling).replaceAll("{{sibling}}", t.r.sibling)
+      .replaceAll("{{outside}}", outside).replaceAll("{{out}}", `${outside}/copy`);
+
+    const realHome = process.env.HOME;
+    try {
+      for (const rootsExist of [false, true]) {
+        const t = buildSandbox(rootsExist);
+        const mode = rootsExist ? "roots exist" : "roots absent";
+        const fsNote = t.caseInsensitive ? "case-insensitive fs" : "case-sensitive fs";
+        const pyEnv = { ...process.env, HOME: t.r.home };
+        const cEnv = codexEnv(`${t.brainDir}/${lane}`, base, t.r.home);
+        process.env.HOME = t.r.home;
+        for (const vector of sandboxVectors) {
+          if (vector.sandbox !== "both" && vector.sandbox !== (rootsExist ? "exist" : "absent")) continue;
+          const command = renderSb(vector.command, t);
+          const cwd = renderSb(vector.cwd, t);
+          const expect = !t.caseInsensitive && vector.expect_case_sensitive_fs ? vector.expect_case_sensitive_fs : vector.expect;
+          const tag = `sandbox[${mode}, ${fsNote}] ${vector.id}`;
+          const results = [
+            ["python", python(`${t.sb}/${lane}/.claude/hooks/deny-repo-writes.py`, command, cwd, pyEnv)],
+            ["javascript", await javascript(`${t.sb}/${lane}/.opencode/plugin/deny-repo-writes.js`, `${t.sb}/${lane}`, command, cwd)],
+            ["codex", codex(`${t.sb}/setup/guards/deny-repo-writes-codex.py`, command, cwd, cEnv, base)],
+          ];
+          for (const [runtime, result] of results) judge(`${tag} (${runtime})`, runtime, vector, expect, result);
+          const [py, js, cx] = results.map(([, result]) => result);
+          const agree = !py.crashed && !js.crashed && !cx.crashed && py.allowed === js.allowed && py.allowed === cx.allowed &&
+            (py.allowed || (category(py.reason) === category(js.reason) && category(py.reason) === category(cx.reason)));
+          if (agree) ok(`${tag} parity: all three drivers agree`);
+          else notOk(`${tag} parity`, `py=${verdictOf(py)} js=${verdictOf(js)} codex=${verdictOf(cx)}`);
+        }
+      }
+    } finally {
+      process.env.HOME = realHome;
+    }
+  }
+
+  for (const [runtime, t] of Object.entries(driverTally)) {
+    console.log(`# driver ${runtime}: ${t.pass + t.fail} assertions, ${t.pass} passed, ${t.fail} failed`);
+    if (t.pass + t.fail === 0) notOk(`driver ${runtime} ran no assertions`);
   }
 } finally {
   rmSync(base, { recursive: true, force: true });

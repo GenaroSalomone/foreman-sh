@@ -44,6 +44,24 @@ engram_store_dir() {
   case "$d" in *[![:space:]]*) printf '%s' "$d" ;; *) printf '%s/.engram' "${HOME:-}" ;; esac
 }
 
+# engram_serve_wait [url] [seconds] — give a serve that is starting time to answer.
+# 0 once /health answers (whoever's it is: the verdict judges that), 1 after the
+# timeout (default HW_ENGRAM_WAIT, else 6s). Returns 0 at once when engram is not
+# installed: there is no serve to wait for, and a launch must not pay for it.
+# Measured 2026-09-30, first `brain demo`: the serve was starting and the one
+# probe ran before it answered, so the session was reported NOT registered.
+engram_serve_wait() {
+  local url="${1:-$(engram_serve_url)}" max="${2:-${HW_ENGRAM_WAIT:-6}}" i=0 ticks
+  command -v engram >/dev/null 2>&1 || return 0
+  case "$max" in ''|*[!0-9]*) max=6 ;; esac
+  ticks=$((max * 2))
+  while ! curl -sf -m 1 "$url/health" >/dev/null 2>&1; do
+    [ "$i" -lt "$ticks" ] || return 1
+    sleep 0.5; i=$((i + 1))
+  done
+  return 0
+}
+
 # engram_serve_verdict [url] — one line on stdout, and:
 #   0  the serve at url is this environment's store (instance ids match)
 #   2  a serve answers, and it is ANOTHER store: never write to it
@@ -51,7 +69,11 @@ engram_store_dir() {
 engram_serve_verdict() {
   local url="${1:-$(engram_serve_url)}" dir want got health
   dir="$(engram_store_dir)"
-  want="$(tr -d '[:space:]' < "$dir/.instance-id" 2>/dev/null || true)"
+  # `[ -r ]` and not `2>/dev/null` on the read: the shell reports a failed `<`
+  # redirection before that `2>` applies, so a first use (no store yet) printed
+  # "No such file or directory" (measured 2026-09-30, empty HOME).
+  want=""
+  if [ -r "$dir/.instance-id" ]; then want="$(tr -d '[:space:]' < "$dir/.instance-id" 2>/dev/null || true)"; fi
   if ! health="$(curl -sf -m 3 "$url/health" 2>/dev/null)"; then
     printf 'no engram serve answers at %s' "$url"; return 3
   fi

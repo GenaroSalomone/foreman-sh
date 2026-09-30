@@ -333,9 +333,9 @@ FIXES
     if [ "$(uname -s)" = Linux ]; then cmd="see https://github.com/Gentleman-Programming/engram/blob/main/docs/INSTALLATION.md"
     else cmd="brew install gentleman-programming/tap/engram"; fi
     step "engram, memory across sessions (recommended): $cmd" "$cmd"
-    step "engram, wired into Claude Code (recommended): engram setup claude-code" "engram setup claude-code"
+    step "engram, wired into Claude Code (recommended): engram setup claude-code   — it asks \"Add to allowlist? (y/N)\": answer y (it lists only engram's own mem_* tools, so saving to memory never stops to ask)" "engram setup claude-code"
   elif [ "${ENGRAM_WIRED:-}" = no ]; then
-    step "engram, wired into Claude Code (recommended): engram setup claude-code" "engram setup claude-code"
+    step "engram, wired into Claude Code (recommended): engram setup claude-code   — it asks \"Add to allowlist? (y/N)\": answer y (it lists only engram's own mem_* tools, so saving to memory never stops to ask)" "engram setup claude-code"
   fi
   if [ -n "$LANE" ]; then
     replay="./install.sh"
@@ -344,6 +344,10 @@ FIXES
   else
     cmd="./install.sh --brain $BRAIN_DIR --lane <name> --repo <path>"
     step "a lane for one of your repositories: $cmd" "$cmd"
+  fi
+  # After the lane's install: the links it makes live in that directory.
+  if [ -n "${PATH_FIX:-}" ]; then
+    step "PATH: add it to your shell profile (~/.zshrc or ~/.bashrc), open a new terminal, then restart herdr so its panes inherit it: $PATH_FIX" "$PATH_FIX"
   fi
   # Optional, so after the lane: it is never the next step while a lane is still to be made.
   if [ "$WITH_JD" = 0 ] && { [ "$JD_STATE" = off ] || [ "$JD_STATE" = partial ]; }; then
@@ -537,6 +541,23 @@ print("yes" if "engram" in servers or any(k.split("@")[0] == "engram" and v is T
 ' 2>/dev/null || echo no)"
   if [ "$ENGRAM_WIRED" = yes ]; then ok "engram is wired into Claude Code"
   else say "PENDING engram is installed but Claude Code has no engram server, so reports never reach memory — run: engram setup claude-code"; fi
+fi
+
+# `~/.local/bin` is not on every PATH, and without it `brain` and `hw` are not found.
+# Measured 2026-09-30 on an empty HOME: the install's WARN came after the run, and
+# `--check` (which stops before it) said nothing, so `brain demo` failed.
+PATH_FIX=""
+if [ "$CHECK" = 1 ]; then
+  _on_path=0; _IFS="$IFS"; IFS=:
+  for _e in $PATH; do [ -n "$_e" ] && [ "$(abspath "$_e")" = "$BIN_OUT" ] && { _on_path=1; break; }; done
+  IFS="$_IFS"
+  case "$_on_path" in
+    1) ok "$BIN_OUT is on your PATH" ;;
+    *) _p="$BIN_OUT"; _h="$(abspath "$HOME")"   # $BIN_OUT has its symlinks resolved; so must $HOME
+       case "$_p" in "$_h"/*) _p="\$HOME/${_p#"$_h"/}" ;; esac
+       PATH_FIX="export PATH=\"$_p:\$PATH\""
+       say "WARN  $BIN_OUT is not on your PATH — brain and hw will not be found until it is" ;;
+  esac
 fi
 
 # Only --check reports it and only --with-judgment-day acts on it: any other run

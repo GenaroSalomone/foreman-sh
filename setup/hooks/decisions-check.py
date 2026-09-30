@@ -84,21 +84,19 @@ def known_ids(sources):
 
 
 def entry_fields(body):
-    """Parse **Key:** value pairs out of one entry's body lines, skipping
-    fenced examples — the same extraction `lint()` used inline before this
-    was split out so `reverses_error` could run standalone in `staged()`."""
-    fields = {}
-    fenced = False
-    for line in body[1:]:
-        if re.match(r"^ {0,3}(`{3,}|~{3,})", line):
-            fenced = not fenced
-        if fenced:
-            continue
-        for key in KEYS:
-            match = re.fullmatch(r"\*\*" + re.escape(key) + r":\*\*\s*(.+)", line)
-            if match:
-                fields[key] = match[1].strip()
-    return fields
+    """Parse **Key:** value pairs out of one entry's body lines — through
+    bin/decisions' own `ruling_fields`, so the two tools read one entry the same
+    way. This used to be its own loop that kept the LAST occurrence of a key
+    while bin/decisions keeps the FIRST (an entry that quotes an earlier ruling
+    below its own is that commentary, not that ruling): the linter judged one
+    `Reverses:` and `decisions supersede` acted on another (measured 2026-09-30,
+    test 374)."""
+    return POLICY["ruling_fields"](body)
+
+
+def evidence_ids(fields):
+    """Every `#NNNNN` the `Evidence:` value cites."""
+    return re.findall(r"#([0-9]+)", fields.get("Evidence", ""))
 
 
 def reverses_error(fields, known):
@@ -115,7 +113,7 @@ def reverses_error(fields, known):
     return None
 
 
-def lint(path, text, sources):
+def lint(path, text, sources, warnings=None):
     lines = text.splitlines()
     entries = list(headings(text))
     known = known_ids(sources)
@@ -138,7 +136,17 @@ def lint(path, text, sources):
         for key in KEYS:
             if not fields.get(key):
                 errors.append(prefix + f"missing **{key}:** value")
-        if "Evidence" in fields and not re.fullmatch(r"engram #\d+", fields["Evidence"]):
+        cited = evidence_ids(fields)
+        if len(cited) > 1:
+            # ADVISORY, NEVER AN ERROR: several observations can honestly back
+            # one ruling. But bin/decisions identifies an entry by the ONE id on
+            # its Evidence line (`entry_id`), so a line that cites several gives
+            # the entry no identity, and no `Reverses:` can ever name it.
+            if warnings is not None:
+                warnings.append(prefix + "Evidence cites %d ids (%s); bin/decisions reads none of them as this "
+                                "entry's id, so no Reverses can name it — keep the ruling's own id alone on "
+                                "**Evidence:** and cite the rest in the body" % (len(cited), ", ".join("#" + i for i in cited)))
+        elif "Evidence" in fields and not re.fullmatch(r"engram #\d+", fields["Evidence"]):
             errors.append(prefix + "Evidence must name engram #NNNNN")
         reverses_problem = reverses_error(fields, known)
         if reverses_problem:
@@ -426,8 +434,11 @@ def staged():
         parent = str(PurePosixPath(path).parent)
         archives = archive_paths(paths, parent)
         sources = [text] + [blob("", p) for p in archives]
-        for error in lint(path, text, sources):
+        warnings = []
+        for error in lint(path, text, sources, warnings):
             print("decisions lint (advisory): " + error, file=sys.stderr)
+        for warning in warnings:
+            print("decisions lint (warning): " + warning, file=sys.stderr)
         old_text = blob("HEAD", path) if path in old_paths else ""
         for error in new_reverses_errors(path, text, old_text, known_ids(sources)):
             print(f"pre-commit: {error}", file=sys.stderr)
@@ -463,14 +474,16 @@ def main():
         return staged()
     if not args.paths:
         parser.error("name at least one decisions.md file")
-    errors = []
+    errors, warnings = [], []
     for name in args.paths:
         path = Path(name)
         text = path.read_text()
         sources = [text] + [p.read_text() for p in (path.parent / "decisions").glob("*.md")]
-        errors.extend(lint(name, text, sources))
+        errors.extend(lint(name, text, sources, warnings))
     for error in errors:
         print(error, file=sys.stderr)
+    for warning in warnings:
+        print("warning: " + warning, file=sys.stderr)
     # Exiting 0 here with errors printed is INTENTIONAL when --report-only is
     # given: this mode diagnoses without blocking (module docstring, and the
     # flag's own --help). Without the flag, a direct-paths call is strict and

@@ -46,8 +46,18 @@ missing. So do `hw`'s dry run and `brain`.
 
 Other first-run screens are handled for you. `brain` and `hw` mark their
 folders trusted. An executor answers the fullscreen-renderer offer with "Not
-now", which changes nothing. Any other screen an executor stops on is named
+now", which changes nothing. The brainer is yours to answer: on Claude Code's
+first start it may stop on that same offer; press `Esc`, and `brain` says when
+it is waiting on it. Any other screen an executor stops on is named
 in `hw`'s error, never answered.
+
+## `~/.local/bin` on your PATH
+
+`hw`, `brain` and the invokers are linked into `~/.local/bin` (or `--bin-dir`).
+If that directory is not on your `PATH` they are not found and `brain demo`
+fails. The installer warns and `--check` lists the fix: add
+`export PATH="$HOME/.local/bin:$PATH"` to your shell profile, open a new
+terminal and restart herdr, so its panes inherit it.
 
 ## Memory (engram) is recommended
 
@@ -66,6 +76,9 @@ plugin) and, when it is missing, prints:
 ```sh
 engram setup claude-code
 ```
+
+engram asks `Add to allowlist? (y/N)`: answer `y`. It lists only engram's own
+memory tools in Claude Code's permissions, so saving to memory never stops to ask.
 
 It does not run that itself. That command writes your Claude Code config by
 engram's own rules, which falls outside what this installer says it writes,

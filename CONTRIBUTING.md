@@ -21,7 +21,11 @@ A vulnerability is not an issue: see [`SECURITY.md`](SECURITY.md).
    ```
 
    CI runs the same gate on Linux and macOS (and Windows under Git Bash, which
-   reports but does not block).
+   reports but does not block). On a CI host (`CI=true` or
+   `GITHUB_ACTIONS=true`) every per-subject time budget of the fast gate is
+   multiplied by 3, and the runner prints that it is: a shared runner cannot
+   judge wall-clock time. `HW_TEST_BUDGET_FACTOR=<n>` sets the factor
+   yourself; the budgets themselves are in `setup/test-budgets.json`.
 3. A change to what a guard allows or refuses comes with a vector in
    `setup/guards/` for the new case.
 4. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)

@@ -1809,12 +1809,245 @@ def _segments_resolve_protected(cfg, segs):
 # ── THE DECISION ────────────────────────────────────────────────────────────
 
 
+# ── `env` OPTIONS ARE NOT THE PROGRAM ───────────────────────────────────────
+#
+# Every rule below sees through a bare `env` (`env rm -rf <repo>/x` is judged
+# as `rm`), but NOT through its options: measured 2026-09-30 on all three
+# drivers (py, js, codex), `env -u HOME rm -rf <repo>/src`, `env --unset=HOME`,
+# `env -i`, `env --`, `env -S 'rm -rf <repo>/src'` and their GNU
+# abbreviations (`--uns`, `--ign`, `--spl`) were ALLOWED, because the word after
+# `env` was an option, so `rm` was no longer in command position, and a `-S`
+# string was a quoted literal that the masker blanks as data.
+#
+# So before any rule runs, an `env` in command position is rewritten into the
+# shape the rules already judge: its options are dropped, a `-S`/
+# `--split-string` value is spliced in as the command text it is, `-C DIR` /
+# `--chdir DIR` becomes `cd DIR &&` in front, and the NAME=VALUE words that
+# follow the options move in front of `env`. Long options are matched the way
+# getopt_long matches them: an exact name, or a prefix of exactly one name. An
+# ambiguous or unknown option makes env refuse to run anything; it is dropped
+# too, which only ever leaves MORE of the command in view.
+_ENV_LONG = {  # name -> "required" | "optional" | None
+    "unset": "required", "chdir": "required", "split-string": "required",
+    "argv0": "required", "ignore-environment": None, "null": None,
+    "debug": None, "help": None, "version": None, "list-signal-handling": None,
+    "block-signal": "optional", "default-signal": "optional",
+    "ignore-signal": "optional",
+}
+_ENV_SHORT_VALUE = "uCSPa"
+_ENV_WORD_END = frozenset(" \t\n;&|()<>`")
+_ENV_AT = re.compile(r"(?<![\w./-])(?:[\w./-]*/)?env(?=[ \t]+\S)")
+
+
+def _env_long(name):
+    """The long option `name` abbreviates, or None (unknown or ambiguous)."""
+    if name in _ENV_LONG:
+        return name
+    hits = [n for n in _ENV_LONG if n.startswith(name)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _env_word(text, i):
+    """(raw word, its value with quotes removed, index past it) from text[i]."""
+    j, n, value = i, len(text), []
+    while j < n and text[j] not in _ENV_WORD_END:
+        ch = text[j]
+        if ch == "\\" and j + 1 < n:
+            value.append(text[j + 1]); j += 2
+        elif ch == "'" and j > i and text[j - 1] == "$":
+            # $'…': a backslash escapes the next character, a quote included.
+            k, part = j + 1, []
+            while k < n and text[k] != "'":
+                if text[k] == "\\" and k + 1 < n:
+                    part.append(text[k + 1]); k += 2
+                else:
+                    part.append(text[k]); k += 1
+            value.append("".join(part)); j = k + 1
+        elif ch == "'":
+            k = text.find("'", j + 1)
+            k = n if k < 0 else k
+            value.append(text[j + 1:k]); j = k + 1
+        elif ch == '"':
+            k, part = j + 1, []
+            while k < n and text[k] != '"':
+                if text[k] == "\\" and k + 1 < n and text[k + 1] in '"\\$`':
+                    part.append(text[k + 1]); k += 2
+                else:
+                    part.append(text[k]); k += 1
+            value.append("".join(part)); j = k + 1
+        else:
+            value.append(ch); j += 1
+    return text[i:min(j, n)], "".join(value), min(j, n)
+
+
+_ENV_BOUNDARY = re.compile(r"[;&|(`\n]|\$\(")
+
+
+def _quote_spans(text):
+    """[(open, close)] of the top-level quoted strings in `text` (close is the
+    index of the closing quote), or None when a quote never closes."""
+    spans, i, n = [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch in "'\"":
+            ansi = ch == "'" and i > 0 and text[i - 1] == "$"
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if text[j] == "\\" and (ch == '"' or ansi) else 1
+            if j >= n:
+                return None
+            spans.append((i, j))
+            i = j + 1
+            continue
+        i += 1
+    return spans
+
+
+def _unwrap_env_once(text):
+    """One pass of `_unwrap_env`; see there."""
+    spans = _quote_spans(text)
+    if spans is None:
+        # An unterminated quote leaves the extent of every word unknown, and a
+        # rewrite that guessed it could consume the rest of the command. The
+        # masker refuses such a text too; this leaves it exactly as written.
+        return text
+    # A `-c` script or an `eval` word is code (the masker keeps both visible):
+    # its own envs are rewritten inside it, and only inside it. Every other
+    # quoted string is data and is not touched.
+    for a, b in reversed(spans):
+        if _SHELL_DASH_C.search(text[:a]) or _EVAL_ARGS.search(text[:a]):
+            inner = text[a + 1:b]
+            text = text[:a + 1] + _unwrap_env(inner) + text[b:]
+    spans = _quote_spans(text) or []
+    # Command position is judged with every quoted string flattened to one
+    # word, so a quote before `env` is a word of some other command (`echo "a"
+    # env -u …` is echo's), never a boundary that makes `env` a program.
+    flat = list(text)
+    for a, b in spans:
+        flat[a:b + 1] = "x" * (b + 1 - a)
+    flat = "".join(flat)
+    out, last = [], 0
+    for m in _ENV_AT.finditer(flat):
+        if m.start() < last:
+            continue
+        prefix = flat[:m.start()]
+        cut = 0
+        for bm in _ENV_BOUNDARY.finditer(prefix):
+            cut = bm.end()
+        if not _CMD_PREFIX_ALLOWED.match(prefix[cut:]):
+            continue
+        i, n = m.end(), len(text)
+        chdir, split, assigns, touched = [], None, [], False
+        while True:
+            while i < n and text[i] in " \t":
+                i += 1
+            if i >= n or text[i] in _ENV_WORD_END:
+                break
+            raw, word, after = _env_word(text, i)
+            take = None  # the option whose value is the next word
+            if word == "--":
+                i, touched = after, True
+                break
+            if word.startswith("--"):
+                name, eq, value = word[2:].partition("=")
+                full = _env_long(name)
+                kind = _ENV_LONG.get(full) if full else None
+                if kind == "required" and not eq:
+                    take = full
+                elif kind == "required":
+                    if full == "chdir":
+                        chdir.append(value)
+                    elif full == "split-string":
+                        split = value
+            elif word.startswith("-") and len(word) > 1:
+                for k, letter in enumerate(word[1:], 1):
+                    if letter in _ENV_SHORT_VALUE:
+                        attached = word[k + 1:]
+                        name = {"C": "chdir", "S": "split-string"}.get(letter, letter)
+                        if not attached:
+                            take = name
+                        elif name == "chdir":
+                            chdir.append(attached)
+                        elif name == "split-string":
+                            split = attached
+                        break
+            elif word == "-":
+                pass  # the same as -i
+            elif _ASSIGNMENT.match(word):
+                assigns.append(raw)
+            else:
+                break
+            touched, i = True, after
+            if take is not None:
+                while i < n and text[i] in " \t":
+                    i += 1
+                if i < n and text[i] not in _ENV_WORD_END:
+                    _, value, i = _env_word(text, i)
+                    if take == "chdir":
+                        chdir.append(value)
+                    elif take == "split-string":
+                        split = value
+            if split is not None:
+                break
+        if not touched:
+            continue
+        head = "".join("cd %s && " % shlex.quote(d) for d in chdir)
+        head += "".join(a + " " for a in assigns)
+        out.append(text[last:m.start()] + head + text[m.start():m.end()] + " "
+                   + (split + " " if split is not None else ""))
+        last = i
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _unwrap_env(text):
+    """`text` with every command-position `env`'s options rewritten away.
+
+    Only an `env` OUTSIDE every quoted string is rewritten (inside a `-c`
+    script, only within that script), so a word is always read from its first
+    character and its quotes pair the way the shell pairs them. It used to read
+    from inside a string: in `echo "env -i"; rm -rf <repo>/x` the closing quote
+    was taken for an opening one, the word ran to the end of the command, and
+    the rewrite dropped the `rm` (Judgment Day, 2026-09-30). Repeated until
+    nothing changes, so `env -i env -u A rm …` is unwrapped at every level.
+
+    AND ITS RESULT ONLY EVER ADDS A DENIAL: `decide` judges the command as
+    written first, and the unwrapped text only when that allowed it (see
+    there). A rewrite that misread a word can therefore never lose a denial
+    the command as written already earned — the failure both rounds of that
+    Judgment Day found, in a different spelling each time.
+    """
+    for _ in range(len(text) + 1):
+        new = _unwrap_env_once(text)
+        if new == text:
+            break
+        text = new
+    return text
+
+
 def decide(cfg, command, cwd):
     """None to allow, or (rule, reason) to refuse.
 
     A pure function of (lane config, command, cwd), so a harness can drive it
     directly. `main` below is the thin part that speaks a vendor's protocol.
+
+    TWO READINGS, AND A DENIAL FROM EITHER STANDS: the command as written, and
+    — only when that is allowed — the same command with `env`'s options
+    rewritten away (`_unwrap_env`). The second can add a denial; it cannot
+    remove one.
     """
+    verdict = _decide(cfg, command, cwd, False)
+    if verdict is not None:
+        return verdict
+    return _decide(cfg, command, cwd, True)
+
+
+def _decide(cfg, command, cwd, unwrap):
+    """`decide` over one reading; `unwrap` selects the env-unwrapped one, and
+    answers None at once when unwrapping changes nothing."""
     if not isinstance(command, str) or not command:
         return None
 
@@ -1835,7 +2068,15 @@ def decide(cfg, command, cwd):
     # Path detection (names_protected, cds_into_protected, teardown, redirect
     # TARGET resolution) stays on the unmasked text — it needs the real path,
     # quoted or not.
+    # UNWRAPPED AFTER THE HEREDOC STRIP, so a body line is never read as the
+    # start of an `env` whose word could run past the terminator. `probe`
+    # itself stays as written for the two allow-exceptions below.
     no_heredoc = _strip_heredoc_bodies(probe)
+    if unwrap:
+        unwrapped = _unwrap_env(no_heredoc)
+        if unwrapped == no_heredoc:
+            return None
+        no_heredoc = unwrapped
     # Joined AFTER the heredoc strip: a continuation must not swallow the
     # line that closes a heredoc and pull the next command into its body.
     copies = _join_continuations(no_heredoc)

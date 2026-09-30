@@ -63,6 +63,21 @@ for _v in ${!GIT_CONFIG@}; do
 done
 unset _v 2>/dev/null || true
 
+# --keep-going, or HW_TEST_KEEP_GOING=1: a red job no longer stops the run.
+# Every job runs, every `not ok` is listed at the end, and the exit is still
+# non-zero with no number printed — so verify-for-push, pre-push and every
+# other caller fail exactly as before; what changes is that ONE full run names
+# every red instead of the first. It travels as the environment because the
+# snapshot below re-executes this file without its arguments, and a nested
+# runner never inherits it (tests/_common.sh sweeps HW_*).
+for _a in "$@"; do
+  case "$_a" in
+    --keep-going) export HW_TEST_KEEP_GOING=1 ;;
+    *) printf 'not ok - runner: unknown argument %s (the only one is --keep-going)\n' "$_a" >&2; exit 2 ;;
+  esac
+done
+unset _a 2>/dev/null || true
+
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$HERE/.." && pwd -P)"
 # NATIVE WINDOWS (Git Bash): the runner's own python, ps and pgrep go through
@@ -146,6 +161,7 @@ case "$HW_TEST_GATE" in
   *) printf 'not ok - runner: HW_TEST_GATE must be full or fast (got: %s)\n' "$HW_TEST_GATE" >&2; exit 1 ;;
 esac
 FAST_THRESHOLD_SECONDS=""
+FG_FACTOR=1
 if [ "$HW_TEST_GATE" = fast ]; then
   BUDGETS="$HERE/test-budgets.json"
   [ -f "$BUDGETS" ] || { printf 'not ok - runner: %s is missing — run setup/measure-tests.sh before the fast gate can run\n' "$BUDGETS" >&2; exit 1; }
@@ -204,6 +220,9 @@ PY
     exit 1
   fi
   FAST_THRESHOLD_SECONDS="$(printf '%s\n' "$_gate_py_out" | sed -n 's/^threshold://p')"
+  FG_FACTOR="$(fg_ci_factor)"
+  [ "$FG_FACTOR" = 1 ] || printf 'runner: every fast-gate time budget is x%s here (%s) — a shared CI runner cannot judge wall-clock; setup/fast-gate-budget.sh, point 6\n' \
+    "$FG_FACTOR" "$([ -n "${HW_TEST_BUDGET_FACTOR:-}" ] && echo "HW_TEST_BUDGET_FACTOR" || echo "CI host")" >&2
   _fast_names="$(printf '%s\n' "$_gate_py_out" | sed -n 's/^fast://p')"
   _FG_OWN="$(printf '%s\n' "$_gate_py_out" | sed -n 's/^own://p')"
   _narrowed=()
@@ -216,6 +235,95 @@ PY
   done
   FILES=("${_narrowed[@]}")
   [ "${#FILES[@]}" -gt 0 ] || { printf 'not ok - runner: the fast gate classified zero files as fast — check fast_gate_threshold_seconds in %s\n' "$BUDGETS" >&2; exit 1; }
+fi
+FAST_TOTAL="${#FILES[@]}"
+
+# ── THE FAST GATE BY SUBJECT: only what the changed paths reach ────────────
+#
+# 30 pre-commit fast gates cost 89 minutes on 2026-09-30, measured:
+# 107-120s each alone, 234-636s under load, 61% of a setup task's wall clock.
+# Each paid all 104 fast subjects for a commit that touched one file. So
+# pre-commit now names the staged paths (HW_TEST_CHANGED=<file>, one path per
+# line) and setup/gate-select answers which fast subjects they reach — by what
+# each subject NAMES, derived, never a hand-kept list — plus the subjects that
+# declare `# gate-core:` in their header, which run on every selection.
+#
+# FAILS TOWARD TODAY'S GATE. A trigger path gate-select cannot map, the
+# runner's own machinery, a missing selector, an unreadable list or a selector
+# that errors: each is the WHOLE fast gate, said once, never a smaller one.
+#
+# A SELECTED RUN IS NOT THE FAST GATE, so it caches no fast verdict: pre-push
+# accepts `<tree>.fast` for task/* pushes, and that file has to mean all 104.
+# Full runs ignore HW_TEST_CHANGED; the floor at push does not move.
+GATE_SELECTED=0; GATE_GUARDS=0; GATE_CHANGED=""
+if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
+  _gs_why=""
+  if [ ! -f "$HERE/gate-select" ]; then
+    _gs_why="setup/gate-select is absent"
+  elif [ ! -r "$HW_TEST_CHANGED" ]; then
+    _gs_why="HW_TEST_CHANGED=$HW_TEST_CHANGED is not a readable file"
+  else
+    _gs_pat=""
+    if [ -f "$HERE/hooks/suite-trigger-pattern.sh" ]; then
+      _gs_pat="$(. "$HERE/hooks/suite-trigger-pattern.sh" && printf '%s' "${SUITE_TRIGGER_PATTERN:-}")" || _gs_pat=""
+    fi
+    _gs_rc=0
+    _gs_out="$(python3 "$HERE/gate-select" "$SOURCE_ROOT" "$HW_TEST_CHANGED" "$_gs_pat" 2>&1)" || _gs_rc=$?
+    if [ "$_gs_rc" -ne 0 ]; then
+      _gs_why="setup/gate-select failed (exit $_gs_rc): $(printf '%s' "$_gs_out" | tail -1)"
+    elif _gs_all="$(printf '%s\n' "$_gs_out" | sed -n 's/^all //p' | head -1)" && [ -n "$_gs_all" ]; then
+      _gs_why="$_gs_all"
+    fi
+  fi
+  if [ -n "$_gs_why" ]; then
+    printf 'runner: the WHOLE fast gate — %s\n' "$_gs_why" >&2
+  else
+    GATE_SELECTED=1
+    GATE_CHANGED="$HW_TEST_CHANGED"
+    printf '%s\n' "$_gs_out" | grep -q '^guards ' && GATE_GUARDS=1
+    _narrowed=()
+    for f in "${FILES[@]}"; do
+      bn="$(basename "$f")"
+      if printf '%s\n' "$_gs_out" | grep -qE "^(core|subject) $(printf '%s' "$bn" | sed 's/[.[\*^$]/\\&/g')( |\$)"; then
+        _narrowed+=("$f")
+      fi
+    done
+    FILES=(${_narrowed[@]+"${_narrowed[@]}"})
+    printf 'runner: SELECTED %s of %s fast subjects from the changed paths%s:\n' "${#FILES[@]}" "$FAST_TOTAL" \
+      "$([ "$GATE_GUARDS" = 1 ] && printf ', plus the guard drivers')" >&2
+    printf '%s\n' "$_gs_out" | sed -n 's/^core \(.*\)/    core     \1/p; s/^subject \([^ ]*\) \(.*\)/    \1  <- \2/p; s/^guards \(.*\)/    guards   <- \1/p; s/^deferred \(.*\)/    deferred \1 (slow: the full run at push, as always)/p' >&2
+    if [ "${#FILES[@]}" -eq 0 ] && [ "$GATE_GUARDS" != 1 ]; then
+      printf 'not ok - runner: the selection is EMPTY — no core subject declares `# gate-core:`, so nothing would run\n' >&2
+      exit 1
+    fi
+    # THE OTHER HALF OF THE CORE: every changed program still has to PARSE,
+    # whether or not a selected subject runs it. Milliseconds per file.
+    while IFS= read -r _p || [ -n "$_p" ]; do
+      [ -n "$_p" ] && [ -f "$SOURCE_ROOT/$_p" ] || continue
+      _src="$SOURCE_ROOT/$_p"; _chk=""
+      case "$_p" in
+        *.sh) _chk=bash ;;
+        *.py) _chk=python ;;
+        *.js|*.mjs) _chk=node ;;
+        *.md|*.json|*.txt) ;;
+        *) case "$(head -1 "$_src" 2>/dev/null || true)" in
+             '#!'*python*) _chk=python ;;
+             '#!'*bash*|'#!'*/sh|'#!'*' sh') _chk=bash ;;
+             '#!'*node*) _chk=node ;;
+           esac ;;
+      esac
+      _syn_rc=0
+      case "$_chk" in
+        bash)   _syn="$(bash -n "$_src" 2>&1)" || _syn_rc=$? ;;
+        python) _syn="$(python3 -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1])' "$_src" 2>&1)" || _syn_rc=$? ;;
+        node)   if command -v node >/dev/null 2>&1; then _syn="$(node --check "$_src" 2>&1)" || _syn_rc=$?; fi ;;
+      esac
+      if [ "$_syn_rc" -ne 0 ]; then
+        printf 'not ok - runner: %s does not parse (%s):\n%s\n' "$_p" "$_chk" "$_syn" >&2
+        exit 1
+      fi
+    done < "$GATE_CHANGED"
+  fi
 fi
 
 # ── A GREEN FAST GATE LEAVES A VERDICT, MARKED gate=fast ────────────────────
@@ -275,9 +383,28 @@ _fast_verdict_write() { # <headline>
        printf 'verified_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
        printf 'headline=%s\n' "$1"
        printf 'host=%s\n' "$(hostname)"
-     } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
-    printf 'runner: fast-gate verdict cached for tree %s (gate=fast) — pre-push accepts it for refs/heads/task/* only, never main\n' \
-      "$FAST_VERDICT_TREE" >&2
+     } > "$tmp" 2>/dev/null; then
+    # STAGED, NOT CACHED, UNDER THE SNAPSHOT. This line runs before
+    # test-hw-snapshot.py re-inventories the private candidate, so a `mv` here
+    # cached a verdict for a run whose bytes that check was about to reject
+    # ("private candidate changed during execution; no summary is valid"). The
+    # wrapper renames the staged file into place only after that check passes
+    # and this run exited 0, and removes it otherwise.
+    if [ -n "${TEST_HW_FAST_VERDICT_HANDOFF:-}" ]; then
+      if printf '%s\n%s\n%s\n' "$tmp" "$f" "$FAST_VERDICT_TREE" > "$TEST_HW_FAST_VERDICT_HANDOFF" 2>/dev/null; then
+        return 0
+      fi
+      rm -f "$tmp" 2>/dev/null || true
+      printf 'runner: could not hand the fast-gate verdict to the snapshot check at %s — a task/* push will ask for one\n' "$TEST_HW_FAST_VERDICT_HANDOFF" >&2
+      return 0
+    fi
+    if mv -f "$tmp" "$f" 2>/dev/null; then
+      printf 'runner: fast-gate verdict cached for tree %s (gate=fast) — pre-push accepts it for refs/heads/task/* only, never main\n' \
+        "$FAST_VERDICT_TREE" >&2
+      return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    printf 'runner: could not write the fast-gate verdict at %s — a task/* push will ask for one\n' "$f" >&2
   else
     rm -f "$tmp" 2>/dev/null || true
     printf 'runner: could not write the fast-gate verdict at %s — a task/* push will ask for one\n' "$f" >&2
@@ -640,10 +767,95 @@ _pool_release_all() {
   while [ "$i" -lt "${#JOB_SLOT[@]}" ]; do _pool_release_slot "$i"; i=$((i + 1)); done
   _pool_excl_release
 }
-JOB_SLOT=()
+JOB_SLOT=(); JOB_SLOT_SEEN=()
 
 TALLY="$(mktemp "${TMPDIR:-/tmp}/hw-test-tally.XXXXXX")"
-trap 'rm -f "$TALLY" "$TALLY.subject"; _pool_release_all' EXIT
+trap 'rm -f "$TALLY" "$TALLY.subject"; _pool_release_all; _queue_release' EXIT
+
+# ── ONE FULL SUITE PER MACHINE AT A TIME, IN ARRIVAL ORDER (2026-09-30) ─────
+#
+# THE LOCK OF 2026-09-23 IS BACK, AS A QUEUE, BECAUSE THE SUITE GOT SHORT. It
+# was removed because waiting behind another full run cost 20-40 minutes; the
+# pool above replaced it. Then the pool's own answer was measured
+# on 2026-09-30: full suites side by side still turn timing subjects red — rc.4's
+# cut went red three times on load flakes (64 min), return-channel lost ~72
+# min, observabilidad ~31, ~170 min in one day — and each red is a whole re-run.
+# The full suite is ~495s now, so the worst wait behind one other is ~8
+# minutes, cheaper than the re-run it prevents.
+#
+# SO A FULL, TOP-LEVEL RUN TAKES A TICKET and starts only when it is the oldest
+# live ticket on the machine AND holds `running` (mkdir, so two runners that
+# both think they are first cannot both start). A second run WAITS — it does
+# not fail — and says whom it waits for and since when, once per change.
+# verify-for-push and release/cut are full runs of this file, so they queue
+# too. A ticket or a `running` whose process is gone (pid AND start time, as
+# the pool judges) is reclaimed at once and said out loud.
+#
+# WHAT DOES NOT QUEUE: the fast gate (a commit must not wait ~8 minutes; its
+# timing subjects still wait for the pool beside a full run, as before), a
+# nested runner (its parent holds the turn), a run with no WORK (no pool
+# either, and it says so above), and a fixture that sets
+# TEST_HW_SUITE_QUEUE=off to race two full runners on purpose (tests/176,
+# which is about the pool, not about this queue). Not an HW_* name, so
+# tests/_common.sh does not sweep it out of the subject that sets it.
+QUEUE_DIR="${SUITE_WORK:+$SUITE_WORK/.locks/suite-queue}"
+QUEUE_TICKET=""; QUEUE_RUNNING_MINE=0
+_queue_release() {
+  if [ "$QUEUE_RUNNING_MINE" = 1 ]; then
+    if _pool_mine "$QUEUE_DIR/running"; then rm -rf "$QUEUE_DIR/running" 2>/dev/null || true; fi
+    QUEUE_RUNNING_MINE=0
+  fi
+  if [ -n "$QUEUE_TICKET" ]; then rm -rf "$QUEUE_TICKET" 2>/dev/null || true; QUEUE_TICKET=""; fi
+}
+_queue_line() { # <dir> — who, where, for which task, since when
+  local task
+  task="$(cat "$1/owner.task" 2>/dev/null || true)"
+  printf '%s%s' "$(_pool_holder_line "$1")" "${task:+, task $task}"
+}
+if [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ] && [ -z "${TEST_HW_NESTED:-}" ] \
+   && [ "${TEST_HW_SUITE_QUEUE:-on}" != off ] && mkdir -p "$QUEUE_DIR" 2>/dev/null; then
+  trap '_queue_release; exit 130' INT
+  trap '_queue_release; exit 143' TERM
+  _q_now="$(python3 -c 'import time; print("%020d" % time.time_ns())')"
+  QUEUE_TICKET="$QUEUE_DIR/t.$_q_now.$$"
+  mkdir "$QUEUE_TICKET"
+  _pool_write_owner "$QUEUE_TICKET" "a full suite (queued)"
+  _q_t0="$(date +%s)"; _q_said=""
+  while :; do
+    _q_ahead=""; _q_pos=1
+    for _t in "$QUEUE_DIR"/t.*; do
+      [ -d "$_t" ] || continue
+      [ "$_t" != "$QUEUE_TICKET" ] || break      # the glob sorts: the rest arrived later
+      if _pool_dir_alive "$_t"; then
+        [ -n "$_q_ahead" ] || _q_ahead="$_t"
+        _q_pos=$((_q_pos + 1))
+      else
+        _pool_reclaim "$_t" "full-suite queue ticket"
+      fi
+    done
+    _q_hold=""
+    if [ -d "$QUEUE_DIR/running" ]; then
+      if _pool_dir_alive "$QUEUE_DIR/running"; then _q_hold="$QUEUE_DIR/running"
+      else _pool_reclaim "$QUEUE_DIR/running" "full-suite turn"; fi
+    fi
+    if [ -z "$_q_ahead" ] && [ -z "$_q_hold" ] && mkdir "$QUEUE_DIR/running" 2>/dev/null; then
+      _pool_write_owner "$QUEUE_DIR/running" "a full suite"
+      QUEUE_RUNNING_MINE=1
+      _q_waited=$(( $(date +%s) - _q_t0 ))
+      [ "$_q_waited" -eq 0 ] || printf 'runner: the full-suite turn is ours after waiting %ss in the queue\n' "$_q_waited" >&2
+      break
+    fi
+    _q_who="${_q_hold:-$_q_ahead}"
+    if [ -n "$_q_who" ] && [ "$_q_said" != "$(cat "$_q_who/owner.pid" 2>/dev/null || true):$_q_pos" ]; then
+      _q_said="$(cat "$_q_who/owner.pid" 2>/dev/null || true):$_q_pos"
+      printf 'runner: WAITING for the machine'"'"'s full-suite turn (queued at %s, position %s): %s %s. Only one full suite runs per machine; this run starts when it is first. Nothing is being killed.\n' \
+        "$(date -r "$_q_t0" +%H:%M:%S 2>/dev/null || date -d "@$_q_t0" +%H:%M:%S 2>/dev/null || printf '%ss ago' "$(( $(date +%s) - _q_t0 ))")" "$_q_pos" \
+        "$([ -n "$_q_hold" ] && printf 'running now —' || printf 'next in line —')" "$(_queue_line "$_q_who")" >&2
+    fi
+    sleep 1
+  done
+  trap - INT TERM
+fi
 
 # A MUTATION ARM NOBODY RUNS IS NOT COVERAGE, and this is where that is caught.
 #
@@ -686,14 +898,15 @@ COVERAGE="$HERE/mutation-coverage"
 #     IS PAYING FOR IT (below). A duration measured against thirteen neighbours
 #     is not that subject's duration, and a gate that refuses a file because the
 #     machine was busy is a gate nobody can act on.
-#   · THE GUARDS, one at a time. This lane was built on the belief that
-#     `setup/guards/test-deny-repo-writes.mjs` WRITES `/tmp/deny-repo-writes-out`;
-#     read on 2026-09-23, it only renders that path into the command strings the
-#     guard judges, and both drivers mkdtemp their own sandbox. The mutation arm
-#     now runs its own mutants four at a time for that reason. The lane still
-#     holds exactly one job, which overlaps the subjects: the ~165s mutation arm
-#     is the first thing the POOL starts. First of the pool, not of the run —
-#     the exclusive lane below runs before any of it, alone.
+#   · (NOT the guards, since 2026-09-30.) Their lane held one job at a time on
+#     the belief that `setup/guards/test-deny-repo-writes.mjs` WRITES
+#     `/tmp/deny-repo-writes-out`; read on 2026-09-23, it only renders that path
+#     into the command strings the guard judges, and every guard driver mkdtemps
+#     its own sandbox — the mutation arm has run four decision drivers at once
+#     ever since. Kept one at a time, the lane was a chain on the critical path:
+#     the arm, then the ~75s decision driver, then the other three, in series,
+#     while the pool had free workers. They are pooled jobs like any other now;
+#     `guards` still names their HOME and artifacts (below), not a queue.
 #   · A NESTED RUNNER. tests/55, 84, 117 and 131 each drive a real copy of THIS
 #     FILE over fixture subjects. A fan-out inside a fan-out multiplies, so
 #     TEST_HW_NESTED pins every runner this one starts to one at a time. It is
@@ -785,7 +998,12 @@ fi
 # safe alone on 2026-09-16 (above); the 2/4/6 re-measurement asked on 2026-09-30
 # was not taken (the machine was at load 110), so it is not claimed here.
 # setup/tests/251 holds the rule.
-if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ]; then
+# AND A RUN THAT HOLDS THE FULL-SUITE TURN (the queue below) skips the check:
+# no other full suite can be on the machine, only fast gates at one slot each,
+# which the pool's cap already accounts for — dropping to 2 for them would
+# halve the one full run the queue exists to keep fast.
+if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ] \
+   && [ "$QUEUE_RUNNING_MINE" != 1 ]; then
   _pool_busy=""
   for _d in "$POOL_DIR"/slot.* "$POOL_DIR/exclusive"; do
     [ -e "$_d" ] || continue
@@ -836,7 +1054,7 @@ _lane_of() { # <subject path> → pool | exclusive
        END { if (!found) print "pool" }' "$1" 2>/dev/null || printf 'pool'
 }
 JOB_PATH=(); JOB_KIND=(); JOB_LANE=(); JOB_HINT=()
-for f in "${FILES[@]}"; do
+for f in ${FILES[@]+"${FILES[@]}"}; do
   JOB_PATH+=("$f"); JOB_KIND+=("subject"); JOB_LANE+=("$(_lane_of "$f")"); JOB_HINT+=("")
 done
 # THE GUARD JOBS ARE FULL-GATE ONLY. `setup/guards/*` are not `setup/tests/*.sh`
@@ -847,7 +1065,10 @@ done
 # fast gate could stay under. It still runs on every `full` invocation — every
 # bare `bash setup/test-hw` and every mandatory pre-push — so it is never
 # skipped, only deferred to the gate that already has the time budget for it.
-if [ "$HW_TEST_GATE" = full ]; then
+# AND A SELECTED FAST GATE THAT TOUCHED A GUARD RUNS THE DRIVERS (not the
+# mutation arm, which stays the full gate's): the brief's "los guards si se
+# tocan guards" — the old fast gate ran no guard at all, even for a guard commit.
+if [ "$HW_TEST_GATE" = full ] || [ "$GATE_GUARDS" = 1 ]; then
   # The read-only guard is ONE implementation behind eight lane shims (it was
   # eight independent copies until 2026-09-06, and they had drifted 11.5 KB
   # apart). Keep its shared vectors outside tests/ so concurrent subject work
@@ -856,8 +1077,13 @@ if [ "$HW_TEST_GATE" = full ]; then
   # today; assuming it is how the subject glob came to assume it too.
   for _g in test-deny-repo-writes.mjs test-deny-repo-writes-filesystem.mjs \
             test-opencode-hw-blocked-reason.mjs test-herdr-opencode-background-state.mjs; do
-    JOB_PATH+=("$HERE/guards/$_g"); JOB_KIND+=("guard-node"); JOB_LANE+=("guards"); JOB_HINT+=("1")
+    # THE HINT IS MEASURED, like the arm's: the decision driver is ~5500
+    # python3 spawns, 71s alone on 2026-09-30; the other three are seconds.
+    _h=5; [ "$_g" != test-deny-repo-writes.mjs ] || _h=75
+    JOB_PATH+=("$HERE/guards/$_g"); JOB_KIND+=("guard-node"); JOB_LANE+=("guards"); JOB_HINT+=("$_h")
   done
+fi
+if [ "$HW_TEST_GATE" = full ]; then
   # AND THE MUTATION ARMS FOR THAT GUARD, which until 2026-09-02 nothing ran.
   #
   # `mutate-deny-repo-writes.sh` existed and worked; it was simply not wired to
@@ -873,10 +1099,12 @@ if [ "$HW_TEST_GATE" = full ]; then
   # point. The hint below is what makes the pool start it first rather than let
   # it cost 140s at the end.
   JOB_PATH+=("$HERE/guards/mutate-deny-repo-writes.sh"); JOB_KIND+=("guard-mutate")
-  # 170: its measured wall under the runner on 2026-09-23 was 159-167s with its
-  # mutants running four at a time (it was ~380s one at a time). Still the
-  # longest job, so still started first.
-  JOB_LANE+=("guards"); JOB_HINT+=("170")
+  # 270: 159-167s under the runner on 2026-09-23; the vectors then grew to ~5500
+  # and it reached 1949s (2026-09-30, a full decision driver per mutant). Its
+  # mutants now stop at their first failing assertion — the only line a kill is
+  # judged on — and it measured 267s alone the same day. Still the longest job,
+  # so still started first.
+  JOB_LANE+=("guards"); JOB_HINT+=("270")
 fi
 # THE GUARD JOBS' HOME IS THE GUARD'S, NOT THE CALLER'S (since 2026-09-22).
 # The subjects run under a HOME of their own (tests/_common.sh); the guard jobs
@@ -916,8 +1144,66 @@ fi
 JOB_TOTAL="${#JOB_PATH[@]}"
 
 JOBDIR="$(mktemp -d "${TMPDIR:-/tmp}/hw-test-jobs.XXXXXX")"
+
+# ── WHERE THE WALL CLOCK WENT: HW_TEST_TIMINGS=<file> ───────────────────────
+#
+# A full run on 5bab697 took 1795s under verify-for-push and ~745s run file by
+# file with `xargs -P 4`, while the comment on the default job count promised
+# ~190s plus the longest subject. Nothing here said where the other ~1000s went:
+# a job's own seconds were measured and thrown away at emit, and a wait for the
+# machine's pool was said once on stderr and never summed. So a run given a
+# file writes one TSV row per job, in print order, and a last `#run` row:
+#
+#   job kind lane slot launched started ended run_s rc cpu_s   (times: seconds after
+#   the run's own start; `launched` is when it got a worker, `started` when the
+#   subject's clock began, after its parse check; cpu_s is the subject's own
+#   user+sys, blank for a guard job — run_s far above cpu_s is a job WAITING)
+#   #run wall_s jobs machine_jobs excl_phase pool_wait_s excl_wait_s busy_s load
+#
+# pool_wait_s is time this run had a free worker of its own and the MACHINE'S
+# pool refused it one; excl_wait_s is time spent draining the machine for the
+# subjects that run alone. busy_s is the sum of every job's run_s, so
+# busy_s / (wall_s * jobs) is how full this run kept its workers. Opt-in, and
+# only at the top: a nested runner never sees it (tests/_common.sh sweeps HW_*).
+TIMINGS="${HW_TEST_TIMINGS:-}"
+RUN_T0="$(date +%s)"
+TM_POOL_WAIT=0; TM_POOL_SINCE=""; TM_EXCL_WAIT=0; TM_EXCL_SINCE=""; TM_BUSY=0
+JOB_LAUNCH_AT=()
+if [ -n "$TIMINGS" ]; then
+  printf 'job\tkind\tlane\tslot\tlaunched\tstarted\tended\trun_s\trc\tcpu_s\n' > "$TIMINGS" 2>/dev/null \
+    || { printf 'runner: cannot write HW_TEST_TIMINGS=%s — this run records no timings\n' "$TIMINGS" >&2; TIMINGS=""; }
+fi
+_tm_wait() { # <pool|excl> <begin|end>
+  [ -n "$TIMINGS" ] || return 0
+  local now
+  case "$1:$2" in
+    pool:begin) [ -n "$TM_POOL_SINCE" ] || TM_POOL_SINCE="$(date +%s)" ;;
+    excl:begin) [ -n "$TM_EXCL_SINCE" ] || TM_EXCL_SINCE="$(date +%s)" ;;
+    pool:end) [ -z "$TM_POOL_SINCE" ] || { now="$(date +%s)"; TM_POOL_WAIT=$((TM_POOL_WAIT + now - TM_POOL_SINCE)); TM_POOL_SINCE=""; } ;;
+    excl:end) [ -z "$TM_EXCL_SINCE" ] || { now="$(date +%s)"; TM_EXCL_WAIT=$((TM_EXCL_WAIT + now - TM_EXCL_SINCE)); TM_EXCL_SINCE=""; } ;;
+  esac
+}
+_tm_row() { # <idx> — after its status was sourced
+  [ -n "$TIMINGS" ] || return 0
+  local idx="$1" rel=0 st=0 en=0 run=0 cpu=""
+  [ "${JOB_KIND[$idx]}" != subject ] || [ "${cpu_ms:-0}" -le 0 ] || cpu="$(( cpu_ms / 1000 ))"
+  [ -z "${JOB_LAUNCH_AT[$idx]:-}" ] || rel=$(( JOB_LAUNCH_AT[$idx] - RUN_T0 ))
+  if [ "${started_at:-0}" -gt 0 ]; then st=$(( started_at - RUN_T0 )); en=$(( ended_at - RUN_T0 )); run=$(( ended_at - started_at )); fi
+  TM_BUSY=$((TM_BUSY + run))
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(basename "${JOB_PATH[$idx]}")" "${JOB_KIND[$idx]}" "${JOB_LANE[$idx]}" \
+    "$(basename "${JOB_SLOT_SEEN[$idx]:-none}")" "$rel" "$st" "$en" "$run" "${rc:-?}" "$cpu" >> "$TIMINGS" 2>/dev/null || true
+}
+_tm_run() {
+  [ -n "$TIMINGS" ] || return 0
+  _tm_wait pool end; _tm_wait excl end
+  local wall=$(( $(date +%s) - RUN_T0 ))
+  printf '#run\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$wall" "$JOBS" "$MACHINE_JOBS" "$EXCL_PHASE" \
+    "$TM_POOL_WAIT" "$TM_EXCL_WAIT" "$TM_BUSY" "$(uptime | sed 's/.*load averages*: *//' | tr ' ' ',')" >> "$TIMINGS" 2>/dev/null || true
+  printf 'runner: timings in %s — wall %ss, %s jobs, pool wait %ss, exclusive drain %ss, busy %ss\n' \
+    "$TIMINGS" "$wall" "$JOBS" "$TM_POOL_WAIT" "$TM_EXCL_WAIT" "$TM_BUSY" >&2
+}
 WITNESS_PID=""
-trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all' EXIT
+trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _queue_release' EXIT
 
 # ── THE PANE A FULL RUN IS STARTED FROM IS A WITNESS, NOT A TARGET ──────────
 #
@@ -1089,7 +1375,7 @@ _run_job() {
       # time both against each other. The minimum of up to three runs is what
       # the loop judges (setup/fast-gate-budget.sh).
       if [ "$rc" -eq 0 ] && [ "${HW_TEST_GATE:-}" = fast ] && [ -n "${FAST_THRESHOLD_SECONDS:-}" ] && [ "$kind" = subject ]; then
-        _b_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$(basename "$f")=//p")")"
+        _b_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$(basename "$f")=//p")" "$FG_FACTOR")"
         _try=0
         while [ "$wall_ms" -gt "$_b_ms" ] && [ "$_try" -lt 2 ]; do
           _try=$((_try + 1))
@@ -1114,8 +1400,8 @@ _run_job() {
   # A subject that never ran because it did not parse timed nothing, and 0 is
   # the honest answer there rather than the duration of the parse check.
   if [ -z "$started" ] || [ -z "$ended" ]; then started=0; ended=0; fi
-  printf 'parse_rc=%s\nrc=%s\ncov_rc=%s\nelapsed=%s\nwall_ms=%s\ncpu_ms=%s\nfirst_ms=%s\nrerun_rc=%s\n' \
-    "$parse_rc" "$rc" "$cov_rc" "$((ended - started))" "$wall_ms" "$cpu_ms" "$first_ms" "$rerun_rc" > "$JOBDIR/$idx.status.part"
+  printf 'parse_rc=%s\nrc=%s\ncov_rc=%s\nelapsed=%s\nwall_ms=%s\ncpu_ms=%s\nfirst_ms=%s\nrerun_rc=%s\nstarted_at=%s\nended_at=%s\n' \
+    "$parse_rc" "$rc" "$cov_rc" "$((ended - started))" "$wall_ms" "$cpu_ms" "$first_ms" "$rerun_rc" "$started" "$ended" > "$JOBDIR/$idx.status.part"
   mv -f "$JOBDIR/$idx.status.part" "$JOBDIR/$idx.status"
 }
 
@@ -1129,7 +1415,7 @@ _kill_tree() {
   kill -TERM "$pid" 2>/dev/null || true
 }
 
-ACTIVE=""; RUNNING=0; GUARD_LANE_BUSY=0; ABORTED=0; NEXT_EMIT=0
+ACTIVE=""; RUNNING=0; ABORTED=0; NEXT_EMIT=0
 # THE EXCLUSIVE JOBS ARE COUNTED, not searched for on every top-up: while any of
 # them is still owed, NOTHING else may start, so this counter is the gate.
 EXCLUSIVE_OWED=0
@@ -1178,13 +1464,14 @@ _launch_job() {
     mkdir -p "$JOBDIR/artifacts.$idx"
     _JOB_RUNNER=(env HOME="$GUARD_HOME" HW_ARTIFACTS="$JOBDIR/artifacts.$idx" "${_JOB_RUNNER[@]}")
   fi
+  [ -z "$TIMINGS" ] || JOB_LAUNCH_AT[$idx]="$(date +%s)"
+  JOB_SLOT_SEEN[$idx]="${JOB_SLOT[$idx]:-}"
   _run_job "$idx" &
   JOB_PID[$idx]=$!
   JOB_LAUNCHED[$idx]=1
   if [ "${JOB_LANE[$idx]}" != exclusive ]; then NONEXCL_LEFT=$((NONEXCL_LEFT - 1)); fi
   ACTIVE="$ACTIVE $idx"
   RUNNING=$((RUNNING + 1))
-  if [ "${JOB_LANE[$idx]}" = guards ]; then GUARD_LANE_BUSY=1; fi
 }
 
 # _try_launch <idx> — start a pooled job if this machine has a worker for it.
@@ -1195,8 +1482,9 @@ _launch_job() {
 _try_launch() {
   if [ "$POOL_ON" = 1 ]; then
     if [ "$POOL_BACKOFF" -gt 0 ]; then POOL_BACKOFF=$((POOL_BACKOFF - 1)); return 1; fi
-    if ! _pool_take_slot "$1"; then POOL_BACKOFF=5; return 1; fi
+    if ! _pool_take_slot "$1"; then POOL_BACKOFF=5; _tm_wait pool begin; return 1; fi
   fi
+  _tm_wait pool end
   _launch_job "$1"
 }
 
@@ -1209,7 +1497,6 @@ _reap() {
     if [ -f "$JOBDIR/$idx.status" ]; then
       wait "${JOB_PID[$idx]}" 2>/dev/null || true
       RUNNING=$((RUNNING - 1))
-      if [ "${JOB_LANE[$idx]}" = guards ]; then GUARD_LANE_BUSY=0; fi
       if [ "${JOB_LANE[$idx]}" = exclusive ]; then
         EXCLUSIVE_OWED=$((EXCLUSIVE_OWED - 1))
         # The machine is handed back once this run's LAST timing subject is
@@ -1249,8 +1536,9 @@ _top_up() {
           # ALONE ON THE MACHINE, not just in this run: see the pool.
           if [ "$POOL_ON" = 1 ]; then
             if [ "$POOL_BACKOFF" -gt 0 ]; then POOL_BACKOFF=$((POOL_BACKOFF - 1)); break; fi
-            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; break; fi
+            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; _tm_wait excl begin; break; fi
           fi
+          _tm_wait excl end
           _launch_job "$idx"; break
         fi
       done
@@ -1260,16 +1548,13 @@ _top_up() {
   if [ "$RUNNING" -lt "$JOBS" ] && [ "${NEXT_EMIT:-0}" -lt "$JOB_TOTAL" ] \
      && [ "${JOB_LAUNCHED[${NEXT_EMIT:-0}]}" = 0 ]; then
     idx="${NEXT_EMIT:-0}"
-    if [ "${JOB_LANE[$idx]}" = pool ]; then
-      _try_launch "$idx" || return 0
-    elif [ "${JOB_LANE[$idx]}" = guards ] && [ "$GUARD_LANE_BUSY" = 0 ]; then
+    if [ "${JOB_LANE[$idx]}" != exclusive ]; then
       _try_launch "$idx" || return 0
     fi
   fi
   for idx in $SCHED_ORDER; do
     [ "$RUNNING" -lt "$JOBS" ] || break
     if [ "${JOB_LAUNCHED[$idx]}" = 0 ]; then
-      if [ "${JOB_LANE[$idx]}" = guards ] && [ "$GUARD_LANE_BUSY" = 1 ]; then continue; fi
       if [ "${JOB_LANE[$idx]}" = exclusive ]; then continue; fi
       _try_launch "$idx" || break
     fi
@@ -1293,6 +1578,20 @@ _stop_everything() {
 trap '_stop_everything; exit 130' INT
 trap '_stop_everything; exit 143' TERM
 
+# _job_red <exit> <line> — a red job. Stops the run as it always has, or under
+# keep-going records the line and returns 1 so the loop moves to the next job.
+KEEP_GOING=0
+case "${HW_TEST_KEEP_GOING:-}" in 1|yes|true) KEEP_GOING=1 ;; esac
+RED_LINES=""; RED_RC=0; RED_COUNT=0
+_job_red() {
+  if [ "$KEEP_GOING" != 1 ]; then _stop_everything; _tm_run; abort_marker; exit "$1"; fi
+  RED_COUNT=$((RED_COUNT + 1))
+  [ "$RED_RC" != 0 ] || RED_RC="$1"
+  RED_LINES="$RED_LINES
+  not ok - $2"
+  return 1
+}
+
 _top_up
 _i=0
 NEXT_EMIT=0
@@ -1309,29 +1608,34 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   _reap || true
   _top_up
   f="${JOB_PATH[$_i]}"
-  parse_rc=0; rc=0; cov_rc=0; elapsed=0; wall_ms=0; cpu_ms=0; first_ms=0; rerun_rc=0
+  parse_rc=0; rc=0; cov_rc=0; elapsed=0; wall_ms=0; cpu_ms=0; first_ms=0; rerun_rc=0; started_at=0; ended_at=0
   . "$JOBDIR/$_i.status"
+  _tm_row "$_i"
   if [ "$parse_rc" -ne 0 ]; then
     printf '\nnot ok - suite: setup/tests/%s does not parse, so it was never run — its assertions are NOT evidence for anything:\n%s\n' \
       "$(basename "$f")" "$(cat "$JOBDIR/$_i.parse" 2>/dev/null)" >&2
-    _stop_everything; abort_marker; exit 1
+    _job_red 1 "setup/tests/$(basename "$f") does not parse" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
   fi
   cat "$JOBDIR/$_i.out"
   cat "$JOBDIR/$_i.out" >> "$TALLY"
   [ ! -s "$JOBDIR/$_i.err" ] || cat "$JOBDIR/$_i.err" >&2
   if [ "$rc" -ne 0 ]; then
+    _stops="the run stops here"; [ "$KEEP_GOING" != 1 ] || _stops="continuing (--keep-going)"
     case "${JOB_KIND[$_i]}" in
       subject)
-        printf '\nnot ok - suite: setup/tests/%s failed (exit %s) — the run stops here\n' \
-          "$(basename "$f")" "$rc" >&2 ;;
+        printf '\nnot ok - suite: setup/tests/%s failed (exit %s) — %s\n' \
+          "$(basename "$f")" "$rc" "$_stops" >&2 ;;
       guard-mutate)
         printf '\nnot ok - suite: setup/guards/%s failed (exit %s) — a surviving mutant means the read-only guard has a hole its own suite cannot see\n' \
           "$(basename "$f")" "$rc" >&2 ;;
       *)
-        printf '\nnot ok - suite: setup/guards/%s failed (exit %s) — the run stops here\n' \
-          "$(basename "$f")" "$rc" >&2 ;;
+        printf '\nnot ok - suite: setup/guards/%s failed (exit %s) — %s\n' \
+          "$(basename "$f")" "$rc" "$_stops" >&2 ;;
     esac
-    _stop_everything; abort_marker; exit "$rc"
+    # Its `ok` lines are already in the tally, so they are counted here too, or
+    # the tracked/untracked split below would not add up.
+    [ "$KEEP_GOING" != 1 ] || count_into "$f" "$JOBDIR/$_i.out"
+    _job_red "$rc" "$(basename "$f") failed (exit $rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
   fi
   count_into "$f" "$JOBDIR/$_i.out"
   # THE FAST GATE'S OWN TIMING IS THE ENFORCEMENT, not the committed manifest.
@@ -1345,14 +1649,14 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   # subject's own, not a reading of how busy the machine was around it.
   if [ "$HW_TEST_GATE" = fast ] && [ -n "$FAST_THRESHOLD_SECONDS" ] && [ "${JOB_KIND[$_i]}" = subject ]; then
     _fg_own="$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$(basename "$f")=//p")"
-    _fg_budget_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$_fg_own")"
+    _fg_budget_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$_fg_own" "$FG_FACTOR")"
     _fg_own_ms="$(fg_ms "$_fg_own")"
     _fg_wall="$wall_ms"; _fg_cpu="$cpu_ms"; _fg_first="$first_ms"
     if [ "$rerun_rc" -ne 0 ]; then
       printf '\nnot ok - runner: setup/tests/%s failed (exit %s) on a timing re-run after passing once — a subject that passes once and fails once is not in the fast gate; its output is %s.rerun.err in the run directory\n' \
         "$(basename "$f")" "$rerun_rc" "$_i" >&2
       { cat "$JOBDIR/$_i.rerun.out" "$JOBDIR/$_i.rerun.err" 2>/dev/null | tail -n 40; } >&2
-      _stop_everything; abort_marker; exit 1
+      _job_red 1 "setup/tests/$(basename "$f") failed on a fast-gate timing re-run (exit $rerun_rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
     fi
     read -r _fg_load _fg_ncpu <<< "$(fg_load_ncpu)"
     read -r _fg_res _fg_mode _fg_why <<< "$(fg_decide "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "${_fg_load:-}" "${_fg_ncpu:-}")"
@@ -1376,7 +1680,7 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
       refuse)
         printf '\nnot ok - runner: setup/tests/%s took %sms (best of up to 3 runs, CPU %sms) in the fast gate, over the %sms budget in setup/test-budgets.json — judged on %s (%s; %s) — re-measure with setup/measure-tests.sh and, if it is really this slow, its classification belongs in the slow set\n' \
           "$(basename "$f")" "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "$_fg_mode" "$_fg_why" "$_fg_ldesc" >&2
-        _stop_everything; abort_marker; exit 1 ;;
+        _job_red 1 "setup/tests/$(basename "$f") over its fast-gate budget (${_fg_wall}ms > ${_fg_budget_ms}ms)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; } ;;
     esac
   fi
   # THE BURN-DOWN LIST IS GONE, BECAUSE IT IS EMPTY. It was introduced on
@@ -1392,13 +1696,14 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   if [ "$cov_rc" -ne 0 ]; then
     printf '\nnot ok - suite: setup/tests/%s failed mutation coverage (exit %s) — a mutant nothing runs, or one nothing can see fail, is not coverage: %s\n' \
       "$(basename "$f")" "$cov_rc" "$(cat "$JOBDIR/$_i.cov" 2>/dev/null || printf 'mutation-coverage printed no reason')" >&2
-    _stop_everything; abort_marker; exit 1
+    _job_red 1 "setup/tests/$(basename "$f") failed mutation coverage (exit $cov_rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
   fi
   rm -f "$JOBDIR/$_i.out" "$JOBDIR/$_i.err" "$JOBDIR/$_i.cov" "$JOBDIR/$_i.parse"
   _i=$((_i + 1))
   NEXT_EMIT="$_i"
 done
 rm -f "$TALLY.subject"
+_tm_run
 
 # THE WITNESS IS READ LAST, once every job is done: see above.
 if [ -n "$WITNESS_PID" ]; then
@@ -1408,8 +1713,20 @@ if [ -n "$WITNESS_PID" ]; then
   if [ -s "$WITNESS_LOG" ]; then
     printf '\nnot ok - runner: %s connection(s) reached the herdr WITNESS socket that stood where the live pane'"'"'s address was — some job addressed the pane it was started from, which on a live pane is a write onto somebody'"'"'s session. First request: %s\n' \
       "$(grep -c . "$WITNESS_LOG")" "$(head -1 "$WITNESS_LOG")" >&2
-    abort_marker; exit 1
+    [ "$KEEP_GOING" = 1 ] || { abort_marker; exit 1; }
+    RED_COUNT=$((RED_COUNT + 1)); [ "$RED_RC" != 0 ] || RED_RC=1
+    RED_LINES="$RED_LINES
+  not ok - runner: a job reached the herdr witness socket"
   fi
+fi
+
+# EVERY RED OF A --keep-going RUN, together, and still no number. The exit is
+# the first red job's, so a caller that tested `$? -ne 0` reads the same verdict
+# a stopped run gave it.
+if [ "$RED_COUNT" -gt 0 ]; then
+  printf '\nnot ok - suite: %s red job(s) in this --keep-going run, in print order:%s\n' "$RED_COUNT" "$RED_LINES" >&2
+  printf '\nKEEP-GOING RUN FAILED — %s red job(s):%s\n' "$RED_COUNT" "$RED_LINES"
+  abort_marker; exit "$RED_RC"
 fi
 
 # THE SUM IS CHECKED AGAINST THE TALLY, because a split that does not add up is
@@ -1479,7 +1796,10 @@ if [ -n "$UNKNOWN_NAMES" ]; then
   fi
   printf '  Run the suite inside the git work tree to get a number that means something.\n'
 else
-  if [ "$HW_TEST_GATE" = fast ]; then
+  if [ "$GATE_SELECTED" = 1 ]; then
+    printf '\nFAST GATE (SELECTED): %s tests passed  (TRACKED only — %s of the %s fast subject files, chosen from the changed paths; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
+      "$TRACKED_OK" "${#FILES[@]}" "$FAST_TOTAL"
+  elif [ "$HW_TEST_GATE" = fast ]; then
     printf '\nFAST GATE: %s tests passed  (TRACKED only — %s of %s subject files; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
       "$TRACKED_OK" "${#FILES[@]}" "$(printf '%s\n' "$TESTS"/[0-9][0-9]*-*.sh | grep -c .)"
   else
@@ -1496,5 +1816,9 @@ else
     # is not needed is how an unqualified number comes back.
     printf '  no untracked subjects ran, so this is the whole suite\n'
   fi
-  if [ "$HW_TEST_GATE" = fast ]; then _fast_verdict_write "FAST GATE: $TRACKED_OK tests passed"; fi
+  if [ "$GATE_SELECTED" = 1 ]; then
+    printf 'runner: no fast-gate verdict cached — a SELECTED run is not the whole fast gate\n' >&2
+  elif [ "$HW_TEST_GATE" = fast ]; then
+    _fast_verdict_write "FAST GATE: $TRACKED_OK tests passed"
+  fi
 fi

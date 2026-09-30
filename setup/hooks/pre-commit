@@ -125,8 +125,25 @@ fi
   echo "pre-commit: setup/hooks/suite-trigger-pattern.sh did not define SUITE_TRIGGER_PATTERN — refusing to guess what can invalidate the suite." >&2
   exit 1
 }
-if printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
-  root="$(git rev-parse --show-toplevel)"
+# AND ONLY THE SUBJECTS THE COMMIT REACHES (2026-09-30). The staged paths go to
+# the runner as HW_TEST_CHANGED; setup/gate-select turns them into the fast
+# subjects that name them, plus the `# gate-core:` subjects, and falls back to
+# the whole fast gate for any trigger path it cannot map. A commit OUTSIDE the
+# trigger — a README, CLAUDE.md, an export overlay — ran nothing before and
+# still runs nothing, UNLESS a fast subject names one of its paths exactly: then
+# those readers and the core run, because a document a subject reads is
+# something that subject can go red on.
+root="$(git rev-parse --show-toplevel)"
+hook_changed="$(mktemp "${TMPDIR:-/tmp}/hw-precommit-changed.XXXXXX")"
+trap 'rm -f "$hook_changed"' EXIT
+printf '%s\n' "$staged" > "$hook_changed"
+hook_docs=0
+if ! printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN" \
+   && [ -f "$root/setup/gate-select" ] && [ -f "$root/setup/test-budgets.json" ] \
+   && python3 "$root/setup/gate-select" "$root" "$hook_changed" "$SUITE_TRIGGER_PATTERN" 2>/dev/null | grep -q '^subject '; then
+  hook_docs=1
+fi
+if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
   # THE SAME DOOR HAS A SECOND LATCH, and it was open until 2026-09-09.
   # `git -c <key>=<value>` serialises every `-c` into GIT_CONFIG_PARAMETERS and
   # exports it, so a descendant git applies it at COMMAND-LINE precedence —
@@ -170,7 +187,7 @@ if printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
                -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
                -u GIT_COMMON_DIR -u GIT_PREFIX \
                "${hook_git_config_unset[@]+"${hook_git_config_unset[@]}"}" \
-               HW_TEST_GATE=fast bash "$root/setup/test-hw" 2>&1)" || hook_rc=$?
+               HW_TEST_CHANGED="$hook_changed" HW_TEST_GATE=fast bash "$root/setup/test-hw" 2>&1)" || hook_rc=$?
     hook_elapsed=$(( $(date +%s) - hook_started ))
     # THE SUITE'S NUMBER TRAVELS WITH ITS OWN CAVEAT, or it does not travel.
     #
@@ -194,7 +211,7 @@ if printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
     # the hook while fixing the hook, caught by test 94 on the first run. It is
     # the exact hazard `bin/lint-shell` exists to flag and `_common.sh` documents
     # at length; the untracked line is legitimately absent most of the time.
-    hook_headline="$(printf '%s\n' "$out" | grep -E '^([0-9]+ tests passed|FAST GATE: [0-9]+ tests passed)' | tail -1 || true)"
+    hook_headline="$(printf '%s\n' "$out" | grep -E '^([0-9]+ tests passed|FAST GATE( \(SELECTED\))?: [0-9]+ tests passed)' | tail -1 || true)"
     hook_untracked="$(printf '%s\n' "$out" | grep -E '^ *\+ [0-9]+ ok from UNTRACKED' | tail -1 || true)"
     if [ "$hook_rc" -ne 0 ]; then
       # Attribution is executor testimony, not a tree-derived claim about who
@@ -210,6 +227,7 @@ if printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
       trigger_named="$(printf '%s\n' "$suite_trigger_paths" | grep . | head -3 \
         | awk 'NR>1{printf ", "} {printf "%s", $0} END{if (NR) print ""}' || true)"
       [ "$trigger_count" -le 3 ] || trigger_named="$trigger_named (+$((trigger_count - 3)) more)"
+      [ -n "$trigger_named" ] || trigger_named="a document a fast subject reads"
       stage_rc=0
       stage_out="$(cd "$root" && "$root/bin/hw" stage 2>&1)" || stage_rc=$?
       {

@@ -289,6 +289,8 @@ export LC_ALL=en_US.UTF-8
 export HW_ENGRAM_URL="http://127.0.0.1:9/hw-test-no-engram"
 export ENGRAM_DATA_DIR="$TMP/home/.engram"
 export ENGRAM_PORT=9
+# brain waits for a serve to start; port 9 never will, so no subject pays the timeout
+export HW_ENGRAM_WAIT=0
 
 # ── A HOME THAT IS NOT THIS MACHINE'S ──────────────────────────────────────
 #
@@ -323,6 +325,11 @@ unset XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME CLAUDE_CONFIG_DIR CODEX_HOME \
 # and the subject exited red. Measured 2026-09-22 under the runner. Before this
 # block the same writes landed in the real ~/Library, unseen.
 export PYTHONDONTWRITEBYTECODE=1
+# AND NOT THE CI HOST'S LENIENCY. setup/test-hw relaxes every fast-gate budget
+# where CI or GITHUB_ACTIONS is true (setup/fast-gate-budget.sh, point 6); a
+# subject that drives a nested runner (217, 391) must judge its fixtures on
+# the budgets it wrote, on a laptop and on a runner alike.
+unset CI GITHUB_ACTIONS 2>/dev/null || true
 FIXTURES="$ROOT/setup/fixtures"
 
 # THE LANE TABLE AND THE BRAIN ROOT, pinned to what every subject was written

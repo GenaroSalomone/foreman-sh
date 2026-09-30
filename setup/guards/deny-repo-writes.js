@@ -1501,7 +1501,184 @@ function segmentsResolveProtected(cfg, segs) {
 // refuse. Split out from the hook so a harness can drive it directly; the hook
 // below is the thin part that turns a refusal into opencode's only refusal
 // mechanism, a throw.
+// ── `env` OPTIONS ARE NOT THE PROGRAM — see `_unwrap_env` in the Python half.
+// An `env` in command position is rewritten into the shape the rules already
+// judge: options dropped, a -S/--split-string value spliced in as command text,
+// -C/--chdir DIR as `cd DIR &&` in front, NAME=VALUE words moved before `env`.
+const ENV_LONG = {
+  "unset": "required", "chdir": "required", "split-string": "required",
+  "argv0": "required", "ignore-environment": null, "null": null,
+  "debug": null, "help": null, "version": null, "list-signal-handling": null,
+  "block-signal": "optional", "default-signal": "optional",
+  "ignore-signal": "optional",
+};
+const ENV_SHORT_VALUE = "uCSPa";
+const ENV_WORD_END = new Set([" ", "\t", "\n", ";", "&", "|", "(", ")", "<", ">", "`"]);
+const ENV_AT = /(?<![\w./-])(?:[\w./-]*\/)?env(?=[ \t]+\S)/g;
+
+function envLong(name) {
+  if (Object.hasOwn(ENV_LONG, name)) return name;
+  const hits = Object.keys(ENV_LONG).filter((n) => n.startsWith(name));
+  return hits.length === 1 ? hits[0] : null;
+}
+
+function envWord(text, i) {
+  let j = i;
+  const n = text.length, value = [];
+  while (j < n && !ENV_WORD_END.has(text[j])) {
+    const ch = text[j];
+    if (ch === "\\" && j + 1 < n) { value.push(text[j + 1]); j += 2; }
+    else if (ch === "'" && j > i && text[j - 1] === "$") {
+      // $'…': a backslash escapes the next character, a quote included.
+      let k = j + 1; const part = [];
+      while (k < n && text[k] !== "'") {
+        if (text[k] === "\\" && k + 1 < n) { part.push(text[k + 1]); k += 2; }
+        else { part.push(text[k]); k += 1; }
+      }
+      value.push(part.join("")); j = k + 1;
+    } else if (ch === "'") {
+      let k = text.indexOf("'", j + 1);
+      if (k < 0) k = n;
+      value.push(text.slice(j + 1, k)); j = k + 1;
+    } else if (ch === '"') {
+      let k = j + 1; const part = [];
+      while (k < n && text[k] !== '"') {
+        if (text[k] === "\\" && k + 1 < n && '"\\$`'.includes(text[k + 1])) { part.push(text[k + 1]); k += 2; }
+        else { part.push(text[k]); k += 1; }
+      }
+      value.push(part.join("")); j = k + 1;
+    } else { value.push(ch); j += 1; }
+  }
+  const end = Math.min(j, n);
+  return [text.slice(i, end), value.join(""), end];
+}
+
+function shQuote(s) {
+  if (s === "") return "''";
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : "'" + s.replaceAll("'", "'\"'\"'") + "'";
+}
+
+const ENV_BOUNDARY = /[;&|(`\n]|\$\(/g;
+
+function quoteSpans(text) {
+  const spans = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "'" || ch === '"') {
+      const ansi = ch === "'" && i > 0 && text[i - 1] === "$";
+      let j = i + 1;
+      while (j < n && text[j] !== ch) j += text[j] === "\\" && (ch === '"' || ansi) ? 2 : 1;
+      if (j >= n) return null;
+      spans.push([i, j]);
+      i = j + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return spans;
+}
+
+function unwrapEnvOnce(text) {
+  let spans = quoteSpans(text);
+  if (spans === null) return text;
+  for (const [a, b] of [...spans].reverse()) {
+    if (SHELL_DASH_C.test(text.slice(0, a)) || EVAL_ARGS.test(text.slice(0, a))) {
+      text = text.slice(0, a + 1) + unwrapEnv(text.slice(a + 1, b)) + text.slice(b);
+    }
+  }
+  spans = quoteSpans(text) ?? [];
+  // Sliced by UTF-16 index, the unit quoteSpans and every regex index use: a
+  // code-point array (`[...text]`) shifted by one per astral character.
+  let flat = text;
+  for (const [a, b] of spans) flat = flat.slice(0, a) + "x".repeat(b + 1 - a) + flat.slice(b + 1);
+  const out = [];
+  let last = 0;
+  for (const m of flat.matchAll(ENV_AT)) {
+    if (m.index < last) continue;
+    const prefix = flat.slice(0, m.index);
+    let cut = 0;
+    for (const bm of prefix.matchAll(ENV_BOUNDARY)) cut = bm.index + bm[0].length;
+    if (!CMD_PREFIX_ALLOWED.test(prefix.slice(cut))) continue;
+    let i = m.index + m[0].length;
+    const n = text.length, chdir = [], assigns = [];
+    let split = null, touched = false;
+    for (;;) {
+      while (i < n && (text[i] === " " || text[i] === "\t")) i += 1;
+      if (i >= n || ENV_WORD_END.has(text[i])) break;
+      const [raw, word, after] = envWord(text, i);
+      let take = null;
+      if (word === "--") { i = after; touched = true; break; }
+      if (word.startsWith("--")) {
+        const eqAt = word.indexOf("=");
+        const name = eqAt < 0 ? word.slice(2) : word.slice(2, eqAt);
+        const value = eqAt < 0 ? "" : word.slice(eqAt + 1);
+        const full = envLong(name);
+        const kind = full ? ENV_LONG[full] : null;
+        if (kind === "required" && eqAt < 0) take = full;
+        else if (kind === "required") {
+          if (full === "chdir") chdir.push(value);
+          else if (full === "split-string") split = value;
+        }
+      } else if (word.startsWith("-") && word.length > 1) {
+        for (let k = 1; k < word.length; k += 1) {
+          const letter = word[k];
+          if (!ENV_SHORT_VALUE.includes(letter)) continue;
+          const attached = word.slice(k + 1);
+          const name = letter === "C" ? "chdir" : letter === "S" ? "split-string" : letter;
+          if (!attached) take = name;
+          else if (name === "chdir") chdir.push(attached);
+          else if (name === "split-string") split = attached;
+          break;
+        }
+      } else if (word === "-") {
+        // the same as -i
+      } else if (ASSIGNMENT.test(word)) {
+        assigns.push(raw);
+      } else break;
+      touched = true; i = after;
+      if (take !== null) {
+        while (i < n && (text[i] === " " || text[i] === "\t")) i += 1;
+        if (i < n && !ENV_WORD_END.has(text[i])) {
+          const [, value, end] = envWord(text, i);
+          i = end;
+          if (take === "chdir") chdir.push(value);
+          else if (take === "split-string") split = value;
+        }
+      }
+      if (split !== null) break;
+    }
+    if (!touched) continue;
+    const head = chdir.map((d) => `cd ${shQuote(d)} && `).join("") + assigns.map((a) => a + " ").join("");
+    out.push(text.slice(last, m.index) + head + text.slice(m.index, m.index + m[0].length) + " "
+      + (split !== null ? split + " " : ""));
+    last = i;
+  }
+  out.push(text.slice(last));
+  return out.join("");
+}
+
+// Only an `env` OUTSIDE every quoted string is rewritten (inside a `-c` script,
+// only within it), repeated until nothing changes — see `_unwrap_env`.
+export function unwrapEnv(text) {
+  for (let pass = 0; pass <= text.length; pass += 1) {
+    const next = unwrapEnvOnce(text);
+    if (next === text) break;
+    text = next;
+  }
+  return text;
+}
+
+// Two readings, and a denial from either stands — see `decide` in the Python.
 export function decide(lane, command, cwd) {
+  const verdict = decideReading(lane, command, cwd, false);
+  if (verdict !== null) return verdict;
+  return decideReading(lane, command, cwd, true);
+}
+
+function decideReading(lane, command, cwd, unwrap) {
   if (typeof command !== "string" || !command) return null;
   const cfg = config(lane);
 
@@ -1522,7 +1699,13 @@ export function decide(lane, command, cwd) {
   // quotes intact, so a real redirect target that happens to be quoted is still
   // resolvable. `masked` additionally blanks quoted-string interiors. Path
   // detection stays on the unmasked text — it needs the real path, quoted or not.
-  const noHeredoc = stripHeredocBodies(probe);
+  // Unwrapped AFTER the heredoc strip — see the Python half.
+  let noHeredoc = stripHeredocBodies(probe);
+  if (unwrap) {
+    const unwrapped = unwrapEnv(noHeredoc);
+    if (unwrapped === noHeredoc) return null;
+    noHeredoc = unwrapped;
+  }
   // Joined AFTER the heredoc strip, as in the Python half.
   const copies = joinContinuations(noHeredoc);
   const masked = copies.map(maskCopy).join(COPY_BOUNDARY);

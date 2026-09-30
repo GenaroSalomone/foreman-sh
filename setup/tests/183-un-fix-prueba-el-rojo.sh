@@ -71,6 +71,12 @@ done
 pass "red test: audit, explore and review preambles do not carry it"
 
 # ── 3. and it costs the shared rules nothing ────────────────────────────────
-grep -q 'FAILS ON THE OLD CODE' "$ROOT/CLAUDE.shared.md" \
-  && fail "red test: the rule was copied into CLAUDE.shared.md, which every session pays for"
-pass "red test: the rule lives only where it applies"
+# The export carries no CLAUDE.shared.md (setup/export/manifest): said, not a
+# grep error that reads as a pass.
+if [ -f "$ROOT/CLAUDE.shared.md" ]; then
+  grep -q 'FAILS ON THE OLD CODE' "$ROOT/CLAUDE.shared.md" \
+    && fail "red test: the rule was copied into CLAUDE.shared.md, which every session pays for"
+  pass "red test: the rule lives only where it applies"
+else
+  pass "red test: this tree carries no CLAUDE.shared.md, so no session pays for the rule"
+fi

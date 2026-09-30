@@ -4,6 +4,38 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.1.0] — 2026-09-30
+
+First stable release.
+
+### Added
+- `install.sh --check` names the answer to engram's allowlist question and
+  lists the `PATH` export as an ordered step.
+- One full test suite runs per machine at a time; a second one waits in a
+  queue. The pre-commit hook runs only the subjects a commit touches
+  (`setup/gate-select`).
+
+### Changed
+- README rewritten: requirements before the quickstart, a table of concepts,
+  every command checked against `hw help all`, and "How it compares" dated
+  and sourced to each project's own documentation. The "When not to use
+  foreman" section is gone.
+- `BRIEF-TEMPLATE.md` no longer carries a section written for one of the
+  maintainer's own projects, and its closing step works without engram.
+- `brain` waits for engram's server before registering a session, and the
+  server starts without printing an error.
+- An executor without Judgment Day reports it as "not installed (optional)",
+  not as escalated.
+- CI scales time budgets by 3 on a shared runner.
+
+### Fixed
+- The repository guards unwrap `env` and its options (`-u`, `-i`, `--chdir`,
+  `-S`) before judging a command, and refuse a quoting trick that hid a write
+  from the Python and JavaScript guards.
+- Test 189 binds its stand-in without a reverse DNS lookup, which failed on
+  the macOS CI runner.
+- Test 54's mock no longer runs out a 2–3 second deadline under load.
+
 ## [0.1.0-rc.4] — 2026-09-30
 
 Fourth pre-release, and the last candidate before 0.1.0. A report that did
@@ -122,7 +154,7 @@ could run, and makes the brainer's guard read the shell.
 - `install.sh --check` checks everything in one pass, lists the fixes in the
   order they must be done, and ends with one `Next step:`.
 - `hw --help` is one page on standard output; `brain --help` works.
-- Colour is used only when output is a terminal, and never with `NO_COLOR`.
+- Color is used only when output is a terminal, and never with `NO_COLOR`.
 - The quickstart in `README.md`, `INSTALL.md` and `examples/demo/` runs as
   written.
 
@@ -180,11 +212,11 @@ this repository.
 - A hermetic test suite (`setup/test-hw`, `setup/test-channel-send`) with a fast
   gate, runtime budgets and mutation coverage.
 - `examples/demo/`: a lane to try the install on a throwaway repository.
-- MIT licence.
+- MIT license.
 
 ### Known limitations
 See [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md). The ones that decide whether
 this fits you: herdr only; Linux and native Windows (Git Bash) are measured
 by the suite but not yet on a live herdr and agent, and WSL2 is the proven way
 on Windows; Codex is not set up by the installer and
-its write tool is unguarded; OpenCode background sub-agents are experimental.
+its write tool is unguarded; OpenCode background subagents are experimental.

@@ -40,6 +40,7 @@ render() {
       info() { :; }
       warn() { :; }
       _specialist_agents() { :; }
+      lane_get() { :; }
       # `_send_brief` no longer checks the entry command against anything on
       # disk — `_framework_entry` just prints the fixed skill name for its
       # mode — so this fixture is about the brief TEXT alone, and the entry

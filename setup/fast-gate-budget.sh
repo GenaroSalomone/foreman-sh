@@ -32,6 +32,13 @@
 #      is relative: real drift (> 2x its own baseline) is still refused. Between
 #      1.5x and 2x of its own number the gate WARNS, per subject, without failing.
 #
+#   6. ON A CI HOST EVERY CEILING IS MULTIPLIED (fg_ci_factor, default x3 when
+#      CI=true or GITHUB_ACTIONS=true). A shared runner cannot judge wall-clock:
+#      measured 2026-09-30, run 36747604152 on windows-latest refused 104 at
+#      3276ms against 3000ms, "load-unknown" — the runner, not the subject.
+#      The factor relaxes, it does not switch off: a subject 3x over its
+#      ceiling is still refused there. HW_TEST_BUDGET_FACTOR overrides it.
+#
 # HW_TEST_LOAD1 / HW_TEST_NCPU replace the measured load (a simulated one, for
 # setup/tests/217-*.sh).
 
@@ -83,11 +90,23 @@ fg_decide() {
   echo "refuse wall unsaturated"
 }
 
-# fg_budget_ms <threshold_s> <own_s> → the ceiling in ms (own empty reads as 0)
+# fg_ci_factor → the multiplier on every ceiling: HW_TEST_BUDGET_FACTOR when it
+# is a positive integer, else 3 on a CI host (CI or GITHUB_ACTIONS = true), else 1
+fg_ci_factor() {
+  case "${HW_TEST_BUDGET_FACTOR:-}" in
+    ''|*[!0-9]*|0|00*) ;;
+    *) printf '%s' "$HW_TEST_BUDGET_FACTOR"; return 0 ;;
+  esac
+  if [ "${CI:-}" = true ] || [ "${GITHUB_ACTIONS:-}" = true ]; then printf 3; else printf 1; fi
+}
+
+# fg_budget_ms <threshold_s> <own_s> [factor] → the ceiling in ms (own empty
+# reads as 0; factor defaults to 1)
 fg_budget_ms() {
-  local base own2
+  local base own2 m
   base=$(( $(fg_ms "$1") + 1000 )); own2=$(( $(fg_ms "${2:-0}") * 2 ))
-  if [ "$own2" -gt "$base" ]; then printf '%s' "$own2"; else printf '%s' "$base"; fi
+  if [ "$own2" -gt "$base" ]; then m="$own2"; else m="$base"; fi
+  printf '%s' "$(( m * ${3:-1} ))"
 }
 
 # fg_drift_warn <wall_ms> <own_ms> <threshold_s> — true when the relative ceiling

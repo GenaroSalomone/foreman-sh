@@ -5329,6 +5329,10 @@ _judgment_day_note() {
    onto the base since dispatch does not pull other people'"'"'s commits into the
    target. If that range is empty there is nothing to judge: say so in the
    report instead. Record the judged range (base SHA..head SHA).
+   JUDGMENT DAY IS OPTIONAL. If the judgment-day skill is not among your
+   available skills, it is not installed: there is nothing to judge with and
+   nothing ESCALATED. Say "Judgment Day: not installed (optional)" in the
+   report and close normally. ESCALATED means judges ran and could not converge.
    REBASED AFTER JUDGING? Do not re-judge the whole range. Run
    hw review-delta <judged-base> <judged-head>
    Exit 0: your own diff is the one judged, only moved — the verdict stands.
@@ -5340,7 +5344,8 @@ _judgment_day_note() {
    authorization. Apply the fixes both judges confirmed without asking. Judges
    that contradict each other, or anything left after round two, is ESCALATED —
    report it, do not ask and do not wait.
-4. The done-invoker report carries the verdict, APPROVED or ESCALATED, and,
+4. The done-invoker report carries the verdict, APPROVED or ESCALATED (or
+   "not installed (optional)", above), and,
    separately, every severe finding only ONE judge raised (unconfirmed, so not
    fixed), each with its file:line.'
 }

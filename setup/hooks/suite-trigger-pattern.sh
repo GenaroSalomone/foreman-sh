@@ -26,4 +26,7 @@
 # loosening it — would have been classified as "nothing triggers" by this
 # pattern's first version, found by adversarial review 2026-09-09 once this
 # pattern started gating a mandatory push, not just a local fast-gate hint.
-SUITE_TRIGGER_PATTERN='^(bin/|setup/test-hw|setup/tests/|setup/guards/|([^/]+/)?\.claude/hooks/deny-repo-writes\.py|([^/]+/)?\.opencode/plugin/deny-repo-writes\.js)'
+# setup/gate-select since 2026-09-30: it decides which subjects a commit runs,
+# so a commit that touches ONLY it would otherwise run no gate at all (Judgment
+# Day, tests/361 S08).
+SUITE_TRIGGER_PATTERN='^(bin/|setup/test-hw|setup/gate-select|setup/tests/|setup/guards/|([^/]+/)?\.claude/hooks/deny-repo-writes\.py|([^/]+/)?\.opencode/plugin/deny-repo-writes\.js)'

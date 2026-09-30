@@ -464,6 +464,24 @@ def _data_names(cfg, text):
 # whole command line, spliced into the words in place of its value.
 _ENV_SHORT_VALUE = "uCPaS"
 _ENV_LONG_VALUE = {"--unset": None, "--chdir": None, "--argv0": None, "--split-string": "S"}
+# Every long option GNU env takes, because getopt_long accepts any prefix that
+# names exactly one of them: `--uns HW_TASK` is `--unset HW_TASK`, and `--spl
+# 'hw next …'` is `--split-string`. Read literally, the abbreviation took no
+# value, so HW_TASK became the program and the verb behind it ran with ALLOW
+# (measured 2026-09-30). An ambiguous prefix makes env refuse; it is read as
+# taking no value, which leaves more of the command in view, never less.
+_ENV_LONG_ALL = tuple(_ENV_LONG_VALUE) + (
+    "--ignore-environment", "--null", "--debug", "--help", "--version",
+    "--list-signal-handling", "--block-signal", "--default-signal",
+    "--ignore-signal")
+
+
+def _env_long_name(name):
+    """The long option `name` spells or abbreviates; `name` itself otherwise."""
+    if name in _ENV_LONG_ALL:
+        return name
+    hits = [n for n in _ENV_LONG_ALL if n.startswith(name)]
+    return hits[0] if len(hits) == 1 else name
 
 
 def _env_option(words, i):
@@ -473,6 +491,7 @@ def _env_option(words, i):
     split = None
     if word.startswith("--"):
         name, eq, value = word.partition("=")
+        name = _env_long_name(name) if name != "--" else name
         if name not in _ENV_LONG_VALUE:
             return i + 1
         if _ENV_LONG_VALUE[name]:

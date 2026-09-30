@@ -87,6 +87,36 @@ def tracking(root):
             'tracked': sorted(os.fsdecode(p) for p in proc.stdout.split(b'\0') if p) if proc.returncode == 0 else []}
 
 
+def settle_fast_verdict(handoff, valid):
+    """Cache the fast gate's staged verdict only for a valid run; drop it otherwise.
+
+    setup/test-hw writes `<tree>.fast.tmp.<pid>` and names it in the handoff
+    file (staged path, final path, tree). It used to rename it into place
+    itself, which happened BEFORE the candidate was re-inventoried, so a run
+    this file then refused still left a verdict pre-push would accept.
+    """
+    try:
+        staged, final, tree = handoff.read_text().split('\n')[:3]
+    except (OSError, ValueError):
+        return
+    if not valid:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        print('runner: no fast-gate verdict cached — the run was not green or its snapshot did not hold',
+              file=sys.stderr, flush=True)
+        return
+    try:
+        os.replace(staged, final)
+    except OSError:
+        print('runner: could not write the fast-gate verdict at %s — a task/* push will ask for one' % final,
+              file=sys.stderr, flush=True)
+        return
+    print('runner: fast-gate verdict cached for tree %s (gate=fast) — pre-push accepts it for '
+          'refs/heads/task/* only, never main' % tree, file=sys.stderr, flush=True)
+
+
 def main():
     root = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix='hw-source-') as temporary:
@@ -109,9 +139,13 @@ def main():
         manifest.write_text(json.dumps(tracked))
         identity = hashlib.sha256(json.dumps(frozen, sort_keys=True).encode()).hexdigest()
         print('# SOURCE SNAPSHOT sha256=' + identity + ' (checkout bytes; explicit live checks remain live)', flush=True)
+        # The fast gate's verdict is staged by the run and cached HERE, after the
+        # candidate is re-inventoried: see settle_fast_verdict.
+        handoff = base / 'fast-verdict.handoff'
         env = dict(os.environ, TEST_HW_SNAPSHOT_ROOT=str(candidate),
                    TEST_HW_TRACKING_MANIFEST=str(manifest), TEST_HW_LIVE_ROOT=str(root),
                    TEST_HW_GIT_USABLE='1' if tracked['usable'] else '0',
+                   TEST_HW_FAST_VERDICT_HANDOFF=str(handoff),
                    PYTHONDONTWRITEBYTECODE='1')
         # Copies retain their modes: subjects copy these bytes into writable
         # mutant fixtures. Isolation is a private copy, not a claim of a
@@ -126,7 +160,9 @@ def main():
             else:
                 print(line, end='', flush=True)
         rc = proc.wait()
-        if frozen != inventory(candidate):
+        intact = frozen == inventory(candidate)
+        settle_fast_verdict(handoff, intact and rc == 0)
+        if not intact:
             raise RuntimeError('private candidate changed during execution; no summary is valid')
         if rc == 0:
             print(''.join(pending), end='', flush=True)

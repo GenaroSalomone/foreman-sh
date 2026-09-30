@@ -17,7 +17,7 @@
 #   database:  own | main
 #   invoker:   the brainer pane that must receive the report
 #   kind:      build | explore | audit | review
-#              What the task IS. A build-only model (openai/gpt-5.6-sol)
+#              What the task IS. A model the lane marks build-only
 #              is REFUSED for explore/audit/review: exploration decides
 #              what to build, and the model meant for building is the
 #              wrong one to decide it. Declaring `build` also silences
@@ -34,7 +34,7 @@
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
 #   boundary:  <what must never cross> — the task is not done without an
-#              approved design judgment (README, Judgment Day)
+#              approved design judgment (INSTALL.md, Judgment Day)
 #
 # A declaration is a CHECK, not a source: it never supplies a flag hw would
 # otherwise ask for, except `sandbox: true`, which is the flag. The brief keys
@@ -84,27 +84,6 @@ just means the report is the only claim there is, which is what it was on
 2026-08-25 when three executors in a row shipped correct code with a
 verification nobody had run.>
 
-## Retroactividad — una línea, obligatoria si el cambio toca un cálculo
-
-> Borrá esta sección sólo si la tarea no cambia ningún número ni ninguna salida.
-> Si la cambia, respondela: **¿este cambio toca datos ya guardados, sí o no?**
-
-Un cambio sobre algo que se **computa en vivo** es retroactivo solo: cualquier
-fecha pasada que se abra después sale con el código nuevo, sin backfill.
-
-Un cambio sobre algo **persistido** deja filas viejas desactualizadas, y hay que
-decir **qué rango recomputar**.
-
-Por qué está acá y no en la cabeza de nadie: en un mismo producto pueden convivir
-las dos cosas — el detalle de paradas se recalcula en vivo y no guarda nada, mientras
-`route_daily_report` persiste una fila por fecha y ruta. Y esa tabla **se escribe
-recién cuando alguien abre la fecha**, así que ya es un mosaico de días
-calculados con versiones distintas del código, antes de cualquier cambio nuevo.
-
-El antecedente: en el PR #289 un filtro **reescribía reportes pasados en
-silencio**, y lo encontró el gate del brief, no un test. Una suposición sobre
-retroactividad no se ve en ningún diff.
-
 ## Mechanism
 <...and, if this task should run under a framework the directory does not
 already have, say which and why: `hw <project> <task> --sdd speckit`.
@@ -123,16 +102,17 @@ proves nothing about yours — that is why this section exists.>
 - <what it is> — handle `<handle>` (checked with `hw handle <handle>`)
 <A global hook blocks every Keychain secret read, so a PREEXISTING stored
 credential is unreachable today: do not prescribe the Keychain read as if it
-works (see Secrets in the shared rules file). A credential the task GENERATES
+works. A credential the task GENERATES
 is fine. If there is no handle for something the task needs, say so here — that
 is a gap, and the executor reports it blocked rather than asking a person to
 paste a secret into a pane.>
 
 ## When you finish
-`mem_save` the findings (`<task> — findings (<date>)`, type `discovery`) and, if
-any, the open questions (type `manual`). No `findings.md` — engram is the one
-store, and `hw` has already pinned your label. Then `done-invoker "<one
-paragraph: what you established, and the observation ids>"`. Once, last thing.
+If engram is set up, `mem_save` the findings (`<task> — findings (<date>)`,
+type `discovery`) and, if any, the open questions (type `manual`). No
+`findings.md`: engram is the one store, and `hw` has already pinned your label.
+Without engram, the report carries them. Then `done-invoker "<one paragraph:
+what you established, and the observation ids>"`. Once, last thing.
 
 ## If you get blocked
 Report it blocked. Do not find a way around it, and close with

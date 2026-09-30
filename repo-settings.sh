@@ -9,7 +9,7 @@ set -euo pipefail
 REPO="${1:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 
 gh repo edit "$REPO" \
-  --description "Plan with one agent, build with many: a shell harness, built on herdr, that keeps your repository out of the planner's hands." \
+  --description "A shell harness, built on herdr, that runs coding agents in two roles: a long-lived brainer that plans but cannot touch your code, and disposable executors that each work in a git worktree of their own and report back." \
   --enable-issues \
   --enable-discussions=false \
   --enable-wiki=false

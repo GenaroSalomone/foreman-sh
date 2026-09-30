@@ -73,7 +73,14 @@ p.write_text(s.replace(old, new, 1))
 PY
   decision_rc=0
   filesystem_rc=0
-  DENY_GUARD_ROOT="$dir/brain" node "$ROOT/setup/guards/test-deny-repo-writes.mjs" >"$dir/decision.txt" 2>&1 || decision_rc=$?
+  # ONLY THE DRIVER THIS MUTANT IS JUDGED BY RUNS, AND IT STOPS AT ITS FIRST
+  # FAILURE: the verdict below reads `$expected.txt`'s first `not ok -` line and
+  # that driver's exit, nothing else. The decision driver is ~5500 python3
+  # spawns (~70s of CPU); run in full for all 77 mutants, including the three
+  # judged by the filesystem driver, it made this arm ~1949s (2026-09-30).
+  if [ "$expected" = decision ]; then
+    DENY_GUARD_FAIL_FAST=1 DENY_GUARD_ROOT="$dir/brain" node "$ROOT/setup/guards/test-deny-repo-writes.mjs" >"$dir/decision.txt" 2>&1 || decision_rc=$?
+  fi
   TMPDIR="$dir" DENY_GUARD_ROOT="$dir/brain" node "$ROOT/setup/guards/test-deny-repo-writes-filesystem.mjs" >"$dir/filesystem.txt" 2>&1 || filesystem_rc=$?
   # A NON-ZERO EXIT IS NOT EVIDENCE OF A KILL, and this is the same rule
   # `saw_mutant` enforces in tests/_common.sh (see setup/decisions.md). A driver

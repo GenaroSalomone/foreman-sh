@@ -36,7 +36,7 @@ grep -q 'POST' "$FRAG" || fail "driver: _engram_register_session was not found i
 LOG="$TMP/engram-requests.log"; : > "$LOG"
 PORTF="$TMP/engram-port"
 python3 - "$LOG" "$PORTF" <<'PY' &
-import http.server, sys
+import http.server, socketserver, sys
 log, portf = sys.argv[1], sys.argv[2]
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -49,14 +49,21 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(b'{"id":"hw-run-189","status":"created"}')
     def log_message(self, *a): pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+# NO REVERSE LOOKUP. HTTPServer.server_bind calls socket.getfqdn on the bound
+# address before the port can be written; on the GitHub macOS runner that
+# lookup outlasted the whole wait below (setup/tests/390).
+class S(http.server.HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+s = S(("127.0.0.1", 0), H)
 open(portf, "w").write(str(s.server_address[1]))
 s.serve_forever()
 PY
 SERVER=$!
 trap 'kill "$SERVER" 2>/dev/null || true; wait "$SERVER" 2>/dev/null || true; rm -rf "$TMP"' EXIT
-for _ in $(seq 1 50); do [ -s "$PORTF" ] && break; sleep 0.1; done
-[ -s "$PORTF" ] || fail "stand-in: the recording engram never bound a port"
+for _ in $(seq 1 100); do [ -s "$PORTF" ] && break; kill -0 "$SERVER" 2>/dev/null || break; sleep 0.1; done
+[ -s "$PORTF" ] || fail "stand-in: the recording engram never bound a port$(kill -0 "$SERVER" 2>/dev/null || printf ' (its python exited)')"
 PORT="$(<"$PORTF")"
 
 # drive [common] — the launch's registration, with the live engram's address

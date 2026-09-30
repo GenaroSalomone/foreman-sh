@@ -199,7 +199,24 @@ function codex(path, command, cwd, env, neutralDir, toolName = "Bash") {
 
 let pass = 0, fail = 0;
 const ok = (name) => { pass++; console.log(`ok - ${name}`); };
-const notOk = (name, detail = "") => { fail++; console.log(`not ok - ${name}${detail ? ` :: ${detail}` : ""}`); };
+// DENY_GUARD_FAIL_FAST=1 STOPS AT THE FIRST `not ok`, for the mutation arm only
+// (setup/guards/mutate-deny-repo-writes.sh). A mutant is killed by a non-zero
+// exit AND the first `not ok -` line this driver prints — nothing after that
+// line is read — so running the other ~5500 vectors, a python3 spawn each,
+// bought nothing: 77 mutants x ~70s of CPU made that arm the longest job of
+// the full suite (1949s measured under the runner, 2026-09-30). The line and
+// the exit a kill is judged on are the same; a surviving mutant still runs
+// every vector. Unset, this driver is unchanged.
+const FAIL_FAST = process.env.DENY_GUARD_FAIL_FAST === "1";
+const notOk = (name, detail = "") => {
+  fail++;
+  console.log(`not ok - ${name}${detail ? ` :: ${detail}` : ""}`);
+  if (FAIL_FAST) {
+    rmSync(base, { recursive: true, force: true });
+    console.log(`\n${pass} passed, ${fail} failed (DENY_GUARD_FAIL_FAST: stopped at the first failure)`);
+    process.exit(1);
+  }
+};
 
 // Per-driver tally, so the conformance count says how many assertions EACH of
 // the three drivers ran, and a driver that quietly ran none shows as a zero.

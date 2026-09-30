@@ -39,7 +39,7 @@ render() {
     HW_BIN_DIR=/fixture/bin; HW_WORKDIR=/fixture/work; ENGRAM_PROJECT=brain
     HW_REVIEW_BASE_REF="$R"; HW_REVIEW_BASE_BRANCH=main
     source "$FRAG"
-    info() { :; }; warn() { :; }; _specialist_agents() { :; }
+    info() { :; }; warn() { :; }; _specialist_agents() { :; }; lane_get() { :; }
     _framework_entry() { [ "$1" != speckit ] || printf "/speckit-specify"; }
     AGENT=claude
     _deliver_brief() { printf "%s" "$BRIEF_TEXT"; }

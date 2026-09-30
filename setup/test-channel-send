@@ -640,12 +640,26 @@ MOCK
 chmod +x "$GATE_MOCK/herdr" "$GATE_MOCK/curl"
 
 gate_run() { # <pane.read behaviour> <budget_ms> -> prints channel-send's output
+  rm -f "$GATE_BIN/.first-slice-spent"
   cat > "$GATE_BIN/herdr-rpc" <<MOCK
 #!/usr/bin/env bash
 # The wait is REAL: it blocks for a slice and then reports a timeout, exactly as
 # herdr-rpc does on a pane that never reaches idle. So "it did not spend the
 # budget" is a claim about wall clock against \$2, not about a stubbed no-op.
-if [ "\$1" = wait-agent ]; then sleep 1; exit 2; fi
+#
+# EXCEPT THE FIRST SLICE, which times out at once. witness_wait only cross-checks
+# after a slice if its deadline has not passed, and that deadline is kept in
+# whole seconds, so a 3000 ms budget leaves as little as 2 s. A first slice that
+# slept 1 s left the cross-check one scheduling delay from never running: under
+# load (2026-09-30, 54 red ~1 in 3 at load ~10) the fork plus the sleep crossed
+# the deadline, channel-send timed out with no witness, and "a timeout still
+# names what the cross-check could not read" went red on a correct binary. The
+# first slice returning at once makes the witness run on the first pass; every
+# later slice still blocks for real.
+if [ "\$1" = wait-agent ]; then
+  if [ ! -e "$GATE_BIN/.first-slice-spent" ]; then : > "$GATE_BIN/.first-slice-spent"; exit 2; fi
+  sleep 1; exit 2
+fi
 if [ "\$1 \$2" = "call pane.read" ]; then $1; fi
 printf '{"result":{}}\n'
 MOCK

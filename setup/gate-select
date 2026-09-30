@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""gate-select — which fast-gate subjects a set of changed paths can reach.
+
+    python3 setup/gate-select <root> <changed-paths-file> [<trigger-regex>]
+
+<changed-paths-file> holds one repo-relative path per line (what pre-commit
+stages). The answer is printed one fact per line, for setup/test-hw and
+setup/hooks/pre-commit to read:
+
+    all <why>              run the WHOLE fast gate (a path this cannot map)
+    subject <name> <path>  a fast subject, and the first changed path reaching it
+    core <name>            a subject that declares `# gate-core:` (always runs)
+    guards <path>          run the guard drivers too (a guard changed)
+    deferred <name>        a changed SLOW subject: not in the fast gate, as today
+
+WHY IT IS DERIVED AND NOT DECLARED. 104 subjects with a hand-kept `# covers:`
+line each is 104 lists that go stale in silence, and a stale one
+UNDER-selects: the only direction here that loses a red. What a subject
+reaches is already written in it: the paths and command names it runs or
+reads. So a subject is selected when its own text — plus the top of
+tests/_common.sh, which every subject sources, plus the bodies of the
+_common.sh helpers it calls — names a changed path or anything that reaches it.
+
+"ANYTHING THAT REACHES IT" is a closure over the code: a changed
+`bin/project-spaces.sh` is reached by every script whose text names
+`project-spaces.sh`, and a subject that runs any of those is selected. Names
+match as bare words (`hw status` counts, not only `bin/hw`), comments
+excluded. Every imprecision in that rule over-selects, which costs seconds;
+none of it under-selects a subject whose text names what it runs.
+
+WHAT IT CANNOT SEE, AND THE ANSWER FOR IT: a path built at runtime
+(`"$ROOT/bin/$tool"`) names nothing. So a TRIGGER path (the suite's own
+pattern, setup/hooks/suite-trigger-pattern.sh) that reaches NO fast subject
+is not "nothing to run": it is `all`, the whole fast gate of today. The
+runner's own machinery (setup/test-hw and what it loads, and everything under
+setup/tests/ that is not a subject) is `all` by rule.
+
+A path OUTSIDE the trigger (a README, CLAUDE.md, an export overlay) never ran
+the gate and never makes it `all`: it adds only the subjects that name it by
+its exact repo-relative path — the ones that read that document.
+"""
+import json
+import os
+import re
+import sys
+
+SUBJECT = re.compile(r"^setup/tests/[0-9][0-9]*-[^/]*\.sh$")
+# The runner and everything it loads: a change here can move any verdict.
+RUNNER = re.compile(
+    r"^setup/(test-hw|test-hw-snapshot\.py|fast-gate-budget\.sh|test-budgets\.json"
+    r"|mutation-coverage|gate-select)$|^setup/tests/")
+GUARD = re.compile(
+    r"^setup/guards/|^([^/]+/)?\.claude/hooks/deny-repo-writes\.py$"
+    r"|^([^/]+/)?\.opencode/plugin/deny-repo-writes\.js$")
+# Where the code a subject can run lives: the closure is taken over these.
+CODE_DIRS = ("bin", "setup", "lanes", "shell", ".claude", ".opencode")
+CODE_SKIP = re.compile(
+    r"^setup/(tests|decisions|briefs|evidence|baselines|plans|export/overlay)/"
+    r"|\.(md|timeline|png|svg|jpg|gif|pdf)$|^setup/decisions\.md$")
+ROOT_FILES = ("projects.json", "guards.json")
+COMMENT = re.compile(r"^\s*(#(?!!)|//).*$", re.M)
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def code_text(path):
+    return COMMENT.sub("", read(path))
+
+
+def names(text, word):
+    """<word> as a bare name: not glued to another name on either side."""
+    return re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(word)
+                     + r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9])", text) is not None
+
+
+def universe(root):
+    files = {}
+    for rel in ROOT_FILES:
+        if os.path.isfile(os.path.join(root, rel)):
+            files[rel] = code_text(os.path.join(root, rel))
+    for top in CODE_DIRS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, top)):
+            dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__")]
+            for fn in filenames:
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, root)
+                if CODE_SKIP.search(rel):
+                    continue
+                try:
+                    if os.path.getsize(full) > 2_000_000:
+                        continue
+                except OSError:
+                    continue
+                files[rel] = code_text(full)
+    return files
+
+
+def loads(text, base):
+    """<text> SOURCES or IMPORTS a file named <base>: its code runs as part of it."""
+    stem = re.escape(re.sub(r"\.(py|js|mjs|sh)$", "", base))
+    b = re.escape(base)
+    return re.search(
+        r"(^|[;&|({\s])(\.|source)\s+[\"']?[^\s\"';]*" + b + r"(?![A-Za-z0-9_.-])"
+        r"|\bimport\s+" + stem + r"\b|\bfrom\s+" + stem + r"\s+import\b"
+        r"|(require\(|\bfrom\s+|import\()\s*[\"'][^\"']*" + stem + r"(\.m?js)?[\"']",
+        text, re.M) is not None
+
+
+def closure(start, code):
+    """start plus every code file that SOURCES or IMPORTS a member, to a fixpoint.
+
+    Only loading counts. A script that RUNS another (`"$BIN_DIR/hw" status`)
+    is not in the closure: bin/ calls itself in a ring (hw, done-invoker,
+    ask-invoker, brain, lint-shell, ...), and following those calls selected
+    86 of 104 subjects for ANY path in bin/ — the gate of today, paid through a
+    slower door. A caller's subject that exercises a callee without naming it
+    is left to the full suite, the push floor, exactly as the 129 slow
+    subjects already are.
+    """
+    seen = {start}
+    todo = [start]
+    while todo:
+        cur = todo.pop()
+        base = os.path.basename(cur)
+        for rel, text in code.items():
+            if rel not in seen and loads(text, base):
+                seen.add(rel)
+                todo.append(rel)
+    return seen
+
+
+def common_parts(path):
+    """(top-level text, {helper: body}) of tests/_common.sh, comments out."""
+    text = code_text(path)
+    helpers = {}
+    top = []
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", lines[i])
+        if m:
+            body = [lines[i]]
+            i += 1
+            while i < len(lines) and lines[i] != "}":
+                body.append(lines[i])
+                i += 1
+            helpers[m.group(1)] = "\n".join(body)
+        else:
+            top.append(lines[i])
+        i += 1
+    return "\n".join(top), helpers
+
+
+def subject_text(text, top, helpers):
+    """The subject, _common.sh's top level, and every helper it reaches."""
+    parts = [text, top]
+    todo = [h for h in helpers if names(text, h)]
+    seen = set(todo)
+    while todo:
+        body = helpers[todo.pop()]
+        parts.append(body)
+        for h in helpers:
+            if h not in seen and names(body, h):
+                seen.add(h)
+                todo.append(h)
+    return "\n".join(parts)
+
+
+def header_declares(path, key):
+    """`# <key>:` in the comment block at the top of the file."""
+    for n, line in enumerate(read(path).split("\n")):
+        if n == 0 and line.startswith("#!"):
+            continue
+        if line.startswith("#"):
+            if re.match(r"^# " + re.escape(key) + r":", line):
+                return True
+            continue
+        if line.strip() == "":
+            continue
+        return False
+    return False
+
+
+def main(argv):
+    if len(argv) < 3:
+        print("usage: gate-select <root> <changed-paths-file> [<trigger-regex>]", file=sys.stderr)
+        return 2
+    root, changed_file = argv[1], argv[2]
+    trigger = re.compile(argv[3]) if len(argv) > 3 and argv[3] else None
+    changed = [l.strip() for l in read(changed_file).split("\n") if l.strip()]
+    if not changed:
+        print("all no changed paths were named")
+        return 0
+    tests = os.path.join(root, "setup", "tests")
+    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    threshold = budgets["fast_gate_threshold_seconds"]
+    fast = sorted(n for n, v in budgets["files"].items()
+                  if v["seconds"] <= threshold and os.path.isfile(os.path.join(tests, n)))
+    top, helpers = common_parts(os.path.join(tests, "_common.sh"))
+    stext = {n: subject_text(COMMENT.sub("", read(os.path.join(tests, n))), top, helpers)
+             for n in fast}
+    code = None
+    chosen = {}
+    guards = []
+    for path in changed:
+        triggered = trigger is None or trigger.search(path) is not None
+        if SUBJECT.match(path):
+            name = os.path.basename(path)
+            if name in stext:
+                chosen.setdefault(name, path)
+            else:
+                print("deferred %s" % name)
+            continue
+        if RUNNER.search(path):
+            print("all %s is the runner's own machinery" % path)
+            return 0
+        if GUARD.search(path):
+            guards.append(path)
+        if not triggered:
+            # A document: only the subjects that read it, by its exact path.
+            for n, t in stext.items():
+                if names(t, path):
+                    chosen.setdefault(n, path)
+            continue
+        if code is None:
+            code = universe(root)
+        reach = closure(path, code)
+        hit = False
+        for n, t in stext.items():
+            for r in reach:
+                if r in t or names(t, os.path.basename(r)):
+                    chosen.setdefault(n, path)
+                    hit = True
+                    break
+        if not hit and path not in guards:
+            print("all %s reaches no fast subject by name" % path)
+            return 0
+    # The core runs on EVERY selection, including one that reached nothing
+    # else (a slow subject, a document nobody reads): whoever called the runner
+    # asked for a gate, and the core is the floor of one. Whether to call it at
+    # all for such a commit is the caller's (pre-commit asks for `subject` lines).
+    for n in fast:
+        if header_declares(os.path.join(tests, n), "gate-core"):
+            print("core %s" % n)
+            chosen.pop(n, None)
+    for n in fast:
+        if n in chosen:
+            print("subject %s %s" % (n, chosen[n]))
+    for g in guards:
+        print("guards %s" % g)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

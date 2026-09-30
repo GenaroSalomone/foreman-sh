@@ -108,7 +108,12 @@ trap 'rm -f "$log"' EXIT
 # HW_TEST_GATE IS PINNED, NOT INHERITED. An ambient `HW_TEST_GATE=fast` used to
 # reach the runner from here, and its green was cached as a FULL verdict — the
 # one thing main must never accept (2026-09-30, tests/250).
-HW_TEST_GATE=full bash setup/test-hw 2>&1 | tee "$log" || rc=$?
+# AND IT KEEPS ITS OWN TIMINGS, one row per job (setup/test-hw, HW_TEST_TIMINGS):
+# a slow verify is the one run whose shape nobody saw, and the file is what
+# says whether the seconds went to subjects, to the machine's pool or to the
+# drain before the subjects that run alone.
+timings="${HW_TEST_TIMINGS:-${TMPDIR:-/tmp}/verify-for-push-timings.$tree.tsv}"
+HW_TEST_TIMINGS="$timings" HW_TEST_GATE=full bash setup/test-hw 2>&1 | tee "$log" || rc=$?
 out="$(cat "$log")"
 elapsed=$(( $(date +%s) - started ))
 if [ "$rc" -ne 0 ]; then

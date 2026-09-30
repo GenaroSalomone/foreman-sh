@@ -97,8 +97,12 @@ make_repo() { # <dir> <runner-source> [bare — no stamping subjects]
       && git add -A . && git commit -q -m fixture ) >/dev/null 2>&1 \
     || fail "fixture: could not build $repo"
 }
+# TEST_HW_SUITE_QUEUE=off: since 2026-09-30 two FULL runs queue (one per
+# machine, tests/360), which would put this race one after the other. What
+# this file holds is the pool beneath that queue — still what a full run shares
+# with every fast gate — so its drives race two full runners with the queue off.
 drive() { # <repo> [VAR=value...]
-  ( cd "$1" && env -u TEST_HW_NESTED HW_TEST_JOBS=2 HW_TEST_MACHINE_JOBS=3 "${@:2}" bash ./setup/test-hw 2>&1 )
+  ( cd "$1" && env -u TEST_HW_NESTED TEST_HW_SUITE_QUEUE=off HW_TEST_JOBS=2 HW_TEST_MACHINE_JOBS=3 "${@:2}" bash ./setup/test-hw 2>&1 )
 }
 
 # verdicts — reads the stamps of one race and prints one line per property:
@@ -182,7 +186,7 @@ assert s.count(sys.argv[2]) == 1, "the mutated line is not where the mutant expe
 p.write_text(s.replace(sys.argv[2], sys.argv[3]))
 PY
 }
-mutate "$TMP/mutant-excl" '            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; break; fi' \
+mutate "$TMP/mutant-excl" '            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; _tm_wait excl begin; break; fi' \
                           '            : mutant-no-exclusive'
 race "$TMP/mutant-excl" mexcl
 saw_mutant "no machine exclusive" "$RACE_V" "ALONE-BROKEN"

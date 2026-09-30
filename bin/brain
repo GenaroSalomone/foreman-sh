@@ -235,6 +235,7 @@ brain_engram_register() {
   # shellcheck source=engram-serve.sh
   . "$BRAIN_BIN/engram-serve.sh"
   url="$(engram_serve_url)"
+  engram_serve_wait "$url" || true
   verdict="$(engram_serve_verdict "$url")" || rc=$?
   if [ "$rc" = 0 ] && engram_session_post "$id" "$ENGRAM_LABEL" "$dir" "$url" >/dev/null 2>&1; then
     BRAIN_ENGRAM_SESSION="$id"

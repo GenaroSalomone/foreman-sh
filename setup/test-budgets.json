@@ -111,7 +111,7 @@
     },
     "176-dos-suites-comparten-la-maquina.sh": {
       "exit": 0,
-      "seconds": 126.64
+      "seconds": 144.02
     },
     "183-un-fix-prueba-el-rojo.sh": {
       "exit": 0,
@@ -168,6 +168,18 @@
     "34-wait-witness.sh": {
       "exit": 0,
       "seconds": 3.91
+    },
+    "390-un-stand-in-http-no-espera-al-dns.sh": {
+      "exit": 0,
+      "seconds": 4.36
+    },
+    "391-en-ci-el-fast-gate-no-juzga-el-reloj.sh": {
+      "exit": 0,
+      "seconds": 23.93
+    },
+    "392-los-fixtures-del-preambulo-no-ensucian-el-log.sh": {
+      "exit": 0,
+      "seconds": 6.03
     },
     "41-ruling-refusal.sh": {
       "exit": 0,
@@ -294,5 +306,5 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-09-30T14:07:35Z"
+  "measured_at": "2026-09-30T17:43:04Z"
 }

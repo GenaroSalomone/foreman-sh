@@ -122,8 +122,8 @@ add it to Codex's `PreToolUse` hook for the shell tool, a Codex session is
 unguarded. A Codex brainer of a lane whose repository is the brain itself, once
 it leaves the brain directory, is unguarded even with the hook registered.
 
-### L4. OpenCode background sub-agents are experimental
-- **Scope:** OpenCode executors and brainers that spawn sub-agents in the
+### L4. OpenCode background subagents are experimental
+- **Scope:** OpenCode executors and brainers that spawn subagents in the
   background. The harness enables them with OpenCode's
   `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` variable.
 - **Impact:** the behaviour, and the variable itself, are OpenCode's and may
@@ -135,7 +135,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   against OpenCode 1.18.23 (`measured`), before the installer's minimum rose to
   1.18.31; they are not re-measured on 1.18.31 or later (`unverified`). Whether the feature has left
   experimental status in a later OpenCode release is `unverified`.
-- **Workaround:** dispatch without relying on background sub-agents; the
+- **Workaround:** dispatch without relying on background subagents; the
   foreground path does not depend on the variable.
 - **Next decision:** revisit when OpenCode documents the feature as stable.
 
@@ -180,6 +180,12 @@ it leaves the brain directory, is unguarded even with the hook registered.
     `~/Code/MyApp` is refused like `~/code/myapp`. A protected root that does
     not exist yet has no identity to compare, and a different-case spelling of
     it is compared as text only.
+  - Nested `env` wrappers: the guards unwrap each `env` and its options before
+    judging the command, and that unwrapping grows steeply with nesting. A
+    command of about 5.6 KB built from chained `env` wrappers takes the guard
+    18 seconds (`measured`); a much larger one could outlast the agent's hook
+    timeout, and a hook that times out does not block. No ordinary command
+    comes near this size.
 - **Evidence:** the shell and write-tool paths for Claude Code and OpenCode are
   `measured` by conformance and mutation tests plus live refusals; the Codex
   write-tool gap is `measured` as absent; the trust-hash behaviour is

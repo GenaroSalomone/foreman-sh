@@ -1,0 +1,440 @@
+#!/usr/bin/env bash
+#
+# hw-sandbox — run an executor inside a Seatbelt (sandbox-exec) profile, and
+# carry its reports out of it.
+#
+#   hw-sandbox profile               print the hard profile for this dispatch
+#   hw-sandbox statedir <rundir>     the run's private state dir (profile, shim, heartbeat)
+#   hw-sandbox arm <rundir> <kind> [<lane> <task>]   rebuild it; record the task as armed
+#   hw-sandbox armed <lane> <task>   exit 0 if that task was ever armed
+#   hw-sandbox run <rundir> <exe> [args…]   (the shim's body) broker + sandbox
+#   hw-sandbox broker <rundir> <owner-pid>   deliver <rundir>/outbox/*.req from outside
+#   hw-sandbox request <invoker> [args…]    (inside) hand one invoker call out
+#
+# WHY, AND WHAT WAS CHOSEN. The setup lane's executor-isolation decision of
+# 2026-09-30, on the executor-isolation-arch measurements: Seatbelt, opt-in per
+# dispatch, macOS only, with the HARD profile — the base one escapes through
+# the docker and herdr unix sockets (measured: `docker run -v $HOME` and
+# `herdr pane run` both wrote to ~ from inside). The hard profile denies every
+# outbound unix socket but mDNSResponder, and with it herdr — so done-invoker
+# and ask-invoker cannot reach the brainer from inside. That is what the
+# broker is for.
+#
+# THE BROKER IS PER DISPATCH, AND IT IS THE LAUNCH WRAPPER'S OWN CHILD. `run`
+# starts it BEFORE it calls sandbox-exec, so it is outside the profile, and it
+# dies when the agent exits. Chosen over the brainer's pane as broker because a
+# brainer is a model turn: it cannot poll a directory, it may be closed (the
+# outbox exists precisely because it may be), and a report would then wait on
+# the next time a person opens the lane. A process the launch owns has none of
+# that and needs no daemon, no lock and no registry.
+#
+# WHAT CROSSES, AND WHAT DOES NOT. Inside, an invoker writes only its ARGV —
+# NUL-separated, never evaluated — as <rundir>/outbox/<id>.req. Outside, the
+# broker runs the REAL invoker from the brain checkout that launched this
+# dispatch, under the environment the pane had at launch: the run, the task and
+# the brainer pane are the broker's, not the request's. So a sandboxed agent
+# can do exactly what it could do before — report its own run, ask its own
+# brainer — and nothing else: no other verb, no other run, no environment.
+# The invoker's stdout, stderr and exit status come back as files and are
+# replayed inside, so the caller sees the same invoker it always did. The
+# answer to an ask comes back the way it always has: the brainer types it into
+# this pane through herdr, from outside.
+#
+# WHAT THE PROFILE DOES NOT STOP is in setup/export/overlay/THREAT-MODEL.md and
+# KNOWN-LIMITATIONS.md: TCP (engram, the network), a push over HTTPS, the run
+# state under <workdir>/.hw, and anything Chrome needs --no-sandbox for.
+set -euo pipefail
+
+die() { printf 'hw-sandbox: %s\n' "$*" >&2; exit 1; }
+
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  _d="$(cd -P "$(dirname "$SELF")" && pwd)"; SELF="$(readlink "$SELF")"
+  case "$SELF" in /*) ;; *) SELF="$_d/$SELF" ;; esac
+done
+BIN_DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+SELF="$BIN_DIR/hw-sandbox"
+
+# Seatbelt compares RESOLVED paths: /tmp is /private/tmp and /var is
+# /private/var, and a rule on the unresolved spelling never matches.
+_canon() {  # $1=path — resolved through its nearest existing ancestor, so
+  # the answer is the same before and after the leaf is created (the state
+  # directory's name is a hash of it)
+  local p="$1" rest="" base
+  while [ ! -d "$p" ] && [ "$p" != / ] && [ -n "$p" ]; do
+    base="$(basename "$p")"; rest="/$base$rest"; p="$(dirname "$p")"
+  done
+  base="$(cd -P "$p" && pwd | sed 's|/$||')"
+  [ -n "$base$rest" ] || { printf '/'; return; }
+  printf '%s%s' "$base" "$rest"
+}
+
+# A path is spliced into the profile as a string literal. Anything that could
+# end the literal or start an escape is refused, never escaped: a profile is a
+# security boundary and "quoted correctly" is one more thing to get wrong.
+_lit() {  # $1=path
+  case "$1" in
+    *'"'*|*'\'*|*$'\n'*) die "path not representable in a profile: $1" ;;
+    /*) printf '"%s"' "$1" ;;
+    *) die "path is not absolute: $1" ;;
+  esac
+}
+# The same path as an anchored regex, for the few rules that need a suffix.
+_re() {  # $1=path
+  printf '%s' "$1" | sed -e 's/[][\.^$*+?(){}|]/\\&/g'
+}
+
+# Claude keeps a transcript per work directory under <config>/projects/<name>,
+# where <name> is the absolute cwd with every non-alphanumeric turned into '-'.
+# Only THAT directory is writable: a sibling's memory/ is loaded into another
+# session's prompt, which would make every other lane's context writable.
+_claude_project_dir_name() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+
+# ── the profile ─────────────────────────────────────────────────────────────
+#
+# Inputs come from the environment the dispatch already has, so `hw` and the
+# tests call it the same way:
+#   HW_WORKDIR   the executor's work directory (on a repo lane, its worktree)
+#   HW_ARTIFACTS where artifacts go; created if missing
+#   TMPDIR       the per-user temp directory
+#   CLAUDE_CONFIG_DIR  the account's config dir (default ~/.claude)
+#   HOME
+#   HW_SANDBOX_KIND    the agent kind; claude is the only one measured
+#   ENGRAM_DATA_DIR    engram's store (default ~/.engram)
+#
+# WHAT IS WRITABLE, and why each one:
+#   · the work directory, and the git worktree it is in when those differ;
+#   · $HW_ARTIFACTS and $TMPDIR (and /private/tmp, where Claude's scratchpads
+#     live);
+#   · the agent's own transcript directory, <config>/projects/<this workdir>,
+#     and NOTHING else of its config directory (see below);
+#   · the engram store. The executor's report IS a mem_save, and the MCP
+#     server opens the database directly (measured by executor-isolation-arch). That makes every
+#     lane's memory writable from inside — named in KNOWN-LIMITATIONS.md;
+#   · the linked worktree's slice of the common .git (as exec-git.sb):
+#     objects, refs, logs, packed-refs and worktrees/<this one>. Never hooks/
+#     and never config — both run as the operator in every other checkout.
+cmd_profile() {
+  local home wd art tmp cfg kind engram wt="" common="" gitdir="" projname
+  home="$(_canon "${HOME:?HOME is unset}")"
+  wd="$(_canon "${HW_WORKDIR:?HW_WORKDIR is unset}")"
+  art="${HW_ARTIFACTS:-$wd/.artifacts}"; mkdir -p "$art" 2>/dev/null || true; art="$(_canon "$art")"
+  tmp="$(_canon "${TMPDIR:-/tmp}")"
+  cfg="$(_canon "${CLAUDE_CONFIG_DIR:-$home/.claude}")"
+  kind="${HW_SANDBOX_KIND:-claude}"
+  engram="$(_canon "${ENGRAM_DATA_DIR:-$home/.engram}")"
+  projname="$(_claude_project_dir_name "$wd")"
+  if git -C "$wd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    wt="$(_canon "$(git -C "$wd" rev-parse --show-toplevel)")"
+    common="$(cd "$wd" && _canon "$(git rev-parse --git-common-dir)")"
+    gitdir="$(cd "$wd" && _canon "$(git rev-parse --git-dir)")"
+  fi
+
+  # EVERY PATH IS CHECKED HERE, IN THIS SHELL, before a byte is printed. The
+  # `$(_lit …)` calls below run in subshells, where `die` ends only the
+  # subshell: measured, a quoted workdir printed `(subpath )` and exited 0.
+  local p
+  for p in "$home" "$wd" "$art" "$tmp" "$cfg" "$engram" "$wt" "$common" "$gitdir"; do
+    [ -z "$p" ] || _lit "$p" >/dev/null
+  done
+  printf ';; hw-sandbox hard profile — generated per dispatch; see bin/hw-sandbox\n'
+  printf '(version 1)\n(allow default)\n(deny file-write*)\n'
+  printf '(allow file-write*\n'
+  printf '  (subpath %s)\n' "$(_lit "$wd")"
+  [ -z "$wt" ] || [ "$wt" = "$wd" ] || printf '  (subpath %s)\n' "$(_lit "$wt")"
+  printf '  (subpath %s)\n  (subpath %s)\n' "$(_lit "$art")" "$(_lit "$tmp")"
+  printf '  (subpath "/private/tmp")\n'
+  printf '  (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$") (literal "/dev/ptmx") (literal "/dev/dtracehelper")\n'
+  printf '  (subpath %s)\n' "$(_lit "$engram")"
+  [ "$kind" = claude ] || die "no measured sandbox profile for $kind (claude only)"
+  # ONE directory of the agent's own state, and nothing else of its config
+  # dir. Measured 2026-09-30 with claude 2.1.284 (-p and Bash, Write): it runs
+  # with only its transcript directory writable. Every sibling is shared with
+  # other sessions and some are executed by them: shell-snapshots/ is SOURCED
+  # by the session that wrote it, session-env/ likewise, projects/*/memory is
+  # loaded into other lanes' prompts, and .claude.json carries MCP servers.
+  printf '  (subpath %s)\n' "$(_lit "$cfg/projects/$projname")"
+  printf ')\n'
+  if [ -n "$common" ] && [ "$common" != "$gitdir" ]; then
+    printf ';; the linked worktree'"'"'s slice of the common .git — never hooks/ or config\n'
+    printf '(allow file-write*\n'
+    printf '  (subpath %s) (subpath %s) (subpath %s) (subpath %s)\n' \
+      "$(_lit "$common/objects")" "$(_lit "$common/refs")" "$(_lit "$common/logs")" "$(_lit "$gitdir")"
+    printf '  (regex #"^%s/packed-refs(\\.lock|\\.new)?$"))\n' "$(_re "$common")"
+  fi
+  printf ';; control sockets run code outside the sandbox: herdr, docker, ssh-agent\n'
+  printf '(deny network-outbound (remote unix-socket))\n'
+  printf '(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))\n'
+  printf ';; credentials that reach other machines\n'
+  printf '(deny file-read* (subpath %s) (subpath %s) (subpath %s))\n' \
+    "$(_lit "$home/.ssh")" "$(_lit "$home/.config/gh")" "$(_lit "$home/.docker")"
+}
+
+# ── the platform ────────────────────────────────────────────────────────────
+# HW_SANDBOX_UNAME exists for the refusal's own test; nothing else sets it.
+cmd_supported() {
+  local os="${HW_SANDBOX_UNAME:-$(uname -s)}"
+  [ "$os" = Darwin ] || { printf 'the sandbox is Seatbelt (sandbox-exec), which exists only on macOS; this is %s. Dispatch without --sandbox, or from a Mac.\n' "$os"; return 1; }
+  command -v sandbox-exec >/dev/null 2>&1 || [ -x /usr/bin/sandbox-exec ] \
+    || { printf 'sandbox-exec is not on this Mac (expected /usr/bin/sandbox-exec). Dispatch without --sandbox.\n'; return 1; }
+  return 0
+}
+
+# ── the broker's own directory ─────────────────────────────────────────────
+#
+# NOTHING THE BROKER OR `arm` WRITES LIVES WHERE THE AGENT CAN WRITE. The
+# outbox is under the work directory, so the sandboxed agent can plant a
+# symlink there; a process outside the profile that then writes `> outbox/x`
+# writes wherever the link points, with the operator's rights (Judgment Day,
+# both judges: ~/.zshrc, ~/.local/bin, ~/.ssh/authorized_keys), and one that
+# reads `< outbox/x.req` reads what the agent may not. So the profile, the
+# shim, the heartbeat, the log and every request in flight live in a per-run
+# STATE directory outside the profile's write set, mode 700:
+#   ${HW_SANDBOX_STATE_ROOT:-~/.local/state/hw-sandbox}/<sha of the rundir>
+# The outbox only carries the agent's own <id>.req INTO it (taken by rename,
+# which moves a link rather than following it, and read only if it is a plain
+# file) and the answer files OUT of it, delivered by rename(2), which replaces
+# a planted link or refuses a planted directory — never writes through either.
+cmd_statedir() {  # $1=rundir — prints the state directory, creating nothing
+  local rundir="${1:?rundir}" root key
+  root="${HW_SANDBOX_STATE_ROOT:-$HOME/.local/state/hw-sandbox}"
+  key="$(printf '%s' "$(_canon "$rundir")" | shasum -a 256 2>/dev/null | cut -c1-24)"
+  [ -n "$key" ] || die "cannot hash the run directory (no shasum)"
+  printf '%s/%s' "$root" "$key"
+}
+# THE RECORD THAT A TASK WAS ARMED is keyed by <lane>:<task> — names hw owns —
+# and not by any path under the work directory: the agent can rename or hide
+# its run directories, and a record found through them is one it can make
+# `hw revive` miss (Judgment Day round 1, both judges on the scoped
+# re-judgment). `armed` exits 0 when the task was ever armed, 1 when never,
+# and anything else when it cannot tell — which a caller treats as armed.
+_task_record() {  # $1=lane $2=task
+  local root key
+  root="${HW_SANDBOX_STATE_ROOT:-$HOME/.local/state/hw-sandbox}"
+  key="$(printf '%s:%s' "${1:?lane}" "${2:?task}" | shasum -a 256 2>/dev/null | cut -c1-24)"
+  [ -n "$key" ] || die "cannot hash the task name (no shasum)"
+  printf '%s/tasks/%s' "$root" "$key"
+}
+cmd_armed() {  # 0 armed, 1 never, 2 cannot tell — never 1 by accident
+  local r
+  { [ -n "${1:-}" ] && [ -n "${2:-}" ]; } || { printf 'hw-sandbox: armed needs <lane> <task>\n' >&2; exit 2; }
+  r="$(_task_record "$1" "$2")" || exit 2
+  [ -n "$r" ] || exit 2
+  if [ -e "$r" ]; then exit 0; fi
+  exit 1
+}
+
+# THE OUTBOX IS PINNED BY IDENTITY, NOT BY PATH. A link planted at a LEAF is
+# replaced by rename(2), but rename follows links in the path ABOVE the leaf,
+# and every directory from the work dir down is the agent's to swap: with
+# `outbox` (or `.hw/<run>`) turned into a link mid-request, an answer lands in
+# any directory the operator can write, and the broker's own *.req sweep
+# claims or deletes files there (Judgment Day round 1, judge B). So the broker
+# records the outbox's device and inode when it starts — before the agent
+# runs — and every claim and delivery opens the path with O_NOFOLLOW, checks
+# that it is still that directory, and acts relative to its descriptor.
+_OUTBOX_PY='
+import os, re, stat, sys
+def pinned(path, pin):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    st = os.fstat(fd)
+    if "%d:%d" % (st.st_dev, st.st_ino) != pin:
+        os.close(fd)
+        raise OSError("outbox %s is no longer the directory the broker started with" % path)
+    return fd
+op = sys.argv[1]
+if op == "pin":
+    st = os.lstat(sys.argv[2])
+    if not stat.S_ISDIR(st.st_mode):
+        sys.exit("outbox %s is not a plain directory" % sys.argv[2])
+    print("%d:%d" % (st.st_dev, st.st_ino))
+elif op == "claim":            # outbox pin workdir -> prints claimed ids
+    ob, pin, w = sys.argv[2:5]
+    fd = pinned(ob, pin)
+    for name in os.listdir(fd):
+        if not name.endswith(".req"):
+            continue
+        rid = name[:-4]
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", rid):
+            try: os.unlink(name, dir_fd=fd)
+            except OSError: pass
+            continue
+        dst = os.path.join(w, rid + ".claimed")
+        try: os.rename(name, dst, src_dir_fd=fd)
+        except OSError: continue
+        st = os.lstat(dst)
+        if not stat.S_ISREG(st.st_mode):
+            if stat.S_ISDIR(st.st_mode): os.rmdir(dst)
+            else: os.unlink(dst)
+            continue
+        print(rid)
+elif op == "deliver":          # outbox pin src name
+    ob, pin, src, name = sys.argv[2:6]
+    try:
+        fd = pinned(ob, pin)
+        os.replace(src, name, dst_dir_fd=fd)
+    except OSError:
+        os.unlink(src)
+'
+_deliver() {  # $1=outbox $2=pin $3=src $4=name — replace the ENTRY, or drop src
+  python3 -c "$_OUTBOX_PY" deliver "$1" "$2" "${3:?}" "${4:?}" 2>/dev/null || rm -f "${3:?}"
+}
+
+# ── arming a pane ───────────────────────────────────────────────────────────
+#
+# herdr starts an agent by typing its canonical executable into the pane's
+# shell (measured: `claude --version` appeared at the prompt). So the only
+# place to stand between herdr and the agent is that shell's PATH, and a
+# pane's --env PATH is lost as soon as the user's rc files rebuild it
+# (measured: a shim on --env PATH was never called). `arm` writes the shim;
+# hw then exports PATH IN the shell, right before `agent start`. The state
+# directory is REBUILT, so no heartbeat, profile or shim of an earlier launch
+# of this run survives into this one.
+cmd_arm() {  # $1=rundir $2=kind [$3=lane $4=task — records that the task was armed]
+  local rundir="${1:?rundir}" kind="${2:?kind}" real st rec
+  cmd_supported >/dev/null || die "$(cmd_supported || true)"
+  st="$(cmd_statedir "$rundir")"
+  rm -rf "${st:?}"
+  mkdir -p "$(dirname "$st")" "$rundir/outbox"
+  ( umask 077; mkdir "$st" "$st/bin" "$st/work" ) || die "cannot create the state directory $st"
+  real="$(PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -x -F "$st/bin" | paste -sd: -)" command -v "$kind" || true)"
+  [ -n "$real" ] || die "cannot find the $kind executable on PATH"
+  HW_SANDBOX_KIND="$kind" cmd_profile > "$st/profile.sb"
+  if [ -n "${3:-}" ] && [ -n "${4:-}" ]; then
+    rec="$(_task_record "$3" "$4")"
+    ( umask 077; mkdir -p "$(dirname "$rec")" ) && printf '%s\n' "$rundir" > "$rec" \
+      || die "cannot record that $3:$4 was armed ($rec)"
+  fi
+  {
+    printf '#!/bin/bash\n'
+    printf '# written by hw-sandbox arm: the %s this pane starts runs in the sandbox.\n' "$kind"
+    printf 'exec %q run %q %q "$@"\n' "$SELF" "$rundir" "$real"
+  } > "$st/bin/$kind"
+  chmod 755 "$st/bin/$kind"
+  printf '%s\n' "$st/bin"
+}
+
+# ── the launch wrapper ─────────────────────────────────────────────────────
+cmd_run() {
+  local rundir="${1:?rundir}" real="${2:?executable}" rc=0 st
+  shift 2 || return 1
+  st="$(cmd_statedir "$rundir")"
+  [ -r "$st/profile.sb" ] || die "no profile at $st/profile.sb — run hw-sandbox arm first"
+  mkdir -p "$rundir/outbox"
+  # IN A SESSION OF ITS OWN (setsid), so the pane's close — which ends up as
+  # a SIGKILL to the pane's process group, measured — cannot reach it or the
+  # invoker it is carrying. python3, because macOS ships no setsid(1).
+  python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+    "$SELF" broker "$rundir" "$$" </dev/null >>"$st/broker.log" 2>&1 &
+  HW_SANDBOX=1 HW_SANDBOX_OUTBOX="$rundir/outbox" HW_SANDBOX_STATE="$st" DISABLE_AUTOUPDATER=1 \
+    /usr/bin/sandbox-exec -f "$st/profile.sb" "$real" "$@" || rc=$?
+  # Not killed: it sees this process gone and exits once in-flight work ends.
+  return "$rc"
+}
+
+# ── the broker (outside) ───────────────────────────────────────────────────
+#
+# One request is <id>.req in the outbox (argv, NUL-separated, first word the
+# invoker). It is taken into the state directory by rename, run in the
+# background so a long ask does not stop the heartbeat, and answered as
+# <id>.out / <id>.err / <id>.rc delivered back — rc last, because it is what
+# the client waits for.
+HEARTBEAT=broker.alive
+_serve_one() {  # $1=outbox $2=its pin $3=work dir $4=id
+  local ob="$1" pin="$2" w="$3" id="$4" verb rc=0
+  local -a argv=()
+  while IFS= read -r -d '' a; do argv+=("$a"); done < "$w/$id.claimed"
+  rm -f "${w:?}/${id:?}.claimed"
+  verb="${argv[0]:-}"
+  case "$verb" in
+    done-invoker|ask-invoker)
+      ( cd "${HW_WORKDIR:-.}" 2>/dev/null || true
+        env -u HW_SANDBOX -u HW_SANDBOX_OUTBOX -u HW_SANDBOX_STATE "$BIN_DIR/$verb" "${argv[@]:1}" \
+          </dev/null >"$w/$id.out" 2>"$w/$id.err" ) || rc=$?
+      ;;
+    *) printf 'hw-sandbox broker: refused: that is not an invoker the sandbox hands out (only done-invoker and ask-invoker)\n' > "$w/$id.err"
+       : > "$w/$id.out"; rc=1 ;;
+  esac
+  printf '%s\n' "$rc" > "$w/$id.rc"
+  _deliver "$ob" "$pin" "$w/$id.out" "$id.out"
+  _deliver "$ob" "$pin" "$w/$id.err" "$id.err"
+  _deliver "$ob" "$pin" "$w/$id.rc" "$id.rc"
+}
+#
+# THE PANE CLOSING DOES NOT STOP IT; ITS OWNER'S DEATH DOES. Measured twice
+# in setup/e2e-sandbox: done-invoker delivers, then runs `hw done`, which
+# closes the very pane the broker lives in. The first run's SIGHUP, and with
+# that ignored the second run's SIGTERM, killed the invoker mid-close; no .rc
+# was written, and the first executor was told the delivery was UNKNOWN about
+# a report its brainer already had. So both are ignored — here and, inherited,
+# in the invoker it runs (bash cannot re-trap a signal ignored at entry, so a
+# served invoker finishes what it started; SIGKILL still ends it). The broker
+# watches its owner, the launch wrapper ($2), instead: once that is gone it
+# lets what is in flight finish, and exits. `run` does not kill it for the
+# same reason.
+cmd_broker() {
+  local rundir="${1:?rundir}" owner="${2:?the owner pid: a broker nobody owns would never exit}" ob st w id pin
+  ob="$rundir/outbox"; mkdir -p "$ob"
+  pin="$(python3 -c "$_OUTBOX_PY" pin "$ob")" || die "cannot pin the outbox $ob"
+  st="$(cmd_statedir "$rundir")"; w="$st/work"
+  { [ -d "$w" ] && [ ! -L "$st" ] && [ ! -L "$w" ]; } || die "no state directory at $st — run hw-sandbox arm first"
+  trap '' HUP TERM
+  trap 'rm -f "${st:?}/$HEARTBEAT"' EXIT
+  while :; do
+    if ! kill -0 "$owner" 2>/dev/null; then
+      wait
+      exit 0
+    fi
+    : > "$st/$HEARTBEAT"
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      _serve_one "$ob" "$pin" "$w" "$id" &
+    done < <(python3 -c "$_OUTBOX_PY" claim "$ob" "$pin" "$w" 2>/dev/null || true)
+    sleep "${HW_SANDBOX_POLL:-0.5}"
+  done
+}
+
+# ── the client (inside) ─────────────────────────────────────────────────────
+# A broker that has not touched its heartbeat for this long is gone.
+STALE_S="${HW_SANDBOX_STALE_S:-20}"
+_age() { local m; m="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0)"; echo $(( $(date +%s) - m )); }
+cmd_request() {
+  local ob="${HW_SANDBOX_OUTBOX:-}" st="${HW_SANDBOX_STATE:-}" id verb="${1:-}" rc
+  { [ -n "$ob" ] && [ -n "$st" ]; } || die "HW_SANDBOX_OUTBOX/HW_SANDBOX_STATE are unset — this is not a sandboxed executor"
+  [ -d "$ob" ] || die "the outbox $ob does not exist"
+  # stdin does not cross (the broker runs the invoker on /dev/null), so the
+  # `-` form would fail with a misleading "stdin produced no bytes".
+  for a in "${@:2}"; do
+    [ "$a" != - ] || die "the stdin form ($verb -) cannot cross the sandbox: pass the paragraph as the argument. NOTHING was sent."
+  done
+  id="$(date +%s)-$$-${RANDOM}"
+  printf '%s\0' "$@" > "$ob/$id.req.tmp"
+  mv "$ob/$id.req.tmp" "$ob/$id.req"
+  while [ ! -f "$ob/$id.rc" ]; do
+    if [ ! -f "$st/$HEARTBEAT" ] || [ "$(_age "$st/$HEARTBEAT")" -gt "$STALE_S" ]; then
+      if [ -f "$ob/$id.req" ]; then
+        rm -f "${ob:?}/${id:?}.req"
+        die "the sandbox broker is not running (no heartbeat in $st for over ${STALE_S}s), so $verb could not leave the sandbox. NOTHING was sent. Report this pane as blocked to the operator: the broker is started by the launch wrapper, so the agent must be relaunched."
+      fi
+      die "the sandbox broker stopped while running $verb, so whether it was delivered is UNKNOWN. Do NOT re-run it; the brainer's pane or \`hw outbox\` says whether it landed."
+    fi
+    sleep 0.3
+  done
+  cat "$ob/$id.out" 2>/dev/null || true
+  cat "$ob/$id.err" >&2 2>/dev/null || true
+  rc="$(tr -dc '0-9' < "$ob/$id.rc")"
+  rm -f "${ob:?}/${id:?}.out" "${ob:?}/${id:?}.err" "${ob:?}/${id:?}.rc" "${ob:?}/${id:?}.req"
+  exit "${rc:-1}"
+}
+
+case "${1:-}" in
+  profile)   shift; cmd_profile "$@" ;;
+  statedir)  shift; cmd_statedir "$@" ;;
+  armed)     shift; cmd_armed "$@" ;;
+  supported) shift; cmd_supported ;;
+  arm)       shift; cmd_arm "$@" ;;
+  run)       shift; cmd_run "$@" ;;
+  broker)    shift; cmd_broker "$@" ;;
+  request)   shift; cmd_request "$@" ;;
+  *) die "usage: hw-sandbox profile|supported|statedir <rundir>|arm <rundir> <kind>|run <rundir> <exe> …|broker <rundir> <owner-pid>|request <invoker> …" ;;
+esac

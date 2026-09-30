@@ -27,6 +27,12 @@ const WRITES = new Set(["write", "edit", "multiedit", "patch", "apply_patch"]);
 
 function payloadFor(tool, args, sessionDir) {
   const a = args ?? {};
+  const isObject = args !== null && typeof args === "object" && !Array.isArray(args);
+  // Arguments that are not an object are refused, not read as empty: `command`
+  // would come out as "" and the guard would allow a call it had not read.
+  if (!isObject && (tool === "bash" || WRITES.has(tool))) {
+    return { unreadable: `${tool} arguments that are not an object (${args === null || args === undefined ? String(args) : Array.isArray(args) ? "a list" : typeof args})` };
+  }
   if (tool === "bash") {
     // The cwd axis: opencode's bash has no persistent shell, and `workdir`
     // is how an agent is told to change directory.
@@ -63,6 +69,9 @@ export const DenyBrainWrites = async (pluginInput) => {
     "tool.execute.before": async (input, output) => {
       const payload = payloadFor(input?.tool, output?.args, sessionDir);
       if (!payload) return;
+      if (payload.unreadable) {
+        throw new Error(`Blocked: the brain guard was handed ${payload.unreadable}, so it cannot read the call. Refused rather than guessed.`);
+      }
       const reason = verdict(payload);
       if (reason) throw new Error(reason);
     },

@@ -218,6 +218,73 @@ PY
   [ "${#FILES[@]}" -gt 0 ] || { printf 'not ok - runner: the fast gate classified zero files as fast — check fast_gate_threshold_seconds in %s\n' "$BUDGETS" >&2; exit 1; }
 fi
 
+# ── A GREEN FAST GATE LEAVES A VERDICT, MARKED gate=fast ────────────────────
+#
+# Each setup task paid TWO full suites (measured 2026-09-30: 965s alone,
+# 1106-2316s contended): the executor's, because pre-push demanded a full
+# verdict for every ref, `task/*` included, and the brainer's on the merge tree.
+# The merge tree is the one that reaches main, so the executor's full run bought
+# nothing the brainer's did not. pre-push now accepts, for `refs/heads/task/*`
+# ONLY, a fast-gate verdict of the exact tree; main still needs a full one.
+#
+# SAME CACHE, OTHER NAME: `<tree>.fast`, never `<tree>`. Every full-verdict
+# reader in pre-push reads `<tree>` or skips any name that is not 40 hex, so a
+# fast verdict cannot be read as a full one by a reader that forgets the gate,
+# and it cannot overwrite a full verdict of the same tree.
+#
+# DECIDED BEFORE THE RUN, on the live checkout, with verify-for-push's rule: the
+# bytes under test must be HEAD's wherever SUITE_TRIGGER_PATTERN reaches. A
+# pre-commit run tests staged bytes that are not HEAD's yet, so it caches
+# nothing. A tree with no git or no pattern file (a fixture) caches nothing.
+FAST_VERDICT_DIR=""; FAST_VERDICT_TREE=""; FAST_VERDICT_COMMIT=""; FAST_VERDICT_WHY=""
+_fast_verdict_prepare() {
+  local live="${TEST_HW_LIVE_ROOT:-}" dirty common
+  [ -n "$live" ] || { FAST_VERDICT_WHY="no live checkout named"; return 0; }
+  if [ ! -f "$SOURCE_ROOT/setup/hooks/suite-trigger-pattern.sh" ]; then
+    FAST_VERDICT_WHY="setup/hooks/suite-trigger-pattern.sh is absent"; return 0
+  fi
+  . "$SOURCE_ROOT/setup/hooks/suite-trigger-pattern.sh"
+  [ -n "${SUITE_TRIGGER_PATTERN:-}" ] || { FAST_VERDICT_WHY="SUITE_TRIGGER_PATTERN is empty"; return 0; }
+  FAST_VERDICT_COMMIT="$(git -C "$live" rev-parse --verify -q HEAD 2>/dev/null)" \
+    && FAST_VERDICT_TREE="$(git -C "$live" rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null)" \
+    && common="$(git -C "$live" rev-parse --git-common-dir 2>/dev/null)" \
+    || { FAST_VERDICT_TREE=""; FAST_VERDICT_WHY="$live is not a git checkout with a HEAD"; return 0; }
+  if ! dirty="$(git -C "$live" diff --name-only HEAD 2>/dev/null)"; then
+    FAST_VERDICT_TREE=""; FAST_VERDICT_WHY="could not compute which tracked paths are dirty"; return 0
+  fi
+  if printf '%s\n' "$dirty" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+    FAST_VERDICT_TREE=""
+    FAST_VERDICT_WHY="uncommitted changes to a path SUITE_TRIGGER_PATTERN names, so the bytes under test are not HEAD's"
+    return 0
+  fi
+  case "$common" in /*) ;; *) common="$live/$common" ;; esac
+  FAST_VERDICT_DIR="$common/hw-push-verified"
+}
+_fast_verdict_write() { # <headline>
+  local f tmp
+  if [ -z "$FAST_VERDICT_TREE" ] || [ -z "$FAST_VERDICT_DIR" ]; then
+    printf 'runner: no fast-gate verdict cached — %s\n' "${FAST_VERDICT_WHY:-unknown}" >&2
+    return 0
+  fi
+  f="$FAST_VERDICT_DIR/$FAST_VERDICT_TREE.fast"
+  tmp="$f.tmp.$$"
+  if mkdir -p "$FAST_VERDICT_DIR" 2>/dev/null && {
+       printf 'commit=%s\n' "$FAST_VERDICT_COMMIT"
+       printf 'tree=%s\n' "$FAST_VERDICT_TREE"
+       printf 'gate=fast\n'
+       printf 'verified_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+       printf 'headline=%s\n' "$1"
+       printf 'host=%s\n' "$(hostname)"
+     } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
+    printf 'runner: fast-gate verdict cached for tree %s (gate=fast) — pre-push accepts it for refs/heads/task/* only, never main\n' \
+      "$FAST_VERDICT_TREE" >&2
+  else
+    rm -f "$tmp" 2>/dev/null || true
+    printf 'runner: could not write the fast-gate verdict at %s — a task/* push will ask for one\n' "$f" >&2
+  fi
+}
+if [ "$HW_TEST_GATE" = fast ]; then _fast_verdict_prepare; fi
+
 # ── WHETHER A SUBJECT IS IN THE COMMIT, AND WHY THE TALLY NOW ASKS ──────────
 #
 # THE INSTRUMENT HAD THE DISEASE IT WAS MEASURING. Today this suite closed four
@@ -709,6 +776,36 @@ if [ -n "$MACHINE_JOBS" ]; then
   esac
 fi
 [ -n "$MACHINE_JOBS" ] || MACHINE_JOBS="$(_test_hw_default_machine_jobs)"
+# THE DEFAULT FOLLOWS THE POOL, decided once, at start (2026-09-30). Briefs used
+# to pin HW_TEST_JOBS=2 by hand for fear of a neighbour. Now, with no
+# HW_TEST_JOBS: a machine where no other suite holds or waits for a slot gives
+# this run every slot of the pool (MACHINE_JOBS); a machine where one does gives
+# it 2, as the briefs did. The pool still caps the sum either way; this only
+# decides how much of it one run reaches for. The idle number is the six measured
+# safe alone on 2026-09-16 (above); the 2/4/6 re-measurement asked on 2026-09-30
+# was not taken (the machine was at load 110), so it is not claimed here.
+# setup/tests/251 holds the rule.
+if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ]; then
+  _pool_busy=""
+  for _d in "$POOL_DIR"/slot.* "$POOL_DIR/exclusive"; do
+    [ -e "$_d" ] || continue
+    if _pool_dir_alive "$_d"; then _pool_busy="$_d"; break; fi
+  done
+  if [ -z "$_pool_busy" ]; then
+    for _w in "$POOL_DIR"/wait.*; do
+      case "$_w" in *.part) continue ;; esac
+      [ -e "$_w" ] || continue
+      if _pool_waiter_alive "$_w"; then _pool_busy="$_w"; break; fi
+    done
+  fi
+  if [ -n "$_pool_busy" ]; then
+    JOBS=2
+    printf 'runner: another suite is on this machine (%s) — this run takes 2 jobs at once, not %s (HW_TEST_JOBS overrides)\n' \
+      "$(basename "$_pool_busy")" "$MACHINE_JOBS" >&2
+  else
+    JOBS="$MACHINE_JOBS"
+  fi
+fi
 export TEST_HW_NESTED=1
 
 # ── THE JOB TABLE: every subject, then every guard, in the order they PRINT ──
@@ -1399,4 +1496,5 @@ else
     # is not needed is how an unqualified number comes back.
     printf '  no untracked subjects ran, so this is the whole suite\n'
   fi
+  if [ "$HW_TEST_GATE" = fast ]; then _fast_verdict_write "FAST GATE: $TRACKED_OK tests passed"; fi
 fi

@@ -161,5 +161,25 @@
   {"id": "declarer-behind-keyword-records", "command": "if true; then export D={{repo}}; echo x > $D/a; fi", "cwd": "{{outside}}", "expect": "deny", "category": "redirect", "trigger": "names"},
   {"id": "env-bash-c-is-still-code", "command": "env bash -c 'rm -rf ../{{repo_name}}/src'", "cwd": "{{sibling}}", "expect": "deny", "category": "mutator", "trigger": "resolved"},
   {"id": "cd-in-a-pipeline-does-not-move-the-shell", "command": "cd /tmp | true; rm -rf ../{{repo_name}}/src", "cwd": "{{sibling}}", "expect": "deny", "category": "mutator", "trigger": "resolved"},
-  {"id": "env-cd-after-a-real-cd-does-not-leave", "command": "cd {{repo}} && env cd /tmp && echo x > a", "cwd": "{{outside}}", "expect": "deny", "category": "redirect", "trigger": "cd"}
+  {"id": "env-cd-after-a-real-cd-does-not-leave", "command": "cd {{repo}} && env cd /tmp && echo x > a", "cwd": "{{outside}}", "expect": "deny", "category": "redirect", "trigger": "cd"},
+
+  {"_comment": "── A BACKSLASH-NEWLINE IS NOT A COMMAND BOUNDARY, AND AN eval BODY IS CODE. Judgment Day of guard-gate-relative-paths, 2026-09-30: `find <repo> \\<newline> -delete` and `eval \"rm -rf <repo>/x\"` were ALLOWED by every driver. bash deletes an unescaped backslash-newline before it splits words, so the scan's `find ... -delete` never met the newline that stopped it; and the masker blanked eval's quoted words as data although eval runs them. An EVEN run of backslashes before the newline escapes itself, and the newline stays a real boundary."},
+  {"id": "find-continuation-delete", "command": "find {{repo}} \\\n  -name a -delete", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "find-continuation-exec-rm", "command": "find {{repo}} -name a \\\n  -exec rm {} +", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "escaped-backslash-before-newline-is-still-a-boundary", "command": "echo \\\\\nrm -rf {{repo}}/x", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "comment-backslash-does-not-continue-the-line", "command": "echo hi # note \\\nrm -rf {{repo}}/x", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "line-comment-backslash-does-not-continue-the-line", "command": "# note \\\nrm -rf {{repo}}/x", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "single-quoted-backslash-newline-is-literal", "command": "echo 'a \\\n' && rm -rf {{repo}}/x", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "ansi-c-escaped-quote-does-not-hide-a-continuation", "command": "echo $'\\''; find {{repo}} \\\n  -delete", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "hash-glued-after-a-continuation-is-not-a-comment", "command": "find {{repo}} -name x\\\n#y \\\n  -delete", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"_comment": "── A QUOTE IN A COMMENT DOES NOT CROSS THE JOIN. Judgment Day round 2 of guarda-eval-y-find-multilinea, 2026-09-30: cc32609 masked the quote-aware and the quote-blind join in ONE pass, so the apostrophe of a comment in one copy paired with its twin in the other and blanked the `rm` between them — ALLOWED by every driver, DENIED at c0ea67c. Each copy is masked on its own now."},
+  {"id": "comment-apostrophe-does-not-pair-across-the-join", "command": "echo hi # it's \\\nrm -rf {{repo}}/x", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "comment-double-quote-does-not-pair-across-the-join", "command": "echo hi # say \"hi \\\nrm -rf {{repo}}/x", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "second-line-comment-quote-does-not-pair-across-the-join", "command": "echo a \\\n# it's \\\nrm -rf {{repo}}/x", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "find-continuation-read-is-allowed", "command": "find {{repo}} \\\n  -name '*.md' -print", "cwd": "{{outside}}", "expect": "allow"},
+  {"id": "eval-quoted-rm", "command": "eval \"rm -rf {{repo}}/x\"", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "eval-single-quoted-rm", "command": "eval 'rm -rf {{repo}}/x'", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "eval-rm-in-a-later-quoted-word", "command": "eval \"true;\" \"rm -rf {{repo}}/x\"", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "eval-behind-a-keyword", "command": "if true; then eval \"rm -rf {{repo}}/x\"; fi", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"},
+  {"id": "quoted-eval-word-is-not-an-eval", "command": "rg -n \"eval\" \"rm -rf\" {{repo}}/src", "cwd": "{{outside}}", "expect": "allow"}
 ]

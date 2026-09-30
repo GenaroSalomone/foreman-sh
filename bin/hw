@@ -906,6 +906,7 @@ cmd_ruling() {
     ok "ruling for $pane was claimed at once by its reporting done-invoker, which shows it to the executor and refuses to report until it is addressed."
     return 0
   fi
+  transcript_append "$rundir" "RULING-QUEUED" "ruling:${entry##*.} task=$seq" "$text"
   ok "ruling queued for $pane ($verdict, task $seq), number $pos in its queue — delivered at its next turn end, or by its done-invoker if it reports first; either way before the task can close, and after every ruling queued ahead of it. It is NOT delivered yet; $rundir/ruling-delivered.${entry##*.} records it once it lands."
 }
 
@@ -1609,11 +1610,66 @@ _claude_start_failure_screen() {
   printf '%s\n' "$screen" | sed '/^[[:space:]]*$/d' | tail -8 | sed 's/^/    /' >&2
 }
 
+# ── the sandbox (--sandbox, or `sandbox: true` in the brief) ────────────────
+#
+# The executor-isolation decision (2026-09-30), on executor-isolation-arch's
+# measurements: Seatbelt, opt-in per dispatch, the
+# HARD profile, macOS only. bin/hw-sandbox holds the profile, the broker that
+# carries done-invoker/ask-invoker out of it, and why each piece is shaped the
+# way it is. What hw owns is the refusal and the arming.
+#
+# CLAUDE ONLY, because it is the only vendor measured under the profile
+# (executor-isolation-arch and setup/e2e-sandbox). OpenCode and Codex keep state in
+# places the profile would have to open — ~/.cache/opencode holds the plugins
+# other sessions execute — and nobody has measured what they break.
+_check_sandbox() {
+  SANDBOX_LINE=""
+  [ "${SANDBOX:-0}" = 1 ] || return 0
+  local why
+  why="$("$HW_BIN_DIR/hw-sandbox" supported 2>&1)" || die "--sandbox refused: $why NOTHING was built."
+  [ "$AGENT" = claude ] || die "--sandbox refused: it is measured for claude only, and this dispatch runs $AGENT. Dispatch with --agent claude, or without --sandbox. NOTHING was built."
+  SANDBOX_LINE="on ($SANDBOX_SRC) — Seatbelt hard profile: writes only in the workdir, artifacts, TMPDIR and the agent's own state; no unix sockets (herdr, docker, ssh-agent); ~/.ssh, ~/.config/gh, ~/.docker unreadable. Reports leave through the outbox broker. TCP is NOT confined."
+}
+
+# herdr starts an agent by typing its executable into the pane's shell, and a
+# pane's --env PATH does not survive the user's rc files (both measured). So
+# the shim hw-sandbox writes is put in front of PATH IN THAT SHELL, just before
+# `agent start` types the command.
+_sandbox_arm_pane() {  # $1=pane $2=kind $3=rundir
+  local pane="$1" kind="$2" rundir="$3" shimdir
+  case "$rundir" in /*/.hw/?*) ;; *) warn "sandbox: no run directory to arm ($rundir)"; return 1 ;; esac
+  shimdir="$(HW_WORKDIR="${HW_WORKDIR:-}" HW_ARTIFACTS="${HW_ARTIFACTS:-}" "$HW_BIN_DIR/hw-sandbox" arm "$rundir" "$kind" "$PROJ" "$TASK")" \
+    || { warn "sandbox: could not arm $rundir — the agent is NOT started unconfined"; return 1; }
+  herdr pane run "$pane" "export PATH=$(printf '%q' "$shimdir"):\$PATH; hash -r 2>/dev/null; clear" >/dev/null 2>&1 \
+    || { warn "sandbox: could not put the shim on $pane's PATH — the agent is NOT started unconfined"; return 1; }
+  _receipt_into "$rundir" sandbox "$(dirname "$shimdir")/profile.sb" "hw-sandbox arm ($kind); shim $shimdir exported in $pane"
+}
+
 # Start an agent, retrying while the pane is still coming up. A freshly split
 # pane is not at its shell prompt yet, and `agent start` rejects it with
 # agent_pane_busy — a race that showed up on the very first route-opt run.
+# The sandboxed launch: arm, start through the ordinary path, then PROVE it.
+_agent_start_sandboxed() {
+  local rundir="${_SANDBOX_RUNDIR:-${HW_WORKDIR:-}/.hw/${HW_RUN:-}}" n=0 st
+  _sandbox_arm_pane "$1" "$3" "$rundir" || return 1
+  st="$("$HW_BIN_DIR/hw-sandbox" statedir "$rundir")"
+  _SANDBOX_ARMED="$1" _agent_start "$@" || return 1
+  # AN AGENT THAT STARTED IS NOT PROOF IT STARTED IN THE SANDBOX. The broker
+  # is the launch wrapper's own child, so its heartbeat is what says the shim
+  # ran and not the bare executable. No heartbeat: refuse, loudly.
+  while [ "$n" -lt 20 ]; do
+    [ -f "$st/broker.alive" ] && return 0
+    sleep 0.5; n=$((n + 1))
+  done
+  warn "sandbox: $3 started in $1 but the broker never came up ($st/broker.alive) — it may be running UNCONFINED. Close it: hw done $PROJ $TASK"
+  return 1
+}
+
 _agent_start() {
   local pane="$1" name="$2" kind="$3" out probe tries=0 registered=0
+  if [ "${SANDBOX:-0}" = 1 ] && [ "${_SANDBOX_ARMED:-}" != "$pane" ]; then
+    _agent_start_sandboxed "$@"; return
+  fi
   while [ "$tries" -lt 15 ]; do
     if [ "$registered" = 1 ]; then
       # agent_not_ready keeps the registration. Poll that exact agent; a
@@ -2689,7 +2745,7 @@ except ValueError:
     raise SystemExit(0)
 known = {"agent", "model", "sdd", "placement", "worktree", "database", "invoker",
          "requires", "requires-agents", "kind", "base", "decision", "delivery",
-         "boundary", "deployed_check"}
+         "boundary", "deployed_check", "sandbox"}
 # What was asked for, read by _check_requested rather than compared.
 known |= {"requested_by", "asked"}
 for raw in lines[1:end]:
@@ -3715,7 +3771,7 @@ _check_brief_contract() {
     [ -n "$key" ] || continue
     case "$key" in
       __malformed__) die "the brief's frontmatter is malformed ($val). Fix it or remove the fence entirely — a half-parsed contract is worse than none." ;;
-      __unknown__)   warn "brief declares '$val', which hw does not check. Known keys: agent model sdd placement worktree database invoker requires requires-agents kind base decision delivery boundary deployed_check requested_by asked" ; continue ;;
+      __unknown__)   warn "brief declares '$val', which hw does not check. Known keys: agent model sdd placement worktree database invoker requires requires-agents kind base decision delivery boundary deployed_check sandbox requested_by asked" ; continue ;;
     esac
     if [ "$key" = requires ]; then _check_capabilities "$val"; continue; fi
     if [ "$key" = requires-agents ]; then
@@ -3723,6 +3779,19 @@ _check_brief_contract() {
       continue
     fi
     if [ "$key" = kind ];     then _check_task_kind "$val" declared; continue; fi
+    # `sandbox: true` IS A SOURCE, NOT ONLY A CHECK: a brief that must not run
+    # unconfined turns the sandbox on rather than trusting the dispatcher to
+    # remember --sandbox. `false` never turns a --sandbox off — the stricter
+    # side wins.
+    if [ "$key" = sandbox ]; then
+      case "$val" in
+        true|yes) SANDBOX=1; SANDBOX_SRC="${SANDBOX_SRC:-brief frontmatter}" ;;
+        false|no) ;;
+        *) die "the brief declares sandbox: $val — it takes true or false. NOTHING was built." ;;
+      esac
+      BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }sandbox"
+      continue
+    fi
     # NOT DISPATCH FIELDS: they say what the operator asked for, and
     # _check_requested reads them after this loop. Comparing them against a
     # resolved value would refuse every brief that cites its request.
@@ -6881,6 +6950,32 @@ cmd_receipt() {
   return 0
 }
 
+# ── hw log ──────────────────────────────────────────────────────────────────
+#
+# What was SAID between the executor and its brainer, from the run's own
+# append-only `transcript.log` (asks, challenges, rulings, answers, reports —
+# see transcript_append in state-witness.sh). Disk, not scrollback: it is still
+# here after both panes are gone. Runs come oldest first so it reads as a story.
+cmd_log() {
+  local proj="$1" task="$2" wt runs r n=0
+  lane_known "$proj" || die "unknown project: $proj (expected: $(lane_names_bar))"
+  wt="$(_lane_wt_dir "$proj" "$task")"
+  [ -n "$wt" ] || wt="$WORK/$proj/$task"
+  [ -d "$wt/.hw" ] || wt="$WORK/$proj/$task"
+  [ -d "$wt/.hw" ] || die "no hw runs for $proj:$task (looked in $wt/.hw)"
+  runs="$(ls -1 "$wt/.hw" 2>/dev/null || true)"
+  for r in $runs; do
+    [ -s "$wt/.hw/$r/transcript.log" ] || continue
+    n=$((n + 1))
+    printf '%s%s%s  %s\n' "$C_B" "$r" "$C_0" "$wt/.hw/$r/transcript.log"
+    cat "$wt/.hw/$r/transcript.log"
+  done
+  if [ "$n" = 0 ]; then
+    warn "no transcript for $proj:$task — nothing was asked, ruled or reported through the invokers yet (runs from before this log existed have none)"
+  fi
+  return 0
+}
+
 # ── hw revive ───────────────────────────────────────────────────────────────
 #
 # REPEAT WHAT WAS RECORDED. NEVER REBUILD WHAT WAS NOT.
@@ -7065,6 +7160,14 @@ cmd_revive() {
   [ -z "$live" ] || _revive_die "an agent is already running in $cwd ($(printf '%s' "$live" | tr '\n' ' ')) — revive would give one directory two agents"
 
   PROJ="$proj"; TASK="$task"; HW_WORKDIR="$cwd"
+  # A run launched in the sandbox comes back in it. The record is keyed by
+  # lane and task in the sandbox's state root, OUTSIDE the work directory: a
+  # marker found through the run directories is one the executor can hide by
+  # renaming them (Judgment Day, both judges). FAIL CLOSED: anything but a
+  # clean "never armed" revives it armed.
+  local _sbx_rc=0
+  "$HW_BIN_DIR/hw-sandbox" armed "$proj" "$task" || _sbx_rc=$?
+  if [ "$_sbx_rc" != 1 ]; then SANDBOX=1; _SANDBOX_RUNDIR="$rundir"; fi
   _project_workspace "$proj" || _revive_die "could not find or create the workspace for $proj"
   local raw tab pane
   raw="$(_capture herdr tab create --workspace "$PROJECT_WORKSPACE" --cwd "$cwd" --label "$proj:$task" --no-focus "${env_args[@]}")" \
@@ -7847,11 +7950,11 @@ _snapshot_done_report() { # run directory
   fi
   if [ -f "$marker" ]; then
     _receipt_into "$rundir" completion_marker \
-      "present — zero-byte flag means receiver-proved delivery; report content is in report_summary/status/artifacts/engram above" \
+      "present — zero-byte flag means the receiver admitted the report (admission, not proof it was read); report content is in report_summary/status/artifacts/engram above" \
       "test -f $marker after done-invoker delivery accounting"
   else
     _receipt_into "$rundir" completion_marker \
-      "absent — report recovered from pane tokens, but receiver-proved delivery is not established" \
+      "absent — report recovered from pane tokens, but receiver admission is not established" \
       "test ! -f $marker while snapshotting completion tokens"
   fi
 }
@@ -8012,10 +8115,25 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   fi
   case "$post" in ''|0) post="" ;; esac
 
+  # `done_state=undelivered` IS A REPORT THAT NEVER REACHED THE BRAINER, NOT ONE
+  # THAT DID. done-invoker publishes it before it tries to deliver and rewrites
+  # it to `delivered` only after the receiver admitted the envelope, so the
+  # token alone says "the executor finished", never "the brainer heard" — and
+  # the pane is the only copy of the transport failure. Closing it here filed a
+  # STRANDED report as reported. The marker still wins: `_report_evidence`
+  # returns `marker` first, so a delivered report never lands in this arm.
+  local stranded=0
+  case "$ev" in
+    "token "*" undelivered") stranded=1 ;;
+  esac
   case "$ev" in
     none) reasons="${reasons}${reasons:+
 }  · task $seq has NOT reported: no $(_run_done_marker "$rundir"), and $pane publishes no done token either. Closing it now files finished-or-unfinished work as neither." ;;
   esac
+  if [ "$stranded" = 1 ]; then
+    reasons="${reasons}${reasons:+
+}  · task $seq is STRANDED: $pane published its report (done_state=undelivered) and the brainer never received it — no $(_run_done_marker "$rundir"). Closing the pane discards the only place that report can still be redelivered from." ;
+  fi
   if [ "$status" = working ] && [ "$self_close" = 0 ]; then
     reasons="${reasons}${reasons:+
 }  · $pane is WORKING right now — a turn is in progress and this close would cut it mid-turn. hw dispatched no turn into it: after a report, hw next is the only re-task route and it advances the task counter first." ;
@@ -8036,7 +8154,7 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   # of the two it is. Any other reason (no report, turns after the report)
   # keeps the ownership wording: those ARE somebody else's.
   local finishing=0
-  if [ "$ev" != none ] && [ "$status" = working ] && [ "$self_close" = 0 ] && [ -z "$post" ] && [ "$focus" != true ]; then
+  if [ "$ev" != none ] && [ "$stranded" = 0 ] && [ "$status" = working ] && [ "$self_close" = 0 ] && [ -z "$post" ] && [ "$focus" != true ]; then
     finishing=1
   fi
   if [ "$finishing" = 1 ]; then
@@ -8055,6 +8173,9 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   [ -z "$revive_note" ] || info "$revive_note"
   if [ "$finishing" = 1 ]; then
     die "NOT CLOSED YET — nothing was closed: the report is in and hw sees no turn after it, so this is most likely the turn that sent it ending (if the pane is still working after a minute, somebody is talking to it — hw status). Run the same command again in a few seconds: hw done $proj $task   (--force would cut that turn)"
+  fi
+  if [ "$stranded" = 1 ]; then
+    die "nothing was closed: the report is STRANDED. Redeliver it first (\`hw outbox flush $proj --to <brainer-pane>\`; do NOT re-run done-invoker if its exit was 5 — the report may already be there); close it deliberately, discarding the undelivered report, with: hw done $proj $task --force"
   fi
   die "nothing was closed. Establish who owns that pane — look at it — and then either let it finish, or close it deliberately with: hw done $proj $task --force"
 }
@@ -12610,6 +12731,147 @@ def shape_of(workdir):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         n += len(files)
     return f"{n} artifact" + ("" if n == 1 else "s")
+
+
+# ── a task that is `working` and has shown no sign of life ───────────────────
+#
+# herdr's `working` goes stale on this machine (state-witness.sh: one pane said
+# `working` eight hours after it reported), so an executor that hangs, or that
+# is waiting on something nobody will answer, read `working` forever. There is
+# no daemon and no history to ask, so STALE is computed at read time from what
+# the disk and the process table already hold: the last turn end, the newest
+# mtime in the run's own state, the newest file in the work directory, and the
+# newest process started with its cwd in it. If none is newer than the
+# threshold, the row says so. It is a place to LOOK, not a verdict: what it
+# cannot see (pane output; one child that has simply been running a long time)
+# is named in the caveats.
+def stale_minutes():
+    try:
+        m = float(os.environ.get("HW_STALE_MINUTES") or 30)
+    except ValueError:
+        return 30.0
+    return m if m > 0 else 30.0
+
+
+def status_now():
+    try:
+        return float(os.environ.get("HW_ST_NOW") or time.time())
+    except ValueError:
+        return time.time()
+
+
+def run_state_activity(rundir):
+    """Newest mtime among the run's own state files, and its t<N>/ directories'.
+    Asks, rulings, transcript lines and turn counters all land here."""
+    newest = None
+    dirs = [rundir] + sorted(glob.glob(os.path.join(rundir, "t[0-9]*")))
+    for d in dirs:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            try:
+                m = os.lstat(os.path.join(d, name)).st_mtime
+            except OSError:
+                continue
+            if newest is None or m > newest:
+                newest = m
+    return newest
+
+
+def tree_activity(workdir, cutoff):
+    """Newest file mtime under the work directory (SKIP_DIRS pruned), returning
+    as soon as one is newer than `cutoff`: the question is only whether anything
+    moved inside the window, so an active tree costs a handful of stats."""
+    newest = None
+    for base, dirs, files in os.walk(workdir):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for f in files:
+            try:
+                m = os.lstat(os.path.join(base, f)).st_mtime
+            except OSError:
+                continue
+            if newest is None or m > newest:
+                newest = m
+                if newest >= cutoff:
+                    return newest
+    return newest
+
+
+def process_activity(workdir, now):
+    """When the newest process with its cwd under `workdir` was STARTED, or None.
+    The agent and its MCP servers live there from the first minute, so only a
+    START inside the window says anything: a test run, a build, a shell the
+    executor opened. None also when ps/lsof cannot be asked."""
+    import subprocess
+    root = canon(workdir)
+    try:
+        out = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn"], capture_output=True,
+                             text=True, timeout=10).stdout
+        ps = subprocess.run(["ps", "-axo", "pid=,etime="], capture_output=True,
+                            text=True, timeout=10).stdout
+    except Exception:
+        return None
+    pids, pid = set(), None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = line[1:]
+        elif line.startswith("n") and pid:
+            c = canon(line[1:])
+            if c == root or c.startswith(root + "/"):
+                pids.add(pid)
+    newest = None
+    for line in ps.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or parts[0] not in pids:
+            continue
+        et, days = parts[1], 0
+        if "-" in et:
+            d, et = et.split("-", 1)
+            days = int(d)
+        try:
+            sec = [int(x) for x in et.split(":")]
+        except ValueError:
+            continue
+        while len(sec) < 3:
+            sec.insert(0, 0)
+        started = now - (days * 86400 + sec[0] * 3600 + sec[1] * 60 + sec[2])
+        if newest is None or started > newest:
+            newest = started
+    return newest
+
+
+def stale_of(newest, workdir, now, threshold_min):
+    """None when the task is not stale or hw cannot tell; otherwise the quiet
+    time in seconds and the last sign of life it found (when, what).
+
+    Cheap signals first and the dearer ones only while every earlier one is
+    still older than the window. No signal at all is None: hw does not claim
+    what it cannot place in time."""
+    if not newest or not newest.get("dir"):
+        return None
+    cutoff = now - threshold_min * 60
+    signs = []
+
+    def seen(ts, what):
+        if ts is not None:
+            signs.append((ts, what))
+        return ts is not None and ts >= cutoff
+
+    if seen(newest.get("started"), "its launch") \
+       or seen(newest.get("turns_at"), "its last turn end") \
+       or seen(run_state_activity(newest["dir"]), "its run state (asks, rulings, transcript)"):
+        return None
+    if workdir and os.path.isdir(workdir):
+        if seen(tree_activity(workdir, cutoff), "a file in its work directory"):
+            return None
+        if seen(process_activity(workdir, now), "a process started in its work directory"):
+            return None
+    if not signs:
+        return None
+    ts, what = max(signs)
+    return {"quiet": now - ts, "at": ts, "what": what}
 HW_STATUS_PY
 }
 
@@ -12851,6 +13113,19 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
                 mark, state, tint = "!", "finished, unreported", WARN
                 notes.append("its agent is gone and the pane is a bare shell — see `finished, never reported` below")
                 limits.add("orphan")
+            if state == "working" and newest and t["workdir"]:
+                quiet = stale_of(newest, t["workdir"], status_now(), stale_minutes())
+                if quiet:
+                    mark, state, tint = "!", "STALE", WARN
+                    notes.append("working by herdr's word, but no turn end, file change or new process for %d min "
+                                 "(last sign: %s at %s); threshold %g min, HW_STALE_MINUTES changes it"
+                                 % (quiet["quiet"] // 60, quiet["what"],
+                                    time.strftime("%d %b %H:%M", time.localtime(quiet["at"])),
+                                    stale_minutes()))
+                    notes.append("look at: `herdr pane read %s` (what it is doing), `hw log %s` (what was said), "
+                                 "its engram findings; it may be waiting on something, hung, or in one long step"
+                                 % ((a or {}).get("pane_id") or "<pane>", key.replace(":", " ", 1)))
+                    limits.add("stale")
         elif ws and dead:
             mark, state, tint = "✗", "DIED", ERR
             notes.append(f"space {ws} is open with no agent, and {', '.join(dead)} exited")
@@ -12877,6 +13152,22 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
             notes.append("its %s and no turn since — see `finished, never reported` below"
                          % _placement_gone(here_run, own_tab, own_ws))
             limits.add("orphan")
+        elif (newest and not newest.get("done") and newest.get("turns", 0) < 1
+              and session_start is not None and newest.get("started") is not None
+              and newest["started"] >= session_start):
+            # THE ROW THAT WAS HIDDEN. Started in this herdr session, no pane, no
+            # agent, no report — and the harness never watched one turn end. That
+            # is an executor gone before it finished its first turn, and it used
+            # to fall through to `no information`, which `hw status` collapses to
+            # a count. It needs the same visibility as a death the space reports.
+            mark, state, tint = "✗", "DIED-BEFORE-FIRST-TURN", ERR
+            notes.append("its %s, and no turn end was ever recorded — it died or was closed before finishing one "
+                         "(`hw done` closes a task without a report too, and leaves no mark of it)"
+                         % _placement_gone(here_run, own_tab, own_ws))
+            notes.append("look at: `hw log %s`, its engram findings, .hw/%s/ in its work directory; "
+                         "if it was closed on purpose, `hw done` leaves this row in place for the rest of this herdr session; otherwise dispatch it again"
+                         % (key.replace(":", " ", 1), newest.get("name")))
+            limits.add("first-turn")
         else:
             mark, state, tint = "?", "no information", DIM
             started = newest["started"] if newest else None
@@ -13037,6 +13328,14 @@ def status_report_caveats(herdr_ok, limits):
             print(f"      {DIM}one turn END watched by the harness, and no live agent. It cannot tell a task{Z}")
             print(f"      {DIM}that finished from one killed after a turn — a Stop hook never could. What it{Z}")
             print(f"      {DIM}does establish is that nothing is running and nobody was told.{Z}")
+        if "stale" in limits:
+            print(f"      {DIM}`STALE` is computed when you read it, from the last turn end, the run's{Z}")
+            print(f"      {DIM}state files, the newest file in its work directory and the newest process{Z}")
+            print(f"      {DIM}started there. herdr exposes no last-output time, so pane output is not a{Z}")
+            print(f"      {DIM}signal, and one long step (a test run that started earlier) is not seen.{Z}")
+        if "first-turn" in limits:
+            print(f"      {DIM}`DIED-BEFORE-FIRST-TURN` is: started in this herdr session, pane gone, no done{Z}")
+            print(f"      {DIM}marker, no turn end ever counted. A `hw done` with no report reads the same.{Z}")
         if "model" in limits:
             print(f"      {DIM}`model` is what the executor's own session record says answered, read at{Z}")
             print(f"      {DIM}launch. A divergence is against what hw handed the vendor (the lane's pin{Z}")
@@ -13105,6 +13404,134 @@ _status_engram_labels() {
   local p
   for p in $HW_LANES; do printf '%s=%s\n' "$p" "$(_engram_label "$p")"; done
 }
+# ── hw outbox ───────────────────────────────────────────────────────────────
+#
+# done-invoker writes each report to `<run state dir>/outbox/<envelope-id>.msg`
+# BEFORE sending and removes it once the receiver admitted it (see
+# invoker-common.sh, "the outbox"). What stays is a report the brainer never got:
+# its pane was closed, or hw could not reach herdr. This is the reader and the
+# redeliverer.
+#
+#   hw outbox [<project>]                    list what is waiting
+#   hw outbox flush [<project>] --to <pane>  redeliver it to that brainer pane
+#
+# `brain <lane>` runs the flush itself on open. `hw status` only LISTS: a flush
+# is a message into a pane, and status is a read-only command.
+#
+# STATE `uncertain` IS NEVER FLUSHED. channel-send exit 5 means the message MAY
+# already be in the brainer's session; redelivering it is exactly the duplicate
+# report the exit exists to prevent. A person reads the pane and deletes the
+# entry. DEDUPLICATION IS BY ENVELOPE ID: one file per id (a retry overwrites),
+# removed on admission, so a flushed id has nothing left to flush twice.
+_outbox_roots() {  # $1=project (optional) — one directory per line
+  local proj="${1:-}" line root lane
+  if [ -n "$proj" ]; then
+    [ ! -d "$WORK/$proj" ] || printf '%s\n' "$WORK/$proj"
+  else
+    printf '%s\n' "$WORK"
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    root="${line%:*}"; lane="${line##*:}"
+    [ -z "$proj" ] || [ "$lane" = "$proj" ] || continue
+    [ ! -d "$root" ] || printf '%s\n' "$root"
+  done <<< "$(_status_worktree_roots)"
+}
+_outbox_metas() {  # $1=project (optional) — oldest first
+  local r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    find "$r" -maxdepth 8 \( -name node_modules -o -name .git \) -prune -o -type f -name '*.meta' -path '*/.hw/*/outbox/*' -print 2>/dev/null
+  done <<< "$(_outbox_roots "${1:-}")" | sort -u | while IFS= read -r m; do
+    printf '%s %s\n' "$(stat -f %m "$m" 2>/dev/null || stat -c %Y "$m" 2>/dev/null || echo 0)" "$m"
+  done | sort -n | cut -d' ' -f2-
+}
+_outbox_field() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
+_outbox_count() {  # $1=project — "<pending> <uncertain>"
+  local m st p=0 u=0
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    [ -f "${m%.meta}.msg" ] || continue
+    st="$(_outbox_field "$m" state)"
+    if [ "$st" = uncertain ]; then u=$((u + 1)); else p=$((p + 1)); fi
+  done <<< "$(_outbox_metas "${1:-}")"
+  printf '%s %s' "$p" "$u"
+}
+_outbox_quiet() {  # $1=project — one warned block when something is waiting
+  local c p u
+  c="$(_outbox_count "${1:-}")"; p="${c% *}"; u="${c#* }"
+  [ "$p" -gt 0 ] 2>/dev/null || [ "$u" -gt 0 ] 2>/dev/null || return 0
+  printf '\n'
+  if [ "$p" -gt 0 ]; then
+    warn "$p report(s) never reached a brainer and are waiting in an outbox — hw outbox${1:+ $1}   (\`brain <lane>\` redelivers them on open)"
+  fi
+  if [ "$u" -gt 0 ]; then
+    warn "$u report(s) are UNCERTAIN (they may already be in a brainer's session) and are held back — hw outbox${1:+ $1}"
+  fi
+}
+cmd_outbox() {
+  local verb=list proj="" to="" m st key msg task p pid fails=0 n=0
+  case "${1:-}" in list|flush) verb="$1"; shift ;; esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) _need_val "$@"; to="$2"; shift 2 ;;
+      -*) die "unknown option: $1 (usage: hw outbox [list|flush] [<project>] [--to <brainer-pane>])" ;;
+      *) proj="$(_canon_project "$1")"
+         lane_known "$proj" || die "unknown project: $1 (expected: $(lane_names_hint))"
+         shift ;;
+    esac
+  done
+  if [ "$verb" = flush ] && [ -z "$to" ]; then
+    die "hw outbox flush needs --to <brainer-pane>: a report is redelivered to a pane you name, never to a guessed one (brain <lane> passes its own)"
+  fi
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    key="${m%.meta}"; [ -f "$key.msg" ] || continue
+    st="$(_outbox_field "$m" state)"; p="$(_outbox_field "$m" project)"; task="$(_outbox_field "$m" task)"
+    if [ "$st" = uncertain ]; then
+      printf '  %s:%s  %s  uncertain — NOT redelivered: it may already be in the brainer'"'"'s session (channel-send exit 5); read that pane, then remove %s\n' \
+        "$p" "$task" "$(_outbox_field "$m" status)" "$key.msg"
+      continue
+    fi
+    # A LIVE done-invoker OWNS ITS ENTRY: it wrote the file before sending and is
+    # still waiting on the brainer's idle gate. Flushing now would send the same
+    # envelope twice (judges A and B). Its pid is in the meta.
+    pid="$(_outbox_field "$m" pid)"
+    if [ "$verb" = flush ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      printf '  %s:%s  still being sent by done-invoker (pid %s) — left alone\n' "$p" "$task" "$pid"
+      continue
+    fi
+    if [ "$verb" = list ]; then
+      printf '  %s:%s  %s  pending  envelope %s  (%s)\n' "$p" "$task" "$(_outbox_field "$m" status)" "$(_outbox_field "$m" envelope)" "$key.msg"
+      n=$((n + 1)); continue
+    fi
+    msg="[redelivered from the outbox: the pane this report was first sent to was gone or unreachable]
+$(cat "$key.msg")"
+    local rc=0
+    # outbox-report: a REDELIVERED REPORT, which is what --report is for (test 35 exempts this one line).
+    "$HW_BIN_DIR/channel-send" --report herdr "$to" - "$msg" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) rm -f "$key.msg" "$m"
+         # THE REPORT REACHED THE BRAINER: say so where `hw done` and a re-run of
+         # done-invoker look, or `hw done` keeps calling it STRANDED and a re-run
+         # sends it a second time (judges A and B).
+         : > "$(dirname "$(dirname "$key")")/done" 2>/dev/null || true
+         rm -f "$(dirname "$(dirname "$key")")/reopened" 2>/dev/null || true   # as done-invoker does; a revived run counts done only without it
+         n=$((n + 1)); printf '  redelivered %s:%s to %s\n' "$p" "$task" "$to" ;;
+      5) printf 'envelope=%s\nproject=%s\ntask=%s\nrun=%s\nstatus=%s\nstate=uncertain\nat=%s\n' \
+           "$(_outbox_field "$m" envelope)" "$p" "$task" "$(_outbox_field "$m" run)" "$(_outbox_field "$m" status)" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$m"
+         warn "redelivering $p:$task to $to is UNCERTAIN (channel-send exit 5): it may already be there; held, not retried"; fails=$((fails + 1)) ;;
+      *) warn "could not redeliver $p:$task to $to (channel-send exit $rc); it stays in the outbox"; fails=$((fails + 1)) ;;
+    esac
+  done <<< "$(_outbox_metas "$proj")"
+  if [ "$verb" = list ]; then
+    [ "$n" -gt 0 ] || info "no pending reports in any outbox${proj:+ for $proj}"
+    return 0
+  fi
+  [ "$fails" = 0 ] || return 1
+  return 0
+}
+
 cmd_status() {
   local ws_json panes_json agents_json exited_ndjson server_started herdr_ok=1
 
@@ -13140,6 +13567,48 @@ cmd_status() {
 }
 
 # ── main ────────────────────────────────────────────────────────────────────
+# AN EXECUTOR DOES NOT HAVE THE BRAINER'S VERBS. `hw` exports HW_TASK and HW_RUN
+# into every executor, so their presence here is the caller's role — read NOW,
+# before this process exports its own HW_RUN for a dispatch. What an executor
+# runs: done on its OWN task (done-invoker), executor-turn-end, receipt, status,
+# handle, suite, human-boundary, review-range/-delta, output, help. What it does
+# not: another task's done, next, ruling, unstick, reap/sweep --apply, preview,
+# revive, a dispatch, and
+# the operator's HW_DONE_ALLOW_BRAIN_LEAK exit. The brain guard
+# (setup/guards/deny_brain_writes.py, brain-guard-programs.txt) holds the same
+# line for the calls it sees; this holds it for the ones it does not. An
+# `env -u HW_TASK -u HW_RUN` gets past THIS check by design (not a sandbox); the
+# guard still refuses that spelling. The brainer path sets neither variable.
+_HW_CALLER_EXECUTOR=0
+{ [ -z "${HW_TASK:-}" ] && [ -z "${HW_RUN:-}" ]; } || _HW_CALLER_EXECUTOR=1
+_executor_refuse() {
+  die "hw $1 is a brainer verb: this shell is executor $HW_PROJECT/$HW_TASK (HW_TASK/HW_RUN are set), and an executor $2. Report with done-invoker, or ask-invoker \"…\" if your brainer must act; do not work around it."
+}
+if [ "$_HW_CALLER_EXECUTOR" = 1 ]; then
+  HW_PROJECT="${HW_PROJECT:-?}"; HW_TASK="${HW_TASK:-?}"
+  case "${1:-}" in
+    "")       _executor_refuse "with no arguments (the picker)" "does not dispatch" ;;
+    next)     _executor_refuse next "is re-tasked by its brainer, not by itself" ;;
+    ruling)   _executor_refuse ruling "does not rule on another run" ;;
+    unstick)  _executor_refuse unstick "does not restart another pane" ;;
+    reap)     case " $* " in *" --apply "*) _executor_refuse "reap --apply" "does not remove worktrees" ;; esac ;;
+    sweep)    case " $* " in *" --apply "*) _executor_refuse "sweep --apply" "does not close other runs" ;; esac ;;
+    preview)  _executor_refuse preview "does not keep or release another run's preview" ;;
+    revive)   _executor_refuse revive "does not reopen another run's pane" ;;
+    done)
+      if [ $# -ge 3 ]; then   # shorter: the verb's own usage error follows
+        [ "$(_canon_project "$2" 2>/dev/null || printf '%s' "$2")" = "$(_canon_project "$HW_PROJECT" 2>/dev/null || printf '%s' "$HW_PROJECT")" ] \
+          && [ "$3" = "$HW_TASK" ] \
+          || _executor_refuse "done $2 $3" "closes only its own task ($HW_PROJECT $HW_TASK)"
+      fi
+      [ "${HW_DONE_ALLOW_BRAIN_LEAK:-0}" != 1 ] \
+        || _executor_refuse "done (HW_DONE_ALLOW_BRAIN_LEAK=1)" "does not use the operator's leak-check exit"
+      ;;
+    -*|help|status|receipt|handle|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|wait|wait-one|wait-monitor|gentle-home) ;;
+    *)        # anything else is `hw <project> <task> …`, a dispatch
+              _executor_refuse "$1 …" "does not dispatch executors" ;;
+  esac
+fi
 if [ $# -eq 0 ]; then
   # The picker needs a person: without a terminal it waited 120 s for an answer
   # nobody could give. No terminal is a usage error. The usage text is defined
@@ -13169,6 +13638,7 @@ if [ "$1" = status ]; then
   done
   export HW_STATUS_PROJECT HW_STATUS_ALL
   cmd_status
+  _outbox_quiet "$HW_STATUS_PROJECT"
   if [ -z "$HW_STATUS_PROJECT" ]; then
     cmd_worktrees --quiet; _tabs_quiet; _reap_quiet; _rules_quiet; _decisions_quiet
   else
@@ -13185,6 +13655,7 @@ fi
 if [ "${1:-}" = executor-turn-end ]; then
   shift; set +e; cmd_executor_turn_end "$@"; _rc=$?; set -e; exit "$_rc"
 fi
+if [ "${1:-}" = outbox ]; then shift; set +e; cmd_outbox "$@"; _rc=$?; set -e; exit "$_rc"; fi
 if [ "${1:-}" = ruling ]; then shift; cmd_ruling "$@"; exit 0; fi
 if [ "${1:-}" = human-boundary ]; then shift; cmd_human_boundary "$@"; exit 0; fi
 if [ "${1:-}" = sweep ]; then shift; cmd_sweep "$@"; exit 0; fi
@@ -13226,6 +13697,11 @@ if [ "${1:-}" = receipt ]; then
   shift
   [ $# -ge 2 ] || die "usage: hw receipt <project> <task>"
   cmd_receipt "$(_canon_project "$1")" "$2"; exit 0
+fi
+if [ "${1:-}" = log ]; then
+  shift
+  [ $# -eq 2 ] || die "usage: hw log <project> <task>"
+  cmd_log "$(_canon_project "$1")" "$2"; exit 0
 fi
 if [ "${1:-}" = revive ]; then
   shift
@@ -13351,6 +13827,11 @@ USAGE
                         Each proved done-invoker report creates one next-task authority.
                         A successful `hw next` consumes that authority; the next proved
                         report re-arms a fresh task-bound lease. Expiry closes the pane.
+    --sandbox          run the executor inside a Seatbelt profile that confines
+                       its writes and cuts its control sockets; it reports
+                       through an outbox. Same as `sandbox: true` in a brief.
+                       macOS and Claude Code only; TCP stays open
+                       (THREAT-MODEL.md).
     --dry-run          print the dispatch, create nothing.
     --allow-stale-hooks launch even though the worktree's versioned hook settings
                        (.claude/settings*.json, .codex/hooks.json, opencode.json)
@@ -13359,6 +13840,18 @@ USAGE
                        (contaminated context, another vendor/model, deliberate
                        concurrent work — recorded in the manifest)
     --no-reuse-check   legacy exact alias for --fresh
+
+BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
+    sandbox: true      same as --sandbox; `false` never turns a --sandbox off.
+    requires-agents: [primary:|subagent:]<name>[, …]
+                       agents the task cannot do without. hw refuses the
+                       dispatch when the executor cannot reach one from its
+                       work directory, instead of warning.
+    boundary: <what must never cross>
+                       a build is not accepted as done without
+                       $HW_ARTIFACTS/design-judgment.md naming it and ending
+                       JUDGMENT: APPROVED (Judgment Day's design mode).
+    decision: <what is undecided>   as --model-why.
 
 USAGE
 }
@@ -13369,6 +13862,11 @@ OTHER COMMANDS
     hw                              interactive brief picker
     hw status                       what is running, and what never closed
     hw receipt <project> <task>     what was MEASURED, next to what was dispatched
+    hw log <project> <task>         what was asked, ruled and reported, from disk
+    hw outbox [<project>]           reports that never reached a brainer, waiting on disk
+    hw outbox flush [<project>] --to <pane>
+                                    redeliver them to that brainer pane (`brain <lane>`
+                                    does it on open; an uncertain one is never resent)
     hw reports [<project>]           one line per task: which reports are on disk
     hw reports <project> <task>      the report text for one task
     hw reports <project> --full      the report text for every task in the lane
@@ -13725,6 +14223,7 @@ AGENT_SRC="lane default for $PROJ"; DB_SRC=default; HERE_SRC=default
 # no worktree", which is a different decision from placement.
 TAB=1; TAB_EXPLICIT=0; SPACE_EXPLICIT=0
 DISPATCH_DRY=0
+SANDBOX=0; SANDBOX_SRC=""; SANDBOX_LINE=""
 CHECK_HANDLES=1
 ALLOW_STALE_HOOKS=0
 CHECK_REUSE=1
@@ -13751,6 +14250,9 @@ while [ $# -gt 0 ]; do
     # launch output — it just had no way to look BEFORE committing, so it looked
     # after, decided not to intervene, and left the executor to improvise.
     --dry-run) DISPATCH_DRY=1;             shift ;;
+    # THE EXECUTOR RUNS IN A SEATBELT PROFILE (bin/hw-sandbox). Opt-in, macOS
+    # only, claude only: the executor-isolation decision of 2026-09-30.
+    --sandbox) SANDBOX=1; SANDBOX_SRC="--sandbox"; shift ;;
     --no-db) WANT_DB=0; DB_SRC=chosen; shift ;;
     --dev-server) WANT_DEVSERVER=1; DEVSERVER_SRC=chosen; shift ;;
     --no-report) WANT_REPORT=0; shift ;;
@@ -13907,6 +14409,7 @@ _artifacts_args
 # BEFORE _check_task and before anything is built. A contradiction between the
 # brief and the flags must cost nothing to discover.
 _check_brief_contract
+_check_sandbox
 _check_requested
 _check_task "$TASK"
 _check_agent_name_free "$TASK"
@@ -14603,7 +15106,8 @@ dispatch $PROJ:$TASK  run=$run_label
   verify      $verify_line
   entry       $entry_line
   workdir     $dir
-  invoker     $invoker_line
+  invoker     $invoker_line${SANDBOX_LINE:+
+  sandbox     $SANDBOX_LINE}
   engram      $(_engram_label "$PROJ")  (the label of the lane, not of the brainer: --report-to routes reports, never memory)
   chaining    $chaining_line
   reuse check $(_reuse_check_field)
@@ -14634,6 +15138,9 @@ EOF
   # executors are dispatched through, and that was not what was asked for. It is
   # named work, not an oversight — `--sdd` inheritance in particular is refused
   # on the fresh route and merely inherited on this one.
+  if [ "$DISPATCH_ROUTE" = reuse ] && [ "${SANDBOX:-0}" = 1 ]; then
+    die "--sandbox is a property of a LAUNCH, and this dispatch would re-task the executor that is already running for $PROJ:$TASK — whatever it was launched with. Add --fresh to launch a sandboxed one. NOTHING was built."
+  fi
   if [ "$DISPATCH_ROUTE" = reuse ]; then return 0; fi
   # AN UNPINNED PROVIDER IS A DECISION NOBODY MADE. The manifest already said
   # `<opencode default — no --model given>`; it read as a field, not as a

@@ -85,7 +85,9 @@ def run_case(publication, caller, route, delivery):
             output = result.stdout + result.stderr
             assert (case/'channel').is_file(), (label, 'caller never reached delivery', output)
             success = delivery == 0 or (route == 'opencode' and delivery == 4)
-            assert result.returncode == (0 if success else 1), (label, result.returncode, output)
+            # channel-send exit 5 (landing unconfirmed) is the invokers' own exit 5,
+            # on every route: collapsed into 1 it read as "not delivered, retry".
+            assert result.returncode == (0 if success else 5 if delivery == 5 else 1), (label, result.returncode, output)
             if not success:
                 note = ('Metadata was verified by read-back before the delivery attempt.' if publication == 'verified'
                         else 'Metadata publication could not be established; do not rely on a token record on this pane.')

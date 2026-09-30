@@ -1,0 +1,78 @@
+name: CI
+
+# The fast gate of the suite this repository ships, on every push and pull
+# request. Public-repository Actions minutes are free; nothing here is paid.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-gate:
+    name: fast gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          # Git Bash on Windows is the least-tested platform (see
+          # KNOWN-LIMITATIONS.md). It reports but does not block a merge until
+          # it has been green here for a while.
+          - os: windows-latest
+            experimental: true
+    continue-on-error: ${{ matrix.experimental == true }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as committed (Windows)
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq ripgrep fd-find
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v fdfind)" "$HOME/.local/bin/fd"
+          cargo install sd --locked
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install jq ripgrep fd sd
+
+      - name: Tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install -y jq ripgrep fd sd-cli
+
+      - name: Versions
+        run: |
+          bash --version | head -1
+          git --version
+          jq --version
+          python3 --version || python --version
+
+      - name: Fast gate
+        env:
+          HW_TEST_GATE: fast
+          HW_TEST_JOBS: '2'
+        run: bash setup/test-hw

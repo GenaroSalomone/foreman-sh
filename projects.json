@@ -17,7 +17,7 @@
     "task's worktree for that lane (lanes/<lane>.sh). A lane with a worktree and",
     "no `build` gets a complete dry run and a refusal to launch."
   ],
-  "work": "~/brain/work",
+  "work": "~/work",
   "lanes": {
     "setup": {
       "hw_aliases": [

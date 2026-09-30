@@ -191,6 +191,25 @@ fi
 ENGRAM_LABEL="$(lane_get "$proj" engram)" || ENGRAM_LABEL=""
 : "${ENGRAM_LABEL:=brain}"
 
+# REPORTS THAT NEVER REACHED A BRAINER ARE HANDED OVER WHEN ITS PANE OPENS.
+# done-invoker keeps each report in `<run>/outbox/` until a brainer's pane
+# admitted it (README, "the outbox"); with the pane closed, the send failed and
+# only that file remained. Opening the lane is the moment there is a pane to
+# hand it to. Best effort by design — a flush that fails must never make
+# `brain <lane>` fail — and bounded: the herdr route waits for an idle pane, and
+# an open that stalls 90s on a working brainer is worse than an outbox entry
+# that waits for the next open. `uncertain` entries are never flushed (hw outbox).
+_brain_flush_outbox() {  # $1 = project, $2 = the brainer's pane
+  local out
+  [ -n "${2:-}" ] || return 0
+  out="$(HW_INVOKER_WAIT_MS=30000 "$BRAIN/bin/hw" outbox flush "$1" --to "$2" 2>&1)" || {
+    printf 'brain: some undelivered reports could not be redelivered to %s — `hw outbox %s` lists them\n%s\n' "$2" "$1" "$out" >&2
+    return 0
+  }
+  [ -z "$out" ] || printf '%s\n' "$out"
+  return 0
+}
+
 # THE BRAINER GETS AN ENGRAM SESSION OF ITS OWN, as hw's executors do.
 #
 # MEASURED 2026-09-28 against a private serve: a brainer whose label is not
@@ -1019,6 +1038,7 @@ PY
           printf 'brain: rules, and `hw` refuses to dispatch from it. Fix it with: brain %s --reset\n' "$proj" >&2
           exit 3 ;;
       esac
+      _brain_flush_outbox "$proj" "$pane"
       exit 0
     fi
   fi
@@ -1214,3 +1234,4 @@ elif [ "$RESET" = 1 ]; then
 else
   echo "opened $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — cwd $dir"
 fi
+_brain_flush_outbox "$proj" "$pane"

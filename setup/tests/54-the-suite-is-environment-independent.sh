@@ -394,7 +394,7 @@ m04_clean_no="$(printf '%s\n' "$m04_clean"     | grep -c '^not ok' || true)"
 m04_dirty_ok="$(printf '%s\n' "$m04_out"       | grep -c '^ok ' || true)"
 m04_dirty_no="$(printf '%s\n' "$m04_out"       | grep -c '^not ok' || true)"
 [ "$m04_clean_no" = 0 ] \
-  || fail "M04 is red for a brainer too ($m04_clean_no not ok), so it is not reproducing the environment-dependent shape"
+  || fail "M04 is red for a brainer too ($m04_clean_no not ok), so it is not reproducing the environment-dependent shape — the brainer's red: $(printf '%s\n' "$m04_clean" | grep -A3 '^not ok' | head -8 | tr '\n' ' ')"
 [ "$m04_dirty_no" -ge 1 ] \
   || fail "M04 is green for the executor too ($m04_dirty_no not ok), so the enumeration is not what produced the split"
 [ "$m04_clean_ok" -gt "$m04_dirty_ok" ] \

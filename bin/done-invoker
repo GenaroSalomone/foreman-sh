@@ -54,6 +54,12 @@
 #      marker IS written; only the close failed, and the pane is preserved.
 #      Do NOT re-run done-invoker on a 4 — it would be a second report for one
 #      task. Close the tab by hand, or diagnose it.
+#   5  DELIVERY UNCERTAIN — channel-send's own 5: the message was ADMITTED but
+#      its landing is UNCONFIRMED, so it MAY already be in the brainer's
+#      session. Nothing is marked done and the pane is kept, but a blind retry
+#      may be a second report for one task: do NOT re-run done-invoker; read the
+#      brainer's pane first. `<state dir>/delivery-uncertain` records it and the
+#      outbox entry is held back from any automatic redelivery.
 #   6  HELD FOR A RULING — a correction queued with `hw ruling` was waiting.
 #      It is printed on stdout and stderr and consumed; NOTHING was reported.
 #      Act on it, then run done-invoker again. Not 1, because 1 says "retry
@@ -109,6 +115,7 @@ _inv_exit_meaning() {
   case "$1" in
     1) printf 'NOT DELIVERED — nothing was reported, no marker written, this pane is the only copy; retry the identical command' ;;
     4) printf 'DELIVERED AND SAFE, but the owned tab/workspace could not be closed — do NOT re-run this, close it by hand' ;;
+    5) printf 'DELIVERY UNCERTAIN — the report MAY already be in the brainer'"'"'s session; do NOT re-run this, read its pane first' ;;
     6) printf 'HELD FOR A RULING — nothing was reported; act on the ruling printed above, THEN run done-invoker again (not before)' ;;
     *) printf 'a failure, not a report' ;;
   esac
@@ -130,6 +137,7 @@ trap '_inv_exit_guard "$?"' EXIT
 # exit code, so they do not share a function either.
 EXIT_DELIVERED_NOT_CLOSED=4
 EXIT_HELD_FOR_RULING=6
+EXIT_DELIVERY_UNCERTAIN=5
 die_delivered_not_closed() { printf 'done-invoker: %s\n' "$*" >&2; exit "$EXIT_DELIVERED_NOT_CLOSED"; }
 
 # ── locate the real brain/bin, through the ~/bin symlink ──────────────────
@@ -148,6 +156,14 @@ while [ -L "$_src" ]; do
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
 INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+# INSIDE THE SANDBOX (hw --sandbox) herdr is out of reach by design: the hard
+# profile denies every unix socket. The call is handed, argv only, to the
+# broker outside, which runs THIS invoker with the dispatch's own environment
+# and replays its output and exit status here (bin/hw-sandbox, "the broker").
+if [ "${HW_SANDBOX:-0}" = 1 ]; then
+  [ -x "$INVOKER_BIN_DIR/hw-sandbox" ] || die "running in the sandbox, but $INVOKER_BIN_DIR/hw-sandbox is missing, so nothing can leave it. NOTHING was sent."
+  exec "$INVOKER_BIN_DIR/hw-sandbox" request done-invoker "$@"
+fi
 INVOKER_PROG=done-invoker
 [ -r "$INVOKER_BIN_DIR/invoker-common.sh" ] \
   || die "cannot find invoker-common.sh beside $_src — this brain/bin is incomplete"
@@ -634,7 +650,7 @@ mem_get_observation the ids named above.
 Artifacts: $FILES file(s) in $ARTIFACTS_ROOT$FILES_NOTE
 
 Distil what is decision-grade into decisions.md; the raw report stays in engram.
-After receiver-proved delivery, done-invoker closes the hw-owned task tab or
+After the receiver admitted the report, done-invoker closes the hw-owned task tab or
 workspace through \`hw done\`. If the brainer launched this run with
 \`hw ... --keep-pane [duration] --why "..."\`, a bounded chaining lease keeps the pane
 for \`hw next\` and expiry closes it automatically.
@@ -724,6 +740,10 @@ herdr notification show "executor $STATUS · $PROJECT:$TASK" \
 
 # ── 3. route and prove delivery, exactly as in ask-invoker ────────────────
 DELIVERY_ROUTE="$(invoker_route)"
+# WRITTEN DOWN BEFORE IT IS SENT: with the brainer's pane gone this file is the
+# only full copy left (see invoker-common.sh, "the outbox").
+invoker_outbox_put "$ENVELOPE_ID" "$MSG" "$STATUS" \
+  || printf 'done-invoker: warning: could not write the outbox copy under %s; the report is only in the message and the tokens.\n' "$(invoker_outbox_dir)" >&2
 if invoker_deliver "$MSG" "$STATE_DIR"; then
   DELIVERY_RC=0
 else
@@ -741,6 +761,15 @@ fi
 if [ "$DELIVERY_RC" -eq 4 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
   printf 'done-invoker: the brainer RECEIVED this (it is in its session) but the turn it started did not complete — see the message above. Counting it as delivered, because it was.\n' >&2
   DELIVERY_RC=0
+fi
+
+# EXIT 5 IS NOT A FAILURE TO RETRY, ON ANY ROUTE. channel-send says the message
+# may already be in the receiver; collapsing that into `die` (exit 1) read as
+# "not delivered, retry" and a retry is a second report for one task.
+if [ "$DELIVERY_RC" -eq 5 ]; then
+  invoker_delivery_uncertain "$ENVELOPE_ID" "$DELIVERY_ROUTE"
+  printf 'done-invoker: %s\n' "delivery UNCERTAIN via $DELIVERY_ROUTE (channel-send exit 5): envelope $ENVELOPE_ID was admitted but its landing is unconfirmed, so it MAY already be in the brainer's session. Do NOT re-run done-invoker — a retry may be a second report for one task. Read the brainer's pane $HW_INVOKER_PANE first; if the envelope is there, run \`hw done $PROJECT $TASK --force\`. The done marker was not written and the outbox copy is held back from automatic redelivery (recorded in $STATE_DIR/delivery-uncertain). $PUBLICATION_NOTE" >&2
+  exit "$EXIT_DELIVERY_UNCERTAIN"
 fi
 
 if [ "$DELIVERY_RC" -ne 0 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
@@ -774,9 +803,23 @@ if [ "$DELIVERY_RC" -ne 0 ]; then
   die "Herdr delivery failed (exit $DELIVERY_RC). $PUBLICATION_NOTE The done marker was not written."
 fi
 
-# ── 4. account only after receiver-owned delivery proof ───────────────────
+# WHAT THE RECEIPT ACTUALLY PROVES DEPENDS ON THE ROUTE. Only a native route
+# (opencode) proves the message is PRESENT in the receiver's session. The herdr
+# route — claude, codex, mixed vendors — proves ADMISSION: the pane was idle,
+# the prompt was accepted; that the brainer read it is not established. Saying
+# "proved delivery" for both is what the audit (F17) found.
+if [ "$DELIVERY_ROUTE" = herdr ]; then
+  RECEIPT_NOTE="receiver ADMITTED envelope $ENVELOPE_ID (admission only: the prompt was accepted by the brainer's pane, not proof it was read)"
+else
+  RECEIPT_NOTE="receiver proved delivery of envelope $ENVELOPE_ID"
+fi
+
+# ── 4. account only after the receiver admitted it ─────────────────────────
 : > "$STATE_DIR/done"
+invoker_outbox_settle "$ENVELOPE_ID"
+rm -f "$STATE_DIR/delivery-uncertain" 2>/dev/null || true
 rm -f "$STATE_DIR/reopened" 2>/dev/null || true
+transcript_append "$STATE_DIR" "REPORT" "$ENVELOPE_ID" "$SUMMARY"
 publish_done delivered || true
 
 # ── 5. close only after receiver-owned delivery proof ─────────────────────
@@ -805,13 +848,13 @@ if [ "$CHAINING_LEASE" = 1 ]; then
     printf 'brainer notified; chaining lease setup failed, so hw closed the owned pane instead of retaining it without a bound.\n'
     exit 0
   fi
-  printf 'brainer notified via %s (%s, %s file(s)); receiver proved delivery of envelope %s; bounded chaining lease recorded and scheduled.\n' \
-    "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$ENVELOPE_ID"
+  printf 'brainer notified via %s (%s, %s file(s)); %s; bounded chaining lease recorded and scheduled.\n' \
+    "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$RECEIPT_NOTE"
   exit 0
 fi
 if [ "$LEGACY_KEEP" = 1 ]; then
-  printf 'brainer notified via %s (%s, %s file(s)); receiver proved delivery of envelope %s; pane kept because chaining is enabled for compatibility with an already-running legacy dispatch.\n' \
-    "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$ENVELOPE_ID"
+  printf 'brainer notified via %s (%s, %s file(s)); %s; pane kept because chaining is enabled for compatibility with an already-running legacy dispatch.\n' \
+    "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$RECEIPT_NOTE"
   exit 0
 fi
 
@@ -824,11 +867,11 @@ fi
 # report for one task. Exit 4 says the true thing, and says it in an order a
 # reader cannot misread: delivered and safe FIRST, then what failed.
 if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK"; then
-  die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — the brainer received envelope $ENVELOPE_ID, it is in its session, and this run is marked done. What failed is the CLOSE: \`hw done $PROJECT $TASK\` could not close the owned task tab/workspace, so the pane is still open at $HERDR_PANE_ID (workdir $WORKDIR). Do NOT re-run done-invoker — the report landed, and a second one is a second report for one task. Close it by hand with \`hw done $PROJECT $TASK\` once the cause above is fixed. (Exit $EXIT_DELIVERED_NOT_CLOSED means delivered-but-not-closed; exit 1 would have meant nothing was reported.)"
+  die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — $RECEIPT_NOTE, and this run is marked done. What failed is the CLOSE: \`hw done $PROJECT $TASK\` could not close the owned task tab/workspace, so the pane is still open at $HERDR_PANE_ID (workdir $WORKDIR). Do NOT re-run done-invoker — the report landed, and a second one is a second report for one task. Close it by hand with \`hw done $PROJECT $TASK\` once the cause above is fixed. (Exit $EXIT_DELIVERED_NOT_CLOSED means delivered-but-not-closed; exit 1 would have meant nothing was reported.)"
 fi
 
 # A successful close normally tears down this shell before execution can reach
 # here. Keep a truthful fallback for legacy/no-placement runs: delivery did
 # succeed, but no automatic close is claimed merely because `hw done` returned.
-printf 'brainer notified via %s (%s, %s file(s)); receiver proved delivery of envelope %s; hw done returned without an owned task pane to close.\n' \
-  "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$ENVELOPE_ID"
+printf 'brainer notified via %s (%s, %s file(s)); %s; hw done returned without an owned task pane to close.\n' \
+  "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$RECEIPT_NOTE"

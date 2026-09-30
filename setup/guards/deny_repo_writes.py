@@ -815,6 +815,82 @@ _SHELL_DASH_C = re.compile(
     r"(?:[\w./-]*/)?" + _SHELL_INTERPRETERS + r"\b"
     r"(?:\s+-[\w-]+)*\s+-c\s*$"
 )
+# `eval` runs its words as one script, and every quoted word is part of it:
+# `eval "rm -rf <repo>/x"` and `eval "true;" "rm ..."` (Judgment Day of
+# guard-gate-relative-paths, 2026-09-30: blanked as data and ALLOWED). The
+# words before the quote are read as shell words, so a `;` inside an earlier
+# quoted word does not end the eval.
+_SHELL_WORD_PART = r"""(?:[^\s|;&()<>'"\\]|\\[\s\S]|"(?:[^"\\]|\\[\s\S])*"|'[^']*')"""
+_EVAL_ARGS = re.compile(
+    r"(?:^|[|;&(`\n])\s*" + _SHELL_WRAPPERS +
+    r"(?:(?:\{|!|if|then|else|elif|do|while|until|time|builtin)\s+)*"
+    r"(?:[\w./-]*/)?eval(?:\s+" + _SHELL_WORD_PART + r"+)*\s+" +
+    _SHELL_WORD_PART + r"*$"
+)
+
+# bash deletes an UNESCAPED backslash-newline before it splits words, so
+# `find <repo> \<newline> -delete` is one command, and the regexes that stop
+# at a newline never met its `-delete` (same Judgment Day). An escaped
+# backslash does not continue the line, and neither does one inside single
+# quotes or at the end of a `#` comment: bash ends the comment at that newline
+# and runs the next line (Judgment Day re-judgment: joining there turned
+# `echo hi # note \<newline>rm -rf <repo>/x` from DENY into ALLOW).
+#
+# That scan tracks quotes, and a quote it misreads (`$'\''`, measured in the
+# second re-judgment) would stop it joining for the rest of the command. So
+# where it differs from the quote-blind join, BOTH are scanned, after a hard
+# boundary: a misread can then only add a denial, never lose one the blind
+# join already had. Each copy is masked ON ITS OWN: masked as one text, a
+# comment's apostrophe in one copy paired with its twin in the other and
+# blanked the `rm` between them (Judgment Day round 2 of
+# guarda-eval-y-find-multilinea: `echo hi # it's \<newline>rm
+# -rf <repo>/x` went DENY -> ALLOW).
+_WORD_START = " \t\n;&|()<>"
+_LINE_CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\n")
+
+
+_COPY_BOUNDARY = "\n;\n"
+
+
+def _join_continuations(text):
+    """The joined copies of `text`: one, or the aware and the blind join."""
+    aware = _join_outside_comments(text)
+    blind = _LINE_CONTINUATION.sub(r"\1", text)
+    return [aware] if blind == aware else [aware, blind]
+
+
+def _mask_copy(text):
+    # Unbalanced quotes: the masking is not trustworthy, so do not mask.
+    masked, balanced = _mask_quotes(text)
+    return masked if balanced else text
+
+
+def _join_outside_comments(text):
+    out, i, n = [], 0, len(text)
+    quote = None
+    while i < n:
+        c = text[i]
+        if quote == "'":
+            quote = None if c == "'" else quote
+        elif c == "\\" and i + 1 < n:
+            if text[i + 1] != "\n":
+                out.append(c + text[i + 1])
+            i += 2
+            continue
+        elif c == '"':
+            quote = None if quote == '"' else '"'
+        elif quote is None and c == "'":
+            quote = "'"
+        elif quote is None and c == "#" and (not out or out[-1][-1] in _WORD_START):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(text[i:j])
+            i = j
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
 
 # CONSUMERS WHOSE HEREDOC BODY CAN DETERMINE A DESTINATION, not just a real
 # shell re-parsing it as new commands. Measured 2026-09-09, adversarially,
@@ -924,6 +1000,7 @@ def _mask_quotes(text):
     """
     out = []
     balanced = True
+    has_eval = "eval" in text  # the per-quote eval scan costs nothing without one
     i, n = 0, len(text)
     while i < n:
         c = text[i]
@@ -945,7 +1022,8 @@ def _mask_quotes(text):
                     continue
                 i += 1
             interior = text[start:i]
-            if _SHELL_DASH_C.search(text[:quote_start]):
+            if (_SHELL_DASH_C.search(text[:quote_start])
+                    or (has_eval and _EVAL_ARGS.search(text[:quote_start]))):
                 out.append(interior)  # code the shell runs — keep it visible
             else:
                 out.append(" " * len(interior))
@@ -1758,10 +1836,10 @@ def decide(cfg, command, cwd):
     # TARGET resolution) stays on the unmasked text — it needs the real path,
     # quoted or not.
     no_heredoc = _strip_heredoc_bodies(probe)
-    masked, balanced = _mask_quotes(no_heredoc)
-    if not balanced:
-        # Unbalanced quotes: the masking is not trustworthy, so do not mask.
-        masked = no_heredoc
+    # Joined AFTER the heredoc strip: a continuation must not swallow the
+    # line that closes a heredoc and pull the next command into its body.
+    copies = _join_continuations(no_heredoc)
+    masked = _COPY_BOUNDARY.join(_mask_copy(c) for c in copies)
 
     # EVERY protected root, not just the lane's own pair. Iterating `cfg["roots"]`
     # is what makes `also_protect` reach these two literal gates; keying them on

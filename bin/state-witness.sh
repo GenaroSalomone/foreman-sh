@@ -636,6 +636,7 @@ ruling_queue_claim_all() {  # <run_dir> <via>
     if [ -n "$text" ]; then
       count=$((count + 1))
       [ "$n" = legacy ] || printf 'at=%s\nvia=%s\n' "$at" "$via" > "$d/ruling-delivered.$n" 2>/dev/null || true
+      transcript_append "$d" "RULING-DELIVERED" "ruling:$n via=$via" "$text"
       [ "$count" -gt 1 ] || first="$text"
       body="${body}── ruling ${count} ──
 $text
@@ -651,4 +652,27 @@ $text
   else
     printf '%s RULINGS, in the order your brainer sent them. Where a later one disagrees with an earlier one, the later one stands.\n\n%s' "$count" "${body%$'\n\n'}"
   fi
+}
+
+# ── THE TASK TRANSCRIPT ──────────────────────────────────────────────────────
+#
+# `<rundir>/transcript.log`: what was SAID between an executor and its brainer,
+# append-only, with a timestamp and the envelope it travelled in. Until this
+# existed the text of an ask, a ruling or a report lived in two panes' scrollback
+# and in tokens that expire after an hour, so "what did the brainer tell it?" had
+# no answer once either pane was gone. `hw log <lane> <task>` reads it.
+#
+# BEST EFFORT, ALWAYS. A log line lost must never cost a delivery, so this
+# returns 0 whatever happens. A task past the first keeps its state in `t<N>/`;
+# the log stays in the run directory itself, one file for the whole executor.
+transcript_append() {  # <state-or-run dir> <kind> <envelope> <text>
+  local d="${1:-}" kind="${2:-}" envelope="${3:-}" text="${4:-}" base body
+  [ -n "$d" ] || return 0
+  base="${d##*/}"
+  case "$base" in t[0-9]*) case "${base#t}" in *[!0-9]*) ;; *) d="${d%/*}" ;; esac ;; esac
+  [ -d "$d" ] || return 0
+  body="$(printf '%s\n' "$text" | sed 's/^/    | /')"
+  printf '%s  %s  envelope=%s\n%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$kind" "${envelope:--}" "$body" \
+    >> "$d/transcript.log" 2>/dev/null || true
+  return 0
 }

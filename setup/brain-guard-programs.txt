@@ -1,6 +1,11 @@
 # Programs of brain a product executor may run, besides done-invoker,
-# ask-invoker, channel-send, hw, browser-close and herdr-rpc (the brain guard,
+# ask-invoker, channel-send, browser-close and herdr-rpc (the brain guard,
 # setup/guards/deny_brain_writes.py, carries those). A line is
-#   <path relative to brain> [via=<interpreter>] [first=<required first arg>]
+#   <path relative to brain> [via=<interpreter>] [first=<arg>[,<arg>…]]
+# `first=` is the closed list of allowed first arguments.
 # Add the programs your own lanes' executors need to run from brain.
 bin/decisions first=index
+# The executor's own `hw` verbs. The brainer's (next, ruling, unstick, reap
+# --apply, a dispatch, done on another task …) are not here, and bin/hw
+# refuses them itself when HW_TASK/HW_RUN are set.
+bin/hw first=done,executor-turn-end,handle,help,-h,--help,--version,human-boundary,output,receipt,review-delta,review-range,status,suite

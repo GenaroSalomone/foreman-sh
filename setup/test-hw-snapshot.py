@@ -21,15 +21,38 @@ import sys
 import tempfile
 
 
+# An hw executor's run state, at the root of its worktree: `.hw/` (written by
+# its own Stop hook at every turn end) and `.artifacts/` ($HW_ARTIFACTS, where
+# a release cut writes its evidence while its gates run). Neither is source,
+# and a write there during the capture aborted a cut's test-hw gate.
+RUN_STATE = {'.hw', '.artifacts'}
+
+
+def copy_ignore(root):
+    """shutil.copytree's ignore: .git anywhere, run state only at the root."""
+    root = os.path.realpath(root)
+    def ignore(parent, names):
+        skip = {'.git'}
+        if os.path.realpath(parent) == root:
+            skip |= RUN_STATE
+        return [n for n in names if n in skip]
+    return ignore
+
+
 def inventory(root):
     """Include ignored files, new subjects, dependencies and symlink objects.
 
-    Git metadata is the only omission: it must never refer to the original
+    Git metadata and an executor's run state at the root (RUN_STATE) are the
+    only omissions: git metadata must never refer to the original
     index/worktree. Symlink targets outside the checkout are not followed.
     """
     result = {}
+    root_real = os.path.realpath(root)
     for parent, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if d != '.git')
+        at_root = os.path.realpath(parent) == root_real
+        dirs[:] = sorted(d for d in dirs if d != '.git' and not (at_root and d in RUN_STATE))
+        if at_root:
+            files = [f for f in files if f not in RUN_STATE]
         for name in sorted(dirs + [f for f in files if f != '.git']):
             path = Path(parent) / name
             rel = str(path.relative_to(root))
@@ -73,8 +96,7 @@ def main():
         candidate = base / 'brain'
         before = inventory(root)
         tracked = tracking(root)
-        shutil.copytree(root, candidate, symlinks=True,
-                        ignore=lambda _parent, names: ['.git'] if '.git' in names else [])
+        shutil.copytree(root, candidate, symlinks=True, ignore=copy_ignore(root))
         frozen = inventory(candidate)
         after = inventory(root)
         if before != frozen or before != after or tracked != tracking(root):

@@ -74,6 +74,11 @@ FLAGS
                         Each proved done-invoker report creates one next-task authority.
                         A successful `hw next` consumes that authority; the next proved
                         report re-arms a fresh task-bound lease. Expiry closes the pane.
+    --sandbox          run the executor inside a Seatbelt profile that confines
+                       its writes and cuts its control sockets; it reports
+                       through an outbox. Same as `sandbox: true` in a brief.
+                       macOS and Claude Code only; TCP stays open
+                       (THREAT-MODEL.md).
     --dry-run          print the dispatch, create nothing.
     --allow-stale-hooks launch even though the worktree's versioned hook settings
                        (.claude/settings*.json, .codex/hooks.json, opencode.json)
@@ -83,10 +88,27 @@ FLAGS
                        concurrent work — recorded in the manifest)
     --no-reuse-check   legacy exact alias for --fresh
 
+BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
+    sandbox: true      same as --sandbox; `false` never turns a --sandbox off.
+    requires-agents: [primary:|subagent:]<name>[, …]
+                       agents the task cannot do without. hw refuses the
+                       dispatch when the executor cannot reach one from its
+                       work directory, instead of warning.
+    boundary: <what must never cross>
+                       a build is not accepted as done without
+                       $HW_ARTIFACTS/design-judgment.md naming it and ending
+                       JUDGMENT: APPROVED (Judgment Day's design mode).
+    decision: <what is undecided>   as --model-why.
+
 OTHER COMMANDS
     hw                              interactive brief picker
     hw status                       what is running, and what never closed
     hw receipt <project> <task>     what was MEASURED, next to what was dispatched
+    hw log <project> <task>         what was asked, ruled and reported, from disk
+    hw outbox [<project>]           reports that never reached a brainer, waiting on disk
+    hw outbox flush [<project>] --to <pane>
+                                    redeliver them to that brainer pane (`brain <lane>`
+                                    does it on open; an uncertain one is never resent)
     hw reports [<project>]           one line per task: which reports are on disk
     hw reports <project> <task>      the report text for one task
     hw reports <project> --full      the report text for every task in the lane

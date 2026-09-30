@@ -28,9 +28,17 @@
 #              what that session can reach. A warning before the launch
 #              beats finding out at minute 40.
 #
+#   sandbox:   true — run the executor inside the macOS sandbox, as --sandbox
+#              (Claude Code on macOS only; THREAT-MODEL.md)
+#   requires-agents: [primary:|subagent:]<name>, …
+#              Agents the task cannot do without: hw refuses the dispatch
+#              when the executor cannot reach one, instead of warning.
+#   boundary:  <what must never cross> — the task is not done without an
+#              approved design judgment (README, Judgment Day)
+#
 # A declaration is a CHECK, not a source: it never supplies a flag hw would
-# otherwise ask for. Other keys hw reads (decision, delivery, boundary,
-# requires-agents) are in `hw help flags`.
+# otherwise ask for, except `sandbox: true`, which is the flag. The brief keys
+# are also in `hw help flags`.
 ---
 
 # Brief: <task-name>

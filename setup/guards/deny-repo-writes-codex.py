@@ -271,7 +271,22 @@ def main():
     # THE CWD AXIS GETS THE REAL CWD, resolved independently of which directory
     # happened to name the lane. See `lane_candidates` for the measurement that
     # forced this apart.
-    verdict = decide(config(lane), command, shell_cwd(payload))
+    #
+    # A CRASH HERE REFUSES. An exception out of `config` or `decide` used to
+    # leave with Python's exit 1, which Codex reads as a non-blocking error: the
+    # command ran, unguarded, exactly when the guard had reached no verdict. Only
+    # exit 2 blocks. (The lane is already known, so an executor is never reached.)
+    try:
+        verdict = decide(config(lane), command, shell_cwd(payload))
+    except Exception as exc:  # noqa: BLE001 — ANY failure while deciding must refuse
+        print(
+            "BLOCKED by deny-repo-writes (codex, lane=%s): the guard CRASHED while "
+            "deciding (%s: %s). It reached no verdict, and a guard that reached no "
+            "verdict has not established that this command is safe. Every Bash "
+            "command is refused until this is fixed." % (lane, type(exc).__name__, exc),
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if verdict:
         print(
             "BLOCKED by deny-repo-writes (codex, lane=%s): %s" % (lane, verdict[1]),

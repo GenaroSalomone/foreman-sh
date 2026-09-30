@@ -610,6 +610,57 @@ invoker_task_seq() {
   printf '%s' "$n"
 }
 
+# ── the outbox: a report is written down BEFORE it is sent ───────────────────
+#
+# done-invoker used to hold the report only in memory and in herdr tokens (24h
+# TTL, capped at 560 characters). With the brainer's pane closed or renamed the
+# send died, the only full copy was the executor's own transcript, and nothing
+# would ever offer it to the brainer again. Now the full envelope is a file
+# under `<run state dir>/outbox/`, keyed by ENVELOPE ID, and it is removed only
+# once the receiver admitted it. `hw outbox` lists it; `hw outbox flush` (run by
+# `brain <lane>` on open) redelivers it.
+#
+# DEDUPLICATION IS BY ENVELOPE ID, ON THE SENDER'S SIDE: one file per id, so a
+# retried done-invoker overwrites rather than adds, and a delivered id has no
+# file left to redeliver. An id that ended `uncertain` (channel-send exit 5: it
+# may already be in the receiver) is NEVER auto-redelivered — that is the one
+# case where a redelivery is a duplicate. The redelivered text carries the same
+# envelope id, which is how a receiver can recognise a repeat.
+invoker_outbox_dir() { printf '%s/outbox' "$(invoker_state_dir)"; }
+invoker_outbox_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+invoker_outbox_write_meta() {  # $1=envelope $2=state $3=status(optional)
+  local d key status="${3:-}"
+  d="$(invoker_outbox_dir)"; key="$(invoker_outbox_key "$1")"
+  [ -n "$status" ] || status="$(sed -n 's/^status=//p' "$d/$key.meta" 2>/dev/null | head -1)"
+  printf 'envelope=%s\nproject=%s\ntask=%s\nrun=%s\nstatus=%s\nstate=%s\nat=%s\npid=%s\n' \
+    "$1" "${HW_PROJECT:-}" "${HW_TASK:-}" "${HW_RUN:-norun}" "$status" "$2" \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$$" > "$d/$key.meta"
+}
+invoker_outbox_put() {  # $1=envelope $2=message $3=status (done|blocked)
+  local d key
+  local state=pending
+  d="$(invoker_outbox_dir)"; key="$(invoker_outbox_key "$1")"
+  mkdir -p "$d" 2>/dev/null || return 1
+  # A re-run after an exit 5 must not launder `uncertain` back into `pending`:
+  # that is the one state a redelivery would duplicate.
+  ! grep -q '^state=uncertain' "$d/$key.meta" 2>/dev/null || state=uncertain
+  printf '%s' "$2" > "$d/$key.msg.tmp" 2>/dev/null && mv "$d/$key.msg.tmp" "$d/$key.msg" || return 1
+  invoker_outbox_write_meta "$1" "$state" "$3" || return 1
+}
+invoker_outbox_settle() {  # $1=envelope — admitted: nothing left to redeliver
+  local d key
+  d="$(invoker_outbox_dir)"; key="$(invoker_outbox_key "$1")"
+  rm -f "$d/$key.msg" "$d/$key.meta" 2>/dev/null || true
+}
+# channel-send exit 5: the message MAY be in the receiver. Say so on disk.
+invoker_delivery_uncertain() {  # $1=envelope $2=route
+  local d key
+  d="$(invoker_outbox_dir)"; key="$(invoker_outbox_key "$1")"
+  printf 'envelope=%s\nroute=%s\nat=%s\nchannel_send_exit=5\n' "$1" "$2" \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$(invoker_state_dir)/delivery-uncertain" 2>/dev/null || true
+  [ ! -f "$d/$key.meta" ] || invoker_outbox_write_meta "$1" uncertain || true
+}
+
 invoker_state_dir() {
   local run_dir seq
   run_dir="$(invoker_run_dir)"

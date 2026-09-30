@@ -325,6 +325,12 @@ fi
 
 _clear_reply_hold() {
   [ "$HOLD_PROVEN" = 1 ] || return 0
+  # The brainer's answer or ruling, delivered: the one place its text is known
+  # together with the run it belongs to (the hold sits in that run's state dir).
+  if type transcript_append >/dev/null 2>&1; then
+    _hold_envelope="${DELIVERY_KEY:-$(awk -F= '$1 == "logical_id" { print $2; exit }' "$REPLY_HOLD" 2>/dev/null)}"
+    transcript_append "$(dirname "$REPLY_HOLD")" "$([ "$IS_RULING" = 1 ] && echo RULING || echo ANSWER)" "${_hold_envelope:--}" "$MESSAGE"
+  fi
   rm -f -- "$REPLY_HOLD" 2>/dev/null || true
 }
 

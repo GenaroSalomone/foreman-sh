@@ -81,7 +81,7 @@ run_case delivered
 [ "$(cat "$TMP/delivered/events")" = $'deliver\nclose done setup task\nartifacts '"$TMP"$'/delivered/artifacts\nmarker-present' ] \
   || fail "done close: order was not receiver delivery -> done marker -> hw done: $(tr '\n' ' ' < "$TMP/delivered/events")"
 case "$(cat "$TMP/delivered/message")" in
-  *"receiver-proved delivery"*"hw done"*"--keep-pane"*"chaining"*)
+  *"receiver admitted the report"*"hw done"*"--keep-pane"*"chaining"*)
     pass "done close: the report reaches the brainer before the existing hw close path runs" ;;
   *) fail "done close: delivered envelope does not explain automatic close and its escape hatch" ;;
 esac

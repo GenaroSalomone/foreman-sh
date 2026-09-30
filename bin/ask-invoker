@@ -93,6 +93,7 @@ _inv_exit_meaning() {
   case "$1" in
     1) printf 'NOT DELIVERED — no ask was spent and no marker written, so nothing was lost; retry the identical command' ;;
     4) printf 'DELIVERED and provably in the brainer session, but its TURN failed — do NOT re-ask' ;;
+    5) printf 'DELIVERY UNCERTAIN — the question MAY already be with the brainer; do NOT re-ask, wait for the reply or read its pane' ;;
     *) printf 'a failure, not a delivery' ;;
   esac
 }
@@ -124,11 +125,22 @@ while [ -L "$_src" ]; do
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
 INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+# INSIDE THE SANDBOX (hw --sandbox) herdr is out of reach by design: the hard
+# profile denies every unix socket. The call is handed, argv only, to the
+# broker outside, which runs THIS invoker with the dispatch's own environment
+# and replays its output and exit status here (bin/hw-sandbox, "the broker").
+if [ "${HW_SANDBOX:-0}" = 1 ]; then
+  [ -x "$INVOKER_BIN_DIR/hw-sandbox" ] || die "running in the sandbox, but $INVOKER_BIN_DIR/hw-sandbox is missing, so nothing can leave it. NOTHING was sent."
+  exec "$INVOKER_BIN_DIR/hw-sandbox" request ask-invoker "$@"
+fi
 INVOKER_PROG=ask-invoker
 [ -r "$INVOKER_BIN_DIR/invoker-common.sh" ] \
   || die "cannot find invoker-common.sh beside $_src — this brain/bin is incomplete"
 # shellcheck source=invoker-common.sh
 . "$INVOKER_BIN_DIR/invoker-common.sh"
+# The task transcript is best effort: an incomplete bin/ loses the log, not the ask.
+# shellcheck source=state-witness.sh
+[ -r "$INVOKER_BIN_DIR/state-witness.sh" ] && . "$INVOKER_BIN_DIR/state-witness.sh"
 
 # This invoker takes no flags at all, so `$*` used to absorb anything that
 # looked like one and publish it as part of the QUESTION. done-invoker had the
@@ -479,6 +491,38 @@ if [ "$DELIVERY_RC" -eq 4 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
   DELIVERY_RC=0
 fi
 
+activate_pending_reply() {
+python3 - "$PENDING_REPLY" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+rows = open(path, encoding="utf-8").read().splitlines()
+assert rows.count("state=undelivered") == 1
+rows[rows.index("state=undelivered")] = "state=delivered"
+temporary = path + ".tmp"
+with open(temporary, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(rows) + "\n")
+os.replace(temporary, path)
+PY
+}
+
+# EXIT 5 IS NOT A FAILURE TO RETRY, ON ANY ROUTE (same as done-invoker): the
+# question MAY already be with the brainer, and re-asking would be a second one.
+# No ask is spent; the reply, if the brainer has it, arrives in this pane.
+if [ "$DELIVERY_RC" -eq 5 ]; then
+  log_ask uncertain
+  # THE QUESTION MAY BE THERE, SO ITS REPLY MUST BE ACCEPTED. channel-send
+  # refuses a --reply-hold whose fact is not state=delivered; leaving it
+  # `undelivered` told the executor to wait for a reply that could never be
+  # sent (Judgment Day, judge B). The ask is still not spent.
+  activate_pending_reply || true
+  printf 'envelope=%s\nroute=%s\nat=%s\nchannel_send_exit=5\n' "$ENVELOPE_ID" "$DELIVERY_ROUTE" \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$STATE_DIR/delivery-uncertain" 2>/dev/null || true
+  printf 'ask-invoker: %s\n' "delivery UNCERTAIN via $DELIVERY_ROUTE (channel-send exit 5): envelope $ENVELOPE_ID was admitted but its landing is unconfirmed, so the question MAY already be with the brainer. Do NOT re-ask — wait in this pane for the reply, or read the brainer's pane $HW_INVOKER_PANE. No ask was spent. $PUBLICATION_NOTE" >&2
+  exit 5
+fi
+
 if [ "$DELIVERY_RC" -ne 0 ] && [ "$DELIVERY_ROUTE" != herdr ]; then
   log_ask "${DELIVERY_ROUTE}-failed"
   die "$DELIVERY_ROUTE delivery proof failed (exit $DELIVERY_RC). $PUBLICATION_NOTE No ask was spent."
@@ -516,24 +560,21 @@ if [ "$DELIVERY_RC" -ne 0 ]; then
 fi
 
 # ── 3. account only after receiver-owned delivery proof ───────────────────
-python3 - "$PENDING_REPLY" <<'PY' || die "the brainer received the request, but its pending-reply fact could not be activated at $PENDING_REPLY"
-import os
-import sys
-
-path = sys.argv[1]
-rows = open(path, encoding="utf-8").read().splitlines()
-assert rows.count("state=undelivered") == 1
-rows[rows.index("state=undelivered")] = "state=delivered"
-temporary = path + ".tmp"
-with open(temporary, "w", encoding="utf-8") as handle:
-    handle.write("\n".join(rows) + "\n")
-os.replace(temporary, path)
-PY
+activate_pending_reply || die "the brainer received the request, but its pending-reply fact could not be activated at $PENDING_REPLY"
 printf '%s' "$ASK_SEQ" > "$COUNT_FILE"
 log_ask delivered
+if type transcript_append >/dev/null 2>&1; then
+  transcript_append "$STATE_DIR" "$([ "$CHALLENGE" = 1 ] && echo CHALLENGE || echo ASK)" "$ENVELOPE_ID" "$QUESTION"
+fi
 publish_ask delivered || true
 herdr notification show "executor blocked · $PROJECT:$TASK" \
   --body "asked the brainer (${ASK_LABEL}) via $DELIVERY_ROUTE" \
   --sound request >/dev/null 2>&1 || true
-printf 'asked the brainer (%s) via %s. The receiver proved delivery of envelope %s; wait for the reply in this pane.\n' \
-  "$ASK_LABEL" "$DELIVERY_ROUTE" "$ENVELOPE_ID"
+if [ "$DELIVERY_ROUTE" = herdr ]; then
+  # The herdr route proves ADMISSION, not that the brainer read it (audit F17).
+  printf 'asked the brainer (%s) via %s. The receiver ADMITTED envelope %s (admission only, not proof it was read); wait for the reply in this pane.\n' \
+    "$ASK_LABEL" "$DELIVERY_ROUTE" "$ENVELOPE_ID"
+else
+  printf 'asked the brainer (%s) via %s. The receiver proved delivery of envelope %s; wait for the reply in this pane.\n' \
+    "$ASK_LABEL" "$DELIVERY_ROUTE" "$ENVELOPE_ID"
+fi

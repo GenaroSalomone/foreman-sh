@@ -21,7 +21,7 @@
   "brain_root": "~/brain",
   "product_repos": [
     "~/code/app",
-    "~/brain/work"
+    "~/work"
   ],
   "defaults": {
     "git_tail": "The brainer is read-only there — only the task's executor changes repo state, in its own worktree. Read-only git (log/status/diff/show/rev-list) is allowed.",
@@ -30,13 +30,13 @@
   "lanes": {
     "brain": {
       "repo": "~/code/app",
-      "worktrees": "~/brain/work",
+      "worktrees": "~/work",
       "write_here": "~/brain/<lane>/",
       "where": "a product repo or a live worktree"
     },
     "setup": {
       "repo": "~/code/app",
-      "worktrees": "~/brain/work",
+      "worktrees": "~/work",
       "write_here": "~/brain/setup/",
       "where": "the app repo or a live worktree"
     }

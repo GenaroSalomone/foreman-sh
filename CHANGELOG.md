@@ -4,7 +4,84 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
-## [0.1.0-rc.3] — unreleased
+## [0.1.0-rc.4] — 2026-09-30
+
+Fourth pre-release, and the last candidate before 0.1.0. A report that did
+not arrive is kept and redelivered instead of lost, a stuck or dead task shows
+in `hw status`, an executor can run inside a kernel sandbox on macOS, and an
+executor no longer holds the brainer's commands.
+
+### Added
+- `hw <lane> <task> --sandbox`, or `sandbox: true` in a brief: on macOS, a
+  Claude Code executor runs inside a Seatbelt profile generated for that
+  dispatch. It cannot write outside its work directory, `$HW_ARTIFACTS`, the
+  temporary directories, its transcript and the engram store; every outbound
+  unix socket but the system resolver's is cut (herdr, Docker, the
+  ssh-agent); `~/.ssh`, `~/.config/gh` and `~/.docker` are unreadable.
+  `done-invoker` and `ask-invoker` still work, through the run's outbox and a
+  broker outside the sandbox. Opt-in; refused off macOS and for OpenCode and
+  Codex; TCP stays open (`THREAT-MODEL.md`, `KNOWN-LIMITATIONS.md` L11).
+- An outbox for reports. `done-invoker` keeps a copy of each report until the
+  receiver admits it; `hw outbox` lists what never arrived, `hw outbox flush
+  --to <pane>` redelivers it, `brain <lane>` redelivers on open, and `hw
+  status` names what is waiting. A report whose delivery is uncertain is never
+  resent on its own.
+- `hw status` marks a working task that shows no sign of activity for
+  `HW_STALE_MINUTES` (30) as `STALE`, naming what to look at, and a run that
+  never reached its first turn as `DIED-BEFORE-FIRST-TURN` instead of hiding
+  it.
+- `hw log <lane> <task>`: the asks, challenges, rulings, answers and reports
+  of one task, from a per-task `transcript.log`.
+- Continuous integration: the fast gate on Linux and macOS, and on Windows
+  under Git Bash without blocking, for every push to `main` and every pull
+  request. `CONTRIBUTING.md`, `SECURITY.md`, issue templates (bug, feature,
+  guard vector) and a pull-request template.
+- README: "How it compares", every cell sourced, and "When not to use
+  foreman".
+
+### Changed
+- `done-invoker` and `ask-invoker` exit 5 when delivery is uncertain (the
+  send was cut off with the message in flight), with a message not to retry,
+  instead of a generic 1. On herdr the receipt says the report was
+  *admitted*; only the native routes say its delivery was proved.
+- `hw done` refuses to close a task whose report never reached the brainer
+  (`STRANDED`) and names how to redeliver it; `--force` discards it
+  deliberately.
+- An executor has an executor's commands only. Run from an executor, `hw`
+  refuses `next`, `ruling`, `unstick`, `reap --apply`, `sweep --apply`,
+  `preview`, `revive`, a dispatch and `done` on another task; the reverse
+  guard lets an executor run `hw` only with its own verbs, and `channel-send`
+  only toward its own brainer.
+- The README and `KNOWN-LIMITATIONS.md` say exactly when engram and Judgment
+  Day become mandatory (a task `hw` registered an engram session for; a brief
+  that declares `boundary:`), and that the installer does not register the
+  Codex guard.
+- `THREAT-MODEL.md` covers injection: a product repository's own agent
+  configuration, and a report's text arriving in the brainer's session.
+- `hw help` lists `hw outbox`, `--sandbox` and the brief keys `sandbox:`,
+  `requires-agents:` and `boundary:`.
+- `install.sh --check` on Linux requires `sd`, `fd`, `rg` and Node 22.7 or
+  newer, as the requirements always said, and names each one missing.
+- The example `projects.json` and `guards.json`, the README and `INSTALL.md`
+  put task worktrees in `~/work`, beside the brain, where the installer puts
+  them.
+- `install.sh`, run again over an existing brain, adds the executor's
+  `bin/hw` line to `setup/brain-guard-programs.txt` when it has none, and
+  keeps every other line (`RELEASE-NOTES.md`, "Upgrading").
+
+### Fixed
+- The brainer's guard let through a `find` whose write action (`-delete`,
+  `-exec`) came after a backslash-newline, read the quoted words of an `eval`
+  as data rather than code, and let a quote inside a comment pair with one on
+  the next line and hide the command between them. All three are refused, in
+  the Python, JavaScript and Codex guards alike.
+- The brainer's guard reads `env --unset`/`-u`, `-i`, `--chdir` and
+  `-S`/`--split-string` as `env` does, so the command behind them is judged.
+- The Codex hook exits 2, a refusal, when it crashes while deciding; it
+  exited 1, which Codex treats as a non-blocking error.
+- The OpenCode plugins refuse a tool call whose arguments are not an object.
+
+## [0.1.0-rc.3] — 2026-09-30
 
 Third pre-release. It fixes an installer layout in which no product executor
 could run, and makes the brainer's guard read the shell.

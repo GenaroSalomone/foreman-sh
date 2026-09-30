@@ -201,8 +201,13 @@ range_needs_suite() {
   # So: check EVERY new commit's OWN change against its OWN parent(s)
   # directly, with `git diff-tree`. This needs no single base at all, so no
   # ordering assumption can fool it.
+  #
+  # EXCEPT THE REMOTE'S task/* BRANCHES (2026-09-30). Those can be pushed on a
+  # FAST verdict alone (below), so a commit that is only there never had a full
+  # run: counting it as "already on the remote" let a tag or a new branch at a
+  # task tip through with no verdict at all (Judgment Day, tests/250 F07).
   local new_commits
-  if ! new_commits="$(git rev-list "$local_sha" --not --remotes="$remote_name" 2>/dev/null)"; then
+  if ! new_commits="$(git rev-list "$local_sha" --not --exclude="$remote_name/task/*" --remotes="$remote_name" 2>/dev/null)"; then
     return 0   # could not enumerate what is new — fail toward requiring a verdict
   fi
   [ -n "$new_commits" ] || return 1   # nothing new by this reckoning
@@ -223,6 +228,16 @@ range_needs_suite() {
 $new_commits
 EOF
   return 1
+}
+
+# full_verdict <file> <tree> → 0 when <file> is a FULL verdict for <tree>: it
+# names the tree, and it does not say `gate=fast`. A fast verdict lives at
+# `<tree>.fast` and no full reader opens that name; refusing the marker here too
+# means a fast run cached under the full name (a mutated or older runner) still
+# cannot open main. A verdict with no gate line is a full one: verify-for-push
+# wrote every verdict before gates existed, and still writes `gate=full`.
+full_verdict() {
+  grep -qF "tree=$2" "$1" 2>/dev/null && ! grep -qxF "gate=fast" "$1" 2>/dev/null
 }
 
 # ancestor_verdict_covers <local_sha> → 0 (covers it) or 1 (does not)
@@ -280,7 +295,7 @@ ancestor_verdict_covers() {
     fi
     if printf '%s\n' "$changed" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
       trigger_tree="$(git rev-parse "$c^{tree}" 2>/dev/null || true)"
-      [ -n "$trigger_tree" ] && grep -qF "tree=$trigger_tree" "$cache_dir/$trigger_tree" 2>/dev/null
+      [ -n "$trigger_tree" ] && full_verdict "$cache_dir/$trigger_tree" "$trigger_tree"
       return
     fi
   done <<EOF
@@ -363,7 +378,7 @@ docs_only_verdict_covers() {
       *[!0-9a-f]*|'') continue ;;   # a .tmp.<pid> mid-write, or anything not a tree name
     esac
     [ "${#vtree}" -eq 40 ] || continue
-    grep -qF "tree=$vtree" "$f" 2>/dev/null || continue
+    full_verdict "$f" "$vtree" || continue
     git cat-file -e "$vtree^{tree}" 2>/dev/null || continue
     diff="$(git diff-tree -r --no-renames --name-status "$vtree" "$tree" 2>/dev/null)" || continue
     [ -n "$diff" ] || continue   # identical trees are the exact-tree check's, not this one's
@@ -409,7 +424,7 @@ verified_ahead() {
     v="$(basename "$f")"
     case "$v" in *[!0-9a-f]*|'') continue ;; esac
     [ "${#v}" -eq 40 ] || continue
-    grep -qF "tree=$v" "$f" 2>/dev/null || continue
+    full_verdict "$f" "$v" || continue
     c="$(sed -n 's/^commit=//p' "$f" 2>/dev/null | head -1)"
     [ -n "$c" ] && [ "$c" != "$sha" ] || continue
     git cat-file -e "$c^{commit}" 2>/dev/null || continue
@@ -445,7 +460,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # a stray touch, anything that is not verify-for-push's real output) passes
   # a bare `-f` check while proving nothing. Requiring `tree=$tree` inside the
   # file costs one more `grep` and closes that gap for free.
-  if [ -n "$tree" ] && grep -qF "tree=$tree" "$cache_dir/$tree" 2>/dev/null; then
+  if [ -n "$tree" ] && full_verdict "$cache_dir/$tree" "$tree"; then
     continue
   fi
   if ancestor_verdict_covers "$local_sha"; then
@@ -456,6 +471,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "pre-push: $local_ref has no verdict of its own, but differs only in lane documentation from $covered_by, which has one — accepted against that verdict." >&2
     continue
   fi
+  # A TASK BRANCH NEEDS THE FAST GATE, NOT THE FULL SUITE (2026-09-30). The full
+  # run is owed once, by the brainer, on the merge tree — the only tree that
+  # reaches main; a second full run on the executor's tree bought nothing and
+  # cost ~965-2316s per task. Keyed by the DESTINATION ref: `task/x:main` is a
+  # push to main. The verdict is `<tree>.fast`, written by a green
+  # `HW_TEST_GATE=fast setup/test-hw` on a checkout clean where
+  # SUITE_TRIGGER_PATTERN reaches, and it must say both its tree and its gate.
+  case "${remote_ref:-}" in
+    refs/heads/task/*)
+      if [ -n "$tree" ] && grep -qxF "tree=$tree" "$cache_dir/$tree.fast" 2>/dev/null \
+         && grep -qxF "gate=fast" "$cache_dir/$tree.fast" 2>/dev/null; then
+        echo "pre-push: $local_ref -> $remote_ref is a task branch; a fast-gate verdict of its exact tree covers it (main still needs a full one)." >&2
+        continue
+      fi
+      ;;
+  esac
   missing="$missing
     $local_ref  $local_sha  (tree ${tree:-unresolvable})"
   while read -r _va_c _va_t; do
@@ -489,6 +520,7 @@ if [ -n "$missing" ]; then
       echo
     fi
     echo "Otherwise run it yourself, then push again:  bash setup/verify-for-push"
+    echo "(a refs/heads/task/* destination needs only the fast gate:  HW_TEST_GATE=fast bash setup/test-hw)"
     echo "If you are certain: git push --no-verify"
   } >&2
   exit 1

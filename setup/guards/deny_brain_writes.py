@@ -59,6 +59,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -89,16 +90,21 @@ PATCH_TOOLS = {"patch", "apply_patch"}
 BASH_TOOLS = {"Bash", "bash"}
 
 # brain's programs a product executor runs by path, measured on the real calls
-# that named brain: done-invoker, ask-invoker, browser-close, hw, herdr-rpc,
-# plus channel-send, which the invokers document. Not every bin/ program is
-# here: `decisions archive --apply`, for one, writes into brain.
-BIN_TOOLS = {"done-invoker", "ask-invoker", "channel-send", "hw",
+# that named brain: done-invoker, ask-invoker, browser-close, herdr-rpc, plus
+# channel-send, which the invokers document (judged again in _channel_send_ok:
+# only toward the brainer). `hw` is NOT here: it is one of the programs in
+# brain-guard-programs.txt with the verbs an executor runs, because the rest
+# (next, ruling, done on another task, a dispatch …) are the brainer's. Not
+# every bin/ program is here: `decisions archive --apply`, for one, writes
+# into brain.
+BIN_TOOLS = {"done-invoker", "ask-invoker", "channel-send",
              "browser-close", "herdr-rpc"}
 
 # Other programs of brain a product executor runs, measured, one per line in
 # `setup/brain-guard-programs.txt` beside this directory: they name lanes and
 # systems, and this directory names none (setup/tests/195). A line is
-#   <path relative to brain> [via=<interpreter>] [first=<required first arg>]
+#   <path relative to brain> [via=<interpreter>] [first=<arg>[,<arg>…]]
+# `first=` is the closed list of allowed first arguments.
 PROGRAMS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                              "brain-guard-programs.txt")
 INTERPRETERS = {"python3", "python", "bash", "sh", "zsh", "node", "perl", "ruby"}
@@ -453,6 +459,52 @@ def _data_names(cfg, text):
     return any(_inside(cfg, p) for p in re.findall(r"/[^\s'\"`;|&<>()]+", text)[:512])
 
 
+# `env`'s options that take a value. The value is the option's, not the
+# program (`env -u HW_TASK hw next` runs hw). `-S`/`--split-string` is also a
+# whole command line, spliced into the words in place of its value.
+_ENV_SHORT_VALUE = "uCPaS"
+_ENV_LONG_VALUE = {"--unset": None, "--chdir": None, "--argv0": None, "--split-string": "S"}
+
+
+def _env_option(words, i):
+    """Index past the `env` option at words[i] and the value it takes. Splices
+    the words of a `-S` string into `words` after the option (in place)."""
+    word = words[i][0]
+    split = None
+    if word.startswith("--"):
+        name, eq, value = word.partition("=")
+        if name not in _ENV_LONG_VALUE:
+            return i + 1
+        if _ENV_LONG_VALUE[name]:
+            split = (i, value if eq else None)
+        j = i + (1 if eq else 2)
+    elif word.startswith("-") and len(word) > 1:
+        j = i + 1
+        for k, letter in enumerate(word[1:], 1):
+            if letter not in _ENV_SHORT_VALUE:
+                continue
+            attached = word[k + 1:]
+            if letter == "S":
+                split = (i, attached if attached else None)
+            j = i + (1 if attached else 2)
+            break
+    else:
+        return i + 1
+    if split is not None:
+        at, value = split
+        if value is None and at + 1 < len(words):
+            value = words[at + 1][0]
+        try:
+            parts = shlex.split(value) if value is not None else []
+        except ValueError:
+            parts = []
+        if parts and value is not None:
+            first = at + 1 if split[1] is None else at
+            words[first:first + 1] = [(w, w) for w in parts]
+            return first
+    return min(j, len(words))
+
+
 def _head(seg):
     """(index of the verb among seg.words, verb) past assignments and wrappers."""
     i, words = 0, seg.words
@@ -465,7 +517,7 @@ def _head(seg):
         if name in WRAPPERS:
             i += 1
             while i < len(words) and (words[i][0].startswith("-") or re.match(r"^[A-Za-z_]\w*=", words[i][1])):
-                i += 1
+                i = _env_option(words, i) if name == "env" else i + 1
             continue
         if name == "timeout":
             i += 1
@@ -556,7 +608,7 @@ def _read_verb_ok(verb, args):
     return True
 
 
-def _judge(cfg, seg, cwd, local=None):
+def _judge(cfg, seg, cwd, local=None, env=None):
     """None, or a refusal, for one simple command."""
     for op, target in seg.redirects:
         if op.startswith("<") and op not in ("<>",):
@@ -579,9 +631,24 @@ def _judge(cfg, seg, cwd, local=None):
         rel, via = prog
         want = cfg["programs"].get(rel)
         rest = args[1:] if via else args
-        if want is None or want[0] != via or (want[1] and (rest[:1] != [want[1]])):
+        if want is None or want[0] != via or (want[1] and (
+                len(rest) < 1 or rest[0] not in want[1].split(","))):
             return _refuse("run", "`%s` is not one of the brain programs a product "
                            "executor runs (%s)" % (rel, _programs_named(cfg)))
+        if rel == "bin/channel-send" and via is None:
+            why = _channel_send_refusal(rest, env or {})
+            if why:
+                return _refuse("run", why)
+        if rel == "bin/hw" and via is None and rest[:1] == ["done"]:
+            pos = [a for a in rest[1:] if not a.startswith("-")]
+            own = (env or {}).get("HW_TASK", "")
+            if own and len(pos) >= 2 and pos[1] != own:
+                return _refuse("run", "`hw done` closes only your own task (%s), not %s"
+                               % (own, pos[1].replace(MARK, "…")))
+        if rel == "bin/hw" and via is None and any(
+                w.startswith("HW_DONE_ALLOW_BRAIN_LEAK=") for w, _ in prefix):
+            return _refuse("run", "HW_DONE_ALLOW_BRAIN_LEAK is the operator's exit from "
+                           "the leak check on `hw done`, never an executor's")
         names_in_args = names_in_args and via is None
         names_verb = False
         if not names_in_prefix or _prefix_ok(cfg, prefix, cwd):
@@ -659,6 +726,35 @@ def _program(cfg, verb, name, args, cwd):
         if os.path.isfile(os.path.join(d, verb)):
             return "bin/" + verb, None
     return None
+
+
+# channel-send's flags that take a value; the rest take none.
+_CS_VALUE_FLAGS = {"--require", "--id", "--report-state", "--reply-hold"}
+
+
+def _channel_send_refusal(args, env):
+    """None when this channel-send goes to the executor's own brainer pane
+    (HW_INVOKER_PANE), else why not. Its positionals are
+    `<vendor> <target> <endpoint> <message>` after the flags."""
+    pos, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--ruling":
+            return ("`channel-send --ruling` steers another run; a ruling is the "
+                    "brainer's (hw ruling)")
+        if a in _CS_VALUE_FLAGS:
+            i += 2
+            continue
+        if a.startswith("--") and not pos:
+            i += 1
+            continue
+        pos.append(a)
+        i += 1
+    target, pane = (pos[1] if len(pos) > 1 else ""), env.get("HW_INVOKER_PANE", "")
+    if pane and MARK not in target and target == pane:
+        return None
+    return ("`channel-send` goes only to your brainer's pane (HW_INVOKER_PANE=%s), "
+            "and its target here is %r" % (pane or "unset", target.replace(MARK, "…")))
 
 
 def _programs_named(cfg):
@@ -866,7 +962,7 @@ def decide(cfg, tool, tool_input, cwd, env=None):
     fed = False  # an earlier stage of this pipeline named brain
     for i, seg in enumerate(segs):
         here = cwds[i]
-        verdict = _judge(cfg, seg, here, shell.local)
+        verdict = _judge(cfg, seg, here, shell.local, env)
         if verdict:
             return verdict
         if cwds[i + 1] and _inside(cfg, cwds[i + 1]):

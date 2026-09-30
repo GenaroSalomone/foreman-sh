@@ -386,6 +386,21 @@ fi
 need python3 "the guards and the JSON merges"        "$([ "$(uname -s)" = Linux ] && echo "apt install python3" || echo "xcode-select --install")"
 need herdr   "every brainer and executor is a herdr pane" "https://herdr.dev"
 need claude  "the agent runtime"                     "https://claude.com/claude-code"
+# Linux needs four more that macOS setups carry already: hw and its scripts
+# call sd, fd and rg, and the OpenCode guard plugin is an ES module run by Node.
+if [ "$(uname -s)" = Linux ]; then
+  need sd "hw and the lane scripts edit files with it" "apt install sd"
+  need fd "hw finds files with it" "apt install fd-find, then link fdfind as fd"
+  need rg "hw and the guards search with it" "apt install ripgrep"
+  if command -v node >/dev/null 2>&1; then
+    node_ver="$(node --version 2>/dev/null | sed -E 's/^v//' || true)"
+    node_mm="$(printf '%s' "$node_ver" | sed -E 's/^([0-9]+)\.([0-9]+).*/\1 \2/')"
+    if [ "${node_mm% *}" -gt 22 ] 2>/dev/null || { [ "${node_mm% *}" -eq 22 ] 2>/dev/null && [ "${node_mm#* }" -ge 7 ] 2>/dev/null; }; then ok "node $node_ver (>= 22.7)"
+    else printf '  MISSING node >= 22.7 — found %s; the OpenCode guard plugin is an ES module in a .js file. Install: https://nodejs.org/en/download\n' "${node_ver:-<no version>}"; missing=1; fix_tool "node >= 22.7: https://nodejs.org/en/download"; fi
+  else
+    printf '  MISSING node — the OpenCode guard plugin is an ES module in a .js file (22.7 or newer). Install: https://nodejs.org/en/download\n'; missing=1; fix_tool "node >= 22.7: https://nodejs.org/en/download"
+  fi
+fi
 command -v python3 >/dev/null 2>&1 || die "python3 is required to continue"
 MODEL_GIVEN="$MODEL"
 [ -z "$LANE" ] || adopt_lane_row
@@ -455,7 +470,8 @@ PY
     fi
   fi
 fi
-for soft in engram fzf rg; do
+_soft="engram fzf rg"; [ "$(uname -s)" != Linux ] || _soft="engram fzf"   # rg is required on Linux, above
+for soft in $_soft; do
   if command -v "$soft" >/dev/null 2>&1; then ok "$soft"
   else
     case "$soft" in
@@ -789,8 +805,19 @@ for g in deny_brain_writes.py deny-brain-writes.js brain-guard.opencode.json; do
   put "$SRC/setup/guards/$g" "$BRAIN/setup/guards/$g"
 done
 sync_dir "$SRC/setup/guards/brain-guard" "$BRAIN/setup/guards/brain-guard"
-if [ -f "$BRAIN/setup/brain-guard-programs.txt" ]; then ok "setup/brain-guard-programs.txt (yours, kept)"
-else put "$SRC/setup/brain-guard-programs.txt" "$BRAIN/setup/brain-guard-programs.txt"; fi
+# One line of it is mechanism, though: the guard allows an executor's `hw`
+# only through a `bin/hw first=…` line, so a list written before that line
+# existed gets the source's, appended, and nothing else is touched.
+_gp="$BRAIN/setup/brain-guard-programs.txt"
+if [ ! -f "$_gp" ]; then put "$SRC/setup/brain-guard-programs.txt" "$_gp"
+elif grep -Eq '^bin/hw[[:space:]]' "$_gp" || ! grep -Eq '^bin/hw[[:space:]]' "$SRC/setup/brain-guard-programs.txt"; then
+  ok "setup/brain-guard-programs.txt (yours, kept)"
+else
+  { [ -z "$(tail -c1 "$_gp")" ] || echo
+    echo "# The executor's own hw verbs, added by install.sh (the guard no longer allows hw without this line)."
+    grep -E '^bin/hw[[:space:]]' "$SRC/setup/brain-guard-programs.txt"; } >> "$_gp"
+  chg "setup/brain-guard-programs.txt (yours, kept) — the executor's bin/hw line added"
+fi
 # Every OpenCode executor's copy of the guard module is mechanism too, so a
 # guard fix reaches it on ANY run — not only on one that names its lane.
 if [ -f "$BRAIN/projects.json" ]; then

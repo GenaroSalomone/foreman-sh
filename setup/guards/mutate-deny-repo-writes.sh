@@ -239,9 +239,10 @@ mutate js-escaped-quote "$GUARD_JS" \
 
 # An unterminated quote must refuse the masking, not blank the rest of the
 # command out of the text every deny regex reads.
-mutate python-unbalanced-quote "$GUARD_PY" "    if not balanced:" "    if False:"
+mutate python-unbalanced-quote "$GUARD_PY" \
+  "    return masked if balanced else text" "    return masked"
 mutate js-unbalanced-quote "$GUARD_JS" \
-  "quoted.balanced ? quoted.masked : noHeredoc" "quoted.masked"
+  "  return quoted.balanced ? quoted.masked : text;" "  return quoted.masked;"
 
 # ── The lane-scoped exemption stays scoped ─────────────────────────────────
 # Granting the spent-worktree teardown to every lane is the levelling-down this
@@ -377,6 +378,32 @@ mutate python-dash-c-nesting "$GUARD_PY" "        if name in _SHELLS:" "        
 mutate js-dash-c-nesting "$GUARD_JS" "    if (SHELLS.has(name)) {" "    if (false) {"
 mutate python-eval-nesting "$GUARD_PY" '        elif name == "eval":' "        elif False:"
 mutate js-eval-nesting "$GUARD_JS" '    } else if (name === "eval") {' "    } else if (false) {"
+# ── A backslash-newline joins, an eval's quoted words are code ─────────────
+# (2026-09-30, Judgment Day of guard-gate-relative-paths)
+mutate python-line-continuation "$GUARD_PY" \
+  "    copies = _join_continuations(no_heredoc)" "    copies = [no_heredoc]"
+mutate js-line-continuation "$GUARD_JS" \
+  "  const copies = joinContinuations(noHeredoc);" "  const copies = [noHeredoc];"
+mutate python-comment-ends-continuation "$GUARD_PY" \
+  '        elif quote is None and c == "#" and (not out or out[-1][-1] in _WORD_START):' "        elif False:"
+mutate js-comment-ends-continuation "$GUARD_JS" \
+  '    } else if (quote === null && c === "#" && (!out.length || WORD_START.includes(out[out.length - 1].slice(-1)))) {' "    } else if (false) {"
+mutate python-blind-join-too "$GUARD_PY" \
+  '    return [aware] if blind == aware else [aware, blind]' "    return [aware]"
+mutate js-blind-join-too "$GUARD_JS" \
+  '  return aware === blind ? [aware] : [aware, blind];' "  return [aware];"
+# Masking both copies as ONE text lets a comment's quote pair across them
+# (Judgment Day round 2 of guarda-eval-y-find-multilinea).
+mutate python-mask-each-copy "$GUARD_PY" \
+  "    masked = _COPY_BOUNDARY.join(_mask_copy(c) for c in copies)" \
+  "    masked = _mask_copy(_COPY_BOUNDARY.join(copies))"
+mutate js-mask-each-copy "$GUARD_JS" \
+  "  const masked = copies.map(maskCopy).join(COPY_BOUNDARY);" \
+  "  const masked = maskCopy(copies.join(COPY_BOUNDARY));"
+mutate python-eval-body-unmasked "$GUARD_PY" \
+  "or (has_eval and _EVAL_ARGS.search(text[:quote_start]))" "or False"
+mutate js-eval-body-unmasked "$GUARD_JS" \
+  "(hasEval && EVAL_ARGS.test(before))" "false"
 mutate python-bare-word "$GUARD_PY" \
   '                    landed = v and _word_lands(cfg, v, d, bare=True)' \
   '                    landed = v and _word_lands(cfg, v, d)'

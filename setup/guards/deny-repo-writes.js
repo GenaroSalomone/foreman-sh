@@ -597,6 +597,64 @@ const SHELL_WRAPPERS = "(?:(?:env|command|exec)\\s+)*";
 const SHELL_DASH_C = new RegExp(
   "(?:^|[|;&(])\\s*" + SHELL_WRAPPERS + "(?:[\\w./-]*/)?" +
   SHELL_INTERPRETERS + "\\b(?:\\s+-[\\w-]+)*\\s+-c\\s*$");
+// `eval` runs its words as one script, every quoted word included — see the
+// Python half (Judgment Day of guard-gate-relative-paths, 2026-09-30).
+const SHELL_WORD_PART =
+  "(?:[^\\s|;&()<>'\"\\\\]|\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|'[^']*')";
+const EVAL_ARGS = new RegExp(
+  "(?:^|[|;&(`\\n])\\s*" + SHELL_WRAPPERS +
+  "(?:(?:\\{|!|if|then|else|elif|do|while|until|time|builtin)\\s+)*" +
+  "(?:[\\w./-]*/)?eval(?:\\s+" + SHELL_WORD_PART + "+)*\\s+" +
+  SHELL_WORD_PART + "*$");
+// bash deletes an UNESCAPED backslash-newline before it splits words — see the
+// Python half. Not an escaped one, not inside single quotes, and not at the end
+// of a `#` comment: bash ends the comment there and runs the next line. Where
+// that quote-tracking scan differs from the quote-blind join, BOTH are scanned
+// after a hard boundary, so a misread quote (`$'\''`) can only add a denial.
+// Each copy is masked on its own, or a comment's quote pairs across the two
+// See the Python half.
+const WORD_START = " \t\n;&|()<>";
+const LINE_CONTINUATION = /(?<!\\)((?:\\\\)*)\\\n/g;
+const COPY_BOUNDARY = "\n;\n";
+export function joinContinuations(text) {
+  const aware = joinOutsideComments(text);
+  const blind = text.replace(LINE_CONTINUATION, "$1");
+  return aware === blind ? [aware] : [aware, blind];
+}
+function maskCopy(text) {
+  // Unbalanced quotes: the masking is not trustworthy, so do not mask.
+  const quoted = maskQuotes(text);
+  return quoted.balanced ? quoted.masked : text;
+}
+function joinOutsideComments(text) {
+  const out = [];
+  const n = text.length;
+  let i = 0;
+  let quote = null;
+  while (i < n) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'") quote = null;
+    } else if (c === "\\" && i + 1 < n) {
+      if (text[i + 1] !== "\n") out.push(c + text[i + 1]);
+      i += 2;
+      continue;
+    } else if (c === '"') {
+      quote = quote === '"' ? null : '"';
+    } else if (quote === null && c === "'") {
+      quote = "'";
+    } else if (quote === null && c === "#" && (!out.length || WORD_START.includes(out[out.length - 1].slice(-1)))) {
+      let j = text.indexOf("\n", i);
+      if (j < 0) j = n;
+      out.push(text.slice(i, j));
+      i = j;
+      continue;
+    }
+    out.push(c);
+    i += 1;
+  }
+  return out.join("");
+}
 // CONSUMERS WHOSE HEREDOC BODY CAN DETERMINE A DESTINATION — see the Python's
 // note for the measurement: `xargs -I{} rm {} <<EOF` runs `rm` once per LINE
 // of its stdin, `patch`'s destination is the `+++ b/<path>` header inside the
@@ -665,6 +723,7 @@ export function stripHeredocBodies(text) {
 export function maskQuotes(text) {
   const out = [];
   let balanced = true;
+  const hasEval = text.includes("eval"); // the per-quote eval scan costs nothing without one
   let i = 0;
   const n = text.length;
   while (i < n) {
@@ -690,7 +749,8 @@ export function maskQuotes(text) {
         i += 1;
       }
       const interior = text.slice(start, i);
-      if (SHELL_DASH_C.test(text.slice(0, quoteStart))) out.push(interior);
+      const before = text.slice(0, quoteStart);
+      if (SHELL_DASH_C.test(before) || (hasEval && EVAL_ARGS.test(before))) out.push(interior);
       else out.push(" ".repeat(interior.length));
       if (i < n) {
         out.push(text[i]);
@@ -1463,9 +1523,9 @@ export function decide(lane, command, cwd) {
   // resolvable. `masked` additionally blanks quoted-string interiors. Path
   // detection stays on the unmasked text — it needs the real path, quoted or not.
   const noHeredoc = stripHeredocBodies(probe);
-  const quoted = maskQuotes(noHeredoc);
-  // Unbalanced quotes: the masking is not trustworthy, so do not mask.
-  const masked = quoted.balanced ? quoted.masked : noHeredoc;
+  // Joined AFTER the heredoc strip, as in the Python half.
+  const copies = joinContinuations(noHeredoc);
+  const masked = copies.map(maskCopy).join(COPY_BOUNDARY);
 
   // EVERY protected root, not just the lane's own pair — see the Python half.
   const { roots } = cfg;
@@ -1695,7 +1755,18 @@ export function makeDenyRepoWrites(lane) {
             "lane this guard knows is named, because a guard that cannot resolve " +
             "its lane cannot tell a protected tree from any other directory.");
         }
-        const args = output?.args ?? {};
+        // ARGUMENTS THAT ARE NOT AN OBJECT REFUSE. `output.args ?? {}` read a
+        // string, a list or a missing `args` as an empty object, so `command`
+        // came out as "" and the guard allowed a call it had not read. The
+        // runtime builds `args`, not the model, so the live risk is a schema
+        // change; a call this guard cannot read has not been seen to be safe.
+        const args = output?.args;
+        if (args === null || typeof args !== "object" || Array.isArray(args)) {
+          throw new Error(
+            `Blocked: the ${lane} read-only guard was handed bash arguments that are ` +
+            `not an object (${args === null ? "null" : Array.isArray(args) ? "a list" : typeof args}), ` +
+            "so it cannot read the command. Refused rather than guessed.");
+        }
         const workdir =
           typeof args.workdir === "string" && args.workdir ? args.workdir : null;
         // A CRASH HERE ALREADY REFUSES, and that asymmetry with the Python is

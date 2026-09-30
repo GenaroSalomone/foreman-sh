@@ -15,7 +15,7 @@ executor in its own worktree that reports back with `done-invoker`.
 - [herdr](https://herdr.dev), running, with its Claude Code integration:
   `herdr integration install claude`
 - [Claude Code](https://claude.com/claude-code), with its first run finished (below)
-- recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (hw's pickers), `rg`
+- recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (hw's pickers), and `rg` on macOS
 - for an OpenCode lane: [OpenCode](https://opencode.ai) 1.18.31 or newer, and herdr's OpenCode
   integration: `herdr integration install opencode` (run `opencode` once first,
   so its config directory exists)
@@ -51,7 +51,11 @@ in `hw`'s error, never answered.
 
 ## Memory (engram) is recommended
 
-engram is recommended, not required. Without it the harness runs and each
+engram is recommended, not required, and becomes mandatory only per task: when
+`hw` registered an engram session for an executor (receipt `engram_session` is
+an `hw-…` id), `done-invoker` refuses a completion that names no stored
+observation as `#<id>`. With no registered session, or with `--blocked`, it
+asks for none. Without engram the harness runs and each
 report still reaches the brainer's session, but nothing is saved to memory:
 later sessions start cold. For reports to reach memory, Claude Code needs an
 `engram` server (`brew install gentleman-programming/tap/engram`, or engram's
@@ -153,7 +157,7 @@ with another `--vendor` for the same lane is refused.
 | `~/brain/projects.json`, `guards.json` | your lanes and what the guards protect; created, then only added to |
 | `~/brain/<lane>/` | `CLAUDE.md`, `decisions.md`, `briefs/`, and `.claude/` with the read-only guard |
 | `~/brain/<lane>/.opencode-executor/` | an OpenCode lane only: the executor's guard plugin and its policy |
-| `~/brain/work/<lane>/<task>` | each task's git worktree (outside your repo) |
+| `~/work/<lane>/<task>` | each task's git worktree: beside the brain, never inside it (the brain guard would refuse every command an executor ran there), and outside your repo. Set by `"work"` in `projects.json` |
 | `~/.local/bin` | links: `hw`, `brain`, `done-invoker`, `ask-invoker`, `channel-send`, `decisions`, and `opencode-auto` for an OpenCode lane |
 | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | one Stop hook, merged; the previous file is kept as `settings.json.bak-brain-install` |
 | `~/.claude/skills/judgment-day/`, `~/.claude/agents/jd-*.md` | only with `--with-judgment-day` (see Judgment Day below) |
@@ -200,6 +204,10 @@ skip are in `KNOWN-LIMITATIONS.md`, L1b.
 
 ## Judgment Day (optional)
 
+Nothing requires it, with one exception: a brief that declares `boundary:` is
+not accepted as done without an `APPROVED` design judgment, which needs this
+skill (see KNOWN-LIMITATIONS.md, L10).
+
 Judgment Day is a blind review by two judges of a diff before it counts as
 finished: both read the same target, neither sees the other's findings, and only
 a severe defect both confirm is fixed, in at most two rounds. It ships in
@@ -230,6 +238,8 @@ recall context when it is registered (see Memory above).
 
 - **Claude Code or OpenCode executors.** Codex lanes are not installed: nothing
   can prove a Codex executor end to end today, so `--vendor codex` is refused.
+  The installer does not write `~/.codex/hooks.json` either, so a Codex session
+  is unguarded until you register the Codex guard yourself (L3, L5).
 - **An OpenCode lane's guard covers shell commands only.** It is a plugin on
   the `bash` tool. OpenCode's own edit and write tools are not refused by it.
 - **An OpenCode executor gets no `--agent`** unless `~/.config/opencode/opencode.json`
@@ -247,6 +257,11 @@ recall context when it is registered (see Memory above).
   `./install.sh --check`, then `brain <lane>` *before* the command above (it
   names the waiting screen), then the command, then `hw <lane> probe --brief
   ~/brain/<lane>/briefs/probe.md --sdd none --model haiku`.
+- **The sandbox is macOS and Claude Code only.** `hw <lane> <task> --sandbox`
+  (or `sandbox: true` in a brief) runs an executor inside a Seatbelt profile;
+  the installer sets nothing up for it, and it is refused elsewhere. What it
+  confines and what it leaves open: `THREAT-MODEL.md` and `KNOWN-LIMITATIONS.md`
+  (L11).
 - **Your repo's own `.claude/settings.json` hooks must resolve.** hw refuses
   to launch into a worktree whose versioned hooks name a missing binary.
   `--allow-stale-hooks` overrides, and the override is recorded.

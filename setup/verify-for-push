@@ -105,7 +105,10 @@ rc=0
 # headline below; pipefail makes the status test-hw's, not tee's.
 log="$(mktemp "${TMPDIR:-/tmp}/verify-for-push.XXXXXX")"
 trap 'rm -f "$log"' EXIT
-bash setup/test-hw 2>&1 | tee "$log" || rc=$?
+# HW_TEST_GATE IS PINNED, NOT INHERITED. An ambient `HW_TEST_GATE=fast` used to
+# reach the runner from here, and its green was cached as a FULL verdict — the
+# one thing main must never accept (2026-09-30, tests/250).
+HW_TEST_GATE=full bash setup/test-hw 2>&1 | tee "$log" || rc=$?
 out="$(cat "$log")"
 elapsed=$(( $(date +%s) - started ))
 if [ "$rc" -ne 0 ]; then
@@ -123,6 +126,7 @@ tmp_cache_file="$cache_file.tmp.$$"
 {
   echo "commit=$commit"
   echo "tree=$tree"
+  echo "gate=full"
   echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "elapsed_seconds=$elapsed"
   echo "headline=$headline"

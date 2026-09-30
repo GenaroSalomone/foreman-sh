@@ -3,9 +3,10 @@
 **Plan with one agent. Build with many. Keep your repository out of the
 planner's hands.**
 
+[![CI](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml/badge.svg)](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-foreman-sh is a small shell harness that runs coding agents over your own
+foreman-sh is a small shell harness, built on herdr, that runs coding agents over your own
 repositories in two roles: a long-lived **brainer** that thinks and writes
 briefs but cannot touch your code, and disposable **executors** that each take
 one brief, work in a git worktree of their own, and report back when they are
@@ -51,9 +52,10 @@ walks a throwaway lane end to end.
 
 - [Why it exists](#why-it-exists)
 - [How it works](#how-it-works)
+- [How it compares](#how-it-compares)
 - [Requirements](#requirements)
 - [Install](#install)
-- [Recommended setup](#recommended-setup)
+- [Optional pieces](#optional-pieces)
 - [Your first task](#your-first-task)
 - [Concepts](#concepts)
 - [Everyday commands](#everyday-commands)
@@ -126,6 +128,46 @@ A task, end to end:
    and deletes a task branch only once git agrees it is merged (`hw reap
    --apply`).
 
+## How it compares
+
+Checked on 2026-09-30 against each project's own page. The footnote on a
+project's name is the source for every cell in its row; where that page does
+not say, the cell reads "not verified" (which is not the same as "absent").
+foreman's row is this README.
+
+| | Isolation | Planner guard | Brief with contract | Re-run verification | Memory | Multi-vendor | UI | Install |
+|---|---|---|---|---|---|---|---|---|
+| **foreman** | worktree + branch per task | yes: mistaken repo writes refused | yes: front-matter checked by `hw` | yes: pinned command re-run at close | `decisions.md`; engram optional | Claude Code, OpenCode; Codex reduced | herdr panes (terminal) | clone + `install.sh` |
+| claude-squad[^cs] | tmux session + worktree per agent | not verified | not verified | not verified | not verified | Claude Code, Codex, Gemini, Aider, other local agents | TUI | `brew install claude-squad` or curl script |
+| Conductor[^co] | "isolated workspaces" (mechanism not verified) | not verified | not verified | not verified | not verified | Claude Code, Codex, Cursor | Mac app | download |
+| uzi[^uz] | worktree per agent | not verified | task given as a prompt (`uzi prompt`); no contract shown | not verified | not verified | claude, codex, "your AI tool of choice" | CLI + tmux | `go install` |
+| container-use[^cu] | container + git branch per agent | not verified | not verified | not verified (shows command history and logs) | not verified | any agent via MCP | terminal + web URLs | `brew install dagger/tap/container-use` or curl script |
+| vibe-kanban[^vk] | workspace with a branch per task (mechanism not verified) | not verified | kanban issue as the task; no contract shown | not verified | not verified | 10 agents listed, incl. Claude Code, Codex, Gemini CLI | web kanban | `npx vibe-kanban` |
+| Superset[^ss] | not verified | not verified (diff viewer before commit) | task described when creating a workspace | not verified | sessions persist across restarts | 20+ agents | desktop app (Electron) | download; macOS, Linux experimental |
+| Claude Code agent teams[^at] | docs warn: "two teammates editing the same file leads to overwrites" | teammate is read-only until its plan is ready; the plan is auto-approved by the lead | spawn prompt; lead's history not carried over | hooks (`TaskCompleted`) can block completion; you write the check | task list persists; in-process teammates not restored on resume | Claude Code only | in-process panel, or tmux / iTerm2 panes | env var (experimental) |
+
+Also relevant: claude-squad is AGPL-3.0, Superset Elastic-2.0, uzi MIT,
+container-use Apache-2.0 (marked early development), and vibe-kanban
+announces it is sunsetting[^vk]. foreman is MIT.
+
+### When not to use foreman
+
+- You run one agent on one task: a plain Claude Code session or a worktree
+  is enough, and foreman adds a brainer, a brief and a report for nothing.
+- You want a GUI or a kanban board: foreman lives in terminal panes.
+- You want one-line install today: foreman needs herdr and an `install.sh`
+  with flags.
+- You need container-level isolation or a Windows-native setup with no WSL2
+  or Git Bash: foreman isolates with git worktrees only.
+
+[^cs]: <https://github.com/smtg-ai/claude-squad>, README, fetched 2026-09-30.
+[^co]: <https://www.conductor.build>, home page, fetched 2026-09-30.
+[^uz]: <https://github.com/devflowinc/uzi>, README, fetched 2026-09-30.
+[^cu]: <https://github.com/dagger/container-use>, README, fetched 2026-09-30.
+[^vk]: <https://github.com/BloopAI/vibe-kanban>, README, fetched 2026-09-30.
+[^ss]: <https://github.com/superset-sh/superset>, README, fetched 2026-09-30.
+[^at]: <https://code.claude.com/docs/en/agent-teams>, fetched 2026-09-30.
+
 ## Requirements
 
 | Platform | How |
@@ -145,10 +187,11 @@ You also need:
   finished (see [Install](#install)). It is the default agent and always the
   brainer.
 - `git`, `jq` 1.7 or newer, `python3`. On Linux also `sd`, `fd`, `rg` and
-  Node 22.7 or newer. On Git Bash, Windows builds of `jq`, `rg`, `fd` and
+  Node 22.7 or newer, which `install.sh --check` requires there. On Git Bash, Windows builds of `jq`, `rg`, `fd` and
   `sd`, which Git for Windows does not ship.
-- Recommended: **engram** for memory across sessions (see
-  [Recommended setup](#recommended-setup)); optional: `fzf` for `hw`'s pickers.
+- Optional: **engram** (recommended) for memory across sessions, and **Judgment Day** for
+  review (see [Optional pieces](#optional-pieces), which says exactly when each
+  becomes mandatory); `fzf` for `hw`'s pickers.
 
 Agents other than Claude Code:
 
@@ -156,7 +199,8 @@ Agents other than Claude Code:
   executors (`--vendor opencode` at install), with herdr's OpenCode
   integration (`herdr integration install opencode`).
 - **Codex** can be dispatched as an executor with `--sdd none` only, and is
-  not set up by the installer.
+  not set up by the installer, guard registration included
+  (see [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md), L3 and L5).
 
 ## Install
 
@@ -195,17 +239,24 @@ The installer checks both and prints these commands when one is missing.
 [`INSTALL.md`](INSTALL.md) has the full reference: every option, what each
 file it writes is for, OpenCode lanes, engram and Windows.
 
-## Recommended setup
+## Optional pieces
 
-Two pieces turn the harness from working into dependable.
+Two pieces make the harness more dependable. Neither is needed to run it; each
+becomes a requirement only under the condition stated below.
 
 **engram, persistent memory across sessions.** [engram](https://github.com/Gentleman-Programming/engram)
 is an MIT-licensed memory server for coding agents (a Go binary with SQLite and
-an MCP server). It is recommended, not required. With it, every `done-invoker`
-report is saved to memory, and a brainer recovers earlier decisions and
-findings instead of starting cold. Without it the harness runs and each report
-still reaches the brainer's session, but nothing is saved: later sessions start
+an MCP server). With it, a brainer recovers earlier decisions and findings
+instead of starting cold. Without it the harness runs and each report still
+reaches the brainer's session, but nothing is saved: later sessions start
 cold. The installer's `--check` lists it as a recommended step, never a blocker.
+
+**When it becomes mandatory:** only for a task whose executor `hw` registered an
+engram session for at dispatch (the receipt's `engram_session` is an `hw-…` id,
+which needs a reachable engram server that is this machine's own store). For
+that task `done-invoker` refuses a completion report that names no stored
+observation as `#<id>` under the lane's project. A run with no registered
+session is not held to it, and `--blocked` is never held to it.
 
 ```sh
 brew install gentleman-programming/tap/engram
@@ -215,7 +266,13 @@ engram setup claude-code
 Other platforms are covered in engram's
 [installation guide](https://github.com/Gentleman-Programming/engram/blob/main/docs/INSTALLATION.md).
 
-**Judgment Day, review before "done".** Two judges read the same diff blind,
+**Judgment Day, review before "done".** Optional: nothing refuses a task for
+lacking it, except a brief that declares `boundary:` in its front-matter (a
+build, or a brief with no `kind:`, whose approach is where it can go wrong). Such a task is not accepted as
+done without `design-judgment.md` in its artifacts, naming that boundary and
+ending in `JUDGMENT: APPROVED`, which is what Judgment Day's design mode
+writes; without the skill installed you cannot produce it honestly, so do not
+put `boundary:` in a brief until you activate it. Two judges read the same diff blind,
 and only a severe defect both confirm is fixed, in at most two rounds. It ships
 in `_skills/judgment-day/` with its three agents in `_agents/`, derived from
 [Gentle AI](https://github.com/Gentleman-Programming/gentle-ai): the skill under
@@ -275,7 +332,7 @@ dispatches. A guard refuses its writes into the lane's repository, so the
 line between deciding and doing is enforced, not requested.
 
 **Executor.** A disposable session started by `hw` for one task: its own
-worktree under `~/brain/work/<lane>/<task>`, its own branch (`task/<task>`
+worktree under `~/work/<lane>/<task>`, beside the brain, its own branch (`task/<task>`
 by default), its own herdr tab. It may write, commit and run anything its
 brief asks for, and it ends with exactly one report.
 
@@ -292,12 +349,15 @@ one question and waits for the answer, and `channel-send` is the transport
 beneath both. Every message is addressed to a pane and confirmed on arrival,
 so a failed delivery says so instead of vanishing.
 
-**Guards.** Hooks for Claude Code, a plugin for OpenCode and a hook for Codex
-that refuse a brainer's writes into protected repositories, plus a reverse
+**Guards.** Hooks for Claude Code, a plugin for OpenCode and a hook script for
+Codex (which you register in Codex's own configuration; the installer does
+not) that refuse a brainer's writes into protected repositories, plus a reverse
 guard that refuses a product executor's writes into the brain. They resolve
 where a write really lands — through `~`, environment variables, `..` and
 symlinks — before deciding. They catch a mistaken write; they are not a
-sandbox. What they stop and what they do not is in
+sandbox. On macOS, `hw <lane> <task> --sandbox` is one: the executor runs in a
+Seatbelt profile that confines its writes and cuts its control sockets, and
+reports through an outbox. What each stops and what it does not is in
 [`THREAT-MODEL.md`](THREAT-MODEL.md).
 
 **Decisions.** `decisions.md` is a lane's append-only record of what was
@@ -314,6 +374,8 @@ together with its archives and rotates old entries out when it grows.
 | `hw status` | What is running, what reported, what was left behind. |
 | `hw reports [<lane>]` | Which reports are on disk; with a task, its text. |
 | `hw receipt <lane> <task>` | What was measured, next to what was dispatched. |
+| `hw log <lane> <task>` | What a task asked, was ruled and reported, from disk. |
+| `hw outbox [flush --to <pane>]` | Reports that never reached a brainer; `flush` redelivers them. |
 | `hw ruling <pane> "<correction>"` | Queue a correction for an executor that is still working. |
 | `hw next <pane> --brief <path>` | Hand a finished executor its next task, keeping its session. |
 | `hw done <lane> <task>` | Close a task's executor. Refuses one that has not reported. |
@@ -369,19 +431,9 @@ with herdr stubbed and every dispatch a dry run. It touches nothing of yours.
 
 ## Feedback and contributing
 
-The most useful reports are the smallest ones: a failing
-`install.sh --check`, a `hw --dry-run` that names the wrong thing, a guard
-that refuses something harmless or lets something through. Open an issue with
-the command, its full output, your platform and the versions of herdr and
-your agent.
-
-For a change, open a pull request with the test that fails without it, and
-run the fast gate before you send it. A change to what a guard allows or
-refuses comes with a vector in `setup/guards/` for the new case. Do not
-install the git hooks in `setup/hooks/` in a clone of this repository unless
-you want them: they are the maintainer's workflow (`pre-push` refuses AI
-attribution in new commits and wants a cached suite verdict), though it
-does not restrict which remote you push to.
+Bug reports, guard vectors and pull requests are welcome: see
+[`CONTRIBUTING.md`](CONTRIBUTING.md). A vulnerability goes through
+[`SECURITY.md`](SECURITY.md), not a public issue.
 
 ## License
 

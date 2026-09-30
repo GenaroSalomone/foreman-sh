@@ -1,4 +1,4 @@
-# Known limitations — 0.1.0-rc.3
+# Known limitations — 0.1.0-rc.4
 
 This is the register of what this pre-release does not do, or does only
 partly. Each entry says its **scope** (where it applies), its **impact**, its
@@ -48,7 +48,8 @@ release candidate.
   `python3` first on Git Bash's PATH (an MSYS2 or Cygwin Python makes the guard
   refuse every call), and `git config --system core.autocrlf false`
   (INSTALL.md, Windows).
-- **Evidence:** the setup suite on a GitHub-hosted `windows-latest` runner,
+- **Evidence:** the maintainer's full setup suite (a superset of the one this
+  repository ships; the subject numbers below are its own) on a GitHub-hosted `windows-latest` runner,
   herdr and the agents stubbed as everywhere in the suite, every subject file
   run one by one (survey mode). Git Bash: 188 of 188 pass, the guard's vector
   suites included, in 57 minutes. WSL2 (Ubuntu 24.04), same commit: 185 of
@@ -65,8 +66,8 @@ release candidate.
   name a symlink (100 of them dangling) included, Python, JavaScript and
   parity halves alike, with the filesystem suite at 42 of 42. There is no
   native-Linux workflow: the Linux figure is WSL2's. That run predates the
-  case-variant change (0.1.0-rc.2) and the shell reading (0.1.0-rc.3) in the
-  same guards (L5); the guards as shipped
+  case-variant change (0.1.0-rc.2), the shell reading (0.1.0-rc.3) and the
+  spellings closed in 0.1.0-rc.4 in the same guards (L5); the guards as shipped
   are `measured` on macOS and `unverified` on WSL2 and Git Bash. The export itself, installed on a
   Windows 11 ARM64 VM under Git Bash from an empty home with the real herdr
   and Claude Code: `--check`, an install, a second identical run that writes
@@ -96,11 +97,11 @@ release candidate.
 - **Same for OpenCode:** `install.sh --vendor opencode` also stops, before
   writing anything, when herdr's OpenCode integration is missing (its report
   reads `MISSING herdr's opencode integration`), and it needs Claude's
-  integration as well. Under an empty home directory that is exactly what
-  `clean-install-check` meets. `measured`: the installer exits 1 with
-  nothing written. Like Claude's, it is the person's step: run OpenCode once
-  so its config directory exists, then `herdr integration install opencode`.
-  `clean-install-check` performs both integration steps itself for that reason.
+  integration as well. Under an empty home directory that is exactly what a
+  clean install meets. `measured` by the maintainer's clean-install check (not
+  shipped): the installer exits 1 with nothing written. Like Claude's, it is
+  the person's step: run OpenCode once so its config directory exists, then
+  `herdr integration install opencode`.
 
 ## Agents
 
@@ -115,16 +116,24 @@ release candidate.
 - **Workaround:** use Claude Code or OpenCode. If you do run Codex, see L5 for
   what its guard does not cover.
 
+The installer does not register the Codex guard: nothing writes
+`~/.codex/hooks.json`. The guard script ships in `setup/guards/`, and until you
+add it to Codex's `PreToolUse` hook for the shell tool, a Codex session is
+unguarded. A Codex brainer of a lane whose repository is the brain itself, once
+it leaves the brain directory, is unguarded even with the hook registered.
+
 ### L4. OpenCode background sub-agents are experimental
 - **Scope:** OpenCode executors and brainers that spawn sub-agents in the
   background. The harness enables them with OpenCode's
   `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` variable.
 - **Impact:** the behaviour, and the variable itself, are OpenCode's and may
-  change between its releases; the harness does not pin an OpenCode version.
+  change between its releases. The installer requires OpenCode 1.18.31 or
+  newer and pins no upper version.
   A background sub-agent's work is not something the harness's return channel
   tracks separately from its parent session.
 - **Evidence:** the `background` option and its detach route were exercised
-  against OpenCode 1.18.23 (`measured`). Whether the feature has left
+  against OpenCode 1.18.23 (`measured`), before the installer's minimum rose to
+  1.18.31; they are not re-measured on 1.18.31 or later (`unverified`). Whether the feature has left
   experimental status in a later OpenCode release is `unverified`.
 - **Workaround:** dispatch without relying on background sub-agents; the
   foreground path does not depend on the variable.
@@ -152,13 +161,20 @@ release candidate.
     command that merely names a protected path.
   - A path computed at run time (`$(printf …)`, `eval` or `sh -c` over a
     substitution, a script, a `while read` loop) is resolved by neither
-    guard. The brainer's guard does follow a relative path, a `cd` earlier in
+    guard: the brainer's guard cannot see the path, and the reverse guard
+    (executors) does not follow a script's or a substitution's write either.
+    The brainer's guard does follow a relative path, a `cd` earlier in
     the same command, a shell-local variable, a glob, a brace expansion,
     `find -delete`/`-exec`, `fd -x`, and a literal `sh -c` or `eval` body.
   - An executor is guarded only against writing into the brain. Everything
     else the account can reach — its home directory, other repositories, the
-    network, `git push --force` — is open to it, and so are the brain's own
-    `bin/` tools, which it needs in order to report.
+    network, `git push --force` — is open to it, unless it runs under
+    `--sandbox` (L11). Of the brain's own `bin/` tools it may run the ones it
+    needs to report: its own `hw` verbs, and `channel-send` only toward its
+    own brainer; `hw` itself also refuses the brainer's verbs to an executor.
+    The guard reads the command it is shown, so a script gets past it; `hw`'s
+    check reads the executor's environment, so unsetting `HW_TASK` and
+    `HW_RUN` gets past that one, and the guard refuses that spelling.
   - Letter case: on a case-insensitive filesystem (macOS APFS by default) a
     path is matched to a protected repository by its filesystem identity, so
     `~/Code/MyApp` is refused like `~/code/myapp`. A protected root that does
@@ -208,11 +224,14 @@ release candidate.
 
 ## Memory
 
-### L8. engram is optional for running and required for reports
+### L8. engram is optional for running and required for reports it registered
 - **Scope:** `done-invoker` reports from executors that `hw` registered a
-  memory session for.
-- **Impact:** without an `engram` server, the harness runs but reports reach no
-  memory, and a completion report that names no stored observation is refused.
+  memory session for (receipt `engram_session` is an `hw-…` id). A run without
+  a registered session, and any `--blocked` report, is not held to it.
+- **Impact:** without an `engram` server, `hw` registers no session: the
+  harness runs, reports reach the brainer but no memory, and nothing is
+  refused. With a registered session, a completion report that names no stored
+  observation as `#<id>` under the lane's project is refused.
   A stray second `engram serve` (for example one started by an agent plugin
   under a throwaway HOME) can own the default port with the wrong store; `hw`
   and the invokers detect that by instance id and refuse to write to it, but ad
@@ -234,3 +253,71 @@ release candidate.
   end-to-end pass with a real herdr server and real Claude Code and OpenCode
   executors (ask, challenge and report through the return channel); that run
   is not part of this repository.
+
+## Review
+
+### L10. Judgment Day is optional, except for a brief that declares `boundary:`
+- **Scope:** briefs with `boundary:` in their front-matter whose `kind:` is
+  `build` or undeclared. For `explore`, `audit` and `review`, `hw` warns and
+  records no gate.
+- **Impact:** `done-invoker` refuses a completion whose `design-judgment.md`
+  is missing, names another boundary, points at a changed design or does not end
+  in `JUDGMENT: APPROVED`. Producing it honestly needs the judgment-day skill
+  (`install.sh --with-judgment-day`); the check reads the file and cannot prove
+  the judgment ran or that it preceded the code. Any other brief is never held
+  to it.
+- **Evidence:** measured.
+- **Workaround:** leave `boundary:` out of a brief until the skill is active.
+
+## Sandbox
+
+### L11. `--sandbox` is macOS-only, opt-in, Claude Code only, and leaves TCP open
+- **Scope:** `hw <lane> <task> --sandbox`, or `sandbox: true` in a brief — the
+  Seatbelt profile around one executor (see `THREAT-MODEL.md`).
+- **Impact:**
+  - **Platform and vendor.** Seatbelt exists only on macOS, and Apple marks
+    `sandbox-exec` deprecated. Off macOS, and with OpenCode or Codex, the
+    dispatch is refused before anything is built. OpenCode keeps the plugins
+    other sessions run under `~/.cache/opencode`, so its profile would have to
+    open a path this one refuses; neither vendor has been measured under it.
+  - **Not confined:** the network (TCP, including every service on the host);
+    `git push --force`/`--delete` (use server-side branch protection); reads
+    outside `~/.ssh`, `~/.config/gh` and `~/.docker`; the keychain (not
+    measured under this profile).
+  - **Writable from inside:** the engram store (every lane's memory — the
+    executor's report is a `mem_save`, and the engram MCP server opens the
+    database directly), `/private/tmp` and `$TMPDIR` (shared with the
+    operator's other sessions), `<workdir>/.hw/` (the run's own state), and
+    the product repository's shared `objects`, `refs`, `logs` and
+    `packed-refs`, which a worktree's commits need: a sandboxed executor can
+    still move or delete any branch of that repository (`git branch -D`,
+    `git update-ref`), though not its hooks or config.
+  - **Chrome** needs `--no-sandbox` inside: a sandbox cannot start inside
+    another.
+  - **Breaks inside:** `ps` (setuid) is refused, so shell start-up files that
+    call it print an error (measured); `git gc` (measured while the profile
+    was designed) and anything else writing outside the worktree's slice of
+    `.git`; a push over SSH; any tool that writes a
+    shared cache under the home directory (package managers included) unless
+    it is pointed at `$TMPDIR`.
+  - **The stdin form** (`done-invoker -`, `ask-invoker -`) is refused
+    inside: stdin does not cross the broker. Pass the text as the argument.
+  - **Nothing removes a run's state directory** under
+    `~/.local/state/hw-sandbox/` (a profile, a shim, a log: a few KB each),
+    nor a task's arming record: a later launch of the same `<lane>:<task>`
+    without `--sandbox` is revived with it.
+  - **A report whose pane closes under it** is carried to the end by the
+    broker, but its caller is gone, so the answer stays unread in the run's
+    outbox (`<id>.out`/`.err`/`.rc`).
+- **Evidence:** `measured` by a live end-to-end dispatch on the maintainer's
+  machine (the script is not shipped: it runs real agents on real accounts) —
+  a temporary lane, with a brainer and an executor in an isolated herdr
+  session: brief read, workdir written, ten probes outside it (writes, the
+  herdr socket, `~/.ssh`) refused, an ask answered back into the sandbox, a `mem_save` into a private
+  engram, a `done` report delivered, and the broker winding down after the
+  close. The profile, the refusal off macOS, and the outbox broker are held
+  by the maintainer's test suite with mutants (not shipped). OpenCode and
+  Codex under the profile: `unverified`. Chrome under it: measured while
+  the profile was designed, not by this dispatch.
+- **Workaround:** off macOS, run executors under a separate OS account or in a
+  container if you need a hard boundary; for TCP, a host firewall.

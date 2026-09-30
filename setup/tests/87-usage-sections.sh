@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Each help section independently preserves its captured literal stderr bytes.
+# Each help section independently preserves its captured literal stdout bytes.
 #
 # THE GOLDEN IS A SNAPSHOT, SO A DELIBERATE HELP CHANGE UPDATES IT IN THE SAME
 # COMMIT, and the fixture diff is the record of what changed. Its value is not
@@ -12,10 +12,10 @@
 #     import pathlib, re, subprocess
 #     src = pathlib.Path("bin/hw").read_text(); out = ""
 #     pre = 'BRAIN=$PWD; . bin/project-spaces.sh; lane_config_load "$BRAIN" || exit 9\n'
-#     for n in ['launch','placement','flags','commands','exits','projects','environment']:
+#     for n in ['launch','placement','flags','commands','recovery','exits','projects','environment','advanced']:
 #         m = re.search(r'^_usage_' + n + r"\(\) \{\n.*?^}", src, re.M | re.S)
 #         out += subprocess.run(['bash','-c', pre + m.group() + '\n_usage_' + n],
-#                               capture_output=True, text=True).stderr
+#                               capture_output=True, text=True).stdout
 #     pathlib.Path("setup/fixtures/hw-help-before.txt").write_text(out)
 #     REGEN
 #
@@ -37,8 +37,8 @@ root = str(pathlib.Path(sys.argv[1]).resolve().parent.parent)
 table = sys.argv[3] if len(sys.argv) > 3 else root + '/projects.json'
 pre = ('BRAIN=' + root + '; HW_PROJECTS_JSON=' + table + '; . ' + root + '/bin/project-spaces.sh; '
        'lane_config_load "$BRAIN" || exit 9\n')
-names = ['launch','placement','flags','commands','exits','projects','environment']
-markers = ['PLACEMENT AND ISOLATION', 'FLAGS\n', 'OTHER COMMANDS\n', 'EXIT STATUS\n', 'PROJECTS\n', 'ENVIRONMENT\n']
+names = ['launch','placement','flags','commands','recovery','exits','projects','environment','advanced']
+markers = ['PLACEMENT AND ISOLATION', 'FLAGS\n', 'OTHER COMMANDS\n', 'RECOVERY AND CLEANUP\n', 'EXIT STATUS\n', 'PROJECTS\n', 'ENVIRONMENT\n', 'ADVANCED\n']
 positions = [0] + [golden.index(marker) for marker in markers] + [len(golden)]
 definitions = {}
 combined = ''
@@ -47,20 +47,20 @@ for name, start, end in zip(names, positions, positions[1:]):
     assert match, 'missing independent usage section: ' + name
     definitions[name] = match.group()
     result = subprocess.run(['bash','-c',pre + match.group() + '\n_usage_' + name], capture_output=True, text=True)
-    assert result.returncode == 0 and result.stdout == '', (name,result)
-    assert result.stderr == golden[start:end], (name,repr(result.stderr),repr(golden[start:end]))
-    combined += result.stderr
-    print('ok - isolated usage ' + name + ' preserves captured stderr bytes and exit status')
+    assert result.returncode == 0 and result.stderr == '', (name,result)
+    assert result.stdout == golden[start:end], (name,repr(result.stdout),repr(golden[start:end]))
+    combined += result.stdout
+    print('ok - isolated usage ' + name + ' preserves captured stdout bytes and exit status')
 assert combined == golden
-wrapper = re.search(r'^_usage\(\) \{\n.*?^}', source, re.M | re.S)
+wrapper = re.search(r'^_usage_all\(\) \{\n.*?^}', source, re.M | re.S)
 assert wrapper
 # On stdin, not in argv: every section at once is over Windows' 32767-character
 # command line, and CreateProcess refuses it before bash starts.
 # Bytes, so a Windows text pipe cannot turn its newlines into CRLF on the way.
-result = subprocess.run(['bash','-s'], input=(pre + '\n'.join(definitions.values()) + '\n' + wrapper.group() + '\n_usage\n').encode(), capture_output=True)
+result = subprocess.run(['bash','-s'], input=(pre + '\n'.join(definitions.values()) + '\n' + wrapper.group() + '\n_usage_all\n').encode(), capture_output=True)
 result.stdout, result.stderr = result.stdout.decode(), result.stderr.decode()
-if not (result.returncode == 0 and result.stdout == '' and result.stderr == golden):
+if not (result.returncode == 0 and result.stderr == '' and result.stdout == golden):
     import difflib
-    d = list(difflib.unified_diff(golden.splitlines(), result.stderr.splitlines(), 'golden', 'hw', n=0))[:12]
-    raise SystemExit('usage differs from the golden (rc=%s, stdout=%r):\n%s' % (result.returncode, result.stdout[:200], '\n'.join(d)))
+    d = list(difflib.unified_diff(golden.splitlines(), result.stdout.splitlines(), 'golden', 'hw', n=0))[:12]
+    raise SystemExit('usage differs from the golden (rc=%s, stderr=%r):\n%s' % (result.returncode, result.stderr[:200], '\n'.join(d)))
 PY

@@ -4,7 +4,52 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
-## [0.1.0-rc.2] — unreleased
+## [0.1.0-rc.3] — unreleased
+
+Third pre-release. It fixes an installer layout in which no product executor
+could run, and makes the brainer's guard read the shell.
+
+### Fixed
+- The installer put task worktrees under `<brain>/work`, inside the brain,
+  where the reverse guard refused every command a product executor ran in its
+  worktree. `work` now goes beside the brain; `install.sh`, `install.sh
+  --check` and `hw` refuse a guarded lane whose work directory is inside the
+  brain and print how to move it. An existing installation also has to run
+  `install.sh --lane` again for each lane, so the guards protect the new
+  work directory (`RELEASE-NOTES.md`, "Upgrading").
+- The brainer's guard (Claude Code, OpenCode, Codex) let through a relative
+  path (`rm -rf ../myapp/src`, `git -C ../myapp …`), a redirect after
+  `cd <repo> &&`, a shell-local variable in a write target, globs, brace
+  expansions, `find -delete`/`-exec` and `fd -x`. It now segments each command,
+  tracks the directory each one runs in, expands its variables and braces,
+  reads literal `sh -c` and `eval` bodies, and treats `find`/`fd` actions as
+  writes. Same verdicts in all three guards.
+- In the Python guards (the Claude Code hooks and the Codex hook), a payload
+  that is not an object, or a shell call whose input is not an object, crashed
+  the hook (a non-blocking error to the agent); it is now refused. Claude Code's reverse guard exited 127 without `python3`, which is
+  not a refusal; it now refuses.
+- `hw` without a terminal waited on an interactive picker; it now prints its
+  usage and exits 2.
+
+### Added
+- `THREAT-MODEL.md`: what the guards stop, what they do not, and what the
+  harness assumes.
+- `install.sh --with-judgment-day` installs Judgment Day into Claude Code's
+  configuration; idempotent, and it refuses rather than overwrites a file it
+  did not write.
+- `hw help <topic>` (`dispatch`, `flags`, `commands`, `exit-codes`,
+  `recovery`, `advanced`, `all`), and `--version` on `hw`, `brain` and
+  `install.sh`.
+
+### Changed
+- `install.sh --check` checks everything in one pass, lists the fixes in the
+  order they must be done, and ends with one `Next step:`.
+- `hw --help` is one page on standard output; `brain --help` works.
+- Colour is used only when output is a terminal, and never with `NO_COLOR`.
+- The quickstart in `README.md`, `INSTALL.md` and `examples/demo/` runs as
+  written.
+
+## [0.1.0-rc.2] — 2026-09-29
 
 Second pre-release. It closes a write-guard gap found after rc.1 and ships
 Judgment Day.

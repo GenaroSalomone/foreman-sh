@@ -55,7 +55,7 @@
     },
     "121-installed-hooks-resolve-what-they-source.sh": {
       "exit": 0,
-      "seconds": 1.82
+      "seconds": 2.16
     },
     "127-a-quiet-tracked-dirt-does-not-block-verify.sh": {
       "exit": 0,
@@ -294,5 +294,5 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-09-30T00:25:17Z"
+  "measured_at": "2026-09-30T08:18:43Z"
 }

@@ -5,6 +5,7 @@
 #   ./install.sh --brain ~/brain --lane other --repo ~/code/other   # add a lane
 #   ./install.sh --brain ~/brain --lane oc --repo ~/code/oc --vendor opencode  # OpenCode executors
 #   ./install.sh --brain ~/brain --check                            # look, write nothing
+#   ./install.sh --brain ~/brain --with-judgment-day                # also activate Judgment Day
 #
 # In a terminal, a NEW lane is asked what it would otherwise leave at a generic
 # value (--operator, --min-model, --requested-by), default shown; with no terminal,
@@ -23,6 +24,9 @@
 #   <claude-config>/settings.json
 #                            ONE entry merged in: the Stop hook
 #                            `bash '<brain>/bin/hw-stop-hook.sh' stop`
+#   <claude-config>/skills/judgment-day/, <claude-config>/agents/jd-*.md
+#                            ONLY with --with-judgment-day: the review skill and its
+#                            three agents, copied (never over a file of yours)
 #
 # It never writes inside a lane's repository: what a lane needs persisted lives
 # in the brain. It never reads or writes a credential.
@@ -42,7 +46,8 @@ set -euo pipefail
 case "${OSTYPE:-}" in msys*|cygwin*) . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/bin/msys-compat.sh" ;; esac
 
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL=""
+BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0
+ORIG_ARGS=("$@")
 OPERATOR="" MIN_MODEL="" REQ_BY=""   # "" = not given; --min-model / --requested-by "none" = given, none
 BIN_DIR_OUT="${HOME}/.local/bin"
 CLAUDE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -52,11 +57,17 @@ MARKER=".brain-install.json"
 # a guess at compatibility: an older one may work, and nothing here has shown it.
 OPENCODE_MIN="1.18.31"
 
+# The tag this checkout sits on, else its short sha. The marker install.sh
+# writes carries the same value, so an installed brain reports it too.
+install_version() {
+  git -C "$SRC" describe --tags --exact-match 2>/dev/null || git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown
+}
+
 usage() {
   cat <<'EOF'
 usage: install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor claude|opencode [--model P/M]]]
                   [--operator NAME] [--min-model haiku|sonnet|opus|none] [--requested-by required|warn|none]
-                  [--bin-dir DIR] [--check]
+                  [--bin-dir DIR] [--with-judgment-day] [--check]
 
   --brain DIR     where your brain lives (created if absent)
   --lane NAME     a lane for one product repository (lowercase word)
@@ -71,7 +82,12 @@ usage: install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor
   --requested-by M  whether every dispatch must cite the request it answers
                   (requested_by: in the brief): required, warn, or none (default: none)
   --bin-dir DIR   where hw, brain and the invokers are linked (default: ~/.local/bin)
-  --check         verify prerequisites and report what a run would do; write nothing
+  --with-judgment-day  also copy the Judgment Day skill and its three agents into the
+                  Claude Code config (skills/ and agents/); refuses over a file of yours
+  --check         verify everything in one pass, list the fixes in the order they must be
+                  done and end with one "Next step"; write nothing
+  -V, --version   print the version (the tag this checkout sits on, else its short sha)
+  -h, --help      this text
 
 With a terminal, a new lane is asked for each of --operator, --min-model and
 --requested-by that was not given; without one nothing is asked. A lane that
@@ -100,7 +116,9 @@ while [ $# -gt 0 ]; do
     --requested-by) [ $# -ge 2 ] || die "--requested-by needs required, warn or none"; REQ_BY="$2"; shift 2 ;;
     --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a directory"; BIN_DIR_OUT="$2"; shift 2 ;;
     --check)   CHECK=1; shift ;;
+    --with-judgment-day) WITH_JD=1; shift ;;
     -h|--help) usage; exit 0 ;;
+    -V|--version) printf 'install.sh %s\n' "$(install_version)"; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
@@ -205,12 +223,152 @@ ask_new_lane() {
   [ -n "$REQ_BY" ] || ask REQ_BY "must every brief cite the request it answers (required, warn)" "none" is_reqby
 }
 
+# ── Judgment Day: the skill and its three agents, copied into Claude Code's config ──
+# The same collision rule as the links: a file of yours under one of those names
+# is never overwritten. "Ours" is proved, not assumed: identical to this checkout's
+# copy, or identical to what an earlier run recorded (so a newer checkout can update
+# it), and never through a symlink. Anything else is a REFUSAL naming the path.
+JD_RECORD_NAME=".judgment-day-installed.json"
+jd_python() {  # <plan|apply> <record file> — plan: one "verdict<TAB>src<TAB>dst" line per file
+  python3 - "$1" "$SRC" "$CLAUDE_CFG" "$2" <<'PY'
+import glob, hashlib, json, os, shutil, sys
+mode, src, cfg, record = sys.argv[1:5]
+def sha(p):
+    with open(p, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+try:
+    rec = json.load(open(record))
+    rec = rec if isinstance(rec, dict) else {}
+except Exception:
+    rec = {}
+items = []
+skill = os.path.join(src, "_skills", "judgment-day")
+for d, _, fs in os.walk(skill):
+    for f in sorted(fs):
+        a = os.path.join(d, f)
+        items.append((a, os.path.join(cfg, "skills", "judgment-day", os.path.relpath(a, skill))))
+for a in sorted(glob.glob(os.path.join(src, "_agents", "jd-*.md"))):
+    items.append((a, os.path.join(cfg, "agents", os.path.basename(a))))
+items.sort(key=lambda x: x[1])
+def through_link_or_file(b):
+    d = os.path.dirname(b)
+    while len(d) > len(cfg) and d.startswith(cfg):
+        if os.path.islink(d) or (os.path.lexists(d) and not os.path.isdir(d)):
+            return True
+        d = os.path.dirname(d)
+    return False
+plan = []
+for a, b in items:
+    if not os.path.lexists(b):
+        v = "refuse" if through_link_or_file(b) else "add"
+    elif os.path.isfile(b) and sha(a) == sha(b):
+        v = "same"
+    elif os.path.isfile(b) and not os.path.islink(b) and not through_link_or_file(b) and rec.get(b) == sha(b):
+        v = "update"
+    else:
+        v = "refuse"
+    plan.append((v, a, b))
+if mode == "plan":
+    for v, a, b in plan:
+        print("%s\t%s\t%s" % (v, a, b))
+    sys.exit(0)
+if any(v == "refuse" for v, _, _ in plan):
+    sys.exit(3)
+for v, a, b in plan:
+    if v in ("add", "update"):
+        os.makedirs(os.path.dirname(b), exist_ok=True)
+        shutil.copy2(a, b)
+        print("chg\t%s" % b)
+new = dict(rec)
+for v, a, b in plan:
+    if os.path.isfile(b) and not os.path.islink(b) and sha(a) == sha(b):
+        new[b] = sha(b)
+if new != rec:
+    with open(record + ".tmp", "w") as f:
+        f.write(json.dumps(new, indent=2, sort_keys=True) + "\n")
+    os.replace(record + ".tmp", record)
+PY
+}
+JD_PLAN="" JD_STATE=""
+jd_evaluate() {
+  JD_PLAN="$(jd_python plan "$BRAIN/$JD_RECORD_NAME")" || die "could not evaluate Judgment Day"
+  [ -n "$JD_PLAN" ] || { JD_STATE=absent; return 0; }
+  local total same add refuse
+  total="$(printf '%s\n' "$JD_PLAN" | wc -l | tr -d ' ')"
+  same="$(printf '%s\n' "$JD_PLAN" | awk -F'\t' '$1=="same"' | wc -l | tr -d ' ')"
+  add="$(printf '%s\n' "$JD_PLAN" | awk -F'\t' '$1=="add"' | wc -l | tr -d ' ')"
+  refuse="$(printf '%s\n' "$JD_PLAN" | awk -F'\t' '$1=="refuse"' | wc -l | tr -d ' ')"
+  if [ "$refuse" != 0 ]; then JD_STATE=conflict
+  elif [ "$same" = "$total" ]; then JD_STATE=active
+  elif [ "$add" = "$total" ]; then JD_STATE=off
+  else JD_STATE=partial; fi
+}
+jd_report() {
+  case "$JD_STATE" in
+    absent)   say "WARN  this checkout ships no Judgment Day (_skills/judgment-day, _agents/jd-*.md)" ;;
+    active)   ok "Judgment Day is active in $CLAUDE_CFG (skills/judgment-day, agents/jd-*.md)" ;;
+    off)      say "Judgment Day is not active — optional review by two blind judges; activate with: ./install.sh --brain $BRAIN_DIR --with-judgment-day" ;;
+    partial)  say "Judgment Day is only partly active in $CLAUDE_CFG — ./install.sh --brain $BRAIN_DIR --with-judgment-day completes it" ;;
+    conflict) say "Judgment Day: a file of yours differs from this checkout's, so --with-judgment-day would refuse and overwrite nothing:"
+              printf '%s\n' "$JD_PLAN" | awk -F'\t' '$1=="refuse" {print "        " $3}' ;;
+  esac
+}
+
+# ── --check's closing: every fix, in the order it must be done, and ONE next step ──
+print_next_steps() {
+  local n=0 first="" line cmd replay a
+  step() { n=$((n + 1)); printf '  %s. %s\n' "$n" "$1"; [ -n "$first" ] || first="$2"; }
+  printf '\nfixes, in the order they must be done (each needs the ones above it)\n'
+  while IFS= read -r line; do [ -z "$line" ] || step "install: $line" "$line"; done <<FIXES
+$FIX_TOOLS
+FIXES
+  if [ -n "$FIRST_RUN" ]; then
+    cmd="$(claude_first_run_command "${CLAUDE_CONFIG_DIR:-}")"
+    step "Claude Code's first run, yours — finish the welcome and login, accept the warning, /exit: $cmd" "$cmd"
+  fi
+  while IFS= read -r line; do [ -z "$line" ] || step "$line" "$line"; done <<FIXES
+$FIX_INTEGRATIONS
+FIXES
+  if [ "$ENGRAM_MISSING" = 1 ]; then
+    if [ "$(uname -s)" = Linux ]; then cmd="see https://github.com/Gentleman-Programming/engram/blob/main/docs/INSTALLATION.md"
+    else cmd="brew install gentleman-programming/tap/engram"; fi
+    step "engram, memory across sessions (recommended): $cmd" "$cmd"
+    step "engram, wired into Claude Code (recommended): engram setup claude-code" "engram setup claude-code"
+  elif [ "${ENGRAM_WIRED:-}" = no ]; then
+    step "engram, wired into Claude Code (recommended): engram setup claude-code" "engram setup claude-code"
+  fi
+  if [ -n "$LANE" ]; then
+    replay="./install.sh"
+    for a in "${ORIG_ARGS[@]}"; do [ "$a" = --check ] || replay="$replay $(printf '%q' "$a")"; done
+    step "install, lane $LANE: $replay" "$replay"
+  else
+    cmd="./install.sh --brain $BRAIN_DIR --lane <name> --repo <path>"
+    step "a lane for one of your repositories: $cmd" "$cmd"
+  fi
+  # Optional, so after the lane: it is never the next step while a lane is still to be made.
+  if [ "$WITH_JD" = 0 ] && { [ "$JD_STATE" = off ] || [ "$JD_STATE" = partial ]; }; then
+    cmd="./install.sh --brain $BRAIN_DIR --with-judgment-day"
+    step "Judgment Day (optional): $cmd" "$cmd"
+  fi
+  printf '\nNext step: %s\n' "$first"
+}
+
 # ── 1. prerequisites ────────────────────────────────────────────────────────
+# --check evaluates EVERYTHING in one pass and orders the fixes by what each one
+# needs (tools → Claude Code's first run → herdr's integrations → memory → Judgment
+# Day → a lane), ending with ONE "Next step". Measured 2026-09-29 on an empty HOME:
+# the old first pass named only herdr's integration, whose command fails until
+# Claude Code has run once; the first-run items appeared on a second pass.
 printf 'prerequisites\n'
 missing=0
+FIX_TOOLS="" FIX_INTEGRATIONS="" ENGRAM_MISSING=0
+# NL in a variable: bash 3.2 (macOS) leaves a literal $'\n' inside "${x:+$'\n'}".
+NL=$'\n'
+fix_tool() { FIX_TOOLS="${FIX_TOOLS}${FIX_TOOLS:+$NL}$1"; }
+fix_integration() { FIX_INTEGRATIONS="${FIX_INTEGRATIONS}${FIX_INTEGRATIONS:+$NL}$1"; }
 need() {  # <command> <why> <how>
   if command -v "$1" >/dev/null 2>&1; then ok "$1"
-  else printf '  MISSING %s — %s. Install: %s\n' "$1" "$2" "$3"; missing=1; fi
+  else printf '  MISSING %s — %s. Install: %s\n' "$1" "$2" "$3"; missing=1; fix_tool "$3"; fi
 }
 [ "$(uname -s)" = Linux ] && PKG="apt install" || PKG="brew install"
 need git     "worktrees and branches"                "$([ "$(uname -s)" = Linux ] && echo "apt install git" || echo "xcode-select --install")"
@@ -222,7 +380,7 @@ if command -v jq >/dev/null 2>&1; then
   case "$jq_ver" in
     [0-9]*.[0-9]*)
       if [ "${jq_ver%%.*}" -gt 1 ] || { [ "${jq_ver%%.*}" -eq 1 ] && [ "${jq_ver#*.}" -ge 7 ]; }; then ok "jq $jq_ver (>= 1.7)"
-      else printf '  MISSING jq >= 1.7 — found %s, whose `jq -e` treats empty input as success. Install: https://jqlang.github.io/jq/download/\n' "$jq_ver"; missing=1; fi ;;
+      else printf '  MISSING jq >= 1.7 — found %s, whose `jq -e` treats empty input as success. Install: https://jqlang.github.io/jq/download/\n' "$jq_ver"; missing=1; fix_tool "jq >= 1.7: https://jqlang.github.io/jq/download/"; fi ;;
   esac
 fi
 need python3 "the guards and the JSON merges"        "$([ "$(uname -s)" = Linux ] && echo "apt install python3" || echo "xcode-select --install")"
@@ -248,17 +406,17 @@ case "$(uname -s)" in
     # python3 first on PATH makes every hook refuse (it cannot decide there).
     case "$(python3 -c 'import os, sys; print(os.name, sys.platform)' 2>/dev/null)" in
       "nt win32"*) ok "python3 is native Windows Python" ;;
-      *) printf '  MISSING native Windows python3 first on PATH — found %s, and the read-only guard refuses every call under it. Install: https://www.python.org/downloads/windows/\n' "$(command -v python3 || echo none)"; missing=1 ;;
+      *) printf '  MISSING native Windows python3 first on PATH — found %s, and the read-only guard refuses every call under it. Install: https://www.python.org/downloads/windows/\n' "$(command -v python3 || echo none)"; missing=1; fix_tool "native Windows python3: https://www.python.org/downloads/windows/" ;;
     esac
     # hw and this installer LINK; with Developer Mode off Windows refuses a
     # symlink, and MSYS's default would have copied instead, silently.
     _lt="$(mktemp -d "${TMPDIR:-/tmp}/brain-install-link.XXXXXX")"
     if : > "$_lt/a" && ln -s a "$_lt/l" 2>/dev/null && [ -L "$_lt/l" ]; then ok "symlinks"
-    else printf '  MISSING symlinks — hw and this installer link files. Enable Windows Developer Mode (Settings → System → For developers), then run this again\n'; missing=1; fi
+    else printf '  MISSING symlinks — hw and this installer link files. Enable Windows Developer Mode (Settings → System → For developers), then run this again\n'; missing=1; fix_tool "enable Windows Developer Mode (Settings → System → For developers)"; fi
     rm -rf "$_lt" ;;
   *)      say "WARN  $(uname -s) is not supported — macOS and Linux only" ;;
 esac
-[ "$bash_major" -ge 3 ] || { printf '  MISSING bash >= 3\n'; missing=1; }
+[ "$bash_major" -ge 3 ] || { printf '  MISSING bash >= 3\n'; missing=1; fix_tool "bash >= 3"; }
 if command -v herdr >/dev/null 2>&1; then
   # Captured first: `| grep -q` exits on the first match, herdr takes SIGPIPE,
   # and pipefail turns an installed integration into a missing one.
@@ -267,7 +425,7 @@ if command -v herdr >/dev/null 2>&1; then
     ok "herdr's claude integration"
   else
     printf "  MISSING herdr's claude integration — hw reads an agent's state through it. Install: herdr integration install claude\n"
-    missing=1
+    missing=1; fix_integration "herdr integration install claude"
   fi
 fi
 if [ "$VENDOR" = opencode ]; then
@@ -285,7 +443,7 @@ PY
     then ok "opencode $oc_ver (>= $OPENCODE_MIN)"
     else
       printf '  MISSING opencode >= %s — found %s. Install: npm install -g opencode-ai@latest\n' "$OPENCODE_MIN" "${oc_ver:-<no version>}"
-      missing=1
+      missing=1; fix_tool "npm install -g opencode-ai@latest"
     fi
   fi
   if command -v herdr >/dev/null 2>&1; then
@@ -293,7 +451,7 @@ PY
       ok "herdr's opencode integration"
     else
       printf "  MISSING herdr's opencode integration — hw reads an opencode executor's state through it. Install: herdr integration install opencode\n"
-      missing=1
+      missing=1; fix_integration "herdr integration install opencode"
     fi
   fi
 fi
@@ -301,18 +459,25 @@ for soft in engram fzf rg; do
   if command -v "$soft" >/dev/null 2>&1; then ok "$soft"
   else
     case "$soft" in
-      engram) say "WARN  engram not found — optional: persistent memory for brainers and executors (brew install gentleman-programming/tap/engram)" ;;
+      engram) ENGRAM_MISSING=1; say "WARN  engram not found — optional: persistent memory for brainers and executors (brew install gentleman-programming/tap/engram)" ;;
       fzf)    say "WARN  fzf not found — optional: only hw's interactive pickers use it (brew install fzf)" ;;
       rg)     say "WARN  rg not found — optional: the shipped rules suggest it (brew install ripgrep)" ;;
     esac
   fi
 done
 if [ "$missing" = 1 ]; then
-  [ "$CHECK" = 1 ] && { say "a real run would stop here"; exit 1; }
-  die "install the missing prerequisites above and run this again; nothing was written"
+  [ "$CHECK" = 1 ] || die "install the missing prerequisites above and run this again; nothing was written"
+  say "a real run would stop here — the rest is still checked, so every fix is named in one pass"
 fi
 ask_new_lane
 : "${MIN_MODEL:=none}" "${REQ_BY:=none}"
+
+BRAIN="$(abspath "$BRAIN_DIR")"
+[ -z "$REPO" ] || REPO="$(abspath "$REPO")"
+BIN_OUT="$(abspath "$BIN_DIR_OUT")"
+# The source checkout is itself a brain, with its own table: installing onto
+# it (or around it) would merge a new lane into ITS projects.json.
+case "$SRC/" in "$BRAIN/"*) die "--brain $BRAIN is (or contains) the checkout this installer runs from — choose a new directory" ;; esac
 
 # ── 1b. what is the person's, said BEFORE they meet it ─────────────────────
 # Measured 2026-09-24 on a new macOS user: every tool worked, and each first
@@ -358,12 +523,16 @@ print("yes" if "engram" in servers or any(k.split("@")[0] == "engram" and v is T
   else say "PENDING engram is installed but Claude Code has no engram server, so reports never reach memory — run: engram setup claude-code"; fi
 fi
 
-BRAIN="$(abspath "$BRAIN_DIR")"
-[ -z "$REPO" ] || REPO="$(abspath "$REPO")"
-BIN_OUT="$(abspath "$BIN_DIR_OUT")"
-# The source checkout is itself a brain, with its own table: installing onto
-# it (or around it) would merge a new lane into ITS projects.json.
-case "$SRC/" in "$BRAIN/"*) die "--brain $BRAIN is (or contains) the checkout this installer runs from — choose a new directory" ;; esac
+# Only --check reports it and only --with-judgment-day acts on it: any other run
+# prints exactly what it printed before this option existed.
+if [ "$CHECK" = 1 ] || [ "$WITH_JD" = 1 ]; then jd_evaluate; fi
+if [ "$CHECK" = 1 ]; then printf '\nJudgment Day (optional)\n'; jd_report; fi
+if [ "$CHECK" = 1 ] && [ "$missing" = 1 ]; then
+  print_next_steps
+  printf '\n--check: nothing written. A real run would stop at the MISSING lines above.\n'
+  exit 1
+fi
+
 
 # ── 2. every refusal, before the first write ────────────────────────────────
 printf '\nchecks\n'
@@ -436,6 +605,30 @@ if lane and isinstance(pj, dict):
         if other != lane and lane in (v.get("hw_aliases", []) + v.get("brain_aliases", [])):
             out["refuse"].append("lane name '%s' is already an alias of lane '%s'" % (lane, other))
 
+# Where task worktrees live. A NEW brain puts `work` beside the brain, never in
+# it: the inverse guard (setup/guards/deny_brain_writes.py) refuses every
+# command of a product executor that stands in brain, and its worktree is where
+# it stands. A table that already says otherwise keeps its own answer, and the
+# refusal below names how to leave it.
+def work_of(table):
+    w = table.get("work") if isinstance(table, dict) else None
+    return os.path.expanduser(os.path.expandvars(w)) if isinstance(w, str) and w else os.path.join(os.path.dirname(brain), "work")
+
+def inside(path, root):
+    path, root = os.path.realpath(path), os.path.realpath(root)
+    return path == root or path.startswith(root + os.sep)
+
+guarded = lane and not (isinstance(pj, dict) and pj.get("lanes", {}).get(lane, {}).get("brain_guard") is False)
+guarded = guarded or (isinstance(pj, dict) and any(v.get("brain_guard") is not False for v in pj.get("lanes", {}).values()))
+if guarded and pj is not BAD and inside(work_of(pj), brain):
+    out["refuse"].append(
+        "%s is inside the brain %s: a product executor works in its worktree, the brain guard refuses every command it runs "
+        "there, and it could execute nothing. New brains put work beside the brain (%s). To migrate an installation that "
+        "has <brain>/work: finish or `hw done` its open tasks, move or remove %s, set \"work\" in %s/projects.json to %s, "
+        "and run this again"
+        % (work_of(pj), brain, os.path.join(os.path.dirname(brain), "work"), work_of(pj), brain,
+           os.path.join(os.path.dirname(brain), "work")))
+
 gj = load(os.path.join(brain, "guards.json"))
 if lane and isinstance(gj, dict):
     cur = gj.get("lanes", {}).get(lane)
@@ -497,18 +690,25 @@ for l in "${LINKS[@]}"; do
     die "$t exists and is not a link this installer made — remove it or choose --bin-dir. Nothing was written"
   fi
 done
+if [ "$WITH_JD" = 1 ] && [ "$JD_STATE" = conflict ]; then
+  printf '%s\n' "$JD_PLAN" | awk -F'\t' '$1=="refuse" {print "  REFUSED " $3 " exists and is not a copy this installer made (or sits under a link) — move it or remove it; nothing is overwritten"}' >&2
+  die "nothing was written"
+fi
+[ "$WITH_JD" = 0 ] || [ "$JD_STATE" != absent ] || die "--with-judgment-day: this checkout ships no _skills/judgment-day or _agents/jd-*.md. Nothing was written"
 ok "no collision with an existing brain, lane, link or settings entry"
 
 if [ "$CHECK" = 1 ]; then
   printf '\n--check: nothing written. A run would install into %s' "$BRAIN"
   [ -z "$LANE" ] || printf ', lane %s over %s (base %s)' "$LANE" "$REPO" "$BASE"
+  [ "$WITH_JD" = 0 ] || printf ', and Judgment Day into %s' "$CLAUDE_CFG"
   printf '\n'
+  print_next_steps
   exit 0
 fi
 
 # ── 3. the mechanism ────────────────────────────────────────────────────────
 printf '\nmechanism → %s\n' "$BRAIN"
-mkdir -p "$BRAIN/setup/guards" "$BRAIN/lanes" "$BRAIN/work"
+mkdir -p "$BRAIN/setup/guards" "$BRAIN/lanes"
 sync_dir() {  # <src dir> <dst dir> — the installer owns dst: mirror it
   local out n
   # Git for Windows ships no rsync: the same mirror in Python (checksum, mode,
@@ -600,7 +800,7 @@ if [ -f "$BRAIN/projects.json" ]; then
   done < <(jq -r '.lanes[] | .opencode_config_dir // empty' "$BRAIN/projects.json")
 fi
 src_sha="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
-marker_new="$(printf '{\n  "installed_from": "%s",\n  "commit": "%s"\n}\n' "$SRC" "$src_sha")"
+marker_new="$(printf '{\n  "installed_from": "%s",\n  "commit": "%s",\n  "version": "%s"\n}\n' "$SRC" "$src_sha" "$(install_version)")"
 if [ "$(cat "$BRAIN/$MARKER" 2>/dev/null)" = "$marker_new" ]; then ok "$MARKER"
 else printf '%s\n' "$marker_new" > "$BRAIN/$MARKER"; chg "$MARKER (commit $src_sha)"; fi
 
@@ -694,7 +894,6 @@ fi
 python3 - "$BRAIN" "$LANE" "$REPO" "$BASE" "$VENDOR" "$MODEL" "$OC_KIT" "$OPERATOR" "$MIN_MODEL" "$REQ_BY" <<'PY'
 import json, os, sys
 brain, lane, repo, base, vendor, model, oc_kit, operator, min_model, req_by = sys.argv[1:11]
-work = os.path.join(brain, "work")
 
 def load(path, default):
     try:
@@ -722,6 +921,11 @@ if not lane:
     if pj is None:
         print("  --    no lane yet: projects.json and guards.json are written with the first --lane")
     sys.exit(0)
+
+# Beside the brain (see the plan pass above); a table that names its own keeps it.
+work = pj.get("work") if isinstance(pj, dict) and pj.get("work") else os.path.join(os.path.dirname(brain), "work")
+work = os.path.expanduser(os.path.expandvars(work))
+os.makedirs(work, exist_ok=True)
 
 if pj is None:
     pj = {"comment": ["The lanes this brain dispatches. Written by install.sh; see hw --help."],
@@ -885,6 +1089,13 @@ tmp = path + ".tmp"
 open(tmp, "w").write(json.dumps(st, indent=2) + "\n"); os.replace(tmp, path)
 PY
   chg "$CLAUDE_CFG/settings.json — Stop hook merged (previous file kept as settings.json.bak-brain-install)"
+fi
+
+if [ "$WITH_JD" = 1 ]; then
+  printf '\nJudgment Day → %s\n' "$CLAUDE_CFG"
+  jd_out="$(jd_python apply "$BRAIN/$JD_RECORD_NAME")" || die "could not install Judgment Day"
+  if [ -z "$jd_out" ]; then ok "Judgment Day is already active (skills/judgment-day, agents/jd-*.md)"
+  else printf '%s\n' "$jd_out" | while IFS=$'\t' read -r _ f; do chg "$f"; done; fi
 fi
 
 printf '\ninstalled: %s\n' "$BRAIN"

@@ -153,11 +153,28 @@ mutate heredoc-code "$GUARD_JS" '"(?:bash|sh|zsh|dash|ksh|ash)"' '"(?:zsh|dash|k
 # These are the arms for the holes measured on 2026-09-06 (a symlink or a `..`
 # traversal into a protected tree was ALLOWED by all eight pre-unification
 # copies). Turning the resolution off must be visible.
+#
+# BOTH resolution passes at once, since 2026-09-29: the shell-word pass added
+# for relative paths (`_segments_resolve_protected`) also resolves the absolute
+# symlink and `..` tokens `_resolves_protected` answers, so turning off only the
+# older pass changed no verdict and the arm survived. What must be visible is
+# "the gate stopped resolving"; each pass alone has its own arm below.
 mutate python-resolution-gate "$GUARD_PY" \
-  "resolved_token = _resolves_protected(cfg, no_heredoc)" "resolved_token = None"
+  "        resolved_token = _resolves_protected(cfg, no_heredoc)
+    resolved_path = _real(resolved_token) if resolved_token else None
+    # And of every word as the shell will see it: relative to the directory
+    # its own command runs in, variables and braces expanded, globs matched
+    # against the roots (see \`_shell_segments\`).
+    if not (names_protected or resolved_token):" \
+  "        resolved_token = None
+    resolved_path = None
+    if False:"
 mutate js-resolution-gate "$GUARD_JS" \
-  "const resolvedToken = namesProtected ? null : resolvesProtected(cfg, noHeredoc);" \
-  "const resolvedToken = null;"
+  "const resolvedToken = namesProtected ? null : resolvesProtected(cfg, noHeredoc);
+  // And of every word as the shell will see it — see \`shellSegments\`.
+  const segHit = (namesProtected || resolvedToken) ? null : segmentsResolveProtected(cfg, segs);" \
+  "const resolvedToken = null;
+  const segHit = null;"
 mutate python-realpath "$GUARD_PY" \
   "        real = _real(path)" "        real = path"
 mutate js-realpath "$GUARD_JS" \
@@ -174,10 +191,42 @@ mutate js-dangling-real-parent "$GUARD_JS" \
   'realPath(dirname(head), n) + "/" + target' 'dirname(head) + "/" + target'
 
 # ── Redirect targets go through the fail-closed predicate ──────────────────
+#
+# BOTH redirect passes at once, since 2026-09-29: the per-command pass
+# (`_word_lands` from each command's own directory) resolves every target the
+# first pass does, so turning off only the first changed no verdict and the arm
+# survived. What must be visible is "no redirect target is resolved any more";
+# the per-command pass alone has its own arm (python/js-segment-redirect).
 mutate python-redirect-target "$GUARD_PY" \
-  "        if not _lands_outside_protected(cfg, t, cwd):" "        if False:"
+  '        if not _lands_outside_protected(cfg, t, cwd):
+            resolved = t if _is_abs(t) else _norm(_join(cwd or ".", t))
+            if _is_abs(resolved):
+                resolved = _real(resolved)
+            return t, resolved
+    # AND AGAIN FROM WHERE EACH COMMAND REALLY RUNS, with its variables
+    # expanded (see `_shell_segments`). Only adds targets: every one above was
+    # already asked against the payload'"'"'s cwd.
+    for seg in segs:' \
+  '        if False:
+            return t, t
+    for seg in ():'
 mutate js-redirect-target "$GUARD_JS" \
-  "    if (!landsOutsideProtected(cfg, t, cwd)) {" "    if (false) {"
+  '    if (!landsOutsideProtected(cfg, t, cwd)) {
+      let resolved = isAbs(t) ? t
+        : (WINPATHS ? joinPath(cwd || ".", t) : normPath((cwd || ".").replace(/\/+$/, "") + "/" + t));
+      if (isAbs(resolved)) resolved = realPath(resolved);
+      return { raw: t, resolved };
+    }
+  }
+  // And again from where each command really runs, with its variables
+  // expanded — see the Python twin. Only adds targets.
+  for (const seg of segs) {' \
+  '    if (false) {
+      return { raw: t, resolved: t };
+    }
+  }
+  for (const seg of []) {'
+
 
 # ── The masker must honour bash's escapes ──────────────────────────────────
 # Found by a Judgment Day judge and MEASURED: without the top-level backslash
@@ -285,6 +334,78 @@ mutate python-same-tree-identity "$GUARD_PY" \
 mutate js-same-tree-identity "$GUARD_JS" \
     '  return cands.some((cand) => sameTree(cfg, cand));' \
     '  return false;'
+
+# ── Where a word really lands (2026-09-29, audit F5-F9) ─────────────────────
+# Each piece of the shell reading must be visible on its own: the gate asking
+# relative/expanded words, the redirect asked from its own command's directory,
+# a cd that lands inside, local assignments, braces, globs and find/fd.
+mutate python-segment-gate "$GUARD_PY" \
+  "        seg_hit = _segments_resolve_protected(cfg, segs)" "        seg_hit = None"
+mutate js-segment-gate "$GUARD_JS" \
+  "const segHit = (namesProtected || resolvedToken) ? null : segmentsResolveProtected(cfg, segs);" \
+  "const segHit = null;"
+mutate python-segment-redirect "$GUARD_PY" \
+  '            landed = _word_lands(cfg, value, seg["cwd"], bare=True)' "            landed = None"
+mutate js-segment-redirect "$GUARD_JS" \
+  "      const landed = wordLands(cfg, value, seg.cwd, true);" "      const landed = null;"
+mutate python-segment-cd "$GUARD_PY" \
+  "        cds_into_protected = any(" "        cds_into_protected = False and any("
+mutate js-segment-cd "$GUARD_JS" \
+  "    cdsInto = segs.some(" "    cdsInto = false && segs.some("
+mutate python-local-assignment "$GUARD_PY" \
+  "                self.local[name] = rhs" "                pass"
+mutate js-local-assignment "$GUARD_JS" \
+  "        this.local[value.slice(0, eq)] = value.slice(eq + 1);" "        void eq;"
+mutate python-brace "$GUARD_PY" "    for v in _brace(value):" "    for v in [value]:"
+mutate js-brace "$GUARD_JS" "  for (let v of brace(value)) {" "  for (let v of [value]) {"
+mutate python-glob "$GUARD_PY" \
+  " or (_GLOB_CHARS.search(v) and _glob_lands(cfg, _norm(p))):" ":"
+mutate js-glob "$GUARD_JS" \
+  " || (GLOB_CHARS.test(v) && globLands(cfg, normOf(p)))) return normOf(p);" ") return normOf(p);"
+mutate python-find-writes "$GUARD_PY" \
+  "        for m in FIND_WRITES.finditer(masked)" "        for m in FIND_WRITES.finditer(\"\")"
+mutate js-find-writes "$GUARD_JS" \
+  "    for (const f of masked.matchAll(FIND_WRITES)) {" "    for (const f of \"\".matchAll(FIND_WRITES)) {"
+# Judgment Day, 2026-09-29: cd behind a reserved word or wrapper, `sh -c` and
+# `eval` bodies, bare names as arguments, and a redirect only the quoted body has.
+mutate python-keyword-skip "$GUARD_PY" \
+  "                              or words[k][0] in skip):" \
+  "                              or False):"
+mutate js-keyword-skip "$GUARD_JS" \
+  "|| skip.has(words[k][0]))) k += 1;" "|| false)) k += 1;"
+mutate python-dash-c-nesting "$GUARD_PY" "        if name in _SHELLS:" "        if False:"
+mutate js-dash-c-nesting "$GUARD_JS" "    if (SHELLS.has(name)) {" "    if (false) {"
+mutate python-eval-nesting "$GUARD_PY" '        elif name == "eval":' "        elif False:"
+mutate js-eval-nesting "$GUARD_JS" '    } else if (name === "eval") {' "    } else if (false) {"
+mutate python-bare-word "$GUARD_PY" \
+  '                    landed = v and _word_lands(cfg, v, d, bare=True)' \
+  '                    landed = v and _word_lands(cfg, v, d)'
+mutate js-bare-word "$GUARD_JS" \
+  "          const landed = v && wordLands(cfg, v, d, true);" \
+  "          const landed = v && wordLands(cfg, v, d);"
+mutate python-nested-redirect-gate "$GUARD_PY" \
+  '    if REDIRECT.search(masked) or any(seg["redirects"] for seg in segs):' \
+  "    if REDIRECT.search(masked):"
+mutate js-nested-redirect-gate "$GUARD_JS" \
+  "  if (REDIRECT.test(masked) || segs.some((seg) => seg.redirects.length)) {" \
+  "  if (REDIRECT.test(masked)) {"
+
+# ── env/nohup/exec do not move the shell's cwd; the start cwd is asked too ──
+# (2026-09-29, Judgment Day re-judgment)
+mutate python-env-cd-moves-cwd "$GUARD_PY" \
+  "        ck = _head_index(words)" "        ck = _head_index(words, _SKIP_WORDS)"
+mutate js-env-cd-moves-cwd "$GUARD_JS" \
+  "    const ck = headIndex(words);" "    const ck = headIndex(words, SKIP_WORDS);"
+mutate python-start-cwd-ask "$GUARD_PY" \
+  '        if seg.get("start") and seg["start"] != seg["cwd"]:' "        if False:"
+mutate js-start-cwd-ask "$GUARD_JS" \
+  "    if (seg.start && seg.start !== seg.cwd) dirs.push(seg.start);" "    if (false) dirs.push(seg.start);"
+
+# ── A payload of the wrong shape refuses (2026-09-29, audit F12) ────────────
+mutate python-malformed-tool-input "$GUARD_PY" \
+  "    if not isinstance(tool_input, dict):" "    if False:"
+mutate codex-malformed-payload "setup/guards/deny-repo-writes-codex.py" \
+  "    if not isinstance(payload, dict):" "    if False:"
 
 # ── The shims, the only per-lane code left ─────────────────────────────────
 # A shim that names the wrong lane guards the wrong trees; a shim that cannot

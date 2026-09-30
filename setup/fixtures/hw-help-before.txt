@@ -5,8 +5,7 @@ LAUNCH
 
   The lanes differ, so the copy-pasteable form differs. These are complete
   commands, not templates with parts left out — one per lane in projects.json,
-  with each default that differs from claude, the default account and a
-  `task/<task>` branch:
+  with each default that differs from claude and a `task/<task>` branch:
 
     hw setup <task> --brief brain/setup/briefs/<task>.md --sdd none
 
@@ -39,22 +38,11 @@ FLAGS
     --brief <path>     the file the executor is given. Without it, it gets a tab
                        and nothing to do.
     --sdd <mode>       speckit | none. REQUIRED where a framework is in play.
-                       `none` = deliberately outside the flow. `gentle` =
-                       gentle-ai's ODD, only in a lane whose sdd_modes lists it
-                       and only with --agent claude; see hw gentle-home.
+                       `none` = deliberately outside the flow.
     --agent <vendor>   claude | opencode | codex. Defaults per lane; see above.
-    --account <name>   default | personal. Which Claude Code account the executor
-                       runs under (CLAUDE_CONFIG_DIR). A lane's own default is
-                       in the list above; anywhere else `personal` is reached
-                       only by typing it, and the manifest marks it chosen.
-                       Claude Code only:
-                       opencode and codex do not read it, and the manifest says
-                       NOT APPLIED rather than claiming a redirect. A non-default
-                       account is refused unless `claude-personal --check` proves
-                       its skills and plugins match the default account.
     --model <m>        claude: an alias (opus, sonnet, haiku, fable) or claude-*.
-                       opencode: provider/model, e.g. openai/gpt-5.6-sol.
-                       codex: a bare id, e.g. gpt-5.6-sol (no provider/ prefix).
+                       opencode: provider/model, e.g. openai/<model>.
+                       codex: a bare id, e.g. <model> (no provider/ prefix).
                        A sonnet or haiku ORCHESTRATOR is refused before anything
                        is built whenever an SDD mode is in force: the phase
                        agents pin their own models, so --model sets only the
@@ -68,9 +56,6 @@ FLAGS
                        audit` alone does not buy opus. The same declaration
                        lives in a brief as `decision: <what is undecided>`;
                        this flag wins over it.
-    --below-floor-why <s>  the reason this dispatch runs below the lane's
-                       model_floor (projects.json). Refused
-                       without it; recorded in the manifest and the receipt.
     --requested-by <s> the request this dispatch answers, in the asker's words.
                        Same as `requested_by:` in a brief, and wins over it.
                        Required or warned per lane (projects.json).
@@ -90,7 +75,6 @@ FLAGS
                         A successful `hw next` consumes that authority; the next proved
                         report re-arms a fresh task-bound lease. Expiry closes the pane.
     --dry-run          print the dispatch, create nothing.
-    --no-handle-check  skip the keychain-handle preflight
     --allow-stale-hooks launch even though the worktree's versioned hook settings
                        (.claude/settings*.json, .codex/hooks.json, opencode.json)
                        invoke a binary not on PATH — recorded in the receipt
@@ -103,10 +87,6 @@ OTHER COMMANDS
     hw                              interactive brief picker
     hw status                       what is running, and what never closed
     hw receipt <project> <task>     what was MEASURED, next to what was dispatched
-    hw revive <project> <task> [--dry-run]
-                                    repeat a closed run's recorded cwd, env and
-                                    session resume in a new tab; refuses anything
-                                    not recorded (cwd gone, no session, no env)
     hw reports [<project>]           one line per task: which reports are on disk
     hw reports <project> <task>      the report text for one task
     hw reports <project> --full      the report text for every task in the lane
@@ -129,14 +109,6 @@ OTHER COMMANDS
     hw preview release <project> <task> end a lease early
                                     close the tab, free the DB and ports.
                                     Removes no worktree and deletes no branch.
-    hw suite <project> [--status|--dry-run] [--wait-ms N] -- <command...>
-        Run one command at a time per lane, behind that lane's suite lock.
-        Names the holder instead of waiting mutely, and breaks an
-        ORPHANED lock on the first pass rather than waiting it out. NEVER kill a
-        suite with `pkill -f`: that pattern matches every lane's run and every
-        agent's, and it has already destroyed three complete runs. Kill by pid,
-        or wait.
-
     hw ruling <pane> "<correction>" [--dry-run]
         Queue a correction for an executor that is STILL WORKING. Every
         queued one (up to 5 undelivered) is delivered at that executor's next
@@ -159,6 +131,12 @@ OTHER COMMANDS
                                     brainer remains reachable. One target finishing never
                                     drops the others. --dry-run witnesses each target once
                                     and creates no tab.
+
+RECOVERY AND CLEANUP
+    hw revive <project> <task> [--dry-run]
+                                    repeat a closed run's recorded cwd, env and
+                                    session resume in a new tab; refuses anything
+                                    not recorded (cwd gone, no session, no env)
     hw unstick <pane>                deliberate OpenCode-only recovery for exact
                                      blocked_reason=stuck + blocked_scope=root|child;
                                      refuses live questions/permissions, then restarts
@@ -167,11 +145,6 @@ OTHER COMMANDS
     hw sweep [--apply]              close tabs of runs that REPORTED, only hw's own
     hw worktrees [<project>] [--migrate]
                                     worktrees outside their repo's canonical root
-    hw handle <handle>...           does a keychain handle resolve?
-    hw gentle-home [--check|--path] provision gentle-ai's own HOME for --sdd gentle
-    hw human-boundary "<why>"       executor-only one-shot escape for a genuine
-                                    money/third-party/irreversible/outward/priority
-                                    decision; names why the ordinary exits do not apply
 
 EXIT STATUS
     0   the thing was done. For `hw next` that means the task was DELIVERED and
@@ -182,6 +155,8 @@ EXIT STATUS
         status alone: a gate that would not open, a container with no agent
         left in it, an agent that did not start and an unreachable pane are all
         1, and none of them is ever reported as success.
+    Two usage exits are not refusals: `hw` alone with no terminal to draw its
+    picker on prints the usage and exits 2; `hw <one word>` prints it and exits 64.
 
     `hw wait` additionally reports VERDICTS, which are not refusals — the wait
     ran, and these say what it found about the TARGET. 1 still means hw refused
@@ -200,6 +175,59 @@ EXIT STATUS
     3/4 herdr-rpc transport: could not connect / rpc error. Facts about herdr,
         not about the executor.
 
+
+PROJECTS
+    setup
+
+ENVIRONMENT
+    HW_INVOKER_PANE   the brainer's pane, where every executor reports. hw
+                      resolves it; export it only when hw cannot — a brainer
+                      whose pane is unlabelled and sitting outside its project
+                      directory matches none of the heuristics. An exported id
+                      is honoured FIRST and still checked: one that is not live,
+                      or that names an executor pane, is refused rather than
+                      handed to an executor as an address that goes nowhere.
+ADVANCED
+    Mechanisms a brain can opt into. A new install needs none of them.
+
+  ACCOUNTS
+    --account <name>   default | personal. Which Claude Code account the executor
+                       runs under (CLAUDE_CONFIG_DIR). A lane's own default is
+                       listed below; anywhere else `personal` is reached
+                       only by typing it, and the manifest marks it chosen.
+                       Claude Code only:
+                       opencode and codex do not read it, and the manifest says
+                       NOT APPLIED rather than claiming a redirect. A non-default
+                       account is refused unless `claude-personal --check` proves
+                       its skills and plugins match the default account.
+    --below-floor-why <s>  the reason this dispatch runs below the lane's
+                       model_floor (projects.json). Refused
+                       without it; recorded in the manifest and the receipt.
+
+  THE GENTLE FLOW
+    --sdd gentle       gentle-ai's ODD, only in a lane whose sdd_modes lists it
+                       and only with --agent claude; see hw gentle-home.
+    hw gentle-home [--check|--path] provision gentle-ai's own HOME for --sdd gentle
+
+  KEYCHAIN HANDLES
+    --no-handle-check  skip the keychain-handle preflight
+    hw handle <handle>...           does a keychain handle resolve?
+
+  THE ONE-SHOT ESCAPE
+    hw human-boundary "<why>"       executor-only one-shot escape for a genuine
+                                    money/third-party/irreversible/outward/priority
+                                    decision; names why the ordinary exits do not apply
+
+  SUITES
+    hw suite <project> [--status|--dry-run] [--wait-ms N] -- <command...>
+        Run one command at a time per lane, behind that lane's suite lock.
+        Names the holder instead of waiting mutely, and breaks an
+        ORPHANED lock on the first pass rather than waiting it out. NEVER kill a
+        suite with `pkill -f`: that pattern matches every lane's run and every
+        agent's, and it has already destroyed three complete runs. Kill by pid,
+        or wait.
+
+  CONSENT VERDICTS
     `hw consent` reports its own VERDICTS in the same one number space, which is
     why they are 9 and 10 rather than the 3/4 the first draft reached for:
     9   NOT ANSWERED. hw made no decision and executed nothing — the run
@@ -211,15 +239,3 @@ EXIT STATUS
         left ambiguous. Every other provider status is relayed unchanged, and
         1 remains hw's own single refusal code.
 
-PROJECTS
-    setup
-    no repository, so no worktree, no branch, no ports, no DB: none
-
-ENVIRONMENT
-    HW_INVOKER_PANE   the brainer's pane, where every executor reports. hw
-                      resolves it; export it only when hw cannot — a brainer
-                      whose pane is unlabelled and sitting outside its project
-                      directory matches none of the heuristics. An exported id
-                      is honoured FIRST and still checked: one that is not live,
-                      or that names an executor pane, is refused rather than
-                      handed to an executor as an address that goes nowhere.

@@ -26,7 +26,7 @@
 
 import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // NATIVE WINDOWS: ONE SPELLING OF A PATH, as in the Python half (read the
@@ -227,6 +227,13 @@ export function config(lane) {
 // called `cp-report` cannot trip them.
 const MUTATORS =
   /(?<![\w-])(rm|mv|cp|rsync|tee|touch|mkdir|rmdir|truncate|dd|ln|chmod|chown|install|patch|sponge|ed|ex|python|python3|node|ruby|perl|php|deno|bun|osascript|xargs)(?![\w-])/;
+// `find` and `fd` are readers until an action writes or runs something — see
+// the Python twin (2026-09-29, audit F9).
+const FIND_WRITES = new RegExp(
+  String.raw`(?<![\w-])find(?![\w-])[^|;&\n]*?\s-(?:delete|exec|execdir|ok|okdir|` +
+  String.raw`fprint|fprint0|fprintf|fls)(?![\w-])` +
+  String.raw`|(?<![\w-])(?:fd|fdfind)(?![\w-])[^|;&\n]*?\s(?:-[A-Za-z]*[xX]|--exec|` +
+  String.raw`--exec-batch)(?![\w-])`, "g");
 // sed/perl/awk only mutate with an in-place flag.
 const INPLACE = /(?<![\w-])(sed|perl|gawk|awk)\b[^|;&]*\s-i\b/;
 // Any redirect that creates or appends to a file (not 2>&1, not a heredoc).
@@ -1051,13 +1058,378 @@ function redirectTargets(probe) {
   return targets;
 }
 
-export function redirectLandsInProtected(cfg, probe, cwd) {
+export function redirectLandsInProtected(cfg, probe, cwd, segs = []) {
   for (const t of redirectTargets(probe)) {
     if (!landsOutsideProtected(cfg, t, cwd)) {
       let resolved = isAbs(t) ? t
         : (WINPATHS ? joinPath(cwd || ".", t) : normPath((cwd || ".").replace(/\/+$/, "") + "/" + t));
       if (isAbs(resolved)) resolved = realPath(resolved);
       return { raw: t, resolved };
+    }
+  }
+  // And again from where each command really runs, with its variables
+  // expanded — see the Python twin. Only adds targets.
+  for (const seg of segs) {
+    for (const [value, raw] of seg.redirects) {
+      const landed = wordLands(cfg, value, seg.cwd, true);
+      if (landed) return { raw, resolved: realPath(landed) };
+    }
+  }
+  return null;
+}
+
+// ── WHERE A WORD REALLY LANDS: RELATIVE, AFTER A cd, THROUGH A VARIABLE ─────
+//
+// The Python twin carries the measurement (2026-09-29, audit F5-F8): the gate
+// asked only absolute tokens, a redirect resolved against the payload's cwd
+// and never the one a `cd` had just left, `$D` was never expanded, and globs
+// and braces were compared as text. This is the same reading, step for step:
+// each simple command's words and write-redirect targets, its own
+// assignments and the environment expanded, braces expanded, and the
+// directory it runs in after every `cd`/`pushd` before it. Everything here
+// only ADDS: it opens the gate on more commands and gives the redirect check
+// more targets; the chain still decides.
+const MARK = "\u0000";
+const GLOB_CHARS = /[*?[]/;
+const WRITE_OPS = new Set([">", ">>", ">|", "&>", "&>>", ">&", "<>"]);
+const REDIRECT_OP = /(\d*)(&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)/y;
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const DECLARERS = new Set(["export", "local", "declare", "typeset", "readonly"]);
+// Words that precede a command without being it (Judgment Day, 2026-09-29).
+// Two lists, because they answer two questions. SHELL_WORDS are the shell's own
+// reserved words and builtins: a `cd` reached through them runs IN the shell and
+// moves its cwd. `env`, `nohup` and `exec` are external commands: `env cd /tmp`
+// runs cd in a child and the shell stays where it was (measured 2026-09-29,
+// Judgment Day re-judgment: round 1 skipped them for the cd and
+// `env cd /tmp; rm -rf ../<repo>/src` went from DENY to ALLOW). They stay
+// skippable only where that is harmless: finding a shell head for `-c` nesting,
+// since `env bash -c '...'` is real code.
+const SHELL_WORDS = new Set([
+  "{", "}", "!", "if", "then", "else", "elif", "do", "while", "until",
+  "time", "builtin", "command"]);
+const SKIP_WORDS = new Set([...SHELL_WORDS, "env", "exec", "nohup"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash"]);
+const headIndex = (words, skip = SHELL_WORDS) => {
+  let k = 0;
+  while (k < words.length && (ASSIGNMENT.test(words[k][0]) || skip.has(words[k][0]))) k += 1;
+  return k;
+};
+const MAX_NESTING = 16;
+const normOf = (p) => (WINPATHS ? canon(p) : normPath(p));
+
+// `a{b,c}d` -> [abd, acd], nested and repeated. Bounds the WORK, not just the
+// output (Judgment Day, 2026-09-29): recursing into every alternative and
+// truncating afterwards cost 2**k calls for k groups, a stalled hook that a
+// timeout does not turn into a refusal. `limit` goes down and the loop stops
+// once it is met. Same as the Python.
+function brace(word, limit = 64) {
+  const m = /\{([^{}]*,[^{}]*)\}/.exec(word);
+  if (!m) return [word];
+  let out = [];
+  for (const alt of m[1].split(",")) {
+    if (out.length >= limit) break;
+    out = out.concat(brace(word.slice(0, m.index) + alt + word.slice(m.index + m[0].length), limit - out.length));
+  }
+  return out.slice(0, limit);
+}
+
+function closeParen(t, i) {
+  let depth = 0, j = i;
+  const n = t.length;
+  while (j < n) {
+    const ch = t[j];
+    if (ch === "\\") { j += 2; continue; }
+    if (ch === "'") {
+      const k = t.indexOf("'", j + 1);
+      j = k < 0 ? n : k + 1;
+      continue;
+    }
+    if (ch === '"') {
+      j += 1;
+      while (j < n && t[j] !== '"') j += t[j] === "\\" ? 2 : 1;
+      j += 1;
+      continue;
+    }
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return j;
+    }
+    j += 1;
+  }
+  return n;
+}
+
+class Segments {
+  constructor(text, at, home, local, segs, depth, origin) {
+    Object.assign(this, { t: text, at, home, local, segs, depth, origin: origin === undefined ? at : origin });
+    this.words = []; this.redirects = [];
+    this.buf = []; this.start = 0; this.have = false; this.pending = null;
+  }
+
+  variable(name) {
+    if (Object.prototype.hasOwnProperty.call(this.local, name)) return this.local[name];
+    return process.env[name] ?? MARK;
+  }
+
+  nested(text) {
+    if (this.depth < MAX_NESTING) {
+      new Segments(text, this.at, this.home, this.local, this.segs, this.depth + 1, this.origin).run();
+    }
+  }
+
+  begin(i) {
+    if (!this.have) { this.start = i; this.have = true; }
+  }
+
+  dollar(i) {
+    const t = this.t;
+    const rest = t.slice(i);
+    if (rest.startsWith("$(")) {
+      const close = closeParen(t, i + 1);
+      if (!rest.startsWith("$((")) this.nested(t.slice(i + 2, close));
+      return [MARK, close + 1];
+    }
+    let m = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([^}]*))?\}/.exec(rest);
+    if (m) {
+      let v = this.variable(m[1]);
+      if (v === MARK && m[2]) v = m[3];
+      return [v, i + m[0].length];
+    }
+    m = /^(?:\$\{[^}]*\}|\$[0-9@*#?$!-])/.exec(rest);
+    if (m) return [MARK, i + m[0].length];
+    m = /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(rest);
+    if (m) return [this.variable(m[1]), i + m[0].length];
+    return ["$", i + 1];
+  }
+
+  flushWord(i) {
+    if (!this.have) return;
+    const value = this.buf.join(""), raw = this.t.slice(this.start, i);
+    if (this.pending !== null) {
+      if (WRITE_OPS.has(this.pending)) this.redirects.push([value, raw]);
+      this.pending = null;
+    } else {
+      const hk = headIndex(this.words);
+      if (ASSIGNMENT.test(value) && (hk === this.words.length || DECLARERS.has(this.words[hk][0]))) {
+        const eq = value.indexOf("=");
+        this.local[value.slice(0, eq)] = value.slice(eq + 1);
+      }
+      this.words.push([value, raw]);
+    }
+    this.buf = []; this.have = false;
+  }
+
+  flushSeg(i) {
+    this.flushWord(i);
+    this.pending = null;
+    const { words, redirects } = this;
+    this.words = []; this.redirects = [];
+    if (!(words.length || redirects.length)) return;
+    this.segs.push({ words, redirects, cwd: this.at, start: this.origin });
+    const k = headIndex(words, SKIP_WORDS);
+    const name = k < words.length ? basename(words[k][0]) : "";
+    // `sh -c '<script>'` and `eval <args>` are one word whose commands run
+    // from here: read them too.
+    if (SHELLS.has(name)) {
+      for (let j = k + 1; j < words.length - 1; j += 1) {
+        const v = words[j][0];
+        if (v.startsWith("-") && !v.startsWith("--") && v.slice(1).includes("c")) {
+          this.nested(words[j + 1][0]);
+          break;
+        }
+      }
+    } else if (name === "eval") {
+      this.nested(words.slice(k + 1).map(([w]) => w).join(" "));
+    }
+    // a cd moves the shell only through the shell's own words: `env cd`,
+    // `nohup cd` and `exec cd` run it in a child (see SHELL_WORDS)
+    const ck = headIndex(words);
+    const cname = ck < words.length ? basename(words[ck][0]) : "";
+    if (cname === "cd" || cname === "pushd") {
+      const args = words.slice(ck + 1).map(([w]) => w).filter((w) => !w.startsWith("-") || w === "-");
+      const target = args.length ? args[0] : this.home;
+      if (target === "-" || target.includes(MARK) || !target) this.at = null;
+      else if (isAbs(target)) this.at = normOf(target);
+      else this.at = this.at ? normOf(joinPath(this.at, target)) : null;
+    } else if (cname === "popd") {
+      this.at = null;
+    }
+  }
+
+  run() {
+    const t = this.t, n = t.length;
+    let i = 0;
+    while (i < n) {
+      const c = t[i];
+      if (c === "\\") {
+        if (i + 1 < n && t[i + 1] !== "\n") { this.begin(i); this.buf.push(t[i + 1]); }
+        i += 2;
+        continue;
+      }
+      if (c === "'") {
+        this.begin(i);
+        let j = t.indexOf("'", i + 1);
+        if (j < 0) j = n;
+        this.buf.push(t.slice(i + 1, j));
+        i = j + 1;
+        continue;
+      }
+      if (c === '"') {
+        this.begin(i);
+        i += 1;
+        while (i < n && t[i] !== '"') {
+          if (t[i] === "\\" && i + 1 < n && '$`"\\\n'.includes(t[i + 1])) {
+            if (t[i + 1] !== "\n") this.buf.push(t[i + 1]);
+            i += 2;
+          } else if (t[i] === "$") {
+            const [v, next] = this.dollar(i);
+            this.buf.push(v); i = next;
+          } else if (t[i] === "`") {
+            let j = t.indexOf("`", i + 1);
+            if (j < 0) j = n;
+            this.nested(t.slice(i + 1, j));
+            this.buf.push(MARK); i = j + 1;
+          } else {
+            this.buf.push(t[i]); i += 1;
+          }
+        }
+        i += 1;
+        continue;
+      }
+      if (c === "$") {
+        this.begin(i);
+        const [v, next] = this.dollar(i);
+        this.buf.push(v); i = next;
+        continue;
+      }
+      if (c === "`") {
+        this.begin(i);
+        let j = t.indexOf("`", i + 1);
+        if (j < 0) j = n;
+        this.nested(t.slice(i + 1, j));
+        this.buf.push(MARK); i = j + 1;
+        continue;
+      }
+      if (c === "#" && !this.have) {
+        const j = t.indexOf("\n", i);
+        i = j < 0 ? n : j;
+        continue;
+      }
+      if (c === "~" && !this.have && /^~(?:$|[/\s;&|)<>])/.test(t.slice(i))) {
+        this.begin(i); this.buf.push(this.home); i += 1;
+        continue;
+      }
+      let m = null;
+      if ("<>".includes(c) || (c === "&" && t[i + 1] === ">") || ("0123456789".includes(c) && !this.have)) {
+        REDIRECT_OP.lastIndex = i;
+        m = REDIRECT_OP.exec(t);
+      }
+      if (m) {
+        this.flushWord(i);
+        const op = m[2];
+        i = m.index + m[0].length;
+        if (op === ">&" || op === "<&") {
+          const dup = /^[ \t]*(?:\d+|-)(?=$|[\s;&|()<>])/.exec(t.slice(i));
+          if (dup) { i += dup[0].length; continue; }
+        }
+        while (i < n && (t[i] === " " || t[i] === "\t")) i += 1;
+        this.pending = op;
+        continue;
+      }
+      if (c === " " || c === "\t") { this.flushWord(i); i += 1; continue; }
+      if ("\n;|&".includes(c)) { this.flushSeg(i); i += 1; continue; }
+      if (c === "(") {
+        this.flushSeg(i);
+        const close = closeParen(t, i);
+        this.nested(t.slice(i + 1, close));
+        i = close + 1;
+        continue;
+      }
+      if (c === ")") { this.flushSeg(i); i += 1; continue; }
+      this.begin(i);
+      this.buf.push(c);
+      i += 1;
+    }
+    this.flushSeg(n);
+  }
+}
+
+export function shellSegments(text, cwd, home) {
+  const segs = [];
+  const at = cwd && isAbs(cwd) ? normOf(cwd) : null;
+  new Segments(text, at, home, Object.create(null), segs, 0).run();
+  return segs;
+}
+
+function globPartMatches(pattern, name) {
+  const out = [];
+  let i = 0;
+  const n = pattern.length;
+  while (i < n) {
+    const c = pattern[i];
+    if (c === "*") out.push("[^/]*");
+    else if (c === "?") out.push("[^/]");
+    else if (c === "[" && pattern.indexOf("]", i + 2) > 0) {
+      const j = pattern.indexOf("]", i + 2);
+      let body = pattern.slice(i + 1, j);
+      if (body.startsWith("!")) body = "^" + body.slice(1);
+      out.push("[" + body.replace(/\\/g, "\\\\") + "]");
+      i = j;
+    } else out.push(escapeRe(c));
+    i += 1;
+  }
+  try {
+    return new RegExp("^" + out.join("") + "$").test(name);
+  } catch {
+    return true; // a class this cannot read may match: refuse, not guess
+  }
+}
+
+function globLands(cfg, pattern) {
+  const pc = pattern.split("/").filter(Boolean);
+  for (const root of cfg.resolvedRoots) {
+    const rc = root.split("/").filter(Boolean);
+    if (pc.length >= rc.length && rc.every((r, k) => globPartMatches(pc[k], r))) return true;
+  }
+  return false;
+}
+
+// Every word is asked bare (Judgment Day, 2026-09-29): `cd .. && rm -rf <name>`
+// names the root with no `/`. It only opens the gate; the chain still decides.
+function wordLands(cfg, value, cwd, bare = false) {
+  for (let v of brace(value)) {
+    if (v.includes(MARK)) v = v.split(MARK)[0];
+    if (!v) continue;
+    if (!(bare || isAbs(v) || v.includes("/") || v === "." || v === "..")) continue;
+    let p;
+    if (isAbs(v)) p = v;
+    else if (cwd) p = joinPath(cwd, v);
+    else continue;
+    if (insideAny(cfg, p) || (GLOB_CHARS.test(v) && globLands(cfg, normOf(p)))) return normOf(p);
+  }
+  return null;
+}
+
+function segmentsResolveProtected(cfg, segs) {
+  for (const seg of segs) {
+    // Defence in depth: any cd this models wrongly would HIDE a word, so where
+    // the tracked cwd differs from the payload's own, ask that too. Only adds
+    // denials.
+    const dirs = [seg.cwd];
+    if (seg.start && seg.start !== seg.cwd) dirs.push(seg.start);
+    for (const d of dirs) {
+      for (const [value, raw] of seg.words) {
+        const eq = value.indexOf("=");
+        for (const v of [value, eq < 0 ? "" : value.slice(eq + 1)]) {
+          const landed = v && wordLands(cfg, v, d, true);
+          if (landed) return { raw, landed };
+        }
+      }
+      for (const [value, raw] of seg.redirects) {
+        const landed = wordLands(cfg, value, d, true);
+        if (landed) return { raw, landed };
+      }
     }
   }
   return null;
@@ -1126,12 +1498,23 @@ export function decide(lane, command, cwd) {
   }
   const standsIn = insideProtected(cfg, cwd);
   const cdsRe = new RegExp(`cd\\s+["']?(${roots.map(escapeRe).join("|")})`);
-  const cdsInto = cdsRe.test(noHeredoc) || cdsRe.test(noHeredocC);
+  let cdsInto = cdsRe.test(noHeredoc) || cdsRe.test(noHeredocC);
+  // And any `cd`/`pushd` that lands there, however it is spelled — see the
+  // Python twin (2026-09-29, audit F6).
+  const segs = shellSegments(noHeredoc, cwd, HOME);
+  const start = cwd && isAbs(cwd) ? normOf(cwd) : null;
+  if (!cdsInto) {
+    cdsInto = segs.some((seg) => seg.cwd && seg.cwd !== start && insideProtected(cfg, seg.cwd));
+  }
   // And the same question asked of paths that do not SPELL a protected root — a
   // symlink into one, or a `..` traversal back into one. Skipped when a literal
   // already opened the gate, so the common case costs nothing.
   const resolvedToken = namesProtected ? null : resolvesProtected(cfg, noHeredoc);
-  if (!(namesProtected || resolvedToken || standsIn || cdsInto)) return null;
+  // And of every word as the shell will see it — see `shellSegments`.
+  const segHit = (namesProtected || resolvedToken) ? null : segmentsResolveProtected(cfg, segs);
+  const gateToken = resolvedToken ?? segHit?.raw ?? null;
+  const gatePath = resolvedToken ? realPath(resolvedToken) : segHit?.landed ?? null;
+  if (!(namesProtected || gateToken || standsIn || cdsInto)) return null;
 
   // Name WHICH condition tripped. A deny that only says "this command mutates
   // the repo" sends the reader to inspect the command text — and when the
@@ -1146,11 +1529,12 @@ export function decide(lane, command, cwd) {
       ` \`workdir\` argument. Re-run with a workdir outside the tree`);
   }
   if (namesProtected) triggers.push(`the command names a protected root (${namedRoot})`);
-  if (resolvedToken) {
+  if (gateToken) {
     triggers.push(
-      `a path in the command RESOLVES inside it (${resolvedToken} -> ` +
-      `${realPath(resolvedToken)}) even though the root does not appear ` +
-      "literally — a symlink or a `..` traversal");
+      `a path in the command RESOLVES inside it (${gateToken} -> ` +
+      `${gatePath}) even though the root does not appear ` +
+      "literally — a symlink, a `..` traversal, a path relative to where its " +
+      "command runs, a variable, a glob or a brace");
   }
   if (cdsInto) triggers.push("the command itself cd's into it");
   const trigger = triggers.join("; and ");
@@ -1186,7 +1570,7 @@ export function decide(lane, command, cwd) {
   // excluded from `namedRoot`/`resolvedToken` above.)
   const contentOnly = !standsIn && !cdsInto && (
     (namedRoot !== null && !masked.includes(namedRoot) && !canonText(masked).includes(namedRoot)) ||
-    (resolvedToken !== null && !masked.includes(resolvedToken))
+    (gateToken !== null && !masked.includes(gateToken))
   );
 
   if (GIT_MUTATORS.test(masked)) {
@@ -1218,8 +1602,10 @@ export function decide(lane, command, cwd) {
       `Blocked: in-place edit targeting ${where} (${trigger}). The brainer is ` +
       `read-only there.` };
   }
-  if (REDIRECT.test(masked)) {
-    const redirectHit = redirectLandsInProtected(cfg, noHeredoc, cwd);
+  // A redirect inside `sh -c '...'` is masked away with its quotes; the shell
+  // reading found it (Judgment Day, 2026-09-29), so it opens this too.
+  if (REDIRECT.test(masked) || segs.some((seg) => seg.redirects.length)) {
+    const redirectHit = redirectLandsInProtected(cfg, noHeredoc, cwd, segs);
     if (redirectHit) {
       return { rule: "redirect", reason:
         `Blocked: shell redirect while targeting ${where} (${trigger}). This ` +
@@ -1236,6 +1622,10 @@ export function decide(lane, command, cwd) {
     while ((m = re.exec(masked))) {
       if (isCommandPosition(masked, m.index)) { mutatorInvoked = true; break; }
       if (m.index === re.lastIndex) re.lastIndex += 1;
+    }
+    for (const f of masked.matchAll(FIND_WRITES)) {
+      if (mutatorInvoked) break;
+      if (isCommandPosition(masked, f.index)) mutatorInvoked = true;
     }
   }
   if (mutatorInvoked) {
@@ -1265,7 +1655,7 @@ export function decide(lane, command, cwd) {
 export const __internals = {
   LANES, config, normPath, realPath, shlexSplit, landsOutsideProtected,
   copyOperands, isCopyOutOfProtected, insideProtected, stripHeredocBodies,
-  maskQuotes, redirectLandsInProtected, isSpentWorktreeTeardown,
+  maskQuotes, redirectLandsInProtected, isSpentWorktreeTeardown, shellSegments,
 };
 
 // The opencode plugin factory. Each lane's `.opencode/plugin/deny-repo-writes.js`

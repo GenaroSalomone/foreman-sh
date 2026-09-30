@@ -22,11 +22,14 @@ With [herdr](https://herdr.dev) and [Claude Code](https://claude.com/claude-code
 installed (see [Requirements](#requirements)):
 
 ```sh
-git clone <this repository> foreman-sh && cd foreman-sh
-./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp
-brain myapp        # opens the lane's brainer in herdr
+git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
+./install.sh --brain ~/brain --check                             # looks at everything, writes nothing
+./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp    # a brain and its first lane
+brain myapp                                                      # opens the lane's brainer in herdr
 ```
 
+`--check` lists every fix at once, in the order it must be done, and ends with
+one `Next step:`. Run it again after each fix until it says nothing is left.
 Then describe the work to the brainer. [Your first task](#your-first-task)
 walks a throwaway lane end to end.
 
@@ -158,14 +161,16 @@ Agents other than Claude Code:
 ## Install
 
 ```sh
-git clone <this repository> foreman-sh && cd foreman-sh
+git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
 ./install.sh --brain ~/brain --check                            # look, write nothing
 ./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp   # a brain and its first lane
 ./install.sh --brain ~/brain --lane other --repo ~/code/other   # every further lane
 ```
 
-`--check` names anything missing, with the command that installs it, and
-writes nothing. The real run:
+`--check` evaluates everything in one pass and writes nothing: it names what is
+missing with the command that fixes it, lists the fixes in dependency order
+(Claude Code's first run, herdr's integration, engram, a lane) and ends with a
+single `Next step:`. The real run:
 
 - builds the brain directory (`~/brain`) with one folder per lane;
 - links `hw`, `brain`, `done-invoker`, `ask-invoker`, `channel-send` and
@@ -196,9 +201,11 @@ Two pieces turn the harness from working into dependable.
 
 **engram, persistent memory across sessions.** [engram](https://github.com/Gentleman-Programming/engram)
 is an MIT-licensed memory server for coding agents (a Go binary with SQLite and
-an MCP server). With it, every `done-invoker` report is saved to memory, and a
-brainer recovers earlier decisions and findings instead of starting cold. The
-harness runs without it, but reports then reach no memory.
+an MCP server). It is recommended, not required. With it, every `done-invoker`
+report is saved to memory, and a brainer recovers earlier decisions and
+findings instead of starting cold. Without it the harness runs and each report
+still reaches the brainer's session, but nothing is saved: later sessions start
+cold. The installer's `--check` lists it as a recommended step, never a blocker.
 
 ```sh
 brew install gentleman-programming/tap/engram
@@ -212,16 +219,23 @@ Other platforms are covered in engram's
 and only a severe defect both confirm is fixed, in at most two rounds. It ships
 in `_skills/judgment-day/` with its three agents in `_agents/`, derived from
 [Gentle AI](https://github.com/Gentleman-Programming/gentle-ai): the skill under
-the Apache License 2.0, the agents under the MIT License. Activation is three commands, in
-[`INSTALL.md`](INSTALL.md), Judgment Day.
+the Apache License 2.0, the agents under the MIT License. Activation is one
+command, which never overwrites a file of yours (details in
+[`INSTALL.md`](INSTALL.md), Judgment Day):
+
+```sh
+./install.sh --brain ~/brain --with-judgment-day
+```
 
 ## Your first task
 
 [`examples/demo/`](examples/demo/README.md) is a lane made to be thrown away.
-It installs against an empty repository and dispatches a one-line brief:
+It installs against a repository of one file, so the example brief has
+something to read, and dispatches a one-line brief:
 
 ```sh
-git init ~/code/toy && git -C ~/code/toy commit --allow-empty -m init
+git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
+git -C ~/code/toy add README.md && git -C ~/code/toy commit -m init
 ./install.sh --brain ~/brain --lane demo --repo ~/code/toy
 cp examples/demo/briefs/hello.md ~/brain/demo/briefs/
 brain demo                                   # opens the demo brainer in herdr
@@ -283,7 +297,8 @@ that refuse a brainer's writes into protected repositories, plus a reverse
 guard that refuses a product executor's writes into the brain. They resolve
 where a write really lands — through `~`, environment variables, `..` and
 symlinks — before deciding. They catch a mistaken write; they are not a
-sandbox.
+sandbox. What they stop and what they do not is in
+[`THREAT-MODEL.md`](THREAT-MODEL.md).
 
 **Decisions.** `decisions.md` is a lane's append-only record of what was
 decided, what it rules out and what would reverse it, so a rejected idea is
@@ -304,7 +319,7 @@ together with its archives and rotates old entries out when it grows.
 | `hw done <lane> <task>` | Close a task's executor. Refuses one that has not reported. |
 | `hw reap [<lane>]` | List worktrees that are provably safe to remove; `--apply` removes them and their merged branches. |
 
-`hw --help` lists every command, flag and exit status. `--sdd none` is the
+`hw --help` is one page; `hw help <topic>` lists every command, flag and exit status. `--sdd none` is the
 declaration that a task runs outside any spec-driven framework; `--sdd
 speckit` enters Spec Kit's flow where its skills are installed.
 

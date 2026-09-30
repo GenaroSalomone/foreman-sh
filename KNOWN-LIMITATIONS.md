@@ -1,4 +1,4 @@
-# Known limitations — 0.1.0-rc.2
+# Known limitations — 0.1.0-rc.3
 
 This is the register of what this pre-release does not do, or does only
 partly. Each entry says its **scope** (where it applies), its **impact**, its
@@ -6,6 +6,9 @@ partly. Each entry says its **scope** (where it applies), its **impact**, its
 executed) and a **workaround** where there is one. Nothing here is a hidden
 regression: a limitation that a change in this release introduced or widened
 would not be listed as "inherited", and none is.
+
+What the guards are built to stop, and what they are not, is laid out as a
+whole in [`THREAT-MODEL.md`](THREAT-MODEL.md).
 
 A limitation is not a promise to fix it. The maintainer owns every entry, and
 unless an entry names a different next decision, it is re-examined at the next
@@ -54,15 +57,16 @@ release candidate.
   OpenCode guard's vector suite, whose symlink cases point at product repos
   the runner does not have. That run found a real gap: the JavaScript half did
   not follow a symlink whose target is missing, so a write through it into a
-  protected repository was allowed where the Python half refused it. This
-  release closes it (the JavaScript half now follows the dangling link, with
+  protected repository was allowed where the Python half refused it.
+  Release 0.1.0-rc.2 closed it (the JavaScript half follows the dangling link, with
   the Python half's verdict); the fix is `measured` on macOS, on Linux
   (Ubuntu 24.04 under WSL2) and on Windows under Git Bash: in one CI run the
   OpenCode guard's vector suite passes 1722 of 1722 on both, 250 lines that
   name a symlink (100 of them dangling) included, Python, JavaScript and
   parity halves alike, with the filesystem suite at 42 of 42. There is no
-  native-Linux workflow: the Linux figure is WSL2's. That run predates this
-  release's case-variant change to the same guards (L5); the guards as shipped
+  native-Linux workflow: the Linux figure is WSL2's. That run predates the
+  case-variant change (0.1.0-rc.2) and the shell reading (0.1.0-rc.3) in the
+  same guards (L5); the guards as shipped
   are `measured` on macOS and `unverified` on WSL2 and Git Bash. The export itself, installed on a
   Windows 11 ARM64 VM under Git Bash from an empty home with the real herdr
   and Claude Code: `--check`, an install, a second identical run that writes
@@ -136,7 +140,9 @@ release candidate.
 - **Impact:** a guard decides from the tool call it is shown. It is built to
   catch a mistaken or careless write, including one written with an environment
   variable or an indirect path, but it is not a sandbox and does not contain a
-  process that is trying to get around it. Specifically:
+  process that is trying to get around it. It runs as the same OS account as
+  the agent it watches, and it sees only the tool calls the agent reports to
+  it. Specifically:
   - **Codex:** the guard covers its shell tool only. A write through Codex's
     own patch/write tool is unguarded, and the Codex configuration this harness was
     developed against runs it without a sandbox or approval prompts. Whether editing the Codex guard script
@@ -144,8 +150,15 @@ release candidate.
   - Where a write's destination cannot be resolved with confidence, the guard
     refuses on the command's content; it therefore may refuse a harmless
     command that merely names a protected path.
-  - A path computed at run time (`eval`, `$(printf …)`, a script, a
-    `while read` loop) is not resolved by the reverse guard.
+  - A path computed at run time (`$(printf …)`, `eval` or `sh -c` over a
+    substitution, a script, a `while read` loop) is resolved by neither
+    guard. The brainer's guard does follow a relative path, a `cd` earlier in
+    the same command, a shell-local variable, a glob, a brace expansion,
+    `find -delete`/`-exec`, `fd -x`, and a literal `sh -c` or `eval` body.
+  - An executor is guarded only against writing into the brain. Everything
+    else the account can reach — its home directory, other repositories, the
+    network, `git push --force` — is open to it, and so are the brain's own
+    `bin/` tools, which it needs in order to report.
   - Letter case: on a case-insensitive filesystem (macOS APFS by default) a
     path is matched to a protected repository by its filesystem identity, so
     `~/Code/MyApp` is refused like `~/code/myapp`. A protected root that does
@@ -157,6 +170,12 @@ release candidate.
   `unverified`. The reverse guard was probed live on Claude Code and on
   OpenCode executors, which refused writes into the brain, a `cd` into it,
   relative paths and a path read from an environment variable (`measured`).
+  The relative-path, `cd`, variable, glob, brace and `find`/`fd` cases are
+  `measured` by a vector suite that runs every case through the Python, the
+  JavaScript and the Codex guard, each case red on the previous release's
+  guards and green on these, and by mutation arms that turn each piece off.
+  A malformed payload and a missing `python3` are refused (`measured`); input
+  that is not JSON names no tool and is allowed.
   The case-variant identity check is `measured` on macOS (APFS) for all three
   guards. On Windows under Git Bash the guards do not use it: they fold case
   in the path's text instead (L1b). On a case-insensitive Linux mount the

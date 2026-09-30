@@ -15,13 +15,16 @@ executor in its own worktree that reports back with `done-invoker`.
 - [herdr](https://herdr.dev), running, with its Claude Code integration:
   `herdr integration install claude`
 - [Claude Code](https://claude.com/claude-code), with its first run finished (below)
-- optional: `engram` (memory), `fzf` (hw's pickers), `rg`
+- recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (hw's pickers), `rg`
 - for an OpenCode lane: [OpenCode](https://opencode.ai) 1.18.31 or newer, and herdr's OpenCode
   integration: `herdr integration install opencode` (run `opencode` once first,
   so its config directory exists)
 
-`./install.sh --check` names anything missing, with its install command, and
-writes nothing.
+`./install.sh --brain ~/brain --check` evaluates all of it in one pass and
+writes nothing. It names anything missing with its install command, then lists
+the fixes in the order they must be done (tools, Claude Code's first run,
+herdr's integrations, engram, a lane) and ends with one line, `Next step: …`.
+Run it again after each fix.
 
 ## Claude Code's first run is yours
 
@@ -46,10 +49,14 @@ folders trusted. An executor answers the fullscreen-renderer offer with "Not
 now", which changes nothing. Any other screen an executor stops on is named
 in `hw`'s error, never answered.
 
-## Memory (engram) is a declared prerequisite
+## Memory (engram) is recommended
 
-For reports to reach memory, Claude Code needs an `engram` server. The
-installer checks for one (a `mcpServers.engram` entry or an enabled engram
+engram is recommended, not required. Without it the harness runs and each
+report still reaches the brainer's session, but nothing is saved to memory:
+later sessions start cold. For reports to reach memory, Claude Code needs an
+`engram` server (`brew install gentleman-programming/tap/engram`, or engram's
+[installation guide](https://github.com/Gentleman-Programming/engram/blob/main/docs/INSTALLATION.md)).
+The installer checks for one (a `mcpServers.engram` entry or an enabled engram
 plugin) and, when it is missing, prints:
 
 ```sh
@@ -62,7 +69,7 @@ and it would add a second registration where the plugin already provides one.
 
 ## The command
 
-From a checkout of this repository:
+From the checkout the README's Quickstart clones:
 
 ```sh
 ./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp
@@ -76,8 +83,8 @@ Then:
 ```sh
 brain myapp                                   # open the brainer
 $EDITOR ~/brain/myapp/briefs/first-task.md    # write a brief
-hw myapp first-task --brief myapp/briefs/first-task.md --sdd none --dry-run
-hw myapp first-task --brief myapp/briefs/first-task.md --sdd none
+hw myapp first-task --brief ~/brain/myapp/briefs/first-task.md --sdd none --dry-run
+hw myapp first-task --brief ~/brain/myapp/briefs/first-task.md --sdd none
 ```
 
 ## What it asks
@@ -149,6 +156,7 @@ with another `--vendor` for the same lane is refused.
 | `~/brain/work/<lane>/<task>` | each task's git worktree (outside your repo) |
 | `~/.local/bin` | links: `hw`, `brain`, `done-invoker`, `ask-invoker`, `channel-send`, `decisions`, and `opencode-auto` for an OpenCode lane |
 | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | one Stop hook, merged; the previous file is kept as `settings.json.bak-brain-install` |
+| `~/.claude/skills/judgment-day/`, `~/.claude/agents/jd-*.md` | only with `--with-judgment-day` (see Judgment Day below) |
 
 Nothing is written inside your repository. If something already exists and
 differs, like another brain's Stop hook, a lane with that name over a
@@ -190,20 +198,30 @@ live headless herdr, and the exported installer on a Windows 11 ARM64 VM. Not ve
 Claude Code, a brainer and an executor reporting back. The numbers and every
 skip are in `KNOWN-LIMITATIONS.md`, L1b.
 
-## Judgment Day (recommended)
+## Judgment Day (optional)
 
 Judgment Day is a blind review by two judges of a diff before it counts as
 finished: both read the same target, neither sees the other's findings, and only
 a severe defect both confirm is fixed, in at most two rounds. It ships in
 `_skills/judgment-day/` with its three agents in `_agents/`, derived from Gentle
 AI: the skill under the Apache License 2.0, the agents under the MIT License
-(`_skills/judgment-day/LICENSE`, `LICENSE-MIT` and `NOTICE`). The installer does not copy it; to activate it for Claude Code:
+(`_skills/judgment-day/LICENSE`, `LICENSE-MIT` and `NOTICE`). To activate it for
+Claude Code:
 
 ```sh
-mkdir -p ~/.claude/skills ~/.claude/agents
-cp -R _skills/judgment-day ~/.claude/skills/
-cp _agents/jd-*.md ~/.claude/agents/
+./install.sh --brain ~/brain --with-judgment-day
 ```
+
+It copies the skill into `$CLAUDE_CONFIG_DIR/skills/judgment-day/` and the
+three agents into `$CLAUDE_CONFIG_DIR/agents/` (`~/.claude/` when unset), and
+does nothing else with them. It is idempotent: a second run changes no file,
+and a newer checkout updates the copies an earlier run made. It has the same
+collision rule as the links: a file of yours under one of those names, one that
+differs from this checkout's copy and that no earlier run made, or a symlink
+that points anywhere but at an identical copy (one that does is left alone and
+never written through), stops the run naming the path before anything is
+written. `--check` says on one line whether Judgment Day is active, and with
+`--with-judgment-day` also reports any collision.
 
 Then ask a session for "judgment day" over a diff. The judges use engram to
 recall context when it is registered (see Memory above).
@@ -228,7 +246,7 @@ recall context when it is registered (see Memory above).
   for the Bypass warning and the fullscreen offer. To repeat it on a new user:
   `./install.sh --check`, then `brain <lane>` *before* the command above (it
   names the waiting screen), then the command, then `hw <lane> probe --brief
-  <lane>/briefs/probe.md --sdd none --model haiku`.
+  ~/brain/<lane>/briefs/probe.md --sdd none --model haiku`.
 - **Your repo's own `.claude/settings.json` hooks must resolve.** hw refuses
   to launch into a worktree whose versioned hooks name a missing binary.
   `--allow-stale-hooks` overrides, and the override is recorded.

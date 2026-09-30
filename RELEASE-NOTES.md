@@ -1,29 +1,54 @@
-# foreman-sh 0.1.0-rc.2
+# foreman-sh 0.1.0-rc.3
 
 **A release candidate.** It is meant for early feedback, and it ships with a
 register of what it does not do: read
 [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md) before installing. It is not a
 stable release; the interfaces below may still change.
 
-## What changed since 0.1.0-rc.1
+## What changed since 0.1.0-rc.2
 
-- **A write-guard gap is closed.** On macOS, a path that spelled a protected
-  repository with different letter case reached it, because the filesystem
-  folds case and the guards compared text. All three guards (Claude Code,
-  OpenCode, Codex) now compare a path's filesystem identity with each
-  protected root.
-- **The OpenCode guard follows a dangling symlink**, with the same verdict as
-  the Python guard. It was measured on macOS, Linux (Ubuntu 24.04 under WSL2)
-  and Windows under Git Bash before the case-variant change; the guards as
-  shipped are measured on macOS, and on the other two not yet (L1b in
-  `KNOWN-LIMITATIONS.md`).
-- **Judgment Day ships with it**: a blind two-judge review of a diff before it
-  counts as finished. It is opt-in; `INSTALL.md` has the three commands.
-- **Codex executors are told the rules they cannot load** from a file:
-  secrets, credential handles, closing the browser, where artifacts go.
-- **Each release candidate is run once for real** before it is published: a
-  real herdr server with real Claude Code and OpenCode executors asking,
-  challenging and reporting back.
+- **A product executor can work in its worktree again.** The installer put
+  task worktrees under `<brain>/work`, inside the brain, where the reverse
+  guard refused every command an executor ran: on a new installation no
+  product executor could do anything. `work` now goes beside the brain, and
+  `install.sh`, `install.sh --check` and `hw` refuse a guarded lane whose work
+  directory is inside the brain, naming how to move it.
+- **The brainer's guard reads the shell.** A relative path
+  (`rm -rf ../myapp/src`), a `cd` earlier in the same command, a shell-local
+  variable, a glob, a brace expansion, `find -delete`/`-exec`, `fd -x` and a
+  literal `sh -c` or `eval` body are now resolved before deciding, with the
+  same verdicts in the Python, JavaScript and Codex guards.
+- **The Python guards fail closed on bad input.** In the Claude Code hooks
+  and the Codex hook, a payload that is not an object is refused instead of
+  crashing the hook, a crash the agent does not treat as a refusal;
+  Claude Code's reverse guard refuses when `python3` is missing, where it
+  exited 127, which Claude Code does not treat as a refusal.
+- **`install.sh --check` names every fix in one pass**, in the order they
+  must be done, and ends with one `Next step:`. `--with-judgment-day` installs
+  Judgment Day, and the README's quickstart is copyable as written.
+- **The commands follow the usual CLI conventions.** `hw --help` is one page
+  with `hw help <topic>` for the rest; `hw`, `brain` and `install.sh` answer
+  `--help` and `--version`; `hw` without a terminal prints its usage instead of
+  waiting on a picker; colour honours `NO_COLOR` and is off when output is not
+  a terminal.
+- **A threat model** ([`THREAT-MODEL.md`](THREAT-MODEL.md)) states what the
+  guards stop, what they do not, and what the harness assumes.
+
+## Upgrading from 0.1.0-rc.2
+
+An installation made by 0.1.0-rc.2 keeps its worktrees in `<brain>/work`, and
+this release refuses it until that changes:
+
+1. Finish or `hw done` every open task, so no worktree is left in
+   `<brain>/work`; then remove it (and run `git worktree prune` in each
+   product repository).
+2. Set `"work"` in `<brain>/projects.json` to a directory outside the brain.
+3. Run `install.sh --brain <brain> --lane <lane> --repo <path>` again for
+   **every lane**. This is what adds the new worktree directory to
+   `guards.json` and to the brainers' deny rules; until it runs, the brainer's
+   guard does not protect worktrees under the new work directory.
+
+The refusal prints the exact paths.
 
 The full list is in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -83,7 +108,8 @@ executor agent. See `INSTALL.md`.
 - Codex can be dispatched with `--sdd none` only, is not set up by the
   installer, and its own write tool is not covered by the guard.
 - OpenCode background sub-agents are an OpenCode experimental feature.
-- The guards catch mistaken writes; they are not a sandbox.
+- The guards catch mistaken writes; they are not a sandbox, and an executor
+  is guarded only against writing into the brain (`THREAT-MODEL.md`).
 - The test suite is hermetic (herdr stubbed), so a green suite does not prove a
   live pane worked.
 

@@ -729,3 +729,19 @@ claude_dialog_advice() {  # $1 = dialog, $2 = account config dir (may be empty)
     fullscreen-offer) printf 'the fullscreen-renderer offer is waiting; "Not now" (Esc) keeps the renderer as it is' ;;
   esac
 }
+
+# ── what every command of this toolchain says about itself ──────────────────
+# `--version` is the same answer from hw and from brain, so it is one function.
+# An installed brain reports what install.sh recorded in its marker; a tree that
+# was never installed (a clone, or the brain itself) reports the tag HEAD sits
+# on, else the short sha. Written for bash 3.2 and zsh: this file is sourced by both.
+cli_version() {  # $1 = the root the command lives in
+  local root="$1" v=""
+  if [ -f "$root/.brain-install.json" ]; then
+    v="$(jq -r '.version // ((.commit // "") | .[0:7]) // empty' "$root/.brain-install.json" 2>/dev/null || true)"
+  fi
+  if [ -z "$v" ] || [ "$v" = null ]; then
+    v="$(git -C "$root" describe --tags --exact-match 2>/dev/null || git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
+  fi
+  printf '%s' "${v:-unknown}"
+}

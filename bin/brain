@@ -68,6 +68,24 @@ case "$_src" in
   *)  _brain_root="$(cd "$(dirname "$_src")/.." && pwd)" ;;
 esac
 BRAIN="${HW_BRAIN_ROOT:-$_brain_root}"
+# --help and --version need no lane table: they answer even when it is broken.
+case "${1:-}" in
+  -V|--version) printf 'brain %s\n' "$(cli_version "$BRAIN")"; exit 0 ;;
+  -h|--help) cat <<'USAGE'
+brain — open (or focus) a lane's long-lived brainer.
+
+usage: brain <lane> [--opencode|--claude] [--reset [--self] [--force]]
+       brain                list the brainers that exist
+       brain --version      print the version
+
+    brain <lane>            open the lane's brainer, or focus it if it is open
+    brain <lane> --reset    replace the agent, keeping the space, tab and pane
+
+A lane is a name in projects.json, or one of its aliases. Its executors are
+launched with `hw help`.
+USAGE
+    exit 0 ;;
+esac
 lane_config_load "$BRAIN" || { echo "brain: the lane table did not load — fix $BRAIN/projects.json (the reason is above)" >&2; exit 1; }
 
 _free_port() {

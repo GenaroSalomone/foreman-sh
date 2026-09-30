@@ -429,6 +429,18 @@ MUTATORS = re.compile(
     r"ed|ex|python|python3|node|ruby|perl|php|deno|bun|osascript|xargs"
     r")(?![\w-])"
 )
+# `find` and `fd` are readers until an action writes or runs something
+# (2026-09-29, audit F9: `find <repo> -delete`, `find … -exec rm {} +` and
+# `fd . <repo> -x rm` were ALLOWED). Mutators only with one of these; the
+# reverse guard already refused them. `-exec` runs an arbitrary command, so it
+# counts whatever it runs — a read through `-exec cat` is refused too, and
+# `rg`/`fd` without `-x` do the same read.
+FIND_WRITES = re.compile(
+    r"(?<![\w-])find(?![\w-])[^|;&\n]*?\s-(?:delete|exec|execdir|ok|okdir|"
+    r"fprint|fprint0|fprintf|fls)(?![\w-])"
+    r"|(?<![\w-])(?:fd|fdfind)(?![\w-])[^|;&\n]*?\s(?:-[A-Za-z]*[xX]|--exec|"
+    r"--exec-batch)(?![\w-])"
+)
 # sed/perl/awk only mutate with an in-place flag.
 INPLACE = re.compile(r"(?<![\w-])(sed|perl|gawk|awk)\b[^|;&]*\s-i\b")
 # Any redirect that creates or appends to a file (not 2>&1, not a heredoc).
@@ -1257,7 +1269,7 @@ def _unquote_word(word):
                   lambda m: next((g for g in m.groups() if g is not None), ""), word)
 
 
-def _redirect_lands_in_protected(cfg, probe, cwd):
+def _redirect_lands_in_protected(cfg, probe, cwd, segs=()):
     """(raw_target, resolved_path) for the first redirect target that lands
     inside a protected root, or None if every target resolves outside.
 
@@ -1287,6 +1299,432 @@ def _redirect_lands_in_protected(cfg, probe, cwd):
             if _is_abs(resolved):
                 resolved = _real(resolved)
             return t, resolved
+    # AND AGAIN FROM WHERE EACH COMMAND REALLY RUNS, with its variables
+    # expanded (see `_shell_segments`). Only adds targets: every one above was
+    # already asked against the payload's cwd.
+    for seg in segs:
+        for value, raw in seg["redirects"]:
+            landed = _word_lands(cfg, value, seg["cwd"], bare=True)
+            if landed:
+                return raw, _real(landed)
+    return None
+
+
+# ── WHERE A WORD REALLY LANDS: RELATIVE, AFTER A cd, THROUGH A VARIABLE ──────
+#
+# THE GATE ASKED ONLY ABSOLUTE TOKENS. Measured 2026-09-29 (audit
+# `auditar-confianza-y-guardas`, F5-F8), ALLOWED by all three drivers:
+#
+#     rm -rf ../<repo>/src                 from a brainer's own cwd beside it
+#     git -C ../<repo> reset --hard        idem
+#     cd <repo> && echo x > .git/hooks/post-checkout
+#     D=<repo>; echo x > $D/a
+#     rm <parent>/rep?/src/*   rm <parent>/{repo,other}/src/a
+#
+# `_ABS_TOKEN` never saw a relative word, a redirect was resolved against the
+# payload's cwd and never the one a `cd` had just left, `$D` was a relative
+# path under the cwd, and `?` and `{a,b}` were compared as text. The reverse
+# guard (`deny_brain_writes.py`) already read all of that; this is its reading,
+# kept to what the gate needs: each simple command's words and write-redirect
+# targets, with the command's own assignments and the environment expanded,
+# braces expanded, and the directory it runs in after every `cd`/`pushd` before
+# it. It is NOT a shell. What it cannot follow (`cd -`, `popd`, a variable it
+# cannot expand, a command substitution's output) it leaves unknown, and an
+# unknown resolves nothing here — the payload-cwd passes already asked it.
+#
+# EVERYTHING HERE ONLY ADDS. It opens the gate on more commands and gives the
+# redirect check more (target, directory) pairs; it never closes a path the
+# passes above opened, so the chain below still decides, and a READ through a
+# relative path (`cat ../<repo>/x > out`) still matches no mutator and is
+# allowed. `deny-repo-writes.js` carries the same reading, step for step.
+
+_MARK = "\x00"          # a part of a word the guard cannot know
+_GLOB_CHARS = re.compile(r"[*?\[]")
+_WRITE_OPS = (">", ">>", ">|", "&>", "&>>", ">&", "<>")
+_REDIRECT_OP = re.compile(r"(\d*)(&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)")
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_DECLARERS = ("export", "local", "declare", "typeset", "readonly")
+# Words that precede a command without being it: reserved words and wrappers.
+# `{ cd <repo>; ...; }`, `if cd ..; then`, `do cd ..`, `! cd ..` (Judgment Day,
+# 2026-09-29) all ran the cd unseen while only the first word was asked.
+# Two lists, because they answer two questions. `_SHELL_WORDS` are the shell's
+# own reserved words and builtins: a `cd` reached through them runs IN the shell
+# and moves its cwd. `env`, `nohup` and `exec` are external commands: `env cd
+# /tmp` runs cd in a child and the shell stays where it was (measured
+# 2026-09-29, Judgment Day re-judgment: round 1 skipped them for the cd and
+# `env cd /tmp; rm -rf ../<repo>/src` went from DENY to ALLOW). They stay
+# skippable only where that is harmless: finding a shell head for `-c` nesting,
+# since `env bash -c '...'` is real code.
+_SHELL_WORDS = frozenset((
+    "{", "}", "!", "if", "then", "else", "elif", "do", "while", "until",
+    "time", "builtin", "command"))
+_SKIP_WORDS = _SHELL_WORDS | frozenset(("env", "exec", "nohup"))
+_SHELLS = frozenset(("sh", "bash", "zsh", "dash", "ksh", "ash"))
+
+
+def _head_index(words, skip=_SHELL_WORDS):
+    """Index of the command word: past assignments and `skip` words. The
+    default is the shell's own words (where a cd or a declarer takes effect);
+    pass `_SKIP_WORDS` to also see through the wrappers."""
+    k = 0
+    while k < len(words) and (_ASSIGNMENT.match(words[k][0])
+                              or words[k][0] in skip):
+        k += 1
+    return k
+_MAX_NESTING = 16
+
+
+def _brace(word, limit=64):
+    """`a{b,c}d` -> [abd, acd], nested and repeated; anything else as is.
+    Bounds the WORK, not just the output: the reverse guard's copy recursed
+    into every alternative and truncated afterwards, so k groups cost 2**k
+    calls (Judgment Day, 2026-09-29: `echo {,}{,}...` x28 stalled the hook, and
+    a hook timeout does not block). Here `limit` is passed down and the loop
+    stops once it is met, so the cost is bounded by 64 results."""
+    m = re.search(r"\{([^{}]*,[^{}]*)\}", word)
+    if not m:
+        return [word]
+    out = []
+    for alt in m.group(1).split(","):
+        if len(out) >= limit:
+            break
+        out += _brace(word[:m.start()] + alt + word[m.end():], limit - len(out))
+    return out[:limit]
+
+
+def _close_paren(t, i):
+    """Index of the `)` matching the `(` at `t[i]`, skipping quotes; len(t)
+    when it never closes."""
+    depth, j, n = 0, i, len(t)
+    while j < n:
+        ch = t[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch == "'":
+            k = t.find("'", j + 1)
+            j = n if k < 0 else k + 1
+            continue
+        if ch == '"':
+            j += 1
+            while j < n and t[j] != '"':
+                j += 2 if t[j] == "\\" else 1
+            j += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return n
+
+
+class _Segments:
+    """One pass over a command's text; see the section header above."""
+
+    def __init__(self, text, at, home, local, segs, depth, origin=None):
+        self.t, self.at, self.home = text, at, home
+        self.origin = at if origin is None else origin  # the payload's own cwd
+        self.local, self.segs, self.depth = local, segs, depth
+        self.words, self.redirects = [], []
+        self.buf, self.start, self.have, self.pending = [], 0, False, None
+
+    def var(self, name):
+        if name in self.local:
+            return self.local[name]
+        return os.environ.get(name, _MARK)
+
+    def nested(self, text):
+        """A subshell or a substitution: its commands are commands too, run
+        from here, and a `cd` inside does not move the commands after it."""
+        if self.depth < _MAX_NESTING:
+            _Segments(text, self.at, self.home, self.local, self.segs,
+                      self.depth + 1, self.origin).run()
+
+    def begin(self, i):
+        if not self.have:
+            self.start, self.have = i, True
+
+    def dollar(self, i):
+        """(value, next index) for the `$…` at `t[i]`."""
+        t = self.t
+        if t.startswith("$(", i):
+            close = _close_paren(t, i + 1)
+            if not t.startswith("$((", i):
+                self.nested(t[i + 2:close])
+            return _MARK, close + 1
+        m = re.match(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([^}]*))?\}", t[i:])
+        if m:
+            v = self.var(m.group(1))
+            if v == _MARK and m.group(2):
+                v = m.group(3)
+            return v, i + len(m.group(0))
+        m = re.match(r"\$\{[^}]*\}|\$[0-9@*#?$!-]", t[i:])
+        if m:
+            return _MARK, i + len(m.group(0))
+        m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)", t[i:])
+        if m:
+            return self.var(m.group(1)), i + len(m.group(0))
+        return "$", i + 1
+
+    def flush_word(self, i):
+        if not self.have:
+            return
+        value, raw = "".join(self.buf), self.t[self.start:i]
+        if self.pending is not None:
+            if self.pending in _WRITE_OPS:
+                self.redirects.append((value, raw))
+            self.pending = None
+        else:
+            hk = _head_index(self.words)
+            if _ASSIGNMENT.match(value) and (
+                    hk == len(self.words)
+                    or self.words[hk][0] in _DECLARERS):
+                name, _, rhs = value.partition("=")
+                self.local[name] = rhs
+            self.words.append((value, raw))
+        self.buf, self.have = [], False
+
+    def flush_seg(self, i):
+        self.flush_word(i)
+        self.pending = None
+        words, self.words = self.words, []
+        redirects, self.redirects = self.redirects, []
+        if not (words or redirects):
+            return
+        self.segs.append({"words": words, "redirects": redirects,
+                          "cwd": self.at, "start": self.origin})
+        k = _head_index(words, _SKIP_WORDS)
+        name = os.path.basename(words[k][0]) if k < len(words) else ""
+        # `sh -c '<script>'` and `eval <args>` are one word whose commands run
+        # from here: read them too (Judgment Day, 2026-09-29).
+        if name in _SHELLS:
+            for j in range(k + 1, len(words) - 1):
+                v = words[j][0]
+                if v.startswith("-") and not v.startswith("--") and "c" in v[1:]:
+                    self.nested(words[j + 1][0])
+                    break
+        elif name == "eval":
+            self.nested(" ".join(w for w, _ in words[k + 1:]))
+        # a cd moves the shell only through the shell's own words: `env cd`,
+        # `nohup cd` and `exec cd` run it in a child (see _SHELL_WORDS)
+        ck = _head_index(words)
+        name = os.path.basename(words[ck][0]) if ck < len(words) else ""
+        if name in ("cd", "pushd"):
+            args = [w for w, _ in words[ck + 1:] if not w.startswith("-") or w == "-"]
+            target = args[0] if args else self.home
+            if target == "-" or _MARK in target or not target:
+                self.at = None
+            elif _is_abs(target):
+                self.at = _norm(target)
+            else:
+                self.at = _norm(_join(self.at, target)) if self.at else None
+        elif name == "popd":
+            self.at = None
+
+    def run(self):
+        t, n, i = self.t, len(self.t), 0
+        while i < n:
+            c = t[i]
+            if c == "\\":
+                if i + 1 < n and t[i + 1] != "\n":
+                    self.begin(i)
+                    self.buf.append(t[i + 1])
+                i += 2
+                continue
+            if c == "'":
+                self.begin(i)
+                j = t.find("'", i + 1)
+                j = n if j < 0 else j
+                self.buf.append(t[i + 1:j])
+                i = j + 1
+                continue
+            if c == '"':
+                self.begin(i)
+                i += 1
+                while i < n and t[i] != '"':
+                    if t[i] == "\\" and i + 1 < n and t[i + 1] in '$`"\\\n':
+                        if t[i + 1] != "\n":
+                            self.buf.append(t[i + 1])
+                        i += 2
+                    elif t[i] == "$":
+                        v, i = self.dollar(i)
+                        self.buf.append(v)
+                    elif t[i] == "`":
+                        j = t.find("`", i + 1)
+                        j = n if j < 0 else j
+                        self.nested(t[i + 1:j])
+                        self.buf.append(_MARK)
+                        i = j + 1
+                    else:
+                        self.buf.append(t[i])
+                        i += 1
+                i += 1
+                continue
+            if c == "$":
+                self.begin(i)
+                v, i = self.dollar(i)
+                self.buf.append(v)
+                continue
+            if c == "`":
+                self.begin(i)
+                j = t.find("`", i + 1)
+                j = n if j < 0 else j
+                self.nested(t[i + 1:j])
+                self.buf.append(_MARK)
+                i = j + 1
+                continue
+            if c == "#" and not self.have:
+                j = t.find("\n", i)
+                i = n if j < 0 else j
+                continue
+            if c == "~" and not self.have and re.match(r"~(?:$|[/\s;&|)<>])", t[i:]):
+                self.begin(i)
+                self.buf.append(self.home)
+                i += 1
+                continue
+            m = None
+            if c in "<>" or (c == "&" and t[i + 1:i + 2] == ">") or (c in "0123456789" and not self.have):
+                m = _REDIRECT_OP.match(t, i)
+            if m:
+                self.flush_word(i)
+                op, i = m.group(2), m.end()
+                if op in (">&", "<&"):
+                    dup = re.match(r"[ \t]*(?:\d+|-)(?=$|[\s;&|()<>])", t[i:])
+                    if dup:
+                        i += len(dup.group(0))
+                        continue
+                while i < n and t[i] in " \t":
+                    i += 1
+                self.pending = op
+                continue
+            if c in " \t":
+                self.flush_word(i)
+                i += 1
+                continue
+            if c in "\n;|&":
+                self.flush_seg(i)
+                i += 1
+                continue
+            if c == "(":
+                self.flush_seg(i)
+                close = _close_paren(t, i)
+                self.nested(t[i + 1:close])
+                i = close + 1
+                continue
+            if c == ")":
+                self.flush_seg(i)
+                i += 1
+                continue
+            self.begin(i)
+            self.buf.append(c)
+            i += 1
+        self.flush_seg(n)
+
+
+def _shell_segments(text, cwd, home):
+    """[{"words": [(value, raw)], "redirects": [(value, raw)], "cwd": dir,
+    "start": dir}], one per simple command in `text`; `cwd` is where that
+    command runs, None where no `cd` before it can be followed, and `start` is
+    the payload's own cwd."""
+    segs = []
+    at = _norm(cwd) if cwd and _is_abs(cwd) else None
+    _Segments(text, at, home, {}, segs, 0).run()
+    return segs
+
+
+def _glob_part_matches(pattern, name):
+    """One path segment against one glob segment, as bash matches it (`*`, `?`,
+    `[...]`, `[!...]`), except that a leading `.` is not special here — which
+    only ever matches more."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[" and pattern.find("]", i + 2) > 0:
+            j = pattern.find("]", i + 2)
+            body = pattern[i + 1:j]
+            if body.startswith("!"):
+                body = "^" + body[1:]
+            out.append("[" + body.replace("\\", "\\\\") + "]")
+            i = j
+        else:
+            out.append(re.escape(c))
+        i += 1
+    try:
+        return re.match("^" + "".join(out) + "$", name) is not None
+    except re.error:
+        return True  # a class this cannot read may match: refuse, not guess
+
+
+def _glob_lands(cfg, pattern):
+    """True when a glob could expand onto a protected root or under one:
+    its first segments match the root's, segment by segment. Asked of the
+    roots, not the disk, so the answer does not depend on what exists."""
+    pc = [p for p in pattern.split("/") if p]
+    for root in cfg["resolved_roots"]:
+        rc = [p for p in root.split("/") if p]
+        if len(pc) >= len(rc) and all(
+                _glob_part_matches(p, r) for p, r in zip(pc, rc)):
+            return True
+    return False
+
+
+def _word_lands(cfg, value, cwd, bare=False):
+    """The path a shell word lands on inside a protected root, or None.
+
+    A relative word resolves against `cwd`, the directory its own command runs
+    in, and is skipped when that is unknown. A word with no `/` is asked only
+    when `bare`. Every word and redirect target is asked bare since
+    2026-09-29 (Judgment Day): `cd .. && rm -rf <repo-name>` and
+    `git -C <repo-name> reset --hard` name the root with no `/`. This only
+    opens the gate; the deny chain still decides, so `ls <repo-name>` after
+    that `cd` stays allowed.
+    """
+    for v in _brace(value):
+        if _MARK in v:
+            v = v.split(_MARK)[0]  # only the known part can be placed
+        if not v:
+            continue
+        if not (bare or _is_abs(v) or "/" in v or v in (".", "..")):
+            continue
+        if _is_abs(v):
+            p = v
+        elif cwd:
+            p = _join(cwd, v)
+        else:
+            continue
+        if _inside_any(cfg, p) or (_GLOB_CHARS.search(v) and _glob_lands(cfg, _norm(p))):
+            return _norm(p)
+    return None
+
+
+def _segments_resolve_protected(cfg, segs):
+    """(raw word, landed path) for the first word or redirect target of any
+    command that lands inside a protected root, or None. `--opt=<path>` and
+    `NAME=<path>` are asked for their value too."""
+    for seg in segs:
+        # Defence in depth: any cd this models wrongly would HIDE a word, so
+        # where the tracked cwd differs from the payload's own, ask that too.
+        # Only adds denials.
+        dirs = [seg["cwd"]]
+        if seg.get("start") and seg["start"] != seg["cwd"]:
+            dirs.append(seg["start"])
+        for d in dirs:
+            for value, raw in seg["words"]:
+                for v in (value, value.partition("=")[2]):
+                    landed = v and _word_lands(cfg, v, d, bare=True)
+                    if landed:
+                        return raw, landed
+            for value, raw in seg["redirects"]:
+                landed = _word_lands(cfg, value, d, bare=True)
+                if landed:
+                    return raw, landed
     return None
 
 
@@ -1361,14 +1799,31 @@ def decide(cfg, command, cwd):
     stands_in_protected = _inside_protected(cfg, cwd)
     # `cd` into a protected tree counts even when cwd is elsewhere.
     cds_pattern = r"cd\s+[\"']?(%s)" % "|".join(re.escape(r) for r in roots)
-    cds_into_protected = (re.search(cds_pattern, no_heredoc)
-                          or re.search(cds_pattern, no_heredoc_c))
+    cds_into_protected = bool(re.search(cds_pattern, no_heredoc)
+                              or re.search(cds_pattern, no_heredoc_c))
+    # AND ANY `cd`/`pushd` THAT LANDS THERE, however it is spelled — relative,
+    # through a variable, through a symlink (2026-09-29, audit F6). Each
+    # command's directory is where the ones before it left the shell.
+    segs = _shell_segments(no_heredoc, cwd, home)
+    start = _norm(cwd) if cwd and _is_abs(cwd) else None
+    if not cds_into_protected:
+        cds_into_protected = any(
+            seg["cwd"] and seg["cwd"] != start and _inside_protected(cfg, seg["cwd"])
+            for seg in segs)
     # And the same question asked of paths that do not SPELL a protected root —
     # a symlink into one, or a `..` traversal back into one. Skipped when a
     # literal already opened the gate, so the common case costs nothing.
     resolved_token = None
     if not names_protected:
         resolved_token = _resolves_protected(cfg, no_heredoc)
+    resolved_path = _real(resolved_token) if resolved_token else None
+    # And of every word as the shell will see it: relative to the directory
+    # its own command runs in, variables and braces expanded, globs matched
+    # against the roots (see `_shell_segments`).
+    if not (names_protected or resolved_token):
+        seg_hit = _segments_resolve_protected(cfg, segs)
+        if seg_hit:
+            resolved_token, resolved_path = seg_hit
 
     if not (names_protected or resolved_token or stands_in_protected
             or cds_into_protected):
@@ -1402,8 +1857,9 @@ def decide(cfg, command, cwd):
     if resolved_token:
         triggers.append(
             "a path in the command RESOLVES inside it (%s -> %s) even though the "
-            "root does not appear literally — a symlink or a `..` traversal"
-            % (resolved_token, _real(resolved_token)))
+            "root does not appear literally — a symlink, a `..` traversal, a "
+            "path relative to where its command runs, a variable, a glob or a "
+            "brace" % (resolved_token, resolved_path))
     if cds_into_protected:
         triggers.append("the command itself cd's into it")
     trigger_reason = "; and ".join(triggers)
@@ -1477,8 +1933,10 @@ def decide(cfg, command, cwd):
         return ("inplace",
                 "Blocked: in-place edit targeting %s (%s). The brainer is "
                 "read-only there." % (where, trigger_reason))
-    if REDIRECT.search(masked):
-        redirect_hit = _redirect_lands_in_protected(cfg, no_heredoc, cwd)
+    # A redirect inside `sh -c '...'` is masked away with its quotes; the shell
+    # reading found it (Judgment Day, 2026-09-29), so it opens this too.
+    if REDIRECT.search(masked) or any(seg["redirects"] for seg in segs):
+        redirect_hit = _redirect_lands_in_protected(cfg, no_heredoc, cwd, segs)
         if redirect_hit:
             raw_target, resolved_target = redirect_hit
             return ("redirect",
@@ -1492,6 +1950,9 @@ def decide(cfg, command, cwd):
     mutator_invoked = any(
         _is_command_position(masked, m.start())
         for m in MUTATORS.finditer(masked)
+    ) or any(
+        _is_command_position(masked, m.start())
+        for m in FIND_WRITES.finditer(masked)
     )
     if mutator_invoked:
         if content_only:
@@ -1543,10 +2004,28 @@ def main(lane, stream=None):
     try:
         payload = json.load(stream or sys.stdin)
     except Exception:
-        sys.exit(0)  # Never block on a malformed payload.
+        sys.exit(0)  # Never block on a payload that is not JSON: it names no tool.
 
+    # A PAYLOAD OF THE WRONG SHAPE REFUSES. Measured 2026-09-29 (audit F12): a
+    # JSON array, a string, or a Bash `tool_input` that is null, a string or a
+    # list raised AttributeError right here, OUTSIDE the try below, and exit 1
+    # is a non-blocking error — the command ran. The vendor builds the payload,
+    # so this is a schema change arriving, and a guard that cannot read one has
+    # not seen a safe command.
+    if not isinstance(payload, dict):
+        deny("Blocked: the %s read-only guard was handed a payload that is not "
+             "a JSON object (%s), so it cannot tell which tool is running or "
+             "what it does. Every call is refused until the payload has the "
+             "shape this guard reads." % (lane, type(payload).__name__))
+        return
     if payload.get("tool_name") != "Bash":
         sys.exit(0)
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        deny("Blocked: the %s read-only guard was handed a Bash call whose "
+             "tool_input is not an object (%s), so it cannot read the command. "
+             "Refused rather than guessed." % (lane, type(tool_input).__name__))
+        return
 
     # AN UNKNOWN LANE DENIES; IT DOES NOT CRASH. Letting `config`'s KeyError
     # propagate was the first draft, and it is fail-OPEN: Claude Code treats a
@@ -1563,7 +2042,7 @@ def main(lane, stream=None):
              % exc.args[0])
         return
 
-    command = payload.get("tool_input", {}).get("command", "") or ""
+    command = tool_input.get("command", "") or ""
     cwd = payload.get("cwd", "") or ""
 
     # AND A CRASH INSIDE `decide` DENIES TOO. The shim already fails closed when

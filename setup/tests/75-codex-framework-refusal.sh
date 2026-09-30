@@ -211,7 +211,7 @@ rm -rf "$handoff_wd/.claude"
 
 # This help claim is paired with the transaction immediately above: historical
 # launch none must not override the measured incompatible live surface.
-help_out="$("$SOURCE" --help 2>&1)"
+help_out="$("$SOURCE" help all 2>&1)"
 case "$help_out" in
   *"effective live worktree surface is measured and incompatible vendor/mode"*"pairs are refused before task creation or delivery."*"only a fallback when that measurement yields no mode, not authoritative."*) ;;
   *) fail "next help does not describe the measured live-surface precedence: $help_out" ;;

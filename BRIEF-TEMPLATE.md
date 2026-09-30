@@ -30,7 +30,7 @@
 #
 # A declaration is a CHECK, not a source: it never supplies a flag hw would
 # otherwise ask for. Other keys hw reads (decision, delivery, boundary,
-# requires-agents) are in `hw --help`.
+# requires-agents) are in `hw help flags`.
 ---
 
 # Brief: <task-name>

@@ -886,6 +886,20 @@ def main(stream=None, root=None):
         payload = json.load(stream or sys.stdin)
     except Exception:
         sys.exit(0)
+    # A payload of the wrong shape refuses (audit F12, 2026-09-29): a Bash
+    # `tool_input` that was null read as an empty command and was allowed.
+    if not isinstance(payload, dict):
+        drw.deny("Blocked: the brain guard was handed a payload that is not a "
+                 "JSON object (%s), so it cannot tell which tool is running. "
+                 "Refused rather than guessed." % type(payload).__name__)
+        return
+    tool = payload.get("tool_name", "")
+    if tool in BASH_TOOLS | set(WRITE_TOOLS) | PATCH_TOOLS \
+            and not isinstance(payload.get("tool_input"), dict):
+        drw.deny("Blocked: the brain guard was handed a %s call whose tool_input "
+                 "is not an object (%s), so it cannot read what it does. Refused "
+                 "rather than guessed." % (tool, type(payload.get("tool_input")).__name__))
+        return
     try:
         verdict = decide(brain_config(root), payload.get("tool_name", ""),
                          payload.get("tool_input", {}), payload.get("cwd", "") or "")

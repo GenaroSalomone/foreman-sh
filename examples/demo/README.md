@@ -1,10 +1,13 @@
 # The demo lane
 
 A lane is one product repository with a brainer of its own. This one exists to
-prove an install end to end on a repository you do not care about.
+prove an install end to end on a repository you do not care about. The toy
+repository holds one file, a one-line README, because the example brief asks the
+executor to read the README.
 
 ```sh
-git init ~/code/toy && git -C ~/code/toy commit --allow-empty -m init
+git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
+git -C ~/code/toy add README.md && git -C ~/code/toy commit -m init
 ./install.sh --brain ~/brain --lane demo --repo ~/code/toy
 cp examples/demo/briefs/hello.md ~/brain/demo/briefs/
 brain demo                                   # then, from the brainer's pane:

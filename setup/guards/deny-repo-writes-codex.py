@@ -93,6 +93,13 @@ def lane_for(directory):
             lane = rest.split("/")[0] if rest else "brain"
             if lane in LANES:
                 return lane
+            # `work/` is the brain's reserved directory for executors'
+            # worktrees (install.sh refuses it as a lane name), not a brainer's
+            # place: a Codex executor in `<brain>/work/<lane>/<task>` is not a
+            # brainer standing inside brain. It is no lane, and stays unguarded
+            # as every executor is.
+            if lane == "work":
+                return None
             # A brain subdirectory that is NOT a lane (`bin/`, `_skills/`, a
             # stray path) is still a brainer standing inside brain, so it gets
             # the root lane rather than no guard.
@@ -177,13 +184,28 @@ def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        sys.exit(0)  # Never block on a malformed payload.
+        sys.exit(0)  # Never block on a payload that is not JSON: it names no tool.
 
-    if payload.get("tool_name") != "Bash":
+    # A PAYLOAD OF THE WRONG SHAPE REFUSES, where this session is a brainer.
+    # Measured 2026-09-29 (audit F12): a JSON array or string, or a Bash
+    # `tool_input` that is null, a string or a list, raised AttributeError and
+    # exited 1 — non-blocking, so the command ran. Codex's payload has not been
+    # captured, so a shape this guard cannot read is the likeliest way it meets
+    # one. The lane is still resolved first: an executor is never guarded, and
+    # a payload that is not an object says nothing, so only the environment can
+    # name the lane for it.
+    malformed = None
+    if not isinstance(payload, dict):
+        malformed = "a payload that is not a JSON object (%s)" % type(payload).__name__
+        payload = {}
+    elif payload.get("tool_name") != "Bash":
         sys.exit(0)
+    elif not isinstance(payload.get("tool_input"), dict):
+        malformed = ("a Bash call whose tool_input is not an object (%s)"
+                     % type(payload.get("tool_input")).__name__)
 
-    command = payload.get("tool_input", {}).get("command", "") or ""
-    if not command:
+    command = "" if malformed else (payload["tool_input"].get("command", "") or "")
+    if not command and not malformed:
         sys.exit(0)
 
     if LOAD_ERROR is not None:
@@ -237,6 +259,14 @@ def main():
         # — the same answer the per-directory registration gives the other two
         # vendors.
         sys.exit(0)
+
+    if malformed:
+        print(
+            "BLOCKED by deny-repo-writes (codex, lane=%s): the guard was handed %s, "
+            "so it cannot read the command. Refused rather than guessed." % (lane, malformed),
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # THE CWD AXIS GETS THE REAL CWD, resolved independently of which directory
     # happened to name the lane. See `lane_candidates` for the measurement that

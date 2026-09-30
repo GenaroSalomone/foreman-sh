@@ -115,6 +115,13 @@ function laneRender(lane) {
     // the variable rather than matching the text. A repo outside the home has
     // no such spelling and renders as itself.
     homeRepo: repo.startsWith(`${homedir()}/`) ? `$HOME${repo.slice(homedir().length)}` : repo,
+    // The repo reached WITHOUT spelling it (2026-09-29, audit F5/F8): its bare
+    // name for a `../<name>` climb from `{{sibling}}`, its parent for a `*`, the
+    // name with its last letter turned into `?`, and a brace that expands to it.
+    repoName: basename(repo),
+    repoParent: dirname(repo),
+    repoGlob: `${dirname(repo)}/${basename(repo).slice(0, -1)}?`,
+    repoBrace: `${dirname(repo)}/{deny-guard-other,${basename(repo)}}`,
   };
 }
 
@@ -143,6 +150,10 @@ const render = (value, r) => value
   .replaceAll("{{dotdot}}", r.dotdot)
   .replaceAll("{{sibling}}", r.sibling)
   .replaceAll("{{home_repo}}", r.homeRepo)
+  .replaceAll("{{repo_name}}", r.repoName)
+  .replaceAll("{{repo_parent}}", r.repoParent)
+  .replaceAll("{{repo_glob}}", r.repoGlob)
+  .replaceAll("{{repo_brace}}", r.repoBrace)
   .replaceAll("{{outside}}", outside)
   .replaceAll("{{out}}", `${outside}/copy`);
 
@@ -394,6 +405,44 @@ try {
       const good = !result.crashed && result.allowed === (want === "allow");
       tally("codex", good);
       if (good) ok(`codex ${name}`); else notOk(`codex ${name}`, result.crashed ?? result.reason);
+    }
+  }
+
+  // ── A PAYLOAD OF THE WRONG SHAPE REFUSES; IT DOES NOT CRASH ─────────────
+  // Measured 2026-09-29 (audit F12, probes M03-M05, M08): a payload that is not
+  // an object, or a Bash payload whose `tool_input` is not one, raised
+  // AttributeError OUTSIDE `main`'s try in the Claude hook and in Codex's, and
+  // exit 1 is a NON-blocking error in both vendors — the command ran. The
+  // runtime builds the payload, not the model, so the live risk is a vendor
+  // changing its schema; a guard that cannot read one has not seen a safe
+  // command. An empty or truncated stdin stays an allow (it names no tool),
+  // and a tool that is not a shell stays none of this guard's business.
+  {
+    const laneDir = `${root}/setup`;
+    const cEnv = codexEnv(`${BRAIN_ROOT}/setup`, base);
+    const raw = (path, input, env, cwd) => spawnSync("python3", [path], { input, encoding: "utf8", env: env ?? process.env, cwd });
+    const claudeVerdict = (r) => r.status !== 0 ? `crashed ${r.status}`
+      : !r.stdout.trim() ? "allow"
+        : /"permissionDecision": "deny"/.test(r.stdout) ? "deny" : `invalid ${r.stdout.trim()}`;
+    const codexVerdict = (r) => r.status === 0 ? "allow" : r.status === 2 ? "deny" : `crashed ${r.status}`;
+    const shapes = [
+      ["a JSON array", "[]", "deny"],
+      ["a JSON string", '"Bash"', "deny"],
+      ["a Bash tool_input that is a string", JSON.stringify({ tool_name: "Bash", tool_input: "rm -rf x", cwd: outside }), "deny"],
+      ["a Bash tool_input that is null", JSON.stringify({ tool_name: "Bash", tool_input: null, cwd: outside }), "deny"],
+      ["a Bash tool_input that is a list", JSON.stringify({ tool_name: "Bash", tool_input: ["rm", "-rf", "x"], cwd: outside }), "deny"],
+      ["an empty stdin (names no tool)", "", "allow"],
+      ["a non-shell tool with a string tool_input", JSON.stringify({ tool_name: "Read", tool_input: "x", cwd: outside }), "allow"],
+    ];
+    for (const [name, input, want] of shapes) {
+      const py = claudeVerdict(raw(`${laneDir}/.claude/hooks/deny-repo-writes.py`, input));
+      tally("python", py === want);
+      if (py === want) ok(`malformed payload, claude hook: ${name} -> ${want}`);
+      else notOk(`malformed payload, claude hook: ${name} -> ${want}`, py);
+      const cx = codexVerdict(raw(codexPath, input, cEnv, base));
+      tally("codex", cx === want);
+      if (cx === want) ok(`malformed payload, codex: ${name} -> ${want}`);
+      else notOk(`malformed payload, codex: ${name} -> ${want}`, cx);
     }
   }
 

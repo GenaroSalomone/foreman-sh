@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Lint rulings (strict by default); --report-only diagnoses legacy files.
 
---staged is the pre-commit boundary: budget failures block, format diagnostics
-are advisory until the separately owned migration lands. Reads index blobs,
-never unstaged decisions. Budget and heading grammar belong to bin/decisions.
+--staged is the pre-commit boundary: budget failures block, and so does a
+malformed `Reverses:` on an entry newly added by this commit. Every other
+format diagnostic — including `Reverses:` on an entry that already lived in
+HEAD — stays advisory until the separately owned migration backfills the
+existing debt. Reads index blobs, never unstaged decisions. Budget and
+heading grammar belong to bin/decisions.
 """
 import argparse
 from pathlib import Path, PurePosixPath
@@ -69,19 +72,53 @@ def entry_bodies(text):
         yield heading, lines[start:end]
 
 
-def lint(path, text, sources):
-    lines = text.splitlines()
-    entries = list(headings(text))
-    # `Reverses:` names its target by ENGRAM ID (bin/decisions, `entry_id` /
-    # `reverses_target`), not by title — a title is edited after the ruling
-    # settles and is not unique across a project's history. `known` must
-    # therefore be resolved the same way `bin/decisions` resolves it, or the
-    # linter disagrees with the tool that owns the format.
-    known = {
+def known_ids(sources):
+    """Every engram id a `Reverses:` value may resolve against — live text
+    plus archives, resolved the same way `bin/decisions` resolves it (see
+    `entry_bodies`'s note on why a malformed heading must not mint one)."""
+    return {
         POLICY["entry_id"](body)
         for source in sources
         for _, body in entry_bodies(source)
     } - {None}
+
+
+def entry_fields(body):
+    """Parse **Key:** value pairs out of one entry's body lines, skipping
+    fenced examples — the same extraction `lint()` used inline before this
+    was split out so `reverses_error` could run standalone in `staged()`."""
+    fields = {}
+    fenced = False
+    for line in body[1:]:
+        if re.match(r"^ {0,3}(`{3,}|~{3,})", line):
+            fenced = not fenced
+        if fenced:
+            continue
+        for key in KEYS:
+            match = re.fullmatch(r"\*\*" + re.escape(key) + r":\*\*\s*(.+)", line)
+            if match:
+                fields[key] = match[1].strip()
+    return fields
+
+
+def reverses_error(fields, known):
+    """None, or the message naming a `Reverses:` value that is neither `none`
+    nor a resolvable, non-self engram id. Shared by `lint()` (always advisory
+    there) and `staged()` (blocking there, for newly added entries only)."""
+    reverse = fields.get("Reverses", "none")
+    if reverse.strip().lower() == POLICY["NO_REVERSE"]:
+        return None
+    reverse_id = POLICY["as_id"](reverse)
+    own_id = POLICY["as_id"](fields.get("Evidence"))
+    if reverse_id is None or reverse_id not in known or reverse_id == own_id:
+        return f"Reverses target not found (or self-reference): {reverse}"
+    return None
+
+
+def lint(path, text, sources):
+    lines = text.splitlines()
+    entries = list(headings(text))
+    known = known_ids(sources)
     errors = []
     if text.strip() and not entries:
         errors.append(f"{path}:1: no dated entry headings found")
@@ -97,28 +134,15 @@ def lint(path, text, sources):
             body.pop()
         if len(body) > MAX_ENTRY_LINES:
             errors.append(prefix + f"entry has {len(body)} lines; ceiling is {MAX_ENTRY_LINES}")
-        fields = {}
-        fenced = False
-        for line in body[1:]:
-            if re.match(r"^ {0,3}(`{3,}|~{3,})", line):
-                fenced = not fenced
-            if fenced:
-                continue
-            for key in KEYS:
-                match = re.fullmatch(r"\*\*" + re.escape(key) + r":\*\*\s*(.+)", line)
-                if match:
-                    fields[key] = match[1].strip()
+        fields = entry_fields(body)
         for key in KEYS:
             if not fields.get(key):
                 errors.append(prefix + f"missing **{key}:** value")
         if "Evidence" in fields and not re.fullmatch(r"engram #\d+", fields["Evidence"]):
             errors.append(prefix + "Evidence must name engram #NNNNN")
-        reverse = fields.get("Reverses", "none")
-        if reverse.strip().lower() != POLICY["NO_REVERSE"]:
-            reverse_id = POLICY["as_id"](reverse)
-            own_id = POLICY["as_id"](fields.get("Evidence"))
-            if reverse_id is None or reverse_id not in known or reverse_id == own_id:
-                errors.append(prefix + f"Reverses target not found (or self-reference): {reverse}")
+        reverses_problem = reverses_error(fields, known)
+        if reverses_problem:
+            errors.append(prefix + reverses_problem)
     return errors
 
 
@@ -354,10 +378,46 @@ def rotation_errors(path, old_files, new_files):
     return []
 
 
+def new_reverses_errors(path, text, old_text, known):
+    """Blocking (not advisory) `Reverses:` problems, restricted to entries this
+    commit ADDS — those whose heading is absent from `old_text` (HEAD's
+    version of the same file). An entry already live in HEAD stays advisory:
+    backfilling the existing 376-line debt is the separately owned migration
+    this check does not attempt (see module docstring).
+
+    Restricted to real entries in `entry_bodies()`'s sense (ENTRY_RE match AND
+    a real calendar date), not every `## ` line: an undated or malformed
+    heading is UNKNOWN to bin/decisions — `decisions check` reports it as an
+    unrecognised heading, never as an entry — so text under it (a pasted
+    quote, a stray note) must not hard-block a commit just because it
+    happens to contain a line shaped like `**Reverses:** ...`."""
+    old_headings = {heading for _, heading in headings(old_text)}
+    lines = text.splitlines()
+    found = list(headings(text))
+    errors = []
+    for i, (start, heading) in enumerate(found):
+        match = POLICY["ENTRY_RE"].match(heading)
+        if not match or POLICY["entry_key"](match) is None or heading in old_headings:
+            continue
+        end = found[i + 1][0] if i + 1 < len(found) else len(lines)
+        body = lines[start:end]
+        while body and not body[-1].strip():
+            body.pop()
+        problem = reverses_error(entry_fields(body), known)
+        if problem:
+            errors.append(f"{path}:{start + 1}: {problem}")
+    return errors
+
+
 def staged():
     paths = set(filter(None, git("ls-files", "-z").decode().split("\0")))
     changed = set(filter(None, git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z").decode().split("\0")))
-    old_paths = None
+    has_head = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"], capture_output=True
+    ).returncode == 0
+    old_paths = set(
+        git("ls-tree", "-r", "--name-only", "HEAD").decode().splitlines()
+    ) if has_head else set()
     failed = False
     for path in sorted(changed):
         if not path.endswith("/decisions.md"):
@@ -368,18 +428,15 @@ def staged():
         sources = [text] + [blob("", p) for p in archives]
         for error in lint(path, text, sources):
             print("decisions lint (advisory): " + error, file=sys.stderr)
+        old_text = blob("HEAD", path) if path in old_paths else ""
+        for error in new_reverses_errors(path, text, old_text, known_ids(sources)):
+            print(f"pre-commit: {error}", file=sys.stderr)
+            failed = True
         size = len(text.splitlines())
         if size <= POLICY["WARN_LINES"]:
             continue
-        if old_paths is None:
-            has_head = subprocess.run(
-                ["git", "rev-parse", "--verify", "HEAD"], capture_output=True
-            ).returncode == 0
-            old_paths = set(
-                git("ls-tree", "-r", "--name-only", "HEAD").decode().splitlines()
-            ) if has_head else set()
         old_archives = archive_paths(old_paths, parent)
-        old_files = ({path: blob("HEAD", path)} if path in old_paths else {})
+        old_files = ({path: old_text} if path in old_paths else {})
         old_files.update({archive: blob("HEAD", archive) for archive in old_archives})
         new_files = {path: text}
         new_files.update({archive: blob("", archive) for archive in archives})

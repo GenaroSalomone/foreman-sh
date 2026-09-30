@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.1.2] — 2026-09-30
+
+### Added
+- `bin/engram-label-proxy`: `hw` and `brain` start engram's MCP server through
+  it, for Claude Code, OpenCode and Codex. A `mem_*` call whose `project` is
+  not the lane's label is refused; a call without one gets the lane's label,
+  taken from the working directory when the session has none; `mem_search`
+  always runs across every project.
+- `hw status` names observations saved under a label other than the lane's.
+
+### Changed
+- `setup/release/cut` runs the candidate, export, unclassified-file and leak
+  checks before the test suites, so a manifest mistake stops the cut in
+  seconds.
+
 ## [0.1.1] — 2026-09-30
 
 ### Fixed

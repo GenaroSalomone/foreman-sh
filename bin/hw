@@ -1820,13 +1820,16 @@ EOF
 # never copy a whole config layer out of a file; it rebuilds the overlay from
 # these two, each validated, instead.
 _export_opencode_overlay() {
-  if [ "${AGENT:-}" = opencode ] && [ -n "${OPENCODE_EFFORT_OVERLAY:-}" ]; then
-    OPENCODE_CONFIG_CONTENT="$OPENCODE_EFFORT_OVERLAY"
+  unset OPENCODE_CONFIG_CONTENT HW_OPENCODE_EFFORT HW_OPENCODE_EFFORT_AGENT
+  [ "${AGENT:-}" = opencode ] || return 0
+  # The engram proxy rides the same layer (_engram_proxy_args); the effort
+  # pair still travels only when there is an effort to rebuild.
+  OPENCODE_CONFIG_CONTENT="$(_opencode_config_content)"
+  if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then export OPENCODE_CONFIG_CONTENT; else unset OPENCODE_CONFIG_CONTENT; fi
+  if [ -n "${OPENCODE_EFFORT_OVERLAY:-}" ]; then
     HW_OPENCODE_EFFORT="$EFFORT"
     HW_OPENCODE_EFFORT_AGENT="$OPENCODE_PRIMARY_AGENT"
-    export OPENCODE_CONFIG_CONTENT HW_OPENCODE_EFFORT HW_OPENCODE_EFFORT_AGENT
-  else
-    unset OPENCODE_CONFIG_CONTENT HW_OPENCODE_EFFORT HW_OPENCODE_EFFORT_AGENT
+    export HW_OPENCODE_EFFORT HW_OPENCODE_EFFORT_AGENT
   fi
 }
 
@@ -2269,9 +2272,11 @@ _hw_env() {
   # --effort, in the --here form; see _export_opencode_overlay. Word-split by
   # the caller, which is safe only because the overlay is compact jq output and
   # the agent name was checked against [A-Za-z0-9._-] when it was built.
+  if [ "$AGENT" = opencode ] && [ -n "$(_opencode_config_content)" ]; then
+    printf -- ' --env OPENCODE_CONFIG_CONTENT=%s' "$(_opencode_config_content)"
+  fi
   if [ "$AGENT" = opencode ] && [ -n "${OPENCODE_EFFORT_OVERLAY:-}" ]; then
-    printf -- ' --env OPENCODE_CONFIG_CONTENT=%s --env HW_OPENCODE_EFFORT=%s --env HW_OPENCODE_EFFORT_AGENT=%s' \
-      "$OPENCODE_EFFORT_OVERLAY" "$EFFORT" "$OPENCODE_PRIMARY_AGENT"
+    printf -- ' --env HW_OPENCODE_EFFORT=%s --env HW_OPENCODE_EFFORT_AGENT=%s' "$EFFORT" "$OPENCODE_PRIMARY_AGENT"
   fi
   if [ "$AGENT" = opencode ] && _brain_guard_on; then
     printf -- ' --env OPENCODE_CONFIG=%s' "$(_brain_guard_opencode_config)"
@@ -4142,6 +4147,71 @@ _brain_guard_args() {
   return 0
 }
 
+# ── the engram label proxy ───────────────────────────────────────────────────
+# Every executor's `engram` MCP server is bin/engram-label-proxy around
+# `engram mcp`, whatever the vendor: it refuses a `project` other than the
+# lane's label and forces `all_projects` on every search (judgment amendment 1,
+# setup/briefs/refs/memoria-engram-judgment.md). Each vendor takes it where a
+# launch can already replace one named server, MEASURED 2026-09-30:
+#   claude    --mcp-config <file> replaces the user-scope `engram` AND a project
+#             .mcp.json `engram` (claude -p, mem_current_project -> the proxy's label)
+#   opencode  OPENCODE_CONFIG_CONTENT {"mcp":{"engram":…}} replaces the command
+#             (opencode debug config)
+#   codex     -c mcp_servers.engram.command/args (codex mcp get engram)
+# A crash-restored opencode shell does not get it back: the restore never
+# copies a config layer (_export_opencode_overlay), and ENGRAM_PROJECT's
+# process override is what remains there.
+_engram_proxy_bin() { printf '%s/bin/engram-label-proxy' "$_brain_root"; }
+_engram_mcp_bin() { command -v engram 2>/dev/null || printf 'engram'; }
+# The claude file: one per label, rewritten at every launch (never by a dry run).
+_engram_mcp_claude_file() { printf '%s/hw/engram-mcp-%s.json' "${XDG_CACHE_HOME:-$HOME/.cache}" "$1"; }
+OPENCODE_ENGRAM_OVERLAY=""; ENGRAM_PROXY_LINE=""
+_engram_proxy_args() {
+  local label proxy eng f
+  OPENCODE_ENGRAM_OVERLAY=""; ENGRAM_PROXY_LINE=""
+  label="$(_engram_label "$PROJ")"; proxy="$(_engram_proxy_bin)"; eng="$(_engram_mcp_bin)"
+  case "$label" in *[!A-Za-z0-9._-]*|"") die "engram label '$label' cannot travel as one word to the engram proxy" ;; esac
+  case "$proxy$eng$(_engram_mcp_claude_file "$label")" in
+    *[[:space:]]*) die "the engram proxy cannot be passed as one word: a path has whitespace ($proxy, $eng, $(_engram_mcp_claude_file "$label"))" ;;
+  esac
+  if [ ! -x "$proxy" ]; then
+    # Same shape as the brain guard: a dry run builds nothing, so it says so and goes on.
+    [ "${DISPATCH_DRY:-0}" = 1 ] \
+      || die "the engram label proxy is not on disk at $proxy, and an executor is not launched with an unguarded engram"
+    warn "the engram label proxy is not on disk at $proxy: this dry run shows no proxy, and a launch would refuse"
+    return 0
+  fi
+  case "$AGENT" in
+    claude)
+      f="$(_engram_mcp_claude_file "$label")"
+      if [ "${DISPATCH_DRY:-0}" != 1 ]; then
+        mkdir -p "${f%/*}" \
+          && jq -n --arg p "$proxy" --arg l "$label" --arg e "$eng" \
+               '{mcpServers: {engram: {command: $p, args: ["--label", $l, "--", $e, "mcp", "--tools=agent"]}}}' > "$f.$$" \
+          && mv "$f.$$" "$f" \
+          || die "could not write the engram proxy's --mcp-config at $f"
+      fi
+      AGENT_ARGS="${AGENT_ARGS:+$AGENT_ARGS }--mcp-config $f"
+      ENGRAM_PROXY_LINE="--mcp-config $f" ;;
+    opencode)
+      OPENCODE_ENGRAM_OVERLAY="$(jq -nc --arg p "$proxy" --arg l "$label" --arg e "$eng" \
+        '{mcp: {engram: {type: "local", command: [$p, "--label", $l, "--", $e, "mcp", "--tools=agent"]}}}')" \
+        || die "could not build the engram proxy's OPENCODE_CONFIG_CONTENT overlay (jq failed)"
+      ENGRAM_PROXY_LINE="OPENCODE_CONFIG_CONTENT mcp.engram" ;;
+    codex)
+      AGENT_ARGS="${AGENT_ARGS:+$AGENT_ARGS }-c mcp_servers.engram.command=\"$proxy\" -c mcp_servers.engram.args=[\"--label\",\"$label\",\"--\",\"$eng\",\"mcp\",\"--tools=agent\"]"
+      ENGRAM_PROXY_LINE="-c mcp_servers.engram.*" ;;
+  esac
+  return 0
+}
+# The one OPENCODE_CONFIG_CONTENT an opencode executor gets: the --effort
+# overlay and the engram proxy, deep-merged. Empty when neither applies.
+_opencode_config_content() {
+  [ -n "${OPENCODE_EFFORT_OVERLAY:-}${OPENCODE_ENGRAM_OVERLAY:-}" ] || return 0
+  local a="${OPENCODE_EFFORT_OVERLAY:-}" b="${OPENCODE_ENGRAM_OVERLAY:-}"
+  jq -nc --argjson a "${a:-null}" --argjson b "${b:-null}" '($a // {}) * ($b // {})'
+}
+
 # ── where an executor's claude.ai artifacts may land ────────────────────────
 #
 # MEASURED 2026-09-29, two real Claude Code 2.1.284 sessions asked only for
@@ -5464,14 +5534,12 @@ CRITICAL does not stop the flow.'
 _brief_preamble() {
   # ── two things hw states on every dispatch, because both were forgotten ──
   #
-  # THE ENGRAM LABEL. hw exports ENGRAM_PROJECT and the engram MCP server
-  # OVERRIDES it: a mem_save that does not pass `project` gets a label derived
-  # from the cwd instead. On 2026-08-24 two executors filed
-  # seven observations under `<lane>` while their env said `brain` —
-  # splitting the lane's memory across two labels, against the rule in
-  # <lane>/CLAUDE.md that says the label is `brain` and the other
-  # "holds nothing and never did". An env variable the receiver ignores is not a
-  # setting, so the value goes in the prompt as an instruction.
+  # THE ENGRAM LABEL. On 2026-08-24 two executors filed seven observations
+  # under `<lane>` while their env said `brain`. engram 2.1.0 honours
+  # ENGRAM_PROJECT (process_override, measured 2026-09-30), and what remained
+  # open — an explicit `project` naming another existing label — is refused
+  # by bin/engram-label-proxy (_engram_proxy_args). The line below tells the
+  # executor so, instead of asking it to remember a parameter.
   #
   # THE SPECIALISTS. A brief once asked an executor to ssh into prod and time
   # queries against a third party's database by hand, with
@@ -5527,9 +5595,9 @@ re-tasked after that report, the task counter did not move — add --retask and
 report anyway. A finished task that cannot be reported is the failure; a report
 your brainer has to arbitrate is not.
 
-Save to engram with project: %s — pass it EXPLICITLY on every mem_save; engram
-ignores ENGRAM_PROJECT and, when the call omits it, files your work under your
-cwd, where nobody looks for it.' "$HW_BIN_DIR" "$HW_BIN_DIR" "${BRIEF:-<no brief file>}" "${ENGRAM_PROJECT:-brain}")"
+Save to engram with project: %s — your engram server is the label proxy hw
+launched: omit `project` or pass exactly that; any other value is refused, and
+every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DIR" "$HW_BIN_DIR" "${BRIEF:-<no brief file>}" "${ENGRAM_PROJECT:-brain}")"
   # THE SESSION hw REGISTERED, when it did (_engram_register_session). Naming it
   # makes the save explicit instead of relying on engram selecting it.
   if [ -n "${HW_ENGRAM_SESSION:-}" ]; then
@@ -7203,6 +7271,16 @@ cmd_revive() {
   # a hand-edited one, or a future recorder that changes shape — is not given
   # it twice; `case " $cmd_args "` needs the surrounding spaces so the check is
   # for the whole token, not a substring of some other flag.
+  # The engram proxy is policy too, for codex as for claude below: its resume
+  # records `resume <sid>` only, and `codex resume` takes -c.
+  if [ "$vendor" = codex ]; then
+    case " $AGENT_ARGS " in
+      *" -c mcp_servers.engram."*) ;;
+      *) local rev_cx="$AGENT_ARGS"
+         AGENT_ARGS=""; PROJ="$proj" AGENT=codex _engram_proxy_args
+         AGENT_ARGS="$rev_cx $AGENT_ARGS" ;;
+    esac
+  fi
   if [ "$vendor" = claude ]; then
     case " $cmd_args " in
       *" --dangerously-skip-permissions "*) ;;
@@ -7217,6 +7295,13 @@ cmd_revive() {
         *) AGENT_ARGS="$AGENT_ARGS --plugin-dir $(_brain_guard_claude_plugin)" ;;
       esac
     fi
+    # And its engram label proxy, the same way: policy, not identity.
+    case " $AGENT_ARGS " in
+      *" --mcp-config "*) ;;
+      *) local rev_args="$AGENT_ARGS"
+         AGENT_ARGS=""; PROJ="$proj" AGENT=claude _engram_proxy_args
+         AGENT_ARGS="$rev_args $AGENT_ARGS" ;;
+    esac
     # And its artifact tools, which the recorded `--resume` never carried. The
     # account is the one the revived pane will actually run under: the recorded
     # env's CLAUDE_CONFIG_DIR, read back through the same table. A directory no
@@ -13569,6 +13654,9 @@ cmd_status() {
   HW_ST_ROOTS="$(_status_worktree_roots)" \
   HW_ST_ENGRAM="$(_status_engram_labels)" \
   python3 -
+  # THE LABELS THE PROXY DID NOT HOLD (design §5): read-only, one line, never a
+  # failed status. Nonzero is a finding (3) or an unreadable store (1).
+  python3 "$(_engram_proxy_bin)" --audit 2>&1 || true
 }
 
 # ── main ────────────────────────────────────────────────────────────────────
@@ -14410,6 +14498,7 @@ _check_brief_measured_evidence
 _build_agent_args
 _brain_guard_check
 _brain_guard_args
+_engram_proxy_args
 _artifacts_args
 # BEFORE _check_task and before anything is built. A contradiction between the
 # brief and the flags must cost nothing to discover.
@@ -15113,7 +15202,7 @@ dispatch $PROJ:$TASK  run=$run_label
   workdir     $dir
   invoker     $invoker_line${SANDBOX_LINE:+
   sandbox     $SANDBOX_LINE}
-  engram      $(_engram_label "$PROJ")  (the label of the lane, not of the brainer: --report-to routes reports, never memory)
+  engram      $(_engram_label "$PROJ")  (the label of the lane, not of the brainer: --report-to routes reports, never memory; held by bin/engram-label-proxy via ${ENGRAM_PROXY_LINE:-nothing})
   chaining    $chaining_line
   reuse check $(_reuse_check_field)
 EOF

@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""THE ENGRAM LABEL, HELD WHERE NO VENDOR CAN SKIP IT.
+
+    engram-label-proxy [--label <label>] -- engram mcp --tools=agent
+
+A stdio JSON-RPC proxy between an agent and `engram mcp`. `hw` and `brain`
+launch it as the agent's `engram` MCP server for every vendor, so the rule
+lives in one process instead of one hook per vendor (Codex hooks see only Bash;
+whether OpenCode's plugin sees MCP calls was never established). Design:
+brain/setup/briefs/refs/memoria-engram-design.md, with the three amendments of
+memoria-engram-judgment.md, which win where they collide.
+
+THE LABEL: `--label`, else ENGRAM_PROJECT, else — under the org root (the brain's parent directory) — the
+lane the cwd belongs to in projects.json (longest prefix of brain/<lane>,
+work/<lane>, the lane's checkout and worktree root). The child is started with
+`--project <label>`, which engram 2.1.0 ranks above the environment
+(`process_override`, measured in the design, probe U).
+
+THE RULES, on every `tools/call` of a `mem_*` tool:
+  - a `project` argument other than the label (case-insensitive) is refused.
+    Keyed on the argument, not on a tool list, so a tool engram adds tomorrow
+    is covered the day it appears (amendment 2);
+  - `mem_search` gets `all_projects: true` under the org root, always
+    (amendment 3): the lanes' history is split across labels, and a default
+    search misses most of it (design §0.3);
+  - `mem_merge_projects` and `mem_delete` are refused (design §3.A);
+  - under the org root with no label resolved, every tool but the reads
+    is refused (amendment 3): writing without a label is how the stray labels
+    were born.
+Outside the org root with no label the proxy only relays: that agent is
+outside the frontier (design §1).
+
+A refusal is an MCP tool result with isError, answered by the proxy; the call
+never reaches engram. Everything else is relayed byte for byte.
+"""
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import threading
+
+# The lane table, as lane_config_load finds it: HW_BRAIN_ROOT may name a tree
+# that is only lane data; HW_PROJECTS_JSON overrides the file itself.
+BRAIN = os.path.realpath(os.environ.get("HW_BRAIN_ROOT")
+                         or os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+READS = {"mem_search", "mem_context", "mem_get_observation", "mem_timeline",
+         "mem_stats", "mem_current_project"}
+REFUSED = {"mem_merge_projects", "mem_delete"}
+
+
+def _expand(p, brain, work, checkout=None, lane=None):
+    if not p:
+        return None
+    p = p.replace("{brain}", brain).replace("{work}", work or "")
+    if checkout is not None:
+        p = p.replace("{checkout}", checkout)
+    if lane is not None:
+        p = p.replace("{lane}", lane)
+    if "{" in p:
+        return None
+    return os.path.realpath(os.path.expanduser(p))
+
+
+def org_root(brain):
+    return os.path.realpath(os.environ.get("HW_ORG_ROOT") or os.path.dirname(brain))
+
+
+def label_from_cwd(cwd, brain):
+    """The lane label for cwd, from projects.json; None when nothing matches."""
+    path = os.environ.get("HW_PROJECTS_JSON") or os.path.join(brain, "projects.json")
+    try:
+        with open(path) as fh:
+            table = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    work = _expand(table.get("work", "{brain}/../work"), brain, None)
+    best, best_len = None, -1
+    cwd = os.path.realpath(cwd)
+    for lane, conf in (table.get("lanes") or {}).items():
+        checkout = _expand(conf.get("checkout"), brain, work)
+        roots = [os.path.join(brain, lane), os.path.join(work, lane) if work else None, checkout,
+                 _expand(conf.get("worktree_root"), brain, work, checkout, lane)]
+        for r in roots:
+            if not r:
+                continue
+            r = os.path.realpath(r)
+            if (cwd == r or cwd.startswith(r + os.sep)) and len(r) > best_len:
+                best, best_len = conf.get("engram") or "brain", len(r)
+    return best
+
+
+def under(path, root):
+    path = os.path.realpath(path)
+    return path == root or path.startswith(root + os.sep)
+
+
+def resolve(label_arg, cwd=None, brain=BRAIN):
+    """(label, governed): governed under the org root or inside a lane."""
+    cwd = cwd or os.getcwd()
+    governed = under(cwd, org_root(brain))
+    label = label_arg or os.environ.get("ENGRAM_PROJECT") or None
+    if not label:
+        # A lane checkout may live outside the root.
+        label = label_from_cwd(cwd, brain)
+    return label, governed or bool(label)
+
+
+def verdict(msg, label, governed):
+    """None to relay msg (possibly rewritten in place), or refusal text."""
+    if not isinstance(msg, dict) or msg.get("method") != "tools/call":
+        return None
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        return None
+    name = str(params.get("name") or "")
+    tool = name.rsplit("__", 1)[-1]
+    if not tool.startswith("mem_") or not governed:
+        return None
+    args = params.get("arguments")
+    if not isinstance(args, dict):
+        args = {}
+        params["arguments"] = args
+    if not label and tool not in READS:
+        return ("engram-label-proxy: no engram label resolves for this directory under the "
+                "org root (no ENGRAM_PROJECT, no lane in projects.json), so %s is refused: "
+                "a write without a label invents one. Run from the lane's directory, or through "
+                "hw/brain." % tool)
+    if tool in REFUSED:
+        return ("engram-label-proxy: %s is refused for every brainer and executor; it rewrites "
+                "or removes other agents' memory. It is the operator's to run." % tool)
+    proj = args.get("project")
+    if isinstance(proj, str) and proj.strip() and label and proj.strip().lower() != label.lower():
+        return ("engram-label-proxy: your engram label is `%s`; `project: %s` is refused. "
+                "Omit `project` — the label is already set for this session." % (label, proj))
+    if proj is not None and not isinstance(proj, str):
+        return "engram-label-proxy: `project` must be a string naming `%s`, or omitted." % label
+    if tool == "mem_search":
+        args["all_projects"] = True
+    return None
+
+
+def refusal(msg, text):
+    return {"jsonrpc": "2.0", "id": msg.get("id"),
+            "result": {"content": [{"type": "text", "text": text}], "isError": True}}
+
+
+# THE DETECTION (design §5), for what the proxy does not reach: an agent outside
+# hw/brain, or a vendor that dropped the server. Every live observation since
+# the watermark whose session directory resolves to a lane, filed under a label
+# other than that lane's. Read-only (mode=ro); `hw status` prints its line.
+WATERMARK = "2026-09-30 00:00:00"
+
+
+def audit(argv):
+    since, db = WATERMARK, None
+    while argv:
+        flag, argv = argv[0], argv[1:]
+        if flag in ("--since", "--db") and argv:
+            val, argv = argv[0], argv[1:]
+            if flag == "--since":
+                since = val
+            else:
+                db = val
+        else:
+            sys.stderr.write("usage: engram-label-proxy --audit [--since 'YYYY-MM-DD HH:MM:SS'] [--db engram.db]\n")
+            return 2
+    db = db or os.path.join(os.environ.get("ENGRAM_DATA_DIR", "").strip()
+                            or os.path.join(os.path.expanduser("~"), ".engram"), "engram.db")
+    if not os.path.isfile(db):
+        print("engram labels  NOT CHECKED — no engram store at %s" % db)
+        return 1
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        rows = con.execute(
+            "SELECT o.id, COALESCE(o.project, ''), COALESCE(s.directory, '') FROM observations o "
+            "LEFT JOIN sessions s ON s.id = o.session_id "
+            "WHERE o.deleted_at IS NULL AND o.created_at >= ? ORDER BY o.id", (since,)).fetchall()
+    except sqlite3.Error as e:
+        print("engram labels  NOT CHECKED — %s: %s" % (db, e))
+        return 1
+    cache, seen, bad = {}, 0, []
+    for oid, proj, directory in rows:
+        if not directory:
+            continue
+        if directory not in cache:
+            cache[directory] = label_from_cwd(directory, BRAIN)
+        want = cache[directory]
+        if not want:
+            continue
+        seen += 1
+        if proj.strip().lower() != want.lower():
+            bad.append((oid, proj, want, directory))
+    if not bad:
+        print("engram labels  0 misfiled since %s (%d observations from lane directories)" % (since, seen))
+        return 0
+    print("engram labels  %d MISFILED since %s (of %d from lane directories) — an agent outside the proxy:"
+          % (len(bad), since, seen))
+    for oid, proj, want, directory in bad[:5]:
+        print("               #%s under `%s`, its lane is `%s` (%s)" % (oid, proj or "<none>", want, directory))
+    if len(bad) > 5:
+        print("               … and %d more" % (len(bad) - 5))
+    return 3
+
+
+def main(argv):
+    if argv[:1] == ["--audit"]:
+        return audit(argv[1:])
+    label_arg = None
+    if "--" not in argv:
+        sys.stderr.write("usage: engram-label-proxy [--label <label>] -- engram mcp [args]\n")
+        return 2
+    i = argv.index("--")
+    head, cmd = argv[:i], argv[i + 1:]
+    if head[:1] == ["--label"] and len(head) == 2:
+        label_arg = head[1]
+    elif head:
+        sys.stderr.write("engram-label-proxy: unknown arguments %r\n" % head)
+        return 2
+    if not cmd:
+        sys.stderr.write("engram-label-proxy: no engram command after --\n")
+        return 2
+    label, governed = resolve(label_arg)
+    # Our label replaces any --project already on the command line.
+    clean, skip = [], False
+    for a in cmd:
+        if skip:
+            skip = False
+            continue
+        if a == "--project":
+            skip = True
+            continue
+        if a.startswith("--project="):
+            continue
+        clean.append(a)
+    if label:
+        clean += ["--project", label]
+    env = dict(os.environ)
+    if label:
+        env["ENGRAM_PROJECT"] = label
+    child = subprocess.Popen(clean, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+    out = sys.stdout.buffer
+    lock = threading.Lock()
+
+    def emit(data):
+        with lock:
+            out.write(data)
+            out.flush()
+
+    def relay_out():
+        for line in iter(child.stdout.readline, b""):
+            emit(line)
+
+    t = threading.Thread(target=relay_out, daemon=True)
+    t.start()
+    try:
+        for line in iter(sys.stdin.buffer.readline, b""):
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                child.stdin.write(line)
+                child.stdin.flush()
+                continue
+            batch = msg if isinstance(msg, list) else [msg]
+            keep, answers, changed = [], [], False
+            for m in batch:
+                before = json.dumps(m, sort_keys=True) if isinstance(m, dict) and m.get("method") == "tools/call" else None
+                text = verdict(m, label, governed)
+                if text is not None:
+                    answers.append(refusal(m, text))
+                    changed = True
+                    continue
+                if before is not None and json.dumps(m, sort_keys=True) != before:
+                    changed = True
+                keep.append(m)
+            for a in answers:
+                emit((json.dumps(a) + "\n").encode())
+            if keep:
+                data = line if not changed else (json.dumps(keep if isinstance(msg, list) else keep[0]) + "\n").encode()
+                child.stdin.write(data)
+                child.stdin.flush()
+    except BrokenPipeError:
+        pass
+    try:
+        child.stdin.close()
+    except OSError:
+        pass
+    rc = child.wait()
+    t.join(timeout=5)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

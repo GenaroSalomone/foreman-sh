@@ -1,12 +1,15 @@
-# foreman-sh 0.1.1
+# foreman-sh 0.1.2
 
-**A guard fix.** A command built from thousands of nested `env` wrappers could
-keep the repository guards busy long enough for the agent's hook to time out,
-and a hook that times out does not block. The guards now stop after a fixed
-amount of work and refuse the command: a 5.6 KB chain that took 18 seconds is
-refused in 0.04 seconds, and a 50 KB one in 0.1 seconds.
+**Memory that stays in its lane.** `hw` and `brain` now start engram through a
+small proxy that holds the lane's memory label. A save that names another
+label is refused with a message that says which label is set, a save that
+names none lands in the lane's, and every search spans all labels, so nothing
+saved under an older label goes missing. The proxy adds about 0.05 ms per call.
 
-## Upgrading from 0.1.0
+Also in this release: `hw status` names observations saved under the wrong
+label, and a release cut runs its seconds-long checks before the test suite.
+
+## Upgrading from 0.1.1
 
 Update your checkout and run `install.sh` again with the arguments you
 installed with. Nothing else needs to change.

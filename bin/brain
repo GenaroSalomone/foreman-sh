@@ -1096,6 +1096,19 @@ account_flag=""
 account_flag="$(brain_account_env "$proj" "$kind")" || exit 1
 brain_acct_dir="${account_flag#CLAUDE_CONFIG_DIR=}"
 workspace_env=(--env "ENGRAM_PROJECT=$ENGRAM_LABEL")
+# THE BRAINER'S ENGRAM GOES THROUGH THE LABEL PROXY, as an executor's does
+# (bin/engram-label-proxy; hw's _engram_proxy_args carries the per-vendor
+# measurements). The lane's .mcp.json stays as it is: claude's --mcp-config
+# wins over it (measured 2026-09-30), and opencode takes the same server from
+# OPENCODE_CONFIG_CONTENT, which is read when the pane is created — a reset
+# keeps the one the tab was opened with.
+ENGRAM_PROXY="$BRAIN_BIN/engram-label-proxy"
+[ -x "$ENGRAM_PROXY" ] || { echo "brain: the engram label proxy is not on disk at $ENGRAM_PROXY; a brainer is not opened with an unguarded engram" >&2; exit 1; }
+ENGRAM_MCP_BIN="$(command -v engram 2>/dev/null || printf 'engram')"
+if [ "$kind" = opencode ]; then
+  workspace_env+=(--env "OPENCODE_CONFIG_CONTENT=$(jq -nc --arg p "$ENGRAM_PROXY" --arg l "$ENGRAM_LABEL" --arg e "$ENGRAM_MCP_BIN" \
+    '{mcp: {engram: {type: "local", command: [$p, "--label", $l, "--", $e, "mcp", "--tools=agent"]}}}')")
+fi
 [ -z "$BRAIN_ENGRAM_SESSION" ] || workspace_env+=(--env "BRAIN_ENGRAM_SESSION=$BRAIN_ENGRAM_SESSION")
 [ -z "$account_flag" ] || workspace_env+=(--env "$account_flag")
 [ "$kind" != opencode ] || workspace_env+=(--env "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
@@ -1180,7 +1193,13 @@ else
   # bypass mode is read at startup, needs two other keys nothing reports on, and
   # a session already running never re-reads it. A brainer that opens in manual
   # mode asks permission for its own `rg`, so the flag goes on the launch.
-  agent_args=(-- --dangerously-skip-permissions)
+  engram_mcp_file="${XDG_CACHE_HOME:-$HOME/.cache}/hw/engram-mcp-$ENGRAM_LABEL.json"
+  mkdir -p "${engram_mcp_file%/*}" \
+    && jq -n --arg p "$ENGRAM_PROXY" --arg l "$ENGRAM_LABEL" --arg e "$ENGRAM_MCP_BIN" \
+         '{mcpServers: {engram: {command: $p, args: ["--label", $l, "--", $e, "mcp", "--tools=agent"]}}}' > "$engram_mcp_file.$$" \
+    && mv "$engram_mcp_file.$$" "$engram_mcp_file" \
+    || { echo "brain: could not write the engram proxy's --mcp-config at $engram_mcp_file" >&2; exit 1; }
+  agent_args=(-- --dangerously-skip-permissions --mcp-config "$engram_mcp_file")
 fi
 while [ "$tries" -lt 15 ]; do
   # `${a[@]+"${a[@]}"}`, NOT `"${a[@]}"`. macOS ships bash 3.2 and under `set -u`

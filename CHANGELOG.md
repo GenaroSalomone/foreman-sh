@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.1.1] — 2026-09-30
+
+### Fixed
+- The repository guards (Python, JavaScript and Codex) unwrap nested `env`
+  wrappers on a fixed work budget and refuse the command when it runs out,
+  instead of taking time that grew with the cube of the nesting. A hook that
+  timed out did not block.
+
 ## [0.1.0] — 2026-09-30
 
 First stable release.

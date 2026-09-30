@@ -180,12 +180,10 @@ it leaves the brain directory, is unguarded even with the hook registered.
     `~/Code/MyApp` is refused like `~/code/myapp`. A protected root that does
     not exist yet has no identity to compare, and a different-case spelling of
     it is compared as text only.
-  - Nested `env` wrappers: the guards unwrap each `env` and its options before
-    judging the command, and that unwrapping grows steeply with nesting. A
-    command of about 5.6 KB built from chained `env` wrappers takes the guard
-    18 seconds (`measured`); a much larger one could outlast the agent's hook
-    timeout, and a hook that times out does not block. No ordinary command
-    comes near this size.
+  - Very long commands: the guards stop unwrapping nested `env` wrappers after
+    a fixed amount of work and refuse the command. A quoted command of about
+    50 KB still takes the guard about 9 seconds to read (`measured`), well
+    inside the hook timeout.
 - **Evidence:** the shell and write-tool paths for Claude Code and OpenCode are
   `measured` by conformance and mutation tests plus live refusals; the Codex
   write-tool gap is `measured` as absent; the trust-hash behaviour is

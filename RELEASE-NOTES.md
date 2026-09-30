@@ -1,32 +1,12 @@
-# foreman-sh 0.1.0
+# foreman-sh 0.1.1
 
-**The first stable release.** It follows four release candidates and fixes
-what a clean install of the last one found. What it does not do, or does only
-partly, is listed in [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md).
+**A guard fix.** A command built from thousands of nested `env` wrappers could
+keep the repository guards busy long enough for the agent's hook to time out,
+and a hook that times out does not block. The guards now stop after a fixed
+amount of work and refuse the command: a 5.6 KB chain that took 18 seconds is
+refused in 0.04 seconds, and a 50 KB one in 0.1 seconds.
 
-## What changed since 0.1.0-rc.4
-
-- **The first run tells you what to do.** `install.sh --check` says to answer
-  `y` to engram's allowlist question, and lists adding `~/.local/bin` to your
-  `PATH` as a step in order instead of a warning. `brain` waits for engram's
-  server before registering the session, and the server no longer prints an
-  error on first use. An executor without Judgment Day reports it as
-  "not installed (optional)", not as escalated.
-- **The guards close more spellings.** `env -u NAME`, `env -i` and the other
-  `env` options no longer hide a write into a protected repository, and a
-  quoting trick that got a write past the Python and JavaScript guards is
-  refused.
-- **The public CI is green** on Linux and macOS, and on Windows (Git Bash)
-  with its time budgets scaled for a shared runner.
-- **The README was rewritten**: requirements first, a table of concepts, every
-  command checked against `hw help all`, and a dated comparison with similar
-  tools. `BRIEF-TEMPLATE.md` no longer carries a section written for one of
-  the maintainer's own projects.
-- **Faster to work on.** The full suite runs in about 8 minutes instead of 30,
-  only one full suite runs per machine at a time, and the pre-commit hook runs
-  only the tests a commit touches.
-
-## Upgrading from 0.1.0-rc.4
+## Upgrading from 0.1.0
 
 Update your checkout and run `install.sh` again with the arguments you
 installed with. Nothing else needs to change.

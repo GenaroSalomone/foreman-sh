@@ -1581,27 +1581,58 @@ function quoteSpans(text) {
   return spans;
 }
 
-function unwrapEnvOnce(text) {
+// The unwrap runs on a budget, and running out of it denies — see
+// `_ENV_BUDGET` in the Python half, whose charges these mirror one for one.
+const ENV_BUDGET = 1_000_000;
+
+class EnvBudgetSpent extends Error {}
+
+function spend(budget, cost) {
+  budget.left -= cost;
+  if (budget.left < 0) throw new EnvBudgetSpent();
+}
+
+function dashCBefore(text, a) {
+  let j = a;
+  while (j > 0 && /\s/.test(text[j - 1])) j -= 1;
+  return j >= 2 && text.slice(j - 2, j) === "-c";
+}
+
+const EVAL_WORD = /(?<![\w.-])eval\s/;
+
+function unwrapEnvOnce(text, budget) {
+  spend(budget, text.length);
   let spans = quoteSpans(text);
   if (spans === null) return text;
+  // `eval` as a word of its own followed by blank — see the Python half.
+  const firstEval = text.search(EVAL_WORD);
   for (const [a, b] of [...spans].reverse()) {
-    if (SHELL_DASH_C.test(text.slice(0, a)) || EVAL_ARGS.test(text.slice(0, a))) {
-      text = text.slice(0, a + 1) + unwrapEnv(text.slice(a + 1, b)) + text.slice(b);
+    const dashC = dashCBefore(text, a);
+    if (!dashC && !(firstEval >= 0 && firstEval < a)) continue;
+    spend(budget, 2 * a);
+    if ((dashC && SHELL_DASH_C.test(text.slice(0, a))) || EVAL_ARGS.test(text.slice(0, a))) {
+      text = text.slice(0, a + 1) + unwrapEnv(text.slice(a + 1, b), budget) + text.slice(b);
     }
   }
+  spend(budget, 3 * text.length);
   spans = quoteSpans(text) ?? [];
   // Sliced by UTF-16 index, the unit quoteSpans and every regex index use: a
-  // code-point array (`[...text]`) shifted by one per astral character.
-  let flat = text;
-  for (const [a, b] of spans) flat = flat.slice(0, a) + "x".repeat(b + 1 - a) + flat.slice(b + 1);
+  // code-point array (`[...text]`) shifted by one per astral character. Built
+  // in one walk: re-slicing the whole string per span was O(n^2) of its own.
+  const parts = [];
+  let from = 0;
+  for (const [a, b] of spans) { parts.push(text.slice(from, a), "x".repeat(b + 1 - a)); from = b + 1; }
+  parts.push(text.slice(from));
+  const flat = parts.join("");
+  const ends = [...flat.matchAll(ENV_BOUNDARY)].map((bm) => bm.index + bm[0].length);
+  let nb = 0, cut = 0;
   const out = [];
   let last = 0;
   for (const m of flat.matchAll(ENV_AT)) {
     if (m.index < last) continue;
-    const prefix = flat.slice(0, m.index);
-    let cut = 0;
-    for (const bm of prefix.matchAll(ENV_BOUNDARY)) cut = bm.index + bm[0].length;
-    if (!CMD_PREFIX_ALLOWED.test(prefix.slice(cut))) continue;
+    while (nb < ends.length && ends[nb] <= m.index) { cut = ends[nb]; nb += 1; }
+    spend(budget, m.index - cut + 1);
+    if (!CMD_PREFIX_ALLOWED.test(flat.slice(cut, m.index))) continue;
     let i = m.index + m[0].length;
     const n = text.length, chdir = [], assigns = [];
     let split = null, touched = false;
@@ -1662,9 +1693,10 @@ function unwrapEnvOnce(text) {
 
 // Only an `env` OUTSIDE every quoted string is rewritten (inside a `-c` script,
 // only within it), repeated until nothing changes — see `_unwrap_env`.
-export function unwrapEnv(text) {
+// Throws EnvBudgetSpent past ENV_BUDGET, which decideReading denies.
+export function unwrapEnv(text, budget = { left: ENV_BUDGET }) {
   for (let pass = 0; pass <= text.length; pass += 1) {
-    const next = unwrapEnvOnce(text);
+    const next = unwrapEnvOnce(text, budget);
     if (next === text) break;
     text = next;
   }
@@ -1702,7 +1734,18 @@ function decideReading(lane, command, cwd, unwrap) {
   // Unwrapped AFTER the heredoc strip — see the Python half.
   let noHeredoc = stripHeredocBodies(probe);
   if (unwrap) {
-    const unwrapped = unwrapEnv(noHeredoc);
+    let unwrapped;
+    try {
+      unwrapped = unwrapEnv(noHeredoc);
+    } catch (e) {
+      if (!(e instanceof EnvBudgetSpent)) throw e;
+      return { rule: "env", reason:
+        "Blocked: this command chains or nests `env` too deeply "
+        + "for the guard to read it within its time budget. A hook "
+        + "that runs out of time does not block, so a command the "
+        + "guard cannot finish reading is refused rather than "
+        + "allowed. Drop the `env` wrappers, or split the command." };
+    }
     if (unwrapped === noHeredoc) return null;
     noHeredoc = unwrapped;
   }

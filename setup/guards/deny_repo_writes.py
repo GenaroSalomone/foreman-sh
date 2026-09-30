@@ -1906,8 +1906,40 @@ def _quote_spans(text):
     return spans
 
 
-def _unwrap_env_once(text):
+# THE UNWRAP RUNS ON A BUDGET, AND RUNNING OUT OF IT DENIES. Each pass used to
+# rescan the whole prefix for every `env` it met, and a chain of n `env -i`
+# takes about n passes: O(n^3), 18 s for 800 levels in 5.6 KB (Judgment Day,
+# 2026-09-30), hours for 50 KB. A hook that times out does not block — the
+# guard fails OPEN — so a command it cannot finish reading is refused instead.
+# The budget counts characters scanned, charged before each scan; the boundary
+# walk is incremental, so an ordinary command spends a few times its length.
+_ENV_BUDGET = 1_000_000
+
+
+class _EnvBudgetSpent(Exception):
+    """The env unwrap ran out of `_ENV_BUDGET`; `_decide` turns it into a deny."""
+
+
+def _spend(budget, cost):
+    budget[0] -= cost
+    if budget[0] < 0:
+        raise _EnvBudgetSpent()
+
+
+def _dash_c_before(text, a):
+    """Cheap precheck for `_SHELL_DASH_C` at `a`: text[:a] ends in `-c\\s*`."""
+    j = a
+    while j > 0 and text[j - 1].isspace():
+        j -= 1
+    return j >= 2 and text[j - 2:j] == "-c"
+
+
+_EVAL_WORD = re.compile(r"(?<![\w.-])eval\s")
+
+
+def _unwrap_env_once(text, budget):
     """One pass of `_unwrap_env`; see there."""
+    _spend(budget, len(text))
     spans = _quote_spans(text)
     if spans is None:
         # An unterminated quote leaves the extent of every word unknown, and a
@@ -1917,10 +1949,22 @@ def _unwrap_env_once(text):
     # A `-c` script or an `eval` word is code (the masker keeps both visible):
     # its own envs are rewritten inside it, and only inside it. Every other
     # quoted string is data and is not touched.
+    # Right to left, so text[:a] is never the part a rewrite changed. Each
+    # regex search reads the whole of text[:a], so it is prechecked and charged.
+    # `eval` as _EVAL_ARGS spells it: a word of its own (a path may end in it)
+    # followed by blank. A bare substring let `retrieval`, `evaluate` or a
+    # path `/x/eval/` charge every later span (Judgment Day, 2026-09-30).
+    first_eval = _EVAL_WORD.search(text)
+    first_eval = first_eval.start() if first_eval else -1
     for a, b in reversed(spans):
-        if _SHELL_DASH_C.search(text[:a]) or _EVAL_ARGS.search(text[:a]):
+        dash_c = _dash_c_before(text, a)
+        if not dash_c and not 0 <= first_eval < a:
+            continue
+        _spend(budget, 2 * a)
+        if (dash_c and _SHELL_DASH_C.search(text[:a])) or _EVAL_ARGS.search(text[:a]):
             inner = text[a + 1:b]
-            text = text[:a + 1] + _unwrap_env(inner) + text[b:]
+            text = text[:a + 1] + _unwrap_env(inner, budget) + text[b:]
+    _spend(budget, 3 * len(text))
     spans = _quote_spans(text) or []
     # Command position is judged with every quoted string flattened to one
     # word, so a quote before `env` is a word of some other command (`echo "a"
@@ -1929,15 +1973,22 @@ def _unwrap_env_once(text):
     for a, b in spans:
         flat[a:b + 1] = "x" * (b + 1 - a)
     flat = "".join(flat)
+    # The last boundary before each `env`, found by walking one list forward
+    # rather than rescanning the prefix for every `env` (that rescan was the
+    # O(n^2) inside each pass).
+    # `nb`, not `k`: the option loop below binds `k` too, and in Python that
+    # shared the walk's index — reset after every short option, the walk went
+    # back to the start for each `env`, uncharged: 25 s for 200 KB of `env -i
+    # ;` (Judgment Day, 2026-09-30).
+    ends, nb, cut = [bm.end() for bm in _ENV_BOUNDARY.finditer(flat)], 0, 0
     out, last = [], 0
     for m in _ENV_AT.finditer(flat):
         if m.start() < last:
             continue
-        prefix = flat[:m.start()]
-        cut = 0
-        for bm in _ENV_BOUNDARY.finditer(prefix):
-            cut = bm.end()
-        if not _CMD_PREFIX_ALLOWED.match(prefix[cut:]):
+        while nb < len(ends) and ends[nb] <= m.start():
+            cut, nb = ends[nb], nb + 1
+        _spend(budget, m.start() - cut + 1)
+        if not _CMD_PREFIX_ALLOWED.match(flat[cut:m.start()]):
             continue
         i, n = m.end(), len(text)
         chdir, split, assigns, touched = [], None, [], False
@@ -2003,7 +2054,7 @@ def _unwrap_env_once(text):
     return "".join(out)
 
 
-def _unwrap_env(text):
+def _unwrap_env(text, budget=None):
     """`text` with every command-position `env`'s options rewritten away.
 
     Only an `env` OUTSIDE every quoted string is rewritten (inside a `-c`
@@ -2019,9 +2070,13 @@ def _unwrap_env(text):
     there). A rewrite that misread a word can therefore never lose a denial
     the command as written already earned — the failure both rounds of that
     Judgment Day found, in a different spelling each time.
+
+    RAISES `_EnvBudgetSpent` past `_ENV_BUDGET` (one budget across every pass
+    and every `-c` script it recurses into), which `_decide` denies.
     """
+    budget = [_ENV_BUDGET] if budget is None else budget
     for _ in range(len(text) + 1):
-        new = _unwrap_env_once(text)
+        new = _unwrap_env_once(text, budget)
         if new == text:
             break
         text = new
@@ -2073,7 +2128,15 @@ def _decide(cfg, command, cwd, unwrap):
     # itself stays as written for the two allow-exceptions below.
     no_heredoc = _strip_heredoc_bodies(probe)
     if unwrap:
-        unwrapped = _unwrap_env(no_heredoc)
+        try:
+            unwrapped = _unwrap_env(no_heredoc)
+        except _EnvBudgetSpent:
+            return ("env",
+                    "Blocked: this command chains or nests `env` too deeply "
+                    "for the guard to read it within its time budget. A hook "
+                    "that runs out of time does not block, so a command the "
+                    "guard cannot finish reading is refused rather than "
+                    "allowed. Drop the `env` wrappers, or split the command.")
         if unwrapped == no_heredoc:
             return None
         no_heredoc = unwrapped

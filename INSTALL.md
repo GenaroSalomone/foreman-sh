@@ -86,7 +86,15 @@ and it would add a second registration where the plugin already provides one.
 
 ## The command
 
-From the checkout the README's Quickstart clones:
+One line, on a machine without the repository. It clones the latest published
+release tag into a temporary directory, runs that `install.sh` with your
+arguments and removes the directory (`git` and `curl` are required):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp
+```
+
+Or from a checkout, as the README's Quickstart shows:
 
 ```sh
 ./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp

@@ -34,19 +34,22 @@ reason on stderr — the shape `block-keychain-secret-read.py` already uses on
 this machine. Emitting Claude's JSON here would print a blob and allow the
 command.
 
-WHAT THIS DOES NOT COVER, stated rather than implied. Only `Bash`. The Claude
-guard is two halves — this hook for Bash, and each lane's `permissions.deny`
-list for `Edit()`/`Write()` — and Codex has no equivalent of the second half:
-`approval_policy = "never"` means there is no deny list to put it in. A Codex
-write through its own patch/write tool is therefore STILL UNGUARDED. Closing
-that needs Codex's write-tool payload shape, which cannot be established from
-here: a first Codex launch stops on two dialogs a brief cannot answer (see
-`bin/hw` `_codex_startup_ready`), so the shape has to be captured by a human
-session. It is a separate, named piece of work, not something to guess at.
+THE PATCH TOOL IS GUARDED TOO (captured 2026-10-01, codex-cli 0.153.4, with a
+logging PreToolUse hook in a throwaway `CODEX_HOME`): Codex sends `apply_patch`
+through PreToolUse as
+
+    {"tool_name": "apply_patch", "tool_input": {"command": "*** Begin Patch\n*** Add File: <path>\n+hi\n*** End Patch"}, "cwd": ...}
+
+so the targets are the `*** Add File:`, `*** Update File:`, `*** Delete File:`
+and `*** Move to:` headers. A patch that lands one inside a protected tree is
+refused with exit 2, in the spellings the tests drive (indented header, `~`, `..`, relative to
+the payload cwd; symlinks through the shared module). The hook only sees it where `~/.codex/hooks.json` registers a
+matcher for it (`apply_patch`, with `Edit`/`Write` as aliases of the same tool).
 """
 import json
 import os
 import pathlib
+import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -180,6 +183,46 @@ def shell_cwd(payload):
         return ""
 
 
+# Codex trims each line before reading a header, so an indented one is applied
+# (measured 2026-10-01: " *** Add File: x" created x); leading blanks must match.
+PATCH_HEADER = re.compile(r"^[^\S\n]*\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$", re.M)
+
+
+def patch_targets(patch, cwd):
+    """Absolute paths every header of an `apply_patch` names.
+
+    A `~` path yields BOTH readings, `$HOME/..` and the literal `~` joined to the
+    cwd, since which one Codex applies is not established here: both are checked.
+    """
+    from deny_repo_writes import _join  # lazily: only a patch needs it
+    out = []
+    for raw in PATCH_HEADER.findall(patch):
+        spellings = [raw]
+        if raw.startswith("~"):
+            spellings.insert(0, os.path.expanduser(raw))
+        for path in spellings:
+            if not _is_abs(path):
+                path = _join(cwd, path) if cwd else path
+            out.append((raw, path))
+    return out
+
+
+def decide_patch(cfg, patch, cwd):
+    """None to allow, or (rule, reason): the Bash answer for a write, per target.
+
+    A write into a protected tree is refused whoever's tool performs it, so this
+    asks the shared module's own boundary question of each header's path.
+    """
+    from deny_repo_writes import _inside_any
+    for raw, path in patch_targets(patch, cwd):
+        if _inside_any(cfg, path):
+            return ("patch",
+                    "Blocked: this patch writes %s (written as `%s`), inside %s. "
+                    "The brainer is read-only there; the same write through Bash "
+                    "is refused too." % (path, raw, cfg["where"]))
+    return None
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -198,13 +241,21 @@ def main():
     if not isinstance(payload, dict):
         malformed = "a payload that is not a JSON object (%s)" % type(payload).__name__
         payload = {}
-    elif payload.get("tool_name") != "Bash":
+    elif payload.get("tool_name") not in ("Bash", "apply_patch"):
         sys.exit(0)
     elif not isinstance(payload.get("tool_input"), dict):
-        malformed = ("a Bash call whose tool_input is not an object (%s)"
-                     % type(payload.get("tool_input")).__name__)
+        malformed = ("a %s call whose tool_input is not an object (%s)"
+                     % (payload.get("tool_name"), type(payload.get("tool_input")).__name__))
+    elif not isinstance(payload["tool_input"].get("command", ""), (str, type(None))):
+        malformed = ("a %s call whose command is not a string (%s)"
+                     % (payload.get("tool_name"), type(payload["tool_input"]["command"]).__name__))
 
+    is_patch = not malformed and payload.get("tool_name") == "apply_patch"
     command = "" if malformed else (payload["tool_input"].get("command", "") or "")
+    if is_patch and not command:
+        # A patch whose text is not under `command` is a payload shape this guard
+        # cannot read; a brainer refuses it rather than let every patch through.
+        malformed = "an apply_patch call with no patch text in tool_input.command"
     if not command and not malformed:
         sys.exit(0)
 
@@ -277,7 +328,10 @@ def main():
     # command ran, unguarded, exactly when the guard had reached no verdict. Only
     # exit 2 blocks. (The lane is already known, so an executor is never reached.)
     try:
-        verdict = decide(config(lane), command, shell_cwd(payload))
+        if is_patch:
+            verdict = decide_patch(config(lane), command, shell_cwd(payload))
+        else:
+            verdict = decide(config(lane), command, shell_cwd(payload))
     except Exception as exc:  # noqa: BLE001 — ANY failure while deciding must refuse
         print(
             "BLOCKED by deny-repo-writes (codex, lane=%s): the guard CRASHED while "

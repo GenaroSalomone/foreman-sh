@@ -29,6 +29,8 @@
 #
 # Run alone while working on this subject:
 #     bash setup/tests/131-a-subject-that-does-not-parse-did-not-pass.sh
+# suite-timing: retry-once — its nested runner refuses a fixture that overran its time budget; measured 2026-09-30:
+#   red under load 11-13 from other lanes, green alone.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # ── a fixture that really is broken ─────────────────────────────────────────

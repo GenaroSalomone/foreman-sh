@@ -4,6 +4,29 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.1.3] — 2026-10-01
+
+### Added
+- `install.sh` runs when piped from curl: it clones the last published `v*` tag
+  into a temporary directory and continues from there with the same flags. A
+  missing `git` or `curl`, or a repository with no published tag, stops it
+  with exit 1. `--check` still writes nothing.
+- Through a pipe, `install.sh` asks a new lane's questions on `/dev/tty`. With
+  no terminal, or under `--check`, it prints one line naming the defaults it
+  used and the flags that change them.
+- `done-invoker` prints `reported — verifying before close: <command>` when it
+  runs the brief's verification after the report is delivered.
+
+### Changed
+- `hw done --force` and the close after a `done-invoker --blocked` report skip
+  the brief's verification and record `verify_run skipped` in the receipt.
+
+### Fixed
+- The Codex repository guard reads `apply_patch` calls: a patch whose file
+  headers land in a protected tree is refused with exit 2, as a Bash write
+  already was. Codex calls the guard for patches only once `~/.codex/hooks.json`
+  has an `apply_patch` matcher for it; the installer does not set up Codex.
+
 ## [0.1.2] — 2026-09-30
 
 ### Added

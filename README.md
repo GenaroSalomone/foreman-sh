@@ -85,11 +85,22 @@ two more tools are optional:
 ## Quickstart
 
 ```sh
-git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
-./install.sh --brain ~/brain --check                            # checks everything, writes nothing
-./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
+curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --check   # checks everything, writes nothing
+curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
 export PATH="$HOME/.local/bin:$PATH"                            # puts hw and brain on your PATH
 brain myapp                                                     # opens the brainer
+```
+
+Piped like this, `install.sh` clones the latest published release tag (not
+`main`) into a temporary directory, runs it with your arguments and removes it.
+It needs `git` and `curl`, and says so when one is missing.
+
+Prefer to read the installer first? Clone the repository and run it from there:
+
+```sh
+git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
+./install.sh --brain ~/brain --check
+./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp
 ```
 
 `--check` lists everything that is missing, in order, and ends with the next

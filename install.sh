@@ -8,7 +8,7 @@
 #   ./install.sh --brain ~/brain --with-judgment-day                # also activate Judgment Day
 #
 # In a terminal, a NEW lane is asked what it would otherwise leave at a generic
-# value (--operator, --min-model, --requested-by), default shown; with no terminal,
+# value (--operator, --min-model, --requested-by), default shown; with no terminal at all,
 # or with all three given as options, nothing is asked.
 #
 # WHAT IT WRITES, AND NOTHING ELSE:
@@ -40,6 +40,32 @@
 # The design, what it rules out and what would reverse it:
 # setup/decisions.md, "Etapa 4: el instalador".
 set -euo pipefail
+# NOT RUN FROM A CHECKOUT (`curl -fsSL …/install.sh | bash -s -- --brain ~/brain`):
+# there is no bin/ beside this file, so fetch the LAST PUBLISHED TAG (never main)
+# into a temporary directory, run that checkout's install.sh with the same
+# arguments, and remove the directory. Everything the installer needs is copied
+# into the brain, so nothing points back at the temporary checkout.
+# FOREMAN_SH_REPO overrides the repository URL (the tests serve a local one).
+_self="${BASH_SOURCE[0]:-}"
+if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
+  _repo="${FOREMAN_SH_REPO:-https://github.com/GenaroSalomone/foreman-sh}"
+  for _need in git curl; do
+    command -v "$_need" >/dev/null 2>&1 || { printf 'install: %s is required to fetch foreman-sh and was not found on PATH\n' "$_need" >&2; exit 1; }
+  done
+  _refs="$(git ls-remote --tags --refs "$_repo" 'v*' 2>/dev/null)" || { printf 'install: cannot list the tags of %s\n' "$_repo" >&2; exit 1; }
+  # a release tag is vMAJOR.MINOR.PATCH; a pre-release (-rc.1) is only taken when no release exists
+  _tags="$(printf '%s\n' "$_refs" | sed -n 's|.*refs/tags/||p')"
+  _tag="$(printf '%s\n' "$_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)" || true
+  [ -n "$_tag" ] || _tag="$(printf '%s\n' "$_tags" | grep -E '^v[0-9]' | sort -V | tail -1)" || true
+  [ -n "$_tag" ] || { printf 'install: %s has no published v* tag\n' "$_repo" >&2; exit 1; }
+  _tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman-sh.XXXXXX")" || { printf 'install: cannot create a temporary directory\n' >&2; exit 1; }
+  trap 'rm -rf "$_tmp"' EXIT
+  printf 'install: fetching foreman-sh %s\n' "$_tag" >&2
+  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$_tag" "$_repo" "$_tmp/foreman-sh" >&2 || { printf 'install: cannot clone %s at %s\n' "$_repo" "$_tag" >&2; exit 1; }
+  _rc=0
+  FOREMAN_SH_INSTALLED_FROM="$_repo" bash "$_tmp/foreman-sh/install.sh" "$@" || _rc=$?
+  exit "$_rc"
+fi
 # NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
 # file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
 # and asks msys for real symlinks. Elsewhere OSTYPE never matches.
@@ -53,6 +79,10 @@ BIN_DIR_OUT="${HOME}/.local/bin"
 CLAUDE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 LINKS=(hw brain done-invoker ask-invoker channel-send decisions)
 MARKER=".brain-install.json"
+# How a hint tells the person to run this installer again: piped, there is no
+# ./install.sh to run (the temporary checkout is gone), so the hint is the pipe.
+INSTALL_CMD="./install.sh"
+[ -z "${FOREMAN_SH_INSTALLED_FROM:-}" ] || INSTALL_CMD="curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s --"
 # The oldest OpenCode this harness has been MEASURED against (INSTALL.md). Not
 # a guess at compatibility: an older one may work, and nothing here has shown it.
 OPENCODE_MIN="1.18.31"
@@ -89,8 +119,8 @@ usage: install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor
   -V, --version   print the version (the tag this checkout sits on, else its short sha)
   -h, --help      this text
 
-With a terminal, a new lane is asked for each of --operator, --min-model and
---requested-by that was not given; without one nothing is asked. A lane that
+With a terminal (stdin, or /dev/tty under `curl | bash`), a new lane is asked for each of --operator, --min-model and
+--requested-by that was not given; without one nothing is asked and the defaults used are printed. A lane that
 exists keeps what its row says; an explicit value that differs is refused.
 
 The Claude Code settings merged are $CLAUDE_CONFIG_DIR/settings.json when that
@@ -204,7 +234,7 @@ ask() {  # <var> <prompt> <default label> <validator> — an empty answer keeps 
   local var="$1" q="$2" def="$3" ok="$4" ans
   while :; do
     printf '  %s [%s]: ' "$q" "$def" >&2
-    IFS= read -r ans || { printf '\n' >&2; return 0; }
+    IFS= read -r ans <&"$ASK_FD" || { printf '\n' >&2; return 0; }
     [ -n "$ans" ] || return 0
     if "$ok" "$ans"; then printf -v "$var" '%s' "$ans"; return 0; fi
     printf '  not valid — try again, or press Enter for the default\n' >&2
@@ -212,11 +242,28 @@ ask() {  # <var> <prompt> <default label> <validator> — an empty answer keeps 
 }
 is_tier()  { case "$1" in haiku|sonnet|opus|none) return 0 ;; esac; return 1; }
 is_reqby() { case "$1" in required|warn|none) return 0 ;; esac; return 1; }
+# The answers come from the terminal even when stdin is the script (`curl … | bash`):
+# stdin if it is one, else /dev/tty if it opens. No terminal at all asks nothing and
+# says which defaults were used.
+ASK_FD=
+open_terminal() {
+  if [ -t 0 ]; then exec 3<&0; ASK_FD=3
+  elif ( : </dev/tty ) 2>/dev/null; then exec 3</dev/tty; ASK_FD=3
+  else return 1; fi
+}
 ask_new_lane() {
-  [ "$CHECK" = 0 ] && [ -t 0 ] && [ -t 1 ] && [ -n "$LANE" ] && [ "$ROW_EXISTS" != 1 ] || return 0
+  [ -n "$LANE" ] && [ "$ROW_EXISTS" != 1 ] || return 0
   local need_op=0
   [ -n "$OPERATOR" ] || [ -n "$ROW_OPERATOR" ] || need_op=1
   [ "$need_op" = 1 ] || [ -z "$MIN_MODEL" ] || [ -z "$REQ_BY" ] || return 0
+  if ! { [ "$CHECK" = 0 ] && [ -t 1 ] && open_terminal; }; then
+    local used=""
+    [ "$need_op" = 0 ] || used="$used operator=\"the operator\" (--operator NAME)"
+    [ -n "$MIN_MODEL" ] || used="$used min-model=none (--min-model haiku|sonnet|opus)"
+    [ -n "$REQ_BY" ] || used="$used request-rule=none (--requested-by required|warn)"
+    printf 'lane %s: not asking (no terminal, or --check), defaults used:%s\n' "$LANE" "$used" >&2
+    return 0
+  fi
   printf '\nlane %s: what only you can say (Enter keeps the default shown)\n' "$LANE" >&2
   [ "$need_op" = 0 ] || ask OPERATOR "your name, as hw's messages say it" "the operator" valid_operator
   [ -n "$MIN_MODEL" ] || ask MIN_MODEL "lowest Claude tier its executors may run without a reason (haiku, sonnet, opus)" "none" is_tier
@@ -307,8 +354,8 @@ jd_report() {
   case "$JD_STATE" in
     absent)   say "WARN  this checkout ships no Judgment Day (_skills/judgment-day, _agents/jd-*.md)" ;;
     active)   ok "Judgment Day is active in $CLAUDE_CFG (skills/judgment-day, agents/jd-*.md)" ;;
-    off)      say "Judgment Day is not active — optional review by two blind judges; activate with: ./install.sh --brain $BRAIN_DIR --with-judgment-day" ;;
-    partial)  say "Judgment Day is only partly active in $CLAUDE_CFG — ./install.sh --brain $BRAIN_DIR --with-judgment-day completes it" ;;
+    off)      say "Judgment Day is not active — optional review by two blind judges; activate with: $INSTALL_CMD --brain $BRAIN_DIR --with-judgment-day" ;;
+    partial)  say "Judgment Day is only partly active in $CLAUDE_CFG — $INSTALL_CMD --brain $BRAIN_DIR --with-judgment-day completes it" ;;
     conflict) say "Judgment Day: a file of yours differs from this checkout's, so --with-judgment-day would refuse and overwrite nothing:"
               printf '%s\n' "$JD_PLAN" | awk -F'\t' '$1=="refuse" {print "        " $3}' ;;
   esac
@@ -338,11 +385,11 @@ FIXES
     step "engram, wired into Claude Code (recommended): engram setup claude-code   — it asks \"Add to allowlist? (y/N)\": answer y (it lists only engram's own mem_* tools, so saving to memory never stops to ask)" "engram setup claude-code"
   fi
   if [ -n "$LANE" ]; then
-    replay="./install.sh"
+    replay="$INSTALL_CMD"
     for a in "${ORIG_ARGS[@]}"; do [ "$a" = --check ] || replay="$replay $(printf '%q' "$a")"; done
     step "install, lane $LANE: $replay" "$replay"
   else
-    cmd="./install.sh --brain $BRAIN_DIR --lane <name> --repo <path>"
+    cmd="$INSTALL_CMD --brain $BRAIN_DIR --lane <name> --repo <path>"
     step "a lane for one of your repositories: $cmd" "$cmd"
   fi
   # After the lane's install: the links it makes live in that directory.
@@ -351,7 +398,7 @@ FIXES
   fi
   # Optional, so after the lane: it is never the next step while a lane is still to be made.
   if [ "$WITH_JD" = 0 ] && { [ "$JD_STATE" = off ] || [ "$JD_STATE" = partial ]; }; then
-    cmd="./install.sh --brain $BRAIN_DIR --with-judgment-day"
+    cmd="$INSTALL_CMD --brain $BRAIN_DIR --with-judgment-day"
     step "Judgment Day (optional): $cmd" "$cmd"
   fi
   printf '\nNext step: %s\n' "$first"
@@ -848,7 +895,7 @@ if [ -f "$BRAIN/projects.json" ]; then
   done < <(jq -r '.lanes[] | .opencode_config_dir // empty' "$BRAIN/projects.json")
 fi
 src_sha="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
-marker_new="$(printf '{\n  "installed_from": "%s",\n  "commit": "%s",\n  "version": "%s"\n}\n' "$SRC" "$src_sha" "$(install_version)")"
+marker_new="$(printf '{\n  "installed_from": "%s",\n  "commit": "%s",\n  "version": "%s"\n}\n' "${FOREMAN_SH_INSTALLED_FROM:-$SRC}" "$src_sha" "$(install_version)")"
 if [ "$(cat "$BRAIN/$MARKER" 2>/dev/null)" = "$marker_new" ]; then ok "$MARKER"
 else printf '%s\n' "$marker_new" > "$BRAIN/$MARKER"; chg "$MARKER (commit $src_sha)"; fi
 
@@ -1165,5 +1212,5 @@ next:
   hw $LANE <task> --brief $BRAIN/$LANE/briefs/<task>.md --sdd none --dry-run
 EOF
 else
-  printf '\nnext: ./install.sh --brain %s --lane <name> --repo <path>\n' "$BRAIN"
+  printf '\nnext: %s --brain %s --lane <name> --repo <path>\n' "$INSTALL_CMD" "$BRAIN"
 fi

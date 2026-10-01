@@ -18,6 +18,8 @@
 # also 112's subject now that pre-push no longer runs the suite inline). Run
 # all four:
 #     for f in 117 112 118 119; do bash setup/tests/$f-*.sh; done
+# suite-timing: retry-once — its nested runner refuses a fixture that overran its time budget; measured 2026-09-30:
+#   red under load 11-13 from other lanes, green alone.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 REAL_HW="$ROOT/setup/test-hw"

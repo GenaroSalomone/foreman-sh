@@ -7812,6 +7812,16 @@ _verify_at_close() {  # $1 = run directory, $2 = directory to run in, $3/$4 = pr
   # `.hw/<run>//verify-1.log`. A path in a receipt is meant to be pasted.
   rundir="${rundir%/}"
   [ -n "$rundir" ] && [ -d "$rundir" ] || return 0
+  # A CLOSE THAT NOBODY NEEDS VERIFIED SAYS SO, in the receipt. `--force` is what
+  # a human reaches for when a close looks stuck, and paying the whole
+  # verification again made it the slowest way out; a `--blocked` report has no
+  # finished work to verify. Both are decided by the caller, not inferred here.
+  if [ -n "${DONE_VERIFY_SKIP:-}" ]; then
+    _receipt_into "$rundir" verify_run "skipped (${DONE_VERIFY_SKIP})" \
+      "hw done $DONE_VERIFY_SKIP: the pinned verification was not run"
+    info "verification skipped (${DONE_VERIFY_SKIP}) — nothing here claims this task was verified"
+    return 0
+  fi
   pin="$rundir/verify"
   # NO PIN AT ALL is a different fact from AN EMPTY PIN, and only the second is
   # worth a receipt: runs that predate this have no file, and inventing a
@@ -12599,7 +12609,7 @@ def invoker_pane_of(rundir):
     task never reported instead of only that it did not.
 
     None means the key is absent, and that is a HARD fact about the run, not a
-    gap: `done-invoker` refuses at bin/done-invoker:109 without it — before it
+    gap: `done-invoker` refuses at its `no HW_INVOKER_PANE` gate without it — before it
     publishes anything. Measured 2026-08-26 against a real herdr pane: the gate
     refusal leaves ZERO tokens, while a DELIVERY refusal (dead brainer pane,
     timeout) publishes done_status/done_state=undelivered/sum first. Two
@@ -12774,7 +12784,7 @@ def orphan_why(orph, live_pane_ids):
                 "brainer report was requested")
     if not orph["invoker"]:
         return ("no HW_INVOKER_PANE in its run env — done-invoker refuses at the "
-                "gate (bin/done-invoker:109) and publishes nothing, so this was "
+                "gate (`no HW_INVOKER_PANE` in bin/done-invoker) and publishes nothing, so this was "
                 "never the executor's to fix")
     if orph["invoker"] not in live_pane_ids:
         return ("its brainer's pane %s is gone, so done-invoker had nowhere to "
@@ -14245,6 +14255,7 @@ KEEP_PREVIEW=0; KEEP_FOR=""; KEEP_WHY=""
 # The one exit from the in-use guard (`_done_in_use_guard`). Default off: a
 # close that cannot establish who owns the pane should stop, not shrug.
 DONE_FORCE=0
+DONE_BLOCKED=0
 if [ "$1" = preview ]; then shift; cmd_preview "$@"; exit 0; fi
 if [ "$1" = done ]; then
   shift
@@ -14254,11 +14265,12 @@ if [ "$1" = done ]; then
     case "$1" in
       --drop-db) DROP_DB=1; shift ;;
       --force) DONE_FORCE=1; shift ;;
+      --blocked) DONE_BLOCKED=1; shift ;;
       --keep-preview)
         KEEP_PREVIEW=1; shift
         case "${1:-}" in ""|--*) ;; *) KEEP_FOR="$1"; shift ;; esac ;;
       --why) _need_val "$@"; KEEP_WHY="$2"; shift 2 ;;
-      *) die "unknown option: $1 (hw done takes --drop-db, --force, --keep-preview [<duration>], --why <reason>)" ;;
+      *) die "unknown option: $1 (hw done takes --drop-db, --force, --blocked, --keep-preview [<duration>], --why <reason>)" ;;
     esac
   done
   if [ "$KEEP_PREVIEW" = 1 ]; then
@@ -14268,6 +14280,9 @@ if [ "$1" = done ]; then
     # kept" does not answer that. It is one short sentence and it is required.
     [ -n "$KEEP_WHY" ] || die "--keep-preview needs --why \"<what is still going to look at this>\" — e.g. --why \"opus judge, then ${HW_OPERATOR:-the operator} approves the exact preview\". A retained preview with no stated reader is the thing this flag exists to stop."
   fi
+  DONE_VERIFY_SKIP=""
+  [ "$DONE_BLOCKED" = 1 ] && DONE_VERIFY_SKIP="blocked"
+  [ "$DONE_FORCE" = 1 ] && DONE_VERIFY_SKIP="--force"
   cmd_done "$(_canon_project "$_dp")" "$_dt"; exit 0
 fi
 

@@ -837,12 +837,27 @@ publish_done delivered || true
 # process able to finish delivery. Refusal paths above remain before this block
 # and therefore do not call hw at all: an undelivered pane is still the recovery
 # copy.
+# SAY WHAT IS ABOUT TO TAKE TIME. `hw done` runs the brief's verification
+# synchronously before it closes anything (`_verify_at_close`, ceiling 900s), so
+# a delivered report whose process then sits silent reads as a hang. Not for
+# --blocked: that close skips the verification; and only where `hw done` is
+# really called (a chaining lease or kept pane runs no verification here).
+_say_verifying() {
+  local pin; pin="$(invoker_run_dir)/verify"
+  if [ "$STATUS" != blocked ] && [ -s "$pin" ]; then
+    printf 'reported — verifying before close: %s (up to %ss)\n' \
+      "$(head -n 1 "$pin")" "${HW_VERIFY_TIMEOUT_SECONDS:-900}"
+  fi
+}
 if [ "$CHAINING_LEASE" = 1 ]; then
   LEASE_RC=0
   "$INVOKER_BIN_DIR/hw" chaining-lease-start || LEASE_RC=$?
   if [ "$LEASE_RC" -ne 0 ]; then
     printf 'done-invoker: THE REPORT IS DELIVERED AND SAFE, but bounded chaining lease setup failed (exit %s). Refusing silent unbounded retention; attempting the normal owner-aware close now.\n' "$LEASE_RC" >&2
-    if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK"; then
+    _DONE_ARGS=()
+    [ "$STATUS" = blocked ] && _DONE_ARGS=(--blocked)
+    _say_verifying
+    if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK" ${_DONE_ARGS[@]+"${_DONE_ARGS[@]}"}; then
       die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — bounded chaining lease setup failed and the fallback close also failed. The done marker exists, but no retention authority was created. Do NOT re-run done-invoker; close this pane with \`hw done $PROJECT $TASK\`."
     fi
     printf 'brainer notified; chaining lease setup failed, so hw closed the owned pane instead of retaining it without a bound.\n'
@@ -866,7 +881,10 @@ fi
 # 1 is "not delivered, retry", and retrying here sends the brainer a second
 # report for one task. Exit 4 says the true thing, and says it in an order a
 # reader cannot misread: delivered and safe FIRST, then what failed.
-if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK"; then
+_DONE_ARGS=()
+[ "$STATUS" = blocked ] && _DONE_ARGS=(--blocked)
+_say_verifying
+if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK" ${_DONE_ARGS[@]+"${_DONE_ARGS[@]}"}; then
   die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — $RECEIPT_NOTE, and this run is marked done. What failed is the CLOSE: \`hw done $PROJECT $TASK\` could not close the owned task tab/workspace, so the pane is still open at $HERDR_PANE_ID (workdir $WORKDIR). Do NOT re-run done-invoker — the report landed, and a second one is a second report for one task. Close it by hand with \`hw done $PROJECT $TASK\` once the cause above is fixed. (Exit $EXIT_DELIVERED_NOT_CLOSED means delivered-but-not-closed; exit 1 would have meant nothing was reported.)"
 fi
 

@@ -16,6 +16,8 @@
 # whole interface: a caller that cannot tell "hw refused" from "the executor is
 # settled" is back to reading prose, which is exactly what the raw herdr call
 # left everyone doing.
+# suite-timing: retry-once — its verdict reads wall-clock waits; measured 2026-09-30:
+#   red under load 11-13 from other lanes, green alone 3 of 3.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # ── a bin dir hw resolves as its own ─────────────────────────────────────────

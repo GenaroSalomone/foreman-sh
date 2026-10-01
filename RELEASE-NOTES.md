@@ -1,18 +1,20 @@
-# foreman-sh 0.1.2
+# foreman-sh 0.1.3
 
-**Memory that stays in its lane.** `hw` and `brain` now start engram through a
-small proxy that holds the lane's memory label. A save that names another
-label is refused with a message that says which label is set, a save that
-names none lands in the lane's, and every search spans all labels, so nothing
-saved under an older label goes missing. The proxy adds about 0.05 ms per call.
+**Install with one command.** `install.sh` can now be piped from curl: it
+fetches the last published release (never `main`) and runs from there, with the
+same flags. When it creates a lane it asks its questions on the terminal even
+through the pipe, and with no terminal it prints the defaults it used and the
+flags that change them. The command is in the README's Quickstart.
 
-Also in this release: `hw status` names observations saved under the wrong
-label, and a release cut runs its seconds-long checks before the test suite.
+Also in this release: `done-invoker` says when it is running the brief's
+verification after the report is delivered, and `hw done --force` and a
+blocked report no longer run that verification again. The Codex guard now
+also refuses an `apply_patch` into a protected tree.
 
-## Upgrading from 0.1.1
+## Upgrading from 0.1.2
 
 Update your checkout and run `install.sh` again with the arguments you
-installed with. Nothing else needs to change.
+installed with, or run the Quickstart command. Nothing else needs to change.
 
 The full list is in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -38,7 +40,8 @@ configuration in `guards.json`.
 
 1. Install a brain and a first lane with one command, on macOS, Linux or
    Windows through WSL2:
-   `./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp`.
+   `curl -fsSL …/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp`
+   (the full command is in the README's Quickstart).
 2. Open the brainer (`brain myapp`), write a brief, and inspect the whole
    dispatch before it runs with `hw myapp task --brief … --sdd none --dry-run`.
 3. Run executors on Claude Code or OpenCode, each isolated in a worktree, and

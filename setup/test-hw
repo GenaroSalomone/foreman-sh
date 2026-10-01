@@ -1053,6 +1053,23 @@ _lane_of() { # <subject path> → pool | exclusive
        { exit }
        END { if (!found) print "pool" }' "$1" 2>/dev/null || printf 'pool'
 }
+# A SUBJECT WHOSE VERDICT DEPENDS ON THE CLOCK MAY DECLARE ITSELF RETRYABLE, in
+# the same header block and with the same reading rules as the lane above:
+#
+#     # suite-timing: retry-once — <why, and what was measured>
+#
+# A declared subject that fails is run ONE more time (the subject by itself, not the suite; it still shares the machine with the other jobs) before the job is
+# called red. The second run decides: green is green (the runner prints
+# `RETRIED <subject>: <first failure>` and counts it in the summary), red is red.
+# A subject that does NOT declare it is never retried — a red of logic stays red
+# on the first run. Only the header is read, so quoting the line is not declaring.
+_timing_of() { # <subject path> → retry | no
+  awk 'NR == 1 && /^#!/ { next }
+       /^#/ { if ($0 ~ /^# suite-timing: retry-once([^A-Za-z0-9_-]|$)/) { print "retry"; found = 1; exit } next }
+       /^[[:space:]]*$/ { next }
+       { exit }
+       END { if (!found) print "no" }' "$1" 2>/dev/null || printf 'no'
+}
 JOB_PATH=(); JOB_KIND=(); JOB_LANE=(); JOB_HINT=()
 for f in ${FILES[@]+"${FILES[@]}"}; do
   JOB_PATH+=("$f"); JOB_KIND+=("subject"); JOB_LANE+=("$(_lane_of "$f")"); JOB_HINT+=("")
@@ -1336,7 +1353,7 @@ fi
 # that is already gone.
 _run_job() {
   local idx="$1" f="${JOB_PATH[$1]}" kind="${JOB_KIND[$1]}"
-  local rc=0 cov_rc=0 parse_rc=0 started ended wall_ms=0 cpu_ms=0 first_ms=0 rerun_rc=0
+  local rc=0 cov_rc=0 parse_rc=0 started ended wall_ms=0 cpu_ms=0 first_ms=0 rerun_rc=0 retried=0 first_rc=0
   set +e
   started=""; ended=""
   if [ "$kind" = subject ]; then
@@ -1368,6 +1385,16 @@ _run_job() {
       started="$(date +%s)"
       fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" bash "$f"
       rc=$?
+      # A TIMING SUBJECT THAT FAILED IS RUN ONCE MORE (the subject by itself, not the suite), and only one that
+      # declared it (_timing_of). The first run's output is kept aside, so the
+      # tally counts the run that decided and the first failure can be named.
+      if [ "$rc" -ne 0 ] && [ "$(_timing_of "$f")" = retry ]; then
+        retried=1; first_rc="$rc"
+        mv -f "$JOBDIR/$idx.out" "$JOBDIR/$idx.first.out"
+        mv -f "$JOBDIR/$idx.err" "$JOBDIR/$idx.first.err"
+        fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" bash "$f"
+        rc=$?
+      fi
       ended="$(date +%s)"
       wall_ms="$FG_WALL_MS"; cpu_ms="$FG_CPU_MS"; first_ms="$wall_ms"; rerun_rc=0
       # THE FAST GATE'S RE-RUNS LIVE IN THE JOB, not in the loop that reads it: the
@@ -1400,8 +1427,8 @@ _run_job() {
   # A subject that never ran because it did not parse timed nothing, and 0 is
   # the honest answer there rather than the duration of the parse check.
   if [ -z "$started" ] || [ -z "$ended" ]; then started=0; ended=0; fi
-  printf 'parse_rc=%s\nrc=%s\ncov_rc=%s\nelapsed=%s\nwall_ms=%s\ncpu_ms=%s\nfirst_ms=%s\nrerun_rc=%s\nstarted_at=%s\nended_at=%s\n' \
-    "$parse_rc" "$rc" "$cov_rc" "$((ended - started))" "$wall_ms" "$cpu_ms" "$first_ms" "$rerun_rc" "$started" "$ended" > "$JOBDIR/$idx.status.part"
+  printf 'parse_rc=%s\nrc=%s\ncov_rc=%s\nelapsed=%s\nwall_ms=%s\ncpu_ms=%s\nfirst_ms=%s\nrerun_rc=%s\nretried=%s\nfirst_rc=%s\nstarted_at=%s\nended_at=%s\n' \
+    "$parse_rc" "$rc" "$cov_rc" "$((ended - started))" "$wall_ms" "$cpu_ms" "$first_ms" "$rerun_rc" "$retried" "$first_rc" "$started" "$ended" > "$JOBDIR/$idx.status.part"
   mv -f "$JOBDIR/$idx.status.part" "$JOBDIR/$idx.status"
 }
 
@@ -1580,6 +1607,7 @@ trap '_stop_everything; exit 143' TERM
 
 # _job_red <exit> <line> — a red job. Stops the run as it always has, or under
 # keep-going records the line and returns 1 so the loop moves to the next job.
+RETRIED_COUNT=0; RETRIED_LINES=""
 KEEP_GOING=0
 case "${HW_TEST_KEEP_GOING:-}" in 1|yes|true) KEEP_GOING=1 ;; esac
 RED_LINES=""; RED_RC=0; RED_COUNT=0
@@ -1608,13 +1636,27 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   _reap || true
   _top_up
   f="${JOB_PATH[$_i]}"
-  parse_rc=0; rc=0; cov_rc=0; elapsed=0; wall_ms=0; cpu_ms=0; first_ms=0; rerun_rc=0; started_at=0; ended_at=0
+  parse_rc=0; rc=0; cov_rc=0; elapsed=0; wall_ms=0; cpu_ms=0; first_ms=0; rerun_rc=0; retried=0; first_rc=0; started_at=0; ended_at=0
   . "$JOBDIR/$_i.status"
   _tm_row "$_i"
   if [ "$parse_rc" -ne 0 ]; then
     printf '\nnot ok - suite: setup/tests/%s does not parse, so it was never run — its assertions are NOT evidence for anything:\n%s\n' \
       "$(basename "$f")" "$(cat "$JOBDIR/$_i.parse" 2>/dev/null)" >&2
     _job_red 1 "setup/tests/$(basename "$f") does not parse" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
+  fi
+  if [ "$retried" = 1 ]; then
+    # THE FIRST FAILURE IS NAMED, not lost: its first `not ok` line, else its exit.
+    _first_fail="$(grep -m1 '^not ok' "$JOBDIR/$_i.first.out" "$JOBDIR/$_i.first.err" 2>/dev/null | sed 's/^[^:]*:not ok - //; s/^not ok - //' || true)"
+    [ -n "$_first_fail" ] || _first_fail="exit $first_rc"
+    if [ "$rc" -eq 0 ]; then
+      RETRIED_COUNT=$((RETRIED_COUNT + 1))
+      RETRIED_LINES="$RETRIED_LINES
+  RETRIED $(basename "$f"): $_first_fail"
+      printf 'RETRIED %s: %s\n' "$(basename "$f")" "$_first_fail"
+    else
+      printf 'runner: %s failed its retry as well; first failure: %s\n' "$(basename "$f")" "$_first_fail" >&2
+    fi
+    rm -f "$JOBDIR/$_i.first.out" "$JOBDIR/$_i.first.err"
   fi
   cat "$JOBDIR/$_i.out"
   cat "$JOBDIR/$_i.out" >> "$TALLY"
@@ -1780,6 +1822,11 @@ fi
 # wrote it. The remedy is per subject and it is the shape tests/105 now uses:
 # make the probe emit proof it ran, and fail when the proof is missing. Do not
 # add a global claim here that this runner cannot support.
+# A FLAKE THAT KEEPS BEING ABSORBED MUST STAY VISIBLE: the count is on stdout,
+# beside the headline it qualifies, and silent when nothing was retried.
+if [ "$RETRIED_COUNT" -gt 0 ]; then
+  printf '\nRETRIED: %s timing subject(s) failed once and passed on their single retry:%s\n' "$RETRIED_COUNT" "$RETRIED_LINES"
+fi
 if [ -n "$UNKNOWN_NAMES" ]; then
   # NO HEADLINE AT ALL. "tracked" was never established here, so any integer
   # under that label is a count of nothing. The total IS printed, because it is

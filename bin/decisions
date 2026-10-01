@@ -512,7 +512,7 @@ def split(path, strict=False, with_pointer_anchor=False):
     """-> (preamble, entries, unknown headings, carried text[, later entries]).
 
     The preamble is everything before the first entry heading, kept verbatim: it
-    carries the file's own contract and the `last-listen` marker, and rewriting
+    carries the file's own contract, and rewriting
     it is not this tool's business — including an ARCHIVE file's preamble, which
     the old writer regenerated over the top of whatever a human had put there.
 

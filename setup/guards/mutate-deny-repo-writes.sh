@@ -134,6 +134,38 @@ _mutate_report() {
 GUARD_PY="setup/guards/deny_repo_writes.py"
 GUARD_JS="setup/guards/deny-repo-writes.js"
 
+# THE ARMS KILLED BY THE LAST VECTORS COME FIRST. A mutant stops at the first
+# failing assertion, so one killed by a vector near the END of the decision
+# driver costs the whole ~70s run. Declared last, they started when three of
+# the four workers were idle and the job ended on its stragglers (measured
+# 2026-10-01 alone: the last four finished at 278, 320, 365 and 369s of 370).
+# Started first they overlap everything else. Which mutants run is unchanged;
+# only the order they are queued and reported in.
+# ── A payload of the wrong shape refuses (2026-09-29, audit F12) ────────────
+mutate python-malformed-tool-input "$GUARD_PY" \
+  "    if not isinstance(tool_input, dict):" "    if False:"
+mutate codex-malformed-payload "setup/guards/deny-repo-writes-codex.py" \
+  "    if not isinstance(payload, dict):" "    if False:"
+
+# ── The shims, the only per-lane code left ─────────────────────────────────
+# A shim that names the wrong lane guards the wrong trees; a shim that cannot
+# reach the shared module guards nothing at all. Both must be loud.
+# The mutated shim is a lane with a directory of its own (not the root), and
+# the name it is swapped to is the next such lane — or, where the table has only
+# one besides the root, the root itself. So the mutant names no lane of its own
+# and still swaps one real shim for another. The fallback is not hypothetical:
+# the exported table carries only `brain` and `setup`, and until 2026-09-29 this
+# demanded two lanes besides both, so the export's suite aborted here before
+# any mutant ran. `setup` is no longer excluded — the shim-import arm below
+# mutates its JS shim in a separate copy, so the two arms do not collide.
+read -r SHIM_LANE SHIM_OTHER <<<"$(node -e "import('$ROOT/setup/guards/deny-repo-writes.js').then(m => { const own = Object.keys(m.LANES).filter(l => l !== 'brain'); console.log(own[0] ?? '', own[1] ?? (own[0] ? 'brain' : '')); })")"
+[ -n "$SHIM_OTHER" ] || { echo "shim-lane-name: the lane table has no lane besides brain" >&2; exit 1; }
+mutate shim-lane-name "$SHIM_LANE/.claude/hooks/deny-repo-writes.py" \
+  "LANE = \"$SHIM_LANE\"" "LANE = \"$SHIM_OTHER\""
+mutate shim-import "setup/.opencode/plugin/deny-repo-writes.js" \
+  '../../../setup/guards/deny-repo-writes.js' '../../../setup/guards/absent.js'
+
+
 # ── The write-detection tables, one runtime each ────────────────────────────
 mutate copy-write-detection "$GUARD_JS" "rm|mv|cp|rsync|tee" "rm|mv|rsync|tee" filesystem
 mutate copy-destination-selection "$GUARD_JS" 'const dest = operands[operands.length - 1];' 'const dest = operands[0];' filesystem
@@ -434,29 +466,5 @@ mutate python-start-cwd-ask "$GUARD_PY" \
   '        if seg.get("start") and seg["start"] != seg["cwd"]:' "        if False:"
 mutate js-start-cwd-ask "$GUARD_JS" \
   "    if (seg.start && seg.start !== seg.cwd) dirs.push(seg.start);" "    if (false) dirs.push(seg.start);"
-
-# ── A payload of the wrong shape refuses (2026-09-29, audit F12) ────────────
-mutate python-malformed-tool-input "$GUARD_PY" \
-  "    if not isinstance(tool_input, dict):" "    if False:"
-mutate codex-malformed-payload "setup/guards/deny-repo-writes-codex.py" \
-  "    if not isinstance(payload, dict):" "    if False:"
-
-# ── The shims, the only per-lane code left ─────────────────────────────────
-# A shim that names the wrong lane guards the wrong trees; a shim that cannot
-# reach the shared module guards nothing at all. Both must be loud.
-# The mutated shim is a lane with a directory of its own (not the root), and
-# the name it is swapped to is the next such lane — or, where the table has only
-# one besides the root, the root itself. So the mutant names no lane of its own
-# and still swaps one real shim for another. The fallback is not hypothetical:
-# the exported table carries only `brain` and `setup`, and until 2026-09-29 this
-# demanded two lanes besides both, so the export's suite aborted here before
-# any mutant ran. `setup` is no longer excluded — the shim-import arm below
-# mutates its JS shim in a separate copy, so the two arms do not collide.
-read -r SHIM_LANE SHIM_OTHER <<<"$(node -e "import('$ROOT/setup/guards/deny-repo-writes.js').then(m => { const own = Object.keys(m.LANES).filter(l => l !== 'brain'); console.log(own[0] ?? '', own[1] ?? (own[0] ? 'brain' : '')); })")"
-[ -n "$SHIM_OTHER" ] || { echo "shim-lane-name: the lane table has no lane besides brain" >&2; exit 1; }
-mutate shim-lane-name "$SHIM_LANE/.claude/hooks/deny-repo-writes.py" \
-  "LANE = \"$SHIM_LANE\"" "LANE = \"$SHIM_OTHER\""
-mutate shim-import "setup/.opencode/plugin/deny-repo-writes.js" \
-  '../../../setup/guards/deny-repo-writes.js' '../../../setup/guards/absent.js'
 
 _mutate_report

@@ -152,8 +152,9 @@ it leaves the brain directory, is unguarded even with the hook registered.
   process that is trying to get around it. It runs as the same OS account as
   the agent it watches, and it sees only the tool calls the agent reports to
   it. Specifically:
-  - **Codex:** the guard covers its shell tool only. A write through Codex's
-    own patch/write tool is unguarded, and the Codex configuration this harness was
+  - **Codex:** the guard script reads both its shell tool and `apply_patch`, but
+    until the `apply_patch` matcher is registered in `~/.codex/hooks.json`, a write
+    through Codex's own patch tool is unguarded, and the Codex configuration this harness was
     developed against runs it without a sandbox or approval prompts. Whether editing the Codex guard script
     re-raises Codex's trust dialog is unknown.
   - Where a write's destination cannot be resolved with confidence, the guard

@@ -177,23 +177,17 @@ esac
 pass "race: nothing is left in the pool after both runs"
 
 # ── 2. the mutants: the exclusive, then the cap, each removed alone ─────────
-mutate() { # <out> <needle> <replacement>
+mutant_of() { # <out>: a copy of the runner; edit it with mutate_anchor (the marker, not the prose)
   cp "$ROOT/setup/test-hw" "$1"
-  python3 - "$1" "$2" "$3" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1]); s = p.read_text()
-assert s.count(sys.argv[2]) == 1, "the mutated line is not where the mutant expects it: " + sys.argv[2]
-p.write_text(s.replace(sys.argv[2], sys.argv[3]))
-PY
 }
-mutate "$TMP/mutant-excl" '            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; _tm_wait excl begin; break; fi' \
-                          '            : mutant-no-exclusive'
+mutant_of "$TMP/mutant-excl"
+mutate_anchor 176-M01 "$TMP/mutant-excl" ': mutant-no-exclusive'
 race "$TMP/mutant-excl" mexcl
 saw_mutant "no machine exclusive" "$RACE_V" "ALONE-BROKEN"
 
 # The cap alone: every slot number is claimable, the exclusive still holds.
-mutate "$TMP/mutant-cap" '  while [ "$k" -lt "$MACHINE_JOBS" ]; do' \
-                         '  while [ "$k" -lt 99 ]; do'
+mutant_of "$TMP/mutant-cap"
+mutate_anchor 176-M02 "$TMP/mutant-cap" 'while [ "$k" -lt 99 ]; do'
 race "$TMP/mutant-cap" mcap
 peak="$(printf '%s\n' "$RACE_V" | sed -n 's/^PEAK //p')"
 [ -n "$peak" ] && [ "$peak" -gt 3 ] && saw_mutant "no machine cap" "$RACE_V" "PEAK $peak" \
@@ -319,8 +313,8 @@ case "$rc:$out" in
     pass "witness: a job that addresses the pane the run was started from turns the whole run red, and the report quotes what it sent" ;;
   *) fail "witness: the run failed, but not on the witness ($rc): $(printf '%s' "$out" | tail -4)" ;;
 esac
-mutate "$TMP/mutant-witness" '    export HERDR_ENV=1 HERDR_SOCKET_PATH="$WITNESS_SOCK" HERDR_PANE_ID="wWITNESS:pWITNESS" \' \
-                             '    : mutant-no-witness \'
+mutant_of "$TMP/mutant-witness"
+mutate_anchor 176-M03 "$TMP/mutant-witness" ': mutant-no-witness'
 make_repo "$TMP/reach-m" "$TMP/mutant-witness" bare; reach_subject "$TMP/reach-m"
 rm -rf "$POOL"
 out="$(drive "$TMP/reach-m")" && rc=0 || rc=$?

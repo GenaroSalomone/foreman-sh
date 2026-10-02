@@ -298,9 +298,9 @@ def entry_key(m):
     position, not by a clock this tool made up.
     """
     y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    hh = int(m.group(4)) if m.group(4) else 0
-    mm = int(m.group(5)) if m.group(5) else 0
-    ss = int(m.group(6)) if m.group(6) else 0
+    hh = int(m.group(4)) if m.group(4) else 0 # MUTATION-ANCHOR: 100-M03
+    mm = int(m.group(5)) if m.group(5) else 0 # MUTATION-ANCHOR: 100-M03b
+    ss = int(m.group(6)) if m.group(6) else 0 # MUTATION-ANCHOR: 100-M03c
     try:
         datetime.datetime(y, mo, d, hh, mm, ss)
     except ValueError:
@@ -564,7 +564,7 @@ def split(path, strict=False, with_pointer_anchor=False):
                 fence = None
         elif fm:
             fence = fm.group(1)
-        if fence is None and H2_RE.match(line):
+        if fence is None and H2_RE.match(line): # MUTATION-ANCHOR: 100-M11
             m = ENTRY_RE.match(line)
             key = entry_key(m) if m else None
             if key is not None:
@@ -575,7 +575,7 @@ def split(path, strict=False, with_pointer_anchor=False):
                 if following_pointer:
                     pointer_followers.append(entry_now)
                 continue
-            if in_pointer and line.strip() == POINTER_HEADING:
+            if in_pointer and line.strip() == POINTER_HEADING: # MUTATION-ANCHOR: 100-M04
                 # The one heading this tool writes itself. Exact match, not a
                 # substring: a quoted mention of it must not switch the parser
                 # into skipping mode. Recorded rather than dropped on sight —
@@ -705,7 +705,7 @@ def in_order(path, entries):
     This function exists because the bug it replaces was selecting `entries[:n]`
     and calling the result "the newest".
     """
-    seq = list(reversed(entries)) if is_archive(path) else list(entries)
+    seq = list(reversed(entries)) if is_archive(path) else list(entries) # MUTATION-ANCHOR: 100-M02
     return sorted(seq, key=lambda e: e[0])
 
 
@@ -918,7 +918,7 @@ def cmd_check(argv):
         print("but nothing can reverse them, because an id is the only name a ruling has:")
         for project, n, total in nameless:
             print("    %-20s %d of %d" % (project, n, total))
-    if over:
+    if over: # MUTATION-ANCHOR: 100-M14
         print()
         print("over %d lines — rotate the oldest quarter out:" % WARN_LINES)
         for project in over:
@@ -953,7 +953,7 @@ def cmd_check(argv):
     #   1 = over the seek budget (rotate it)
     #   2 = headings this tool cannot read (fix them)
     #   3 = staged temporary files from a killed rotation (check, then delete)
-    if over:
+    if over: # MUTATION-ANCHOR: 100-M14b
         return 1
     if broken:
         return 2
@@ -1062,7 +1062,7 @@ def stage_everything(buckets, targets, project, path, preamble, keep,
         #
         # `existing` before `buckets[q]`: on a tie the already-archived entry
         # arrived first, so it is the older of the two.
-        merged = list(reversed(sorted(existing + buckets[q], key=lambda e: e[0])))
+        merged = list(reversed(sorted(existing + buckets[q], key=lambda e: e[0]))) # MUTATION-ANCHOR: 100-M13
         staged.append((target, stage(target, render(pre, merged))))
     # THE CARRIED TEXT GOES BACK AFTER THE REGENERATED BLOCK AND BEFORE THE
     # FIRST SURVIVING DATED ENTRY THAT ORIGINALLY FOLLOWED IT. Appended decisions
@@ -1072,7 +1072,7 @@ def stage_everything(buckets, targets, project, path, preamble, keep,
     trailer = list(pointer_block(project)) + list(carried)
     trailer_before = next((entry for entry in pointer_followers
                            if any(entry is live for live in keep)), None)
-    staged.append((path, stage(path, render(preamble, keep, trailer,
+    staged.append((path, stage(path, render(preamble, keep, trailer, # MUTATION-ANCHOR: 100-M06
                                             trailer_before=trailer_before))))
 
 
@@ -1159,8 +1159,8 @@ def cmd_archive(argv):
                 "file empty — an empty live file is not a rotation"
                 % ("%04d-%02d-%02d" % before[:3]))
     elif keep_n is not None:
-        keep = ordered[len(ordered) - keep_n:] if keep_n < len(ordered) else list(ordered)
-        move = ordered[:len(ordered) - keep_n] if keep_n < len(ordered) else []
+        keep = ordered[len(ordered) - keep_n:] if keep_n < len(ordered) else list(ordered) # MUTATION-ANCHOR: 100-M01
+        move = ordered[:len(ordered) - keep_n] if keep_n < len(ordered) else [] # MUTATION-ANCHOR: 100-M01b
     else:
         # COUNT **AND** LINES, because the two disagreed. `check` flags a file on
         # lines; the rotation cut on entries alone, so one lane sat at
@@ -1201,7 +1201,7 @@ def cmd_archive(argv):
         die(refuse)
 
     if not move:
-        if current_lines > WARN_LINES:
+        if current_lines > WARN_LINES: # MUTATION-ANCHOR: 100-M07
             # The old tool printed this same line and exited 0 on a file `check`
             # called OVER in the same breath. It is not a success.
             die("%s is %d lines, over the %d-line budget, and all %d entries are in "
@@ -1408,7 +1408,7 @@ def cmd_archive(argv):
     #
     # The archive files this rotation does not open are part of the comparison
     # too: an entry must end up in exactly ONE place across the whole project.
-    untouched = [a for a in archive_files(project) if a not in targets.values()]
+    untouched = [a for a in archive_files(project) if a not in targets.values()] # MUTATION-ANCHOR: 100-M10
     staged_view = [(tmp, os.path.relpath(dest, ROOT)) for dest, tmp in staged] \
         + [(a, os.path.relpath(a, ROOT)) for a in untouched]
     live_tmp = staged[-1][1]
@@ -1453,7 +1453,7 @@ def cmd_archive(argv):
         # its own arithmetic was wrong. That is the bug, not a note.
         problems.append("  %s would be %d lines, over the %d-line budget"
                         % (os.path.relpath(path, ROOT), planned_lines, WARN_LINES))
-    if problems:
+    if problems: # MUTATION-ANCHOR: 100-M05
         for _dest, tmp in staged:
             if os.path.exists(tmp):
                 os.unlink(tmp)

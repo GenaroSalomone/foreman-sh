@@ -38,7 +38,7 @@ state=delivered
 intent=$2
 route=herdr
 target=wT:p1
-logical_id=
+logical_id=run-1:$([ "$2" = answer ] && echo ask || echo challenge):1:reply
 pane=wT:p1
 run=run-1
 EOF

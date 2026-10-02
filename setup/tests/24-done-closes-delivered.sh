@@ -7,7 +7,7 @@ make_case() {
   local name="$1" dir
   dir="$TMP/$name"
   mkdir -p "$dir/bin" "$dir/work/.hw/run" "$dir/artifacts"
-  cp "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/state-witness.sh" "$dir/bin/"
+  cp "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/runenv" "$ROOT/bin/state-witness.sh" "$dir/bin/"
 cat > "$dir/bin/channel-send" <<'STUB'
 #!/usr/bin/env bash
 printf 'deliver\n' >> "$STUB_EVENTS"

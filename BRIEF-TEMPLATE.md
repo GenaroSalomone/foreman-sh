@@ -54,7 +54,7 @@ constraints that live in someone's head.>
 - <thing>
 
 ## Out of scope
-- <thing the agent must NOT touch>
+- <what stays untouched> — <why: who owns it, or what breaks if it moves>
 
 ## Done when
 - [ ] <observable, checkable condition>

@@ -95,9 +95,9 @@ esac
 pass "archive --keep 1: both entries are still present across the two files"
 
 # MUTANT M01: select from the FRONT of the chronological list — the shipped bug.
-sed 's|keep = ordered\[len(ordered) - keep_n:\] if keep_n < len(ordered) else list(ordered)|keep = ordered[:keep_n]|; s|move = ordered\[:len(ordered) - keep_n\] if keep_n < len(ordered) else \[\]|move = ordered[keep_n:]|' \
-  "$ROOT/bin/decisions" > "$(M m01)"
-grep -q 'keep = ordered\[:keep_n\]' "$(M m01)" || fail "M01 did not apply — the selection line moved"
+cp "$ROOT/bin/decisions" "$(M m01)"
+mutate_anchor 100-M01 "$(M m01)" 'keep = ordered[:keep_n]'
+mutate_anchor 100-M01b "$(M m01)" 'move = ordered[keep_n:]'
 T="$(tree m01 "$(M m01)")"; two_entries "$T"
 # The needle is the mutant's OWN plan line naming what it kept. The fixture's
 # untouched text also says "the OLDEST decision", so reading the file back
@@ -133,9 +133,8 @@ esac
 
 # MUTANT M02: drop the archive-file reversal, so an archive's newest-first
 # serialization is read as if it were chronological.
-sed 's|seq = list(reversed(entries)) if is_archive(path) else list(entries)|seq = list(entries)|' \
-  "$ROOT/bin/decisions" > "$(M m02)"
-grep -q 'seq = list(entries)$' "$(M m02)" || fail "M02 did not apply"
+cp "$ROOT/bin/decisions" "$(M m02)"
+mutate_anchor 100-M02 "$(M m02)" 'seq = list(entries)'
 T="$(tree m02 "$(M m02)")"
 mkdir -p "$T/setup/decisions"
 # Same day, no clock, written newest-first as archives are. Chronology here is
@@ -192,9 +191,10 @@ esac
 # on the ORDERING use of the clock rather than on the regex: deleting the regex
 # groups renumbers the ones after them, which crashes the parser instead of
 # changing its order, and a crash is not this assertion's subject.
-sed 's|^    hh = int(m.group(4)) if m.group(4) else 0$|    hh = 0|; s|^    mm = int(m.group(5)) if m.group(5) else 0$|    mm = 0|; s|^    ss = int(m.group(6)) if m.group(6) else 0$|    ss = 0|' \
-  "$ROOT/bin/decisions" > "$(M m03)"
-grep -q '^    hh = 0$' "$(M m03)" || fail "M03 did not apply — the clock fields of entry_key moved"
+cp "$ROOT/bin/decisions" "$(M m03)"
+mutate_anchor 100-M03 "$(M m03)" 'hh = 0'
+mutate_anchor 100-M03b "$(M m03)" 'mm = 0'
+mutate_anchor 100-M03c "$(M m03)" 'ss = 0'
 T="$(tree m03 "$(M m03)")"; clock_fixture "$T"
 saw_mutant "M03 the clock does not reach the sort key, so same-day rows fall back to append position" \
   "$(dec "$T" index setup | grep 'decisions.md ' | head -1)" "morning ruling, written up afterwards"
@@ -271,9 +271,8 @@ pass "check fails while an unrecognised heading exists"
 # fixture because it can see an unrecognised heading; the mutant cannot see one,
 # so it exits 0. That is text only the mutant produces, and it cannot be printed
 # by a mutant that failed to run.
-sed 's|            if in_pointer and line.strip() == POINTER_HEADING:|            if in_pointer:|' \
-  "$ROOT/bin/decisions" > "$(M m04)"
-grep -q '            if in_pointer:$' "$(M m04)" || fail "M04 did not apply"
+cp "$ROOT/bin/decisions" "$(M m04)"
+mutate_anchor 100-M04 "$(M m04)" 'if in_pointer:'
 T="$(tree m04 "$(M m04)")"; below_pointer "$T"
 OUT="$(dec "$T" check >/dev/null 2>&1; echo "check-exit=$?")"
 saw_mutant "M04 the pointer region swallows any heading below it, so nothing sees it" \
@@ -300,8 +299,6 @@ grep -rq 'CONTENT-THAT-MUST-NOT-VANISH' "$T/setup" \
 
 # MUTANT M05: skip the staged conservation check. Paired with a write that
 # loses the carried heading, so the check is what has to catch it.
-sed 's|^    if problems:$|    if False:|' "$ROOT/bin/decisions" > "$(M m05)"
-grep -q '^    if False:$' "$(M m05)" || fail "M05 did not apply"
 T="$(tree m05 "$(M m05)")"; below_pointer "$T"
 # With the check skipped AND the pointer swallowing, nothing stops the loss. The
 # pointer half is the real binary's, so mutate only the check and drive the loss
@@ -309,19 +306,9 @@ T="$(tree m05 "$(M m05)")"; below_pointer "$T"
 # python3, not sed: the live-file staging is now a two-line call inside
 # stage_everything(), so a single-line sed pattern cannot reach it — and a
 # mutation that silently fails to apply is a mutant that kills nothing.
-python3 - "$ROOT/bin/decisions" "$(M m05)" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-check = "    if problems:\n"
-assert check in s, "M05: the staged-check anchor is gone"
-s = s.replace(check, "    if False:\n", 1)
-render = "render(preamble, keep,"
-assert render in s, "M05: the live-render anchor is gone"
-s = s.replace(render, "render(preamble, [(k, h, []) for k, h, _b in keep],", 1)
-open(dst, "w").write(s)
-PYMUT
-grep -q 'for k, h, _b in keep' "$(M m05)" || fail "M05 did not apply (body-dropping render)"
+cp "$ROOT/bin/decisions" "$(M m05)"
+mutate_anchor 100-M05 "$(M m05)" 'if False:'
+mutate_anchor 100-M06 "$(M m05)" 'staged.append((path, stage(path, render(preamble, [(k, h, []) for k, h, _b in keep], trailer,'
 python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$(M m05)" \
   || fail "M05 produced invalid python, which kills nothing"
 T="$(tree m05 "$(M m05)")"; below_pointer "$T"
@@ -355,16 +342,8 @@ fi
 
 # MUTANT M06: keep the check, drop the bodies. The check must be what stops it,
 # and it must stop it BEFORE anything is installed.
-python3 - "$ROOT/bin/decisions" "$(M m06)" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-render = "render(preamble, keep,"
-assert render in s, "M06: the live-render anchor is gone"
-open(dst, "w").write(
-    s.replace(render, "render(preamble, [(k, h, []) for k, h, _b in keep],", 1))
-PYMUT
-grep -q 'for k, h, _b in keep' "$(M m06)" || fail "M06 did not apply"
+cp "$ROOT/bin/decisions" "$(M m06)"
+mutate_anchor 100-M06 "$(M m06)" 'staged.append((path, stage(path, render(preamble, [(k, h, []) for k, h, _b in keep], trailer,'
 python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$(M m06)" \
   || fail "M06 produced invalid python, which kills nothing"
 T="$(tree m06 "$(M m06)")"; below_pointer "$T"
@@ -409,9 +388,8 @@ case "$(dec "$T" index setup)" in
 esac
 
 # MUTANT M11: no fence state — the shipped parser had none.
-sed 's|^        if fence is None and H2_RE.match(line):$|        if H2_RE.match(line):|' \
-  "$ROOT/bin/decisions" > "$(M m11)"
-grep -q '^        if H2_RE.match(line):$' "$(M m11)" || fail "M11 did not apply"
+cp "$ROOT/bin/decisions" "$(M m11)"
+mutate_anchor 100-M11 "$(M m11)" 'if H2_RE.match(line):'
 T="$(tree m11 "$(M m11)")"
 cat > "$T/setup/decisions.md" <<'MD'
 # setup — decisions
@@ -447,8 +425,8 @@ esac
 pass "the over-budget refusal wrote nothing"
 
 # MUTANT M07: report the old success line instead of refusing.
-sed 's|^        if current_lines > WARN_LINES:$|        if False:|' "$ROOT/bin/decisions" > "$(M m07)"
-grep -q '^        if False:$' "$(M m07)" || fail "M07 did not apply"
+cp "$ROOT/bin/decisions" "$(M m07)"
+mutate_anchor 100-M07 "$(M m07)" 'if False:'
 T="$(tree m07 "$(M m07)")"
 { printf '# setup — decisions\n\n---\n\n## 2026-08-08 a\n\nBody.\n\n## 2026-08-09 b\n\n'
   for i in $(seq 1 1500); do echo "line $i"; done
@@ -553,23 +531,9 @@ pass "the quarter file it does not rewrite is left byte-identical"
 # with a write that duplicates an entry into the live file. An entry in two
 # places is what an interrupted install looks like, and the count is only able
 # to see it if every file is in the comparison.
-python3 - "$ROOT/bin/decisions" "$(M m10)" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-scope = "    untouched = [a for a in archive_files(project) if a not in targets.values()]"
-assert scope in s, "M10: the staged-scope anchor is gone"
-s = s.replace(scope, "    untouched = []", 1)
-render = "render(preamble, keep,"
-assert render in s, "M10: the live-render anchor is gone"
-s = s.replace(
-    render,
-    "render(preamble, keep + [e for e in split(archive_files(project)[-1])[1][:1]],",
-    1)
-open(dst, "w").write(s)
-PYMUT
-grep -q '^    untouched = \[\]$' "$(M m10)" || fail "M10 did not apply (scope)"
-grep -q 'keep + \[e for e in split' "$(M m10)" || fail "M10 did not apply (duplicating write)"
+cp "$ROOT/bin/decisions" "$(M m10)"
+mutate_anchor 100-M10 "$(M m10)" 'untouched = []'
+mutate_anchor 100-M06 "$(M m10)" 'staged.append((path, stage(path, render(preamble, keep + [e for e in split(archive_files(project)[-1])[1][:1]], trailer,'
 T="$(tree m10 "$(M m10)")"; scoped "$T"
 # The mutant still gets caught — by the POST-install re-read, which reads every
 # archive back off disk. That is the difference the arm is about: with the
@@ -598,18 +562,8 @@ case "$OUT" in
 esac
 
 # With the untouched archive back in scope, the same duplicating write is caught.
-python3 - "$ROOT/bin/decisions" "$(M m12)" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-render = "render(preamble, keep,"
-assert render in s, "M12: the live-render anchor is gone"
-open(dst, "w").write(s.replace(
-    render,
-    "render(preamble, keep + [e for e in split(archive_files(project)[-1])[1][:1]],",
-    1))
-PYMUT
-grep -q 'keep + \[e for e in split' "$(M m12)" || fail "M12 did not apply"
+cp "$ROOT/bin/decisions" "$(M m12)"
+mutate_anchor 100-M06 "$(M m12)" 'staged.append((path, stage(path, render(preamble, keep + [e for e in split(archive_files(project)[-1])[1][:1]], trailer,'
 T="$(tree m12 "$(M m12)")"; scoped "$T"
 # Unmutated scope, same duplicating write: caught BEFORE anything is installed.
 T="$(tree m12 "$(M m12)")"; scoped "$T"
@@ -693,9 +647,8 @@ else
   fail "index reads the tie back in the wrong order (SECOND-IN at $i_second, FIRST-IN at $i_first)"
 fi
 # M13 — the reverse=True form. Dies on the two arms above.
-sed 's|merged = list(reversed(sorted(existing + buckets\[q\], key=lambda e: e\[0\])))|merged = sorted(buckets[q] + existing, key=lambda e: e[0], reverse=True)|' \
-  "$ROOT/bin/decisions" > "$(M m13)"
-grep -q 'reverse=True' "$(M m13)" || fail "M13 did not apply"
+cp "$ROOT/bin/decisions" "$(M m13)"
+mutate_anchor 100-M13 "$(M m13)" 'merged = sorted(buckets[q] + existing, key=lambda e: e[0], reverse=True)'
 T="$(tree m13 "$(M m13)")"; tie_tree "$T"
 dec "$T" archive setup --keep 1 --apply >/dev/null 2>&1 || true
 m_arch="$(ls "$T"/setup/decisions/*.md 2>/dev/null | head -1)"
@@ -747,8 +700,9 @@ grep -q 'headings the tool cannot read' "$ROOT/bin/hw" \
   || fail "hw has no separate sentence for exit 2, so it still labels a heading problem as a budget problem"
 pass "hw distinguishes the two, so the warning names the remedy it actually has"
 # M14 — the two answers share code 1 again. Dies on the exit-code arm.
-sed 's|^    if over:$|    if over or broken:|' "$ROOT/bin/decisions" > "$(M m14)"
-grep -q '^    if over or broken:$' "$(M m14)" || fail "M14 did not apply"
+cp "$ROOT/bin/decisions" "$(M m14)"
+mutate_anchor 100-M14 "$(M m14)" 'if over or broken:'
+mutate_anchor 100-M14b "$(M m14)" 'if over or broken:'
 T="$(tree m14 "$(M m14)")"; small_broken "$T"
 m_rc=0
 dec "$T" check >/dev/null 2>&1 || m_rc=$?

@@ -311,34 +311,20 @@ echo "── mutants: every arm must bite ──"
 
 MUTANTS="$TMP/mutants"; mkdir -p "$MUTANTS"
 
-# mutate <name> <old> <new> [<old> <new> ...] -> path to the mutated binary
-#
-# Takes PAIRS, because one plausible defect is not always one edit: moving the
-# preflight after the POST means deleting the call from where it is and adding
-# it where it should not be, and a single-substitution engine can only express
-# defects that happen to be one substitution wide.
-mutate() {
-  local name="$1"; shift
-  local out="$MUTANTS/$name"
+# mutant_bin <name> -> path to a fresh copy of the binary, ready for one or more
+# `mutate_anchor <id> "$path" <replacement>` calls: each lands on the line (or
+# block) a `// # MUTATION-ANCHOR: 26-Mnn` marker in bin/channel-send declares,
+# not on the prose of that line (mutate_anchor, _common.sh). A defect that is not
+# one edit — moving the preflight after the POST means deleting the call from
+# where it is and adding it where it should not be — takes several.
+mutant_bin() {
+  local out="$MUTANTS/$1"
   cp "$BIN" "$out"
   chmod +x "$out"
-  python3 - "$out" "$@" <<'PY'
-import sys
-path, edits = sys.argv[1], sys.argv[2:]
-if len(edits) % 2 != 0:
-    sys.exit("mutate: edits must come in old/new pairs")
-src = open(path, encoding="utf-8").read()
-for old, new in zip(edits[0::2], edits[1::2]):
-    count = src.count(old)
-    if count != 1:
-        sys.exit(f"mutation anchor found {count} times, expected 1: {old[:70]!r}")
-    src = src.replace(old, new)
-open(path, "w", encoding="utf-8").write(src)
-PY
   printf '%s' "$out"
 }
 
-# judge <name> <mode> <old> <new> [<old> <new> ...]
+# judge <name> <mode> <mutant-path>
 #
 # BASELINE FIRST, ALWAYS. A mutant that "survives" because the machine was
 # loaded reads exactly like a real gap in the tests, so the unmutated binary is
@@ -348,12 +334,11 @@ PY
 judge() {
   local bin wr wp brc bposts name mode
   name="$1"; mode="$2"
-  # The arity is checked BEFORE the shift, not after: `shift 2` returns 1 when
-  # fewer than two arguments are left and `set -e` then kills the run with
-  # nothing printed — the exact silent-death shape this suite exists to make
-  # impossible, and one bin/lint-shell refuses to let past.
-  [ $# -ge 4 ] || fail "judge: needs a name, a mode, and at least one old/new pair"
-  shift 2
+  # The arity is checked first: a bare `shift` past the end returns 1 and
+  # `set -e` would kill the run with nothing printed — the silent-death shape
+  # this suite exists to make impossible, and one bin/lint-shell refuses.
+  [ $# -eq 3 ] || fail "judge: needs a name, a mode, and the path of a built mutant"
+  bin="$3"
   wr="$(want_rc "$mode")"; wp="$(want_posts "$mode")"
 
   run "$BIN" "$mode"
@@ -361,7 +346,6 @@ judge() {
   { [ "$brc" = "$wr" ] && { [ "$mode" = unreachable ] || [ "$bposts" = "$wp" ]; }; } \
     || fail "ENVIRONMENT: arm $mode is unsound (unmutated binary gave exit $brc, $bposts POSTs; expected $wr, $wp) — mutant $name not judged: $OUT"
 
-  bin="$(mutate "$name" "$@")"
   run "$bin" "$mode"
   if [ "$RC" = "$wr" ] && { [ "$mode" = unreachable ] || [ "$POSTS" = "$wp" ]; }; then
     fail "MUTANT SURVIVED: $name — arm $mode gave exit $RC with $POSTS POST(s), identical to the correct binary"
@@ -370,38 +354,33 @@ judge() {
 }
 
 # SURVIVED-2026-08-26 #1 — the preflight call deleted outright.
-judge preflight-call-deleted dead-disabled \
-  'await preflightDefaultAgent()
-await json(`/session/${session}`, "session-identity")' \
-  'await json(`/session/${session}`, "session-identity")'
+mb="$(mutant_bin preflight-call-deleted)"
+mutate_anchor 26-M01 "$mb" ''
+judge preflight-call-deleted dead-disabled "$mb"
 
 # SURVIVED-2026-08-26 #2 — the new fact filed under an existing code.
-judge exit-6-downgraded-to-5 dead-disabled \
-  '    6,
-  )
-}' \
-  '    5,
-  )
-}'
+mb="$(mutant_bin exit-6-downgraded-to-5)"
+mutate_anchor 26-M02 "$mb" '5,'
+judge exit-6-downgraded-to-5 dead-disabled "$mb"
 
 # SURVIVED-2026-08-26 #3 — the membership test inverted, so healthy receivers
 # are condemned. Judged by the HEALTHY arm: the false-positive guard is the
 # half an inverted test destroys.
-judge membership-inverted healthy \
-  'if (resolved.includes(defaultAgent)) return' \
-  'if (!resolved.includes(defaultAgent)) return'
+mb="$(mutant_bin membership-inverted)"
+mutate_anchor 26-M03 "$mb" 'if (!resolved.includes(defaultAgent)) return'
+judge membership-inverted healthy "$mb"
 
 # SURVIVED-2026-08-26 #4 — the empty-resolved-set guard dropped, so an endpoint
 # that does not report its agents the way we assumed is condemned.
-judge empty-set-guard-dropped empty-agents \
-  'if (resolved.length === 0) return' \
-  'if (false) return'
+mb="$(mutant_bin empty-set-guard-dropped)"
+mutate_anchor 26-M04 "$mb" 'if (false) return'
+judge empty-set-guard-dropped empty-agents "$mb"
 
 # The preflight never condemns anything — the other half of #3, and the shape a
 # "make the test pass" edit produces.
-judge preflight-never-condemns dead-disabled \
-  'if (resolved.includes(defaultAgent)) return' \
-  'if (true) return'
+mb="$(mutant_bin preflight-never-condemns)"
+mutate_anchor 26-M05 "$mb" 'if (true) return'
+judge preflight-never-condemns dead-disabled "$mb"
 
 # The preflight runs AFTER the POST — deleted from the top and re-inserted once
 # the message has already been admitted. It STILL EXITS 6, so the exit code
@@ -413,35 +392,28 @@ judge preflight-never-condemns dead-disabled \
 # the POST and the defect was never actually injected. Recorded here because it
 # is the failure mode a mutation suite is most likely to hide: a mutant that
 # does not change behaviour proves nothing about the arm judging it.
-judge preflight-after-the-post dead-disabled \
-  'await preflightDefaultAgent()
-await json(`/session/${session}`, "session-identity")' \
-  'await json(`/session/${session}`, "session-identity")' \
-  '  const deadline = Date.now() + persistenceTimeout' \
-  '  await preflightDefaultAgent()
-  const deadline = Date.now() + persistenceTimeout'
+mb="$(mutant_bin preflight-after-the-post)"
+mutate_anchor 26-M01 "$mb" ''
+mutate_anchor 26-M06 "$mb" $'await preflightDefaultAgent()\nconst deadline = Date.now() + persistenceTimeout'
+judge preflight-after-the-post dead-disabled "$mb"
 
 # The preflight reports a transport failure of its own, masking the layer that
 # owns unreachability.
-judge preflight-owns-transport unreachable \
-  '  } catch {
-    return
-  }' \
-  '  } catch (error) {
-    fail("receiver preflight", error instanceof Error ? error.message : String(error), 6)
-  }'
+mb="$(mutant_bin preflight-owns-transport)"
+mutate_anchor 26-M07 "$mb" $'} catch (error) {\n  fail("receiver preflight", error instanceof Error ? error.message : String(error), 6)\n}'
+judge preflight-owns-transport unreachable "$mb"
 
 # A non-OK response is treated as evidence. Only the 500-with-a-plausible-body
 # arm can kill this: a 404 body carries no default_agent, so the next guard
 # returns anyway and the mutant is equivalent there.
-judge trusts-non-ok-response agent-500-body \
-  'if (!configResponse.ok || !agentResponse.ok) return' \
-  'if (false) return'
+mb="$(mutant_bin trusts-non-ok-response)"
+mutate_anchor 26-M08 "$mb" 'if (false) return'
+judge trusts-non-ok-response agent-500-body "$mb"
 
 # A receiver with no default_agent configured is condemned.
-judge no-default-condemns no-default \
-  'if (!defaultAgent) return' \
-  'if (false) return'
+mb="$(mutant_bin no-default-condemns)"
+mutate_anchor 26-M09 "$mb" 'if (false) return'
+judge no-default-condemns no-default "$mb"
 
 # THE ONE-GET VERSION: decide from /config alone — "declared and not disabled" —
 # instead of membership in the resolved set. This is the shape a single GET can
@@ -449,6 +421,6 @@ judge no-default-condemns no-default \
 # `build`, is a builtin declared in no config scope, so a config-only test
 # condemns a perfectly healthy receiver. This is the arm that justifies the
 # second GET.
-judge one-get-config-only healthy \
-  'if (resolved.includes(defaultAgent)) return' \
-  'if (config?.agent && Object.prototype.hasOwnProperty.call(config.agent, defaultAgent) && config.agent[defaultAgent]?.disable !== true) return'
+mb="$(mutant_bin one-get-config-only)"
+mutate_anchor 26-M10 "$mb" 'if (config?.agent && Object.prototype.hasOwnProperty.call(config.agent, defaultAgent) && config.agent[defaultAgent]?.disable !== true) return'
+judge one-get-config-only healthy "$mb"

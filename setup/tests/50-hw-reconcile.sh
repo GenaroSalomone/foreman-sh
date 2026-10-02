@@ -10,7 +10,7 @@ mkdir -p "$HARNESS/bin" "$TMP/state"
 cp "$SUBJECT" "$HARNESS/bin/hw-reconcile"
 cp "$ROOT/bin/state-witness.sh" "$HARNESS/bin/state-witness.sh"
 # The lane table, read through project-spaces.sh: which lanes have a repository.
-cp "$ROOT/bin/project-spaces.sh" "$HARNESS/bin/project-spaces.sh"
+cp "$ROOT/bin/project-spaces.sh" "$HARNESS/bin/project-spaces.sh"; cp "$ROOT/bin/runenv" "$HARNESS/bin/runenv"; cp "$ROOT/bin/holdfacts" "$HARNESS/bin/holdfacts"
 cp "$ROOT/projects.json" "$HARNESS/projects.json"
 
 cat > "$HARNESS/bin/herdr-rpc" <<STUB

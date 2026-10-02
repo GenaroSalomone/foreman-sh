@@ -27,7 +27,7 @@
 #
 # Then READ `git diff setup/fixtures/hw-help-before.txt` before committing: if
 # it carries a line you did not mean to write, the golden just absorbed drift
-# instead of catching it. Last moved 2026-09-30: hw outbox, --sandbox and the brief keys, +22.
+# instead of catching it. Last moved 2026-09-30: hw outbox, --sandbox and the brief keys, +22; 2026-10-01: --permissions, +12.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 python3 - "${HELP_SUBJECT:-$ROOT/bin/hw}" "$ROOT/setup/fixtures/hw-help-before.txt" ${HELP_TABLE:+"$HELP_TABLE"} <<'PY'
 import pathlib, re, subprocess, sys

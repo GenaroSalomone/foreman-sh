@@ -6,6 +6,7 @@
 #   ./install.sh --brain ~/brain --lane oc --repo ~/code/oc --vendor opencode  # OpenCode executors
 #   ./install.sh --brain ~/brain --check                            # look, write nothing
 #   ./install.sh --brain ~/brain --with-judgment-day                # also activate Judgment Day
+#   ./install.sh --with-recommended                                 # install missing dependencies with Homebrew
 #
 # In a terminal, a NEW lane is asked what it would otherwise leave at a generic
 # value (--operator, --min-model, --requested-by), default shown; with no terminal at all,
@@ -64,6 +65,10 @@ if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
   git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$_tag" "$_repo" "$_tmp/foreman-sh" >&2 || { printf 'install: cannot clone %s at %s\n' "$_repo" "$_tag" >&2; exit 1; }
   _rc=0
   FOREMAN_SH_INSTALLED_FROM="$_repo" bash "$_tmp/foreman-sh/install.sh" "$@" || _rc=$?
+  # Piped, bash reads this file from stdin: leaving the rest unread once it outgrows
+  # the pipe buffer makes curl fail with 23 (write error) under pipefail, even when
+  # the install itself succeeded. Read it to the end; a real file or a terminal has nothing to drain.
+  [ -n "$_self" ] || [ -t 0 ] || cat >/dev/null 2>&1 || :
   exit "$_rc"
 fi
 # NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
@@ -72,7 +77,7 @@ fi
 case "${OSTYPE:-}" in msys*|cygwin*) . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/bin/msys-compat.sh" ;; esac
 
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0
+BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_REC=0 PERMISSIONS_OPT=""
 ORIG_ARGS=("$@")
 OPERATOR="" MIN_MODEL="" REQ_BY=""   # "" = not given; --min-model / --requested-by "none" = given, none
 BIN_DIR_OUT="${HOME}/.local/bin"
@@ -83,6 +88,8 @@ MARKER=".brain-install.json"
 # ./install.sh to run (the temporary checkout is gone), so the hint is the pipe.
 INSTALL_CMD="./install.sh"
 [ -z "${FOREMAN_SH_INSTALLED_FROM:-}" ] || INSTALL_CMD="curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s --"
+# A package (the Homebrew formula) runs this file through its own command and names it.
+INSTALL_CMD="${FOREMAN_SH_INSTALL_CMD:-$INSTALL_CMD}"
 # The oldest OpenCode this harness has been MEASURED against (INSTALL.md). Not
 # a guess at compatibility: an older one may work, and nothing here has shown it.
 OPENCODE_MIN="1.18.31"
@@ -90,6 +97,7 @@ OPENCODE_MIN="1.18.31"
 # The tag this checkout sits on, else its short sha. The marker install.sh
 # writes carries the same value, so an installed brain reports it too.
 install_version() {
+  [ -z "${FOREMAN_SH_VERSION:-}" ] || { printf '%s\n' "$FOREMAN_SH_VERSION"; return 0; }   # a package has no .git
   git -C "$SRC" describe --tags --exact-match 2>/dev/null || git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown
 }
 
@@ -97,7 +105,7 @@ usage() {
   cat <<'EOF'
 usage: install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor claude|opencode [--model P/M]]]
                   [--operator NAME] [--min-model haiku|sonnet|opus|none] [--requested-by required|warn|none]
-                  [--bin-dir DIR] [--with-judgment-day] [--check]
+                  [--bin-dir DIR] [--with-judgment-day] [--with-recommended] [--permissions ask|skip] [--check]
 
   --brain DIR     where your brain lives (created if absent)
   --lane NAME     a lane for one product repository (lowercase word)
@@ -114,6 +122,13 @@ usage: install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor
   --bin-dir DIR   where hw, brain and the invokers are linked (default: ~/.local/bin)
   --with-judgment-day  also copy the Judgment Day skill and its three agents into the
                   Claude Code config (skills/ and agents/); refuses over a file of yours
+  --permissions P skip (recommended, the default) or ask. skip launches Claude Code with
+                  --dangerously-skip-permissions and OpenCode with --auto; ask leaves their
+                  permission prompts on, so an unattended executor waits for a person.
+                  Written to ~/.config/hw/permissions (XDG_CONFIG_HOME); --check writes nothing
+  --with-recommended  install what is missing, required and recommended, with Homebrew, one
+                  package at a time, each command printed before it runs; alone, it installs
+                  only that. With --check it prints the commands and runs none
   --check         verify everything in one pass, list the fixes in the order they must be
                   done and end with one "Next step"; write nothing
   -V, --version   print the version (the tag this checkout sits on, else its short sha)
@@ -145,14 +160,17 @@ while [ $# -gt 0 ]; do
     --min-model) [ $# -ge 2 ] || die "--min-model needs haiku, sonnet, opus or none"; MIN_MODEL="$2"; shift 2 ;;
     --requested-by) [ $# -ge 2 ] || die "--requested-by needs required, warn or none"; REQ_BY="$2"; shift 2 ;;
     --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a directory"; BIN_DIR_OUT="$2"; shift 2 ;;
+    --permissions) [ $# -ge 2 ] || die "--permissions needs ask or skip"; PERMISSIONS_OPT="$2"; shift 2 ;;
     --check)   CHECK=1; shift ;;
     --with-judgment-day) WITH_JD=1; shift ;;
+    --with-recommended) WITH_REC=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -V|--version) printf 'install.sh %s\n' "$(install_version)"; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
-[ -n "$BRAIN_DIR" ] || { usage >&2; die "--brain is required"; }
+[ -n "$BRAIN_DIR" ] || [ "$WITH_REC" = 1 ] || { usage >&2; die "--brain is required"; }
+case "$PERMISSIONS_OPT" in ""|ask|skip) ;; *) die "--permissions must be ask or skip (got: $PERMISSIONS_OPT)" ;; esac
 if [ -n "$LANE" ] || [ -n "$REPO" ]; then
   [ -n "$LANE" ] && [ -n "$REPO" ] || die "--lane and --repo go together"
   [[ "$LANE" =~ ^[a-z][a-z-]*$ ]] || die "lane name '$LANE' is not a lowercase word (a-z and '-')"
@@ -241,6 +259,7 @@ ask() {  # <var> <prompt> <default label> <validator> — an empty answer keeps 
   done
 }
 is_tier()  { case "$1" in haiku|sonnet|opus|none) return 0 ;; esac; return 1; }
+is_perm()  { case "$1" in ask|skip) return 0 ;; esac; return 1; }
 is_reqby() { case "$1" in required|warn|none) return 0 ;; esac; return 1; }
 # The answers come from the terminal even when stdin is the script (`curl … | bash`):
 # stdin if it is one, else /dev/tty if it opens. No terminal at all asks nothing and
@@ -366,6 +385,9 @@ print_next_steps() {
   local n=0 first="" line cmd replay a
   step() { n=$((n + 1)); printf '  %s. %s\n' "$n" "$1"; [ -n "$first" ] || first="$2"; }
   printf '\nfixes, in the order they must be done (each needs the ones above it)\n'
+  if [ -n "$FIX_TOOLS" ] && [ "$WITH_REC" = 0 ] && command -v brew >/dev/null 2>&1; then
+    printf '  (Homebrew can install the missing packages in one step: %s --with-recommended)\n' "$INSTALL_CMD"
+  fi
   while IFS= read -r line; do [ -z "$line" ] || step "install: $line" "$line"; done <<FIXES
 $FIX_TOOLS
 FIXES
@@ -403,6 +425,16 @@ FIXES
   fi
   printf '\nNext step: %s\n' "$first"
 }
+
+# ── 0. --with-recommended: the dependencies, installed because they were asked for ──
+if [ "$WITH_REC" = 1 ]; then
+  rec_rc=0
+  if [ "$CHECK" = 1 ]; then bash "$SRC/install-deps.sh" --plan || rec_rc=$?
+  else bash "$SRC/install-deps.sh" || rec_rc=$?; fi
+  hash -r
+  [ -n "$BRAIN_DIR" ] || exit "$rec_rc"
+  printf '\n'
+fi
 
 # ── 1. prerequisites ────────────────────────────────────────────────────────
 # --check evaluates EVERYTHING in one pass and orders the fixes by what each one
@@ -567,6 +599,32 @@ case "$FIRST_RUN" in *login*) say "PENDING not logged in" ;; esac
 case "$FIRST_RUN" in *bypass*) say "PENDING the Bypass Permissions warning was never accepted — every brainer and executor starts in that mode" ;; esac
 [ -z "$FIRST_RUN" ] || say "  do it once, in a terminal: $(claude_first_run_command "${CLAUDE_CONFIG_DIR:-}")   — finish the welcome and login, accept the warning, /exit"
 
+# ── permissions: skip (recommended) or ask ──────────────────────────────────
+# Whether hw and brain launch agents with their permission prompts skipped. The
+# choice is the person's and lives in one machine file that hw, brain and this
+# installer all resolve (hw_permissions_resolve, bin/project-spaces.sh). Asked
+# only with a terminal, and never under --check; an existing choice is kept.
+printf '\npermissions (hw and brain launch agents with prompts skipped, or asked)\n'
+PERM_FILE="$(hw_permissions_file)"
+hw_permissions_resolve "$PERMISSIONS_OPT" || die "$PERMISSIONS_ERR"
+if [ -z "$PERMISSIONS_OPT" ] && [ ! -f "$PERM_FILE" ] && [ -z "${HW_PERMISSIONS:-}" ] && [ "$CHECK" = 0 ] && [ -t 1 ] \
+   && { [ -n "$ASK_FD" ] || open_terminal; }; then
+  say "skip (recommended): Claude Code runs with --dangerously-skip-permissions and OpenCode with --auto, so executors"
+  say "never stop on a prompt. ask: those flags are left off, and an unattended executor WAITS for a person on every prompt."
+  PERMISSIONS_ANS=""
+  ask PERMISSIONS_ANS "permissions" "skip" is_perm
+  PERMISSIONS_OPT="${PERMISSIONS_ANS:-skip}"
+  hw_permissions_resolve "$PERMISSIONS_OPT"
+fi
+if [ "$CHECK" = 1 ]; then
+  say "permissions: $PERMISSIONS ($PERMISSIONS_SRC) — --check writes nothing"
+elif [ -n "$PERMISSIONS_OPT" ]; then
+  mkdir -p "${PERM_FILE%/*}" && printf '%s\n' "$PERMISSIONS_OPT" > "$PERM_FILE" || die "could not write $PERM_FILE"
+  chg "permissions: $PERMISSIONS_OPT written to $PERM_FILE"
+else
+  say "permissions: $PERMISSIONS ($PERMISSIONS_SRC) — change with install.sh --permissions ask|skip, or hw --permissions ask|skip"
+fi
+
 # engram: DECLARED, NOT INSTALLED. Wiring it into Claude Code is engram's own
 # `engram setup claude-code`, which writes into the user's Claude config by its
 # own rules — outside the list of files this installer says it writes, and a
@@ -729,7 +787,7 @@ if isinstance(st, dict):
     else:
         cmds = [h.get("command", "") for g in hooks.get("Stop", []) if isinstance(g, dict)
                 for h in g.get("hooks", []) if isinstance(h, dict)]
-        theirs = [c for c in cmds if "hw-stop-hook.sh" in c and c != stop_cmd]
+        theirs = [c for c in cmds if "hw-stop-hook.sh" in c and c != stop_cmd]  # MUTATION-ANCHOR: 187-M01
         if theirs:
             out["refuse"].append("%s already runs another brain's Stop hook (%s) — one user, one brain; remove it or install into that brain"
                                  % (settings, theirs[0]))
@@ -1125,7 +1183,7 @@ pane = {"repo": repo, "worktrees": repo, "write_here": "your task's own worktree
 print(json.dumps({
     "comment": ["What the %s OPENCODE EXECUTOR's guard protects. Written by install.sh;"
                 " the brainer's policy is guards.json at the brain root." % lane],
-    "brain_root": brain, "product_repos": [repo],
+    "brain_root": brain, "product_repos": [repo],  # MUTATION-ANCHOR: 198-M01
     "defaults": {"git_tail": tail,
                  "redirect_tail": "If you were only reading and the '>' is part of a search pattern, keep the checkout's absolute path out of the command."},
     "lanes": {"brain": pane, lane: pane}}, indent=2))

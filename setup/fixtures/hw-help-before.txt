@@ -212,6 +212,18 @@ ENVIRONMENT
 ADVANCED
     Mechanisms a brain can opt into. A new install needs none of them.
 
+  PERMISSIONS
+    --permissions <ask|skip>
+                       skip (recommended, and the default): Claude Code gets
+                       --dangerously-skip-permissions, OpenCode --auto, Codex keeps
+                       its own approval_policy. ask: none of those flags, so every
+                       permission prompt stays on; an unattended executor then waits
+                       on it and a person must answer in its pane. Order: the flag,
+                       HW_PERMISSIONS, the machine file ~/.config/hw/permissions
+                       (one word; install.sh --permissions writes it), the default.
+                       The manifest's `permissions` line says which and from where.
+                       A running pane keeps what it launched with.
+
   ACCOUNTS
     --account <name>   default | personal. Which Claude Code account the executor
                        runs under (CLAUDE_CONFIG_DIR). A lane's own default is

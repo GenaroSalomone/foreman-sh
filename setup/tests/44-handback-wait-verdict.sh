@@ -28,12 +28,7 @@ case "$out" in *"HAND-BACK REFUSED"*"no wait was started"*"done-invoker --blocke
 # copy from $ROOT, the working tree, like every ungated arm here. See
 # setup/tests/46-mutation-arms-are-not-gated.sh and setup/mutation-coverage.
   M1="$TMP/m1"; mkdir -p "$M1"; cp "$BIN"/* "$M1/" 2>/dev/null || true
-  python3 - "$M1/hw" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read(); old='if [ "$turn_state" = handback_refused ]; then'; new='if [ "$turn_state" = never_handback_refused ]; then'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
+  mutate_anchor 44-M01 "$M1/hw" 'if [ "$turn_state" = never_handback_refused ]; then'
   chmod +x "$M1/hw"
   mout="$(run_wait "$M1/hw" || true)"
   # KILLED BY WHAT THE MUTANT DID INSTEAD. Removing the handback verdict does not

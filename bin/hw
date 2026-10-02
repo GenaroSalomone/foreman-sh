@@ -648,69 +648,25 @@ _executor_state_dir() {
   printf '%s/.hw/%s' "$HW_WORKDIR" "$HW_RUN"
 }
 
+# Is this `pending-reply-N` a delivered hold for THIS run, pane and vendor? One
+# validator, bin/holdfacts, shared with hw-reconcile. Exit 1 is "not a valid
+# hold" (the reason is dropped: this is a predicate run over every file in the
+# state dir); any other exit means the validator itself did not run, and that
+# is named, because an invalid-by-accident hold lets an executor end its turn
+# with a reply still owed.
 _executor_reply_facts_valid() {
-  local file="$1"
-  HOLD_FILE="$file" HOLD_RUN="${HW_RUN:-}" HOLD_PANE="${HERDR_PANE_ID:-}" \
-    HOLD_VENDOR="${HW_EXECUTOR_VENDOR:-}" python3 - <<'PY'
-import os
-import re
-from pathlib import Path
-
-path = Path(os.environ["HOLD_FILE"])
-try:
-    rows = path.read_text(encoding="utf-8").splitlines()
-except OSError:
-    raise SystemExit(1)
-
-facts = {}
-for row in rows:
-    if "=" not in row:
-        raise SystemExit(1)
-    key, value = row.split("=", 1)
-    if not key or key in facts:
-        raise SystemExit(1)
-    facts[key] = value
-
-required = {"version", "state", "intent", "route", "target", "logical_id", "pane", "run"}
-if set(facts) != required:
-    raise SystemExit(1)
-
-run = os.environ["HOLD_RUN"]
-pane = os.environ["HOLD_PANE"]
-vendor = os.environ["HOLD_VENDOR"]
-if not run or not pane:
-    raise SystemExit(1)
-if facts["version"] != "1" or facts["state"] != "delivered":
-    raise SystemExit(1)
-if facts["run"] != run or facts["pane"] != pane:
-    raise SystemExit(1)
-
-intent = facts["intent"]
-kind = {"answer": "ask", "ruling": "challenge"}.get(intent)
-if kind is None:
-    raise SystemExit(1)
-prefix = re.escape(run) + r"(?::t(?:[2-9]|[1-9][0-9]+))?"
-if not re.fullmatch(prefix + rf":{kind}:[1-9][0-9]*:reply", facts["logical_id"]):
-    raise SystemExit(1)
-
-route = facts["route"]
-target = facts["target"]
-if route == "herdr":
-    if target != pane:
-        raise SystemExit(1)
-elif route in {"opencode", "codex"}:
-    if route != vendor or not target:
-        raise SystemExit(1)
-else:
-    raise SystemExit(1)
-PY
+  local err rc=0
+  err="$("$HW_BIN_DIR/holdfacts" check "$1" --run "${HW_RUN:-}" --pane "${HERDR_PANE_ID:-}" \
+    --vendor "${HW_EXECUTOR_VENDOR:-}" 2>&1)" || rc=$?
+  [ "$rc" -le 1 ] || printf 'hw: holdfacts did not run for %s (exit %s): %s\n' "$1" "$rc" "$err" >&2
+  return "$rc"
 }
 
 _executor_pending_reply() {
   local state_dir="$1" file intent
   for file in "$state_dir"/pending-reply-*; do
     [ -f "$file" ] || continue
-    if ! _executor_reply_facts_valid "$file"; then
+    if ! _executor_reply_facts_valid "$file"; then # MUTATION-ANCHOR: 43-M07
       continue
     fi
     intent="$(awk -F= '$1=="intent" {print substr($0, index($0,"=")+1); exit}' "$file" 2>/dev/null || true)"
@@ -961,7 +917,7 @@ cmd_executor_turn_end() {
   # branch took EVERY turn end of a chained task 2+ once task 1 had reported,
   # and returned before the queued-ruling delivery below: a ruling for task N
   # could never land. MEASURED 2026-09-28 (setup/decisions.md).
-  if [ -f "$(_run_done_marker "$state_dir")" ] && [ ! -f "$(_run_reopened_marker "$state_dir")" ]; then
+  if [ -f "$(_run_done_marker "$state_dir")" ] && [ ! -f "$(_run_reopened_marker "$state_dir")" ]; then  # MUTATION-ANCHOR: 203-M02 # MUTATION-ANCHOR: 43-M03
     rm -f "$state_dir/handback-refused" 2>/dev/null || true
     # COUNT WHAT HAPPENS AFTER THE REPORT — hw was blind in exactly the window
     # where the damage is done. This branch used to return here and publish
@@ -1017,7 +973,7 @@ cmd_executor_turn_end() {
     fi
     case "$post" in ''|*[!0-9]*) post=0 ;; esac
     [ "$post_seq" = "$cur_seq" ] || post=0
-    post=$((post + 1))
+    post=$((post + 1))  # MUTATION-ANCHOR: 150-M04
     printf '%s %s\n' "$cur_seq" "$post" > "$state_dir/turns-post-report" 2>/dev/null || true
     [ ! -r "$state_dir/turns" ] || turns="$(tr -dc '0-9' < "$state_dir/turns" 2>/dev/null || true)"
     case "$turns" in ''|*[!0-9]*) turns=0 ;; esac
@@ -1064,7 +1020,7 @@ cmd_executor_turn_end() {
   # let the executor act on a correction its brainer has already corrected.
   _load_state_witness
   local ruling
-  if ruling="$(ruling_queue_claim_all "$state_dir" turn-end)"; then
+  if ruling="$(ruling_queue_claim_all "$state_dir" turn-end)"; then  # MUTATION-ANCHOR: 133-M02
     if [ -n "$ruling" ]; then
       _executor_turn_publish ended_with_ruling "$turns" ruling "${ruling:0:80}"
       if [ "$hook_json" = 1 ]; then
@@ -1085,7 +1041,7 @@ PY
   # the run root for task 1, t<N>/ after `hw next`). Read there: since chained
   # task turn ends reach this path, a root-only read refused a legal wait.
   local task_dir; task_dir="$(_run_done_marker "$state_dir")"; task_dir="${task_dir%/done}"
-  hold="$(_executor_pending_reply "$task_dir" || true)"
+  hold="$(_executor_pending_reply "$task_dir" || true)" # MUTATION-ANCHOR: 43-M02
   if [ -n "$hold" ]; then
     hold_intent="${hold%%$'\t'*}"
     rm -f "$state_dir/handback-refused" 2>/dev/null || true
@@ -1093,7 +1049,7 @@ PY
     return 0
   fi
 
-  if [ -r "$state_dir/human-boundary" ]; then
+  if [ -r "$state_dir/human-boundary" ]; then # MUTATION-ANCHOR: 43-M04
     boundary="$(tr '\n' ' ' < "$state_dir/human-boundary" 2>/dev/null || true)"
     rm -f "$state_dir/human-boundary" "$state_dir/handback-refused" 2>/dev/null || true
     _executor_turn_publish ended_human_boundary "$turns" human_boundary "${boundary:0:80}"
@@ -1118,7 +1074,7 @@ import os
 print(json.dumps({"decision": "block", "reason": os.environ["REASON"]}, separators=(",", ":")))
 PY
   fi
-  return 8
+  return 8 # MUTATION-ANCHOR: 43-M01
 }
 
 # ── Port allocation ─────────────────────────────────────────────────────────
@@ -1375,12 +1331,12 @@ base_env = {k: os.environ[k] for k in
              "HW_PORT_WEB", "HW_PORT_API",
              "HW_REVIEW_BASE_REF", "HW_REVIEW_BASE_BRANCH",
              "AGENT_BROWSER_NAMESPACE", "HW_BROWSER_PROFILE",
-             "CLAUDE_CONFIG_DIR",
+             "CLAUDE_CONFIG_DIR",  # MUTATION-ANCHOR: 122-M01
              "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS",
              # --effort for opencode. hw exports these only when THIS dispatch
              # built an overlay, and unsets them otherwise — see
              # _export_opencode_overlay — so a brainer's own value never rides in.
-             "OPENCODE_CONFIG_CONTENT",
+             "OPENCODE_CONFIG_CONTENT",  # MUTATION-ANCHOR: 199-M01
              "HW_OPENCODE_EFFORT", "HW_OPENCODE_EFFORT_AGENT",
              "OPENCODE_CONFIG")
             if os.environ.get(k)}
@@ -1626,7 +1582,7 @@ _check_sandbox() {
   SANDBOX_LINE=""
   [ "${SANDBOX:-0}" = 1 ] || return 0
   local why
-  why="$("$HW_BIN_DIR/hw-sandbox" supported 2>&1)" || die "--sandbox refused: $why NOTHING was built."
+  why="$("$HW_BIN_DIR/hw-sandbox" supported 2>&1)" || die "--sandbox refused: $why NOTHING was built."  # MUTATION-ANCHOR: 321-M01
   [ "$AGENT" = claude ] || die "--sandbox refused: it is measured for claude only, and this dispatch runs $AGENT. Dispatch with --agent claude, or without --sandbox. NOTHING was built."
   SANDBOX_LINE="on ($SANDBOX_SRC) — Seatbelt hard profile: writes only in the workdir, artifacts, TMPDIR and the agent's own state; no unix sockets (herdr, docker, ssh-agent); ~/.ssh, ~/.config/gh, ~/.docker unreadable. Reports leave through the outbox broker. TCP is NOT confined."
 }
@@ -1759,7 +1715,7 @@ _trust_dir() {
   # `$CFG_DIR/.claude.json` under a redirect; the unredirected default keeps the
   # legacy `~/.claude.json`, which is the file Claude Code reads when
   # CLAUDE_CONFIG_DIR is unset.
-  [ -z "${ACCOUNT_CONFIG_DIR:-}" ] || cfg="$ACCOUNT_CONFIG_DIR/.claude.json"
+  [ -z "${ACCOUNT_CONFIG_DIR:-}" ] || cfg="$ACCOUNT_CONFIG_DIR/.claude.json"  # MUTATION-ANCHOR: 122-M03
   [ -f "$cfg" ] || return 0
   cp "$cfg" "$cfg.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || { warn "could not back up $cfg; leaving trust alone"; return 0; }
   if DIR="$dir" CFG="$cfg" python3 - <<'EOF'
@@ -2749,7 +2705,7 @@ except ValueError:
     print("__malformed__\tunterminated frontmatter: no closing --- found")
     raise SystemExit(0)
 known = {"agent", "model", "sdd", "placement", "worktree", "database", "invoker",
-         "requires", "requires-agents", "kind", "base", "decision", "delivery",
+         "requires", "requires-agents", "kind", "base", "decision", "delivery",  # MUTATION-ANCHOR: 159-M04
          "boundary", "deployed_check", "sandbox"}
 # What was asked for, read by _check_requested rather than compared.
 known |= {"requested_by", "asked"}
@@ -3151,7 +3107,7 @@ if sys.argv[1] == "dir":
                 text = open(path, encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
-            entries.append((declared(text) or f[:-3], path))
+            entries.append((declared(text) or f[:-3], path))  # MUTATION-ANCHOR: 177-M01
 else:
     repo, ref, sub = sys.argv[2:5]
     ls = subprocess.run(["git", "-C", repo, "ls-tree", "--name-only", "%s:%s" % (ref, sub)],
@@ -3163,7 +3119,7 @@ else:
         show = subprocess.run(["git", "-C", repo, "show", spec],
                               capture_output=True, text=True, errors="replace")
         if show.returncode == 0:
-            entries.append((declared(show.stdout) or f[:-3], spec))
+            entries.append((declared(show.stdout) or f[:-3], spec))  # MUTATION-ANCHOR: 177-M02
 for name, source in entries:
     print("%s\t%s" % (name, source))
 PY
@@ -3205,7 +3161,7 @@ _opencode_project_config_agent() {  # $1 = name, $2 = config path or ref:path, $
   # An entry with no `mode` only overrides a built-in or user agent (route-
   # optimization's `build`/`plan` set just a model), so its mode is not this
   # file's to state: fall through to the definitions hw read before.
-  printf '%s' "$json" | jq -e --arg a "$name" '.agent[$a] | type == "object" and has("mode")' >/dev/null 2>&1 || return 1
+  printf '%s' "$json" | jq -e --arg a "$name" '.agent[$a] | type == "object" and has("mode")' >/dev/null 2>&1 || return 1  # MUTATION-ANCHOR: 177-M04
   mode="$(printf '%s' "$json" | jq -r --arg a "$name" '.agent[$a].mode' 2>/dev/null)" || return 2
   case "$mode" in primary|subagent|all) ;; *) return 2 ;; esac
   printf '%s\t%s' "$mode" "$conf"
@@ -3258,7 +3214,7 @@ _opencode_project_agent() {  # $1 = name; prints "mode<TAB>source"
   _opencode_project_config_agent "$name" "$task_dir/opencode.json"; status=$?
   [ "$status" = 1 ] || return "$status"
   if [ "$agents_from" = checkout ] && [ "${WANT_WT:-1}" = 1 ] && [ -n "$oc_project_dir" ]; then
-    _opencode_project_config_agent "$name" "$oc_project_dir/opencode.json"; status=$?
+    _opencode_project_config_agent "$name" "$oc_project_dir/opencode.json"; status=$?  # MUTATION-ANCHOR: 177-M03
     [ "$status" = 1 ] || return "$status"
   fi
   if [ "$agents_from" = base ] && [ "${WANT_WT:-1}" = 1 ] && [ -n "$oc_project_dir" ]; then
@@ -3693,7 +3649,7 @@ _model_suggested() {  # the model this task's DECLARATIONS argue for
   # three times. A note that argues against a declared floor is the push the
   # floor exists to remove.
   local floor; floor="$(project_model_floor "${PROJ:-}")"
-  if [ -n "$MODEL_WHY" ] || [ "$floor" = opus ]; then printf 'opus'; else printf 'sonnet'; fi
+  if [ -n "$MODEL_WHY" ] || [ "$floor" = opus ]; then printf 'opus'; else printf 'sonnet'; fi  # MUTATION-ANCHOR: 159-M02
 }
 
 # The manifest annotation for the model field: empty when there is nothing to
@@ -4011,14 +3967,18 @@ _check_model_floor() {
 # Validate auditable SHAPE only, never evidence truth or semantic support.
 _check_brief_measured_evidence() {
   [ -n "${BRIEF:-}" ] || return 0
+  # MUTATION-ANCHOR: 38-M14
   HW_MEASURED_BRIEF="$BRIEF" python3 - <<'PY' || die "brief $BRIEF has an invalid ## MEASURED block. Accepted: Claim: ... then exactly one of Evidence-Command: ... plus an immediate fenced transcript with a \$ command and literal output; Evidence-Report: engram #<numeric-id>; Evidence-Receipt: <project>:<task> key=<named-key>; Evidence-File: <path>:<line-or-range> plus an immediate fenced quote. This lint checks shape, adjacency, and auditable identity only — not authenticity, freshness, semantic support, causality, completeness, or omitted contradictions."
+  # MUTATION-ANCHOR-END: 38-M14
 import os, re, sys
 path = os.environ["HW_MEASURED_BRIEF"]
 lines = open(path, encoding="utf-8").read().splitlines()
 def fail(n, msg):
     print(f"hw: {path}:{n}: {msg}", file=sys.stderr); raise SystemExit(1)
 i = 0
+# MUTATION-ANCHOR: 38-M01
 while i < len(lines):
+# MUTATION-ANCHOR-END: 38-M01
     if lines[i].strip() != "## MEASURED": i += 1; continue
     section_line = i + 1; i += 1; body = []
     while i < len(lines) and not re.match(r"^##(?:\s|$)", lines[i]):
@@ -4031,25 +3991,47 @@ while i < len(lines):
         while p < len(body) and not body[p][1].strip(): p += 1
         if p >= len(body): break
         n, claim = body[p]
+        # MUTATION-ANCHOR: 38-M06
         if not re.match(r"^Claim:\s+\S", claim): fail(n, "expected Claim: ...; prose, headings, citations, bare commands, and bare paths do not count")
+        # MUTATION-ANCHOR-END: 38-M06
         p += 1
+        # MUTATION-ANCHOR: 38-M07
         if p >= len(body) or not body[p][1].strip(): fail(n, "Claim needs an immediately adjacent Evidence-* carrier")
+        # MUTATION-ANCHOR-END: 38-M07
         en, ev = body[p]; p += 1
+        # MUTATION-ANCHOR: 38-M03
         if re.fullmatch(r"Evidence-Report:\s+engram\s+#[0-9]+", ev): continue
+        # MUTATION-ANCHOR-END: 38-M03
+        # MUTATION-ANCHOR: 38-M04
         if re.fullmatch(r"Evidence-Receipt:\s+[^\s:]+:[^\s:]+\s+key=[A-Za-z0-9_.-]+", ev): continue
+        # MUTATION-ANCHOR-END: 38-M04
         kind = None
+        # MUTATION-ANCHOR: 38-M02
         if re.fullmatch(r"Evidence-Command:\s+\S.*", ev): kind = "command"
+        # MUTATION-ANCHOR-END: 38-M02
+        # MUTATION-ANCHOR: 38-M05
         elif re.fullmatch(r"Evidence-File:\s+.+:[0-9]+(?:-[0-9]+)?", ev): kind = "file"
+        # MUTATION-ANCHOR-END: 38-M05
+        # MUTATION-ANCHOR: 38-M08
         elif ev.startswith("Evidence-"): fail(en, "unknown Evidence-* carrier")
+        # MUTATION-ANCHOR-END: 38-M08
+        # MUTATION-ANCHOR: 38-M09
+        # MUTATION-ANCHOR: 38-M10
         else: fail(en, "Claim needs an immediately adjacent recognized Evidence-* carrier")
+        # MUTATION-ANCHOR-END: 38-M09
+        # MUTATION-ANCHOR-END: 38-M10
+        # MUTATION-ANCHOR: 38-M12
         if p >= len(body) or not re.match(r"^```[^`]*$", body[p][1]): fail(en, f"Evidence-{kind.title()} needs an immediately attached fenced block")
+        # MUTATION-ANCHOR-END: 38-M12
         fn = body[p][0]; p += 1; quoted = []
         while p < len(body) and body[p][1] != "```": quoted.append(body[p]); p += 1
         if p >= len(body): fail(fn, "unterminated evidence fence")
         p += 1
         if kind == "command":
             if not any(re.match(r"^\$\s+\S", t) for _, t in quoted): fail(fn, "transcript needs a `$ command` line")
+            # MUTATION-ANCHOR: 38-M11
             if not any(t.strip() and not re.match(r"^\$\s+", t) for _, t in quoted): fail(fn, "transcript needs at least one literal output line")
+            # MUTATION-ANCHOR-END: 38-M11
         elif not any(t.strip() for _, t in quoted): fail(fn, "file quote is empty")
 PY
 }
@@ -4272,7 +4254,10 @@ _build_agent_args() {
       # still in manual mode hours after the settings were fixed, because a
       # running session never re-reads them. The flag has no such gates: it is
       # the same decision, stated where the launch can be verified.
-      AGENT_ARGS="--dangerously-skip-permissions"
+      #
+      # `--permissions ask` (see hw_permissions_resolve) leaves them on: the
+      # executor then stops on every prompt, and nobody is watching its pane.
+      if [ "${PERMISSIONS:-skip}" = skip ]; then AGENT_ARGS="--dangerously-skip-permissions"; fi
       # Validate known vendor syntax, not a frozen model catalog. The observed
       # rejection of terra does not prove every future unfamiliar alias invalid.
       # Unknown aliases warn and reach the vendor; acceptance here is not proof
@@ -4332,7 +4317,8 @@ _build_agent_args() {
         die "lane $PROJ names opencode_config_dir $OPENCODE_EXECUTOR_CONFIG, but it has no plugin/deny-repo-writes.js — the executor would run unguarded. Re-run install.sh for this lane, or remove the field from projects.json"
       fi
       OPENCODE_AGENT_PORT="$(_free_channel_port)"
-      AGENT_ARGS="$AGENT_ARGS --auto --port $OPENCODE_AGENT_PORT"
+      if [ "${PERMISSIONS:-skip}" = skip ]; then AGENT_ARGS="$AGENT_ARGS --auto"; fi
+      AGENT_ARGS="$AGENT_ARGS --port $OPENCODE_AGENT_PORT"
       # OPENCODE ALWAYS GETS AN EXPLICIT PRIMARY, unless the override opts out.
       #
       # Outside a framework, a Sol primary is valuable for judgment and
@@ -4416,6 +4402,9 @@ _build_agent_args() {
       fi
       ;;
     codex)
+      # skip leaves codex's own approval_policy alone (hw never set one); ask
+      # pins it, so a machine whose ~/.codex/config.toml says `never` still asks.
+      if [ "${PERMISSIONS:-skip}" = ask ]; then AGENT_ARGS="$AGENT_ARGS -a on-request"; fi
       if [ -n "$MODEL" ]; then
         case "$MODEL" in
           */*) die "codex needs a bare model id, not opencode's provider/model form (got: $MODEL). Use --model ${MODEL##*/} with --agent codex." ;;
@@ -4915,7 +4904,7 @@ _resolve_account() {
     return 0
   fi
   local out rc=0
-  out="$(account_verify "$ACCOUNT" 2>&1)" || rc=$?
+  out="$(account_verify "$ACCOUNT" 2>&1)" || rc=$?  # MUTATION-ANCHOR: 122-M02
   if [ "$rc" != 0 ]; then
     ACCOUNT_VERDICT=refused
     ACCOUNT_REFUSAL="$(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
@@ -4957,7 +4946,7 @@ _resolve_effective_sdd_mode() {
 # Codex can list framework skill files, but its native transport has not yet
 # demonstrated that it can invoke an SDD entry and complete its flow. Do not
 # build an executor around an entry prompt that is only a claim.
-_validate_sdd_vendor_pair() {
+_validate_sdd_vendor_pair() {  # MUTATION-ANCHOR: 164-M05
   local vendor requested surface inherited
   vendor="$1"; requested="$2"; surface="$3"; inherited="${4:-}"
   _resolve_effective_sdd_mode "$requested" "$surface" "$inherited"
@@ -5078,7 +5067,7 @@ _next_dispatch_model() {
     /^[[:space:]]*model=/ {
       line = $0
       sub(/^[[:space:]]*model=/, "", line)
-      if (match(line, /  \([^()]*\)$/)) line = substr(line, 1, RSTART - 1)
+      if (match(line, /  \([^()]*\)$/)) line = substr(line, 1, RSTART - 1) # MUTATION-ANCHOR: 136-M02
       print line
       exit
     }
@@ -5118,7 +5107,7 @@ _next_dispatch_effort() {
 # would otherwise accidentally collide with something a caller actually typed.
 _reuse_flag_decision() {
   local requested="$1" measured="$2"
-  if [ -z "$measured" ]; then _REUSE_FLAG_VERDICT=unmeasurable; return 0; fi
+  if [ -z "$measured" ]; then _REUSE_FLAG_VERDICT=unmeasurable; return 0; fi # MUTATION-ANCHOR: 136-M07
   if [ "$measured" = "$requested" ]; then _REUSE_FLAG_VERDICT=match; return 0; fi
   _REUSE_FLAG_VERDICT=mismatch
 }
@@ -5246,7 +5235,7 @@ REUSE_ACCOUNT_MEASURED=0
 _reuse_measure_account() {
   REUSE_ACCOUNT_CFG=""
   REUSE_ACCOUNT_MEASURED=0
-  [ -r "$_REUSE_RUNDIR/env" ] || return 0
+  [ -r "$_REUSE_RUNDIR/env" ] || return 0 # MUTATION-ANCHOR: 136-M11
   REUSE_ACCOUNT_MEASURED=1
   REUSE_ACCOUNT_CFG="$(_run_env_value "$_REUSE_RUNDIR" CLAUDE_CONFIG_DIR || true)"
 }
@@ -5273,7 +5262,7 @@ _reuse_account_desc() {  # $1 = measured CLAUDE_CONFIG_DIR ("" = the default acc
 
 _reuse_account_field_line() {
   if [ "$REUSE_ACCOUNT_MEASURED" = 0 ]; then
-    printf "the REUSED session's own account could not be measured — %s — --account cannot change a live session" "$(_reuse_account_absence_reason)"
+    printf "the REUSED session's own account could not be measured — %s — --account cannot change a live session" "$(_reuse_account_absence_reason)" # MUTATION-ANCHOR: 136-M12
   elif [ -n "$REUSE_ACCOUNT_CFG" ]; then
     printf "the REUSED session's own: CLAUDE_CONFIG_DIR=%s (read from %s/env) — --account cannot change a live session" "$REUSE_ACCOUNT_CFG" "$(basename "$_REUSE_RUNDIR")"
   else
@@ -5389,28 +5378,28 @@ _judgment_day_applies() {
 }
 
 _judgment_day_note() {
-  printf 'CLOSING THIS CODE TASK: JUDGMENT DAY, THEN done-invoker. In this order:
+  printf 'Closing this code task: Judgment Day, then done-invoker, in this order:
 
 1. Commit per work unit as you go, on this branch, with Conventional Commit
    messages — not one commit at the end. The review target is what you
-   COMMITTED; uncommitted work is not judged and is not delivered.
+   committed; uncommitted work is not judged and is not delivered.
 2. Before done-invoker, run the judgment-day skill over
    "$(hw review-range)"..HEAD — the branch point computed NOW, so a rebase
    onto the base since dispatch does not pull other people'"'"'s commits into the
    target. If that range is empty there is nothing to judge: say so in the
    report instead. Record the judged range (base SHA..head SHA).
-   JUDGMENT DAY IS OPTIONAL. If the judgment-day skill is not among your
+   Judgment Day is optional. If the judgment-day skill is not among your
    available skills, it is not installed: there is nothing to judge with and
    nothing ESCALATED. Say "Judgment Day: not installed (optional)" in the
    report and close normally. ESCALATED means judges ran and could not converge.
-   REBASED AFTER JUDGING? Do not re-judge the whole range. Run
+   If you rebased after judging, do not re-judge the whole range. Run
    hw review-delta <judged-base> <judged-head>
    Exit 0: your own diff is the one judged, only moved — the verdict stands.
    Exit 3: it prints the files whose own diff changed; re-judge ONLY those, as
    a scoped re-judgment (it does not reset the fix-round budget). Exit 1: it
    cannot tell — judge the full range again.
 3. The skill asks before its first fix round. Nobody answers here, and nobody
-   has to: the brief that authorized this implementation IS that
+   has to: the brief that authorized this implementation is that
    authorization. Apply the fixes both judges confirmed without asking. Judges
    that contradict each other, or anything left after round two, is ESCALATED —
    report it, do not ask and do not wait.
@@ -5459,7 +5448,7 @@ _design_gate_applies() {
 }
 
 _design_judgment_note() {  # $1 = the declared boundary
-  printf 'JUDGE THE DESIGN BEFORE THE CODE. This brief declares a boundary:
+  printf 'Judge the design before the code. This brief declares a boundary:
 
     boundary: %s
 
@@ -5560,7 +5549,7 @@ _brief_preamble() {
   # report as the exit when a tool or runtime limitation prevents the work.
   local specialists preamble
   specialists="$(_specialist_agents "$HW_WORKDIR")"
-  preamble="$(printf 'CLOSE WITH done-invoker. Finishing the work is not reporting it, and neither is
+  preamble="$(printf 'Close with done-invoker. Finishing the work is not reporting it, and neither is
 answering in your own pane — your brainer cannot see this pane and will not poll
 it. Until done-invoker runs, this task reads as open to everyone else.
 
@@ -5569,18 +5558,18 @@ no answerer here — where such a tool exists at all, its answer never arrives.
 ask-invoker is the only human channel. A missing tool or runtime limitation is a
 fact to report with done-invoker --blocked, never a reason to end the turn silently.
 
-done-invoker AND ask-invoker ARE SHELL COMMANDS, in your PATH, run in a terminal.
+done-invoker and ask-invoker are shell commands in your PATH, run in a terminal.
 They are not tools, and no tool of those names exists. Run them the way you run
 any other command:
 
     done-invoker "<one paragraph: what you established, and the engram ids>"
     done-invoker --blocked "<what stopped you, and what would unblock it>"
-    ask-invoker  "<one question>"       # your brainer answers; the budget is small
+    ask-invoker  "<one question, at most 600 characters>"   # 3 per task; your brainer answers
     ask-invoker --challenge "<what the brief forbids> :: <what you observed>"
 
-If the brief forbids something you have EVIDENCE is wrong, challenge it instead
+If the brief forbids something you have evidence is wrong, challenge it instead
 of stopping — obey-or-stop are not your only two moves.
-A challenge does NOT spend an ask; it has its own budget. It needs the evidence,
+A challenge does not spend an ask; it has its own budget. It needs the evidence,
 not the opinion. Until your brainer rules, hold.
 
 If your shell cannot find them, they are at %s/done-invoker and
@@ -5632,10 +5621,12 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
   # call. Bare $PROJ died here under set -u the one time that subshell had not
   # been given a value at all (setup/tests/12-hw-next.sh, measured 2026-09-22).
   local brief_note=""
-  [ -z "${PROJ:-}" ] || brief_note="$(lane_get "$PROJ" brief_note)" || brief_note=""
+  [ -z "${PROJ:-}" ] || brief_note="$(lane_get "$PROJ" brief_note)" || brief_note=""  # MUTATION-ANCHOR: 171-M07b
+  # MUTATION-ANCHOR: 171-M03
   if [ -n "$brief_note" ]; then
     preamble="$(printf '%s\n\n%s' "$preamble" "$brief_note")"
   fi
+  # MUTATION-ANCHOR-END: 171-M03
   # THE BASE A JUDGMENT DAY TARGET IS BUILT AGAINST, ON EVERY DISPATCH THAT HAS ONE.
   #
   # GATED ON THE FACT: a base was computed, or it was not. A lane with no
@@ -5649,7 +5640,7 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
   # a paragraph about the range a judge would read is noise to it.
   if _judgment_day_applies; then
     local base_note
-    base_note="$(printf 'THE BASE A JUDGMENT DAY TARGET IS BUILT AGAINST, computed by hw at dispatch:
+    base_note="$(printf 'The base a Judgment Day target is built against, computed by hw at dispatch:
 
     HW_REVIEW_BASE_REF=%s
     HW_REVIEW_BASE_BRANCH=%s   (the branch POINT off it — git merge-base, not its tip)
@@ -5680,11 +5671,17 @@ done-invoker instead of judging it.' \
   # something to the one kind whose output is a diff.
   case "$(_brief_kind_for_close)" in
     ""|build)
-      preamble="$(printf '%s\n\n%s' "$preamble" 'A BEHAVIOUR FIX SHIPS THE TEST THAT FAILS ON THE OLD CODE. Prove it: revert
+      preamble="$(printf '%s\n\n%s' "$preamble" 'A behaviour fix ships the test that fails on the old code. Prove it: revert
 the fix, watch that test go red, restore it, watch it go green, and say so in
 the commit. An existing expectation that asserts the old behaviour is the
 defect written a second time: change it. The one exception is a refactor — it
-changes no expectation, and a refactor that does has broken something.')" ;;
+changes no expectation, and a refactor that does has broken something.
+
+Where the repo carries setup/test-hw, its fast gate (HW_TEST_GATE=fast bash
+setup/test-hw) runs the fast subjects AND the slow ones that name a path your
+branch changed against main (capped, the cut ones printed). It is still not the
+full suite and caches no full verdict, but a red it prints is yours to fix now,
+not after the merge.')" ;;
   esac
   # THE DESIGN BEFORE THE CODE, where the brief declares a boundary. Before the
   # closing, because it happens first.
@@ -5807,10 +5804,10 @@ _send_brief() {
   if [ "$SDD" = none ]; then
     if [ -n "$DISPATCH_FRAMEWORK" ] \
        && [ "$DISPATCH_FRAMEWORK" != "<undetermined>" ]; then
-      BRIEF_TEXT="$(printf 'THIS TASK RUNS OUTSIDE THE FRAMEWORK FLOW — chosen, not overlooked.\nThe directory is in %s mode, so its skills are loaded, but this task does not\nenter any part of that framework surface: do NOT run a phase command, review or\nverify flow, or orchestrator preflight. If a loaded skill demands a blocking\npreflight, it does not apply to this task: do not answer it and do not STOP on\nit. There is no change to specify or apply here. Do the work directly and close\nwith done-invoker.\n\n---\n\n%s' \
+      BRIEF_TEXT="$(printf 'This task runs outside the framework flow, by choice: it was dispatched with\n--sdd none, so the brief is the whole contract. The directory is in %s mode and\nits skills are loaded; leave their phase commands, review or verify flows and\npreflights unused here, and a skill that asks for a blocking preflight does not\napply to this task. Do the work directly and close with done-invoker.\n\n---\n\n%s' \
         "$DISPATCH_FRAMEWORK" "$BRIEF_TEXT")"
     else
-      BRIEF_TEXT="$(printf 'THIS TASK RUNS OUTSIDE THE FRAMEWORK FLOW — chosen, not overlooked.\nThe directory framework mode could not be determined, and framework skills may\nstill be loaded, but this task does not enter any part of that surface: do NOT\nrun a phase command, review or verify flow, or orchestrator preflight. If a\nloaded skill demands a blocking preflight, it does not apply to this task: do\nnot answer it and do not STOP on it. There is no change to specify or apply\nhere. Do the work directly and close with done-invoker.\n\n---\n\n%s' \
+      BRIEF_TEXT="$(printf 'This task runs outside the framework flow, by choice: it was dispatched with\n--sdd none, so the brief is the whole contract. The directory framework mode\ncould not be determined and framework skills may still be loaded; leave their\nphase commands, review or verify flows and preflights unused here, and a skill\nthat asks for a blocking preflight does not apply to this task. Do the work\ndirectly and close with done-invoker.\n\n---\n\n%s' \
         "$BRIEF_TEXT")"
     fi
     info "prompt states the flow is deliberately not entered ($DISPATCH_FRAMEWORK mode, --sdd none)"
@@ -7095,28 +7092,12 @@ cmd_log() {
 # stands, a new one is owed, and done-invoker accepts it plainly.
 _revive_die() { printf '%shw revive REFUSED:%s %s\n' "$C_ERR" "$C_0" "$*" >&2; exit 1; }
 
-# Parse a run env file into NUL-separated KEY=value records, or fail. Same
-# grammar as the writer; the decoder is the inverse of
-# `value.replace("'", "'\\''")` and nothing else.
+# A run env file as NUL-separated KEY=value records, or fail naming the line.
+# STRICT (no --lenient): a replay has to be the exact inverse of the writer, so
+# a damaged file refuses instead of replaying part of itself. bin/runenv is the
+# decoder; this is only its name here.
 _run_env_records() {  # $1 = env file
-  HW_ENV_IN="$1" python3 - <<'ENVPARSE'
-import os, re, sys
-path = os.environ["HW_ENV_IN"]
-line_re = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)='(.*)'$")
-out = []
-with open(path, encoding="utf-8") as fh:
-    for n, raw in enumerate(fh, 1):
-        line = raw.rstrip("\n")
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        m = line_re.match(line)
-        if not m:
-            sys.stderr.write("line %d is not KEY='value': %r\n" % (n, line))
-            sys.exit(2)
-        key, enc = m.group(1), m.group(2)
-        out.append("%s=%s" % (key, enc.replace("'\\''", "'")))
-sys.stdout.write("\0".join(out) + ("\0" if out else ""))
-ENVPARSE
+  "$HW_BIN_DIR/runenv" dump --nul "$1"
 }
 
 cmd_revive() {
@@ -7209,9 +7190,10 @@ cmd_revive() {
     if [ -f "$marker" ]; then info "would mark the run reopened ($(_run_reopened_marker "$rundir")): it reported done, so a revived executor reports again without --retask"
     else info "the run never reported, so nothing to reopen"; fi
     if [ "$vendor" = claude ]; then
+      hw_permissions_resolve "" || _revive_die "$PERMISSIONS_ERR"
       case " $cmd_args " in
         *" --dangerously-skip-permissions "*) info "the recorded resume already carries --dangerously-skip-permissions" ;;
-        *) info "would inject --dangerously-skip-permissions (today's machine policy, not part of the recorded resume identity): $cmd_bin $cmd_args --dangerously-skip-permissions" ;;
+        *) [ "$PERMISSIONS" = ask ] && info "permissions: ask ($PERMISSIONS_SRC) — would NOT inject --dangerously-skip-permissions" || info "would inject --dangerously-skip-permissions (today's machine policy, not part of the recorded resume identity): $cmd_bin $cmd_args --dangerously-skip-permissions" ;;
       esac
     fi
     ok "dry run — nothing created, no agent started"
@@ -7255,6 +7237,7 @@ cmd_revive() {
   _receipt_into "$rundir" revived_pane "$pane" "herdr tab create reply .result.root_pane.pane_id"
 
   AGENT_ARGS="$cmd_args"
+  hw_permissions_resolve "" || _revive_die "$PERMISSIONS_ERR"
   # INJECTED, NOT REPLAYED. `session_resume` records IDENTITY of this run —
   # `--resume <sid>` and nothing else (see _receipt_session) — never the
   # machine's CURRENT policy. `--dangerously-skip-permissions` is policy: the
@@ -7273,6 +7256,9 @@ cmd_revive() {
   # for the whole token, not a substring of some other flag.
   # The engram proxy is policy too, for codex as for claude below: its resume
   # records `resume <sid>` only, and `codex resume` takes -c.
+  if [ "$vendor" = codex ] && [ "$PERMISSIONS" = ask ]; then
+    case " $AGENT_ARGS " in *" -a "*) ;; *) AGENT_ARGS="$AGENT_ARGS -a on-request" ;; esac
+  fi
   if [ "$vendor" = codex ]; then
     case " $AGENT_ARGS " in
       *" -c mcp_servers.engram."*) ;;
@@ -7284,7 +7270,7 @@ cmd_revive() {
   if [ "$vendor" = claude ]; then
     case " $cmd_args " in
       *" --dangerously-skip-permissions "*) ;;
-      *) AGENT_ARGS="$cmd_args --dangerously-skip-permissions" ;;
+      *) [ "$PERMISSIONS" != skip ] || AGENT_ARGS="$cmd_args --dangerously-skip-permissions" ;;
     esac
     # Policy too, like the flag above: a revived product executor is guarded
     # exactly as its first launch was. (opencode's half comes back with the
@@ -7560,9 +7546,9 @@ cmd_reports() {
 # shows it, `hw reap` refuses to touch a worktree under one, and it EXPIRES, so
 # the failure mode is a preview that outlives its usefulness by hours rather
 # than one that outlives it by days because nobody remembered.
-_LEASE_MAX_H=24
+_LEASE_MAX_H=24 # MUTATION-ANCHOR: 37-M04
 _lease_seconds() {  # 90m | 2h | 4 -> seconds. Empty -> 4h.
-  local v="${1:-4h}" n u
+  local v="${1:-4h}" n u # MUTATION-ANCHOR: 37-M01
   case "$v" in
     *h) n="${v%h}"; u=3600 ;;
     *m) n="${v%m}"; u=60 ;;
@@ -7662,13 +7648,27 @@ cmd_chaining_lease_start() {
   seconds="${HW_CHAINING_LEASE_SECONDS:-}"; reason="${HW_CHAINING_LEASE_REASON:-}"; holder="${HW_CHAINING_LEASE_HOLDER:-${HW_INVOKER_PANE:-unknown}}"
   case "$seconds" in ''|*[!0-9]*) die "delivered, but chaining lease duration is absent or invalid" ;; esac
   [ -n "$reason" ] || die "delivered, but chaining lease reason is absent"
-  [ -f "$(_chaining_task_marker "$rundir" "$seq")" ] || die "refusing to start a chaining lease before task $seq has a done marker"
+  [ -f "$(_chaining_task_marker "$rundir" "$seq")" ] || die "refusing to start a chaining lease before task $seq has a done marker" # MUTATION-ANCHOR: 37-M05
   token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" || die "could not create chaining lease identity"
   now="$(date +%s)"; until=$((now + seconds)); lease="$(_chaining_lease_path "$rundir")"
   {
+    # MUTATION-ANCHOR: 37-M06
+    # MUTATION-ANCHOR: 37-M07
+    # MUTATION-ANCHOR: 37-M08
+    # MUTATION-ANCHOR: 37-M09
+    # MUTATION-ANCHOR: 37-M10
+    # MUTATION-ANCHOR: 37-M11
+    # MUTATION-ANCHOR: 37-M12
     printf 'token=%s\ntask=%s\nuntil=%s\nuntil_h=%s\nreason=%s\nholder=%s\nby=%s\ncreated=%s\nstate=live\n' \
       "$token" "$seq" "$until" "$(date -r "$until" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || printf '%s' "$until")" \
       "$reason" "$holder" "${HERDR_PANE_ID:-unknown}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    # MUTATION-ANCHOR-END: 37-M06
+    # MUTATION-ANCHOR-END: 37-M07
+    # MUTATION-ANCHOR-END: 37-M08
+    # MUTATION-ANCHOR-END: 37-M09
+    # MUTATION-ANCHOR-END: 37-M10
+    # MUTATION-ANCHOR-END: 37-M11
+    # MUTATION-ANCHOR-END: 37-M12
   } > "$lease" || die "could not write $lease"
   nohup bash -c 'sleep "$1"; exec "$2" chaining-lease-expire "$3" "$4" "$5"' _ \
     "$seconds" "$HW_BIN_DIR/hw" "$rundir" "$token" "$seq" \
@@ -7676,7 +7676,7 @@ cmd_chaining_lease_start() {
   pid=$!
   if ! kill -0 "$pid" 2>/dev/null; then rm -f "$lease"; die "could not schedule chaining lease expiry"
   fi
-  printf 'scheduler_pid=%s\n' "$pid" >> "$lease" || { kill "$pid" 2>/dev/null || true; rm -f "$lease"; die "could not record chaining lease scheduler"; }
+  printf 'scheduler_pid=%s\n' "$pid" >> "$lease" || { kill "$pid" 2>/dev/null || true; rm -f "$lease"; die "could not record chaining lease scheduler"; } # MUTATION-ANCHOR: 37-M13
   ok "chaining lease active until $(_chaining_lease_field "$rundir" until_h) — holder $holder; expiry closes the owned pane"
 }
 
@@ -7684,18 +7684,22 @@ cmd_chaining_lease_expire() {
   local rundir="$1" token="$2" seq="$3" lease kind id
   lease="$(_chaining_lease_path "$rundir")"
   _chaining_lock_take "$rundir" || die "could not acquire the run lock to expire $lease"
+  # MUTATION-ANCHOR: 37-M16
+  # MUTATION-ANCHOR: 37-M17
   if [ "$(_chaining_lease_field "$rundir" token)" != "$token" ] \
      || [ "$(_chaining_lease_field "$rundir" task)" != "$seq" ] \
      || [ "$(_chaining_current_task "$rundir")" != "$seq" ] \
      || [ ! -f "$(_chaining_task_marker "$rundir" "$seq")" ]; then
+  # MUTATION-ANCHOR-END: 37-M16
+  # MUTATION-ANCHOR-END: 37-M17
     _chaining_lock_release; exit 0
   fi
   printf 'state=expired-cleanup\nexpired_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$lease"
   if [ -r "$rundir/tab" ]; then kind=tab; id="$(tr -d '[:space:]' < "$rundir/tab")"
   elif [ -r "$rundir/workspace" ]; then kind=workspace; id="$(tr -d '[:space:]' < "$rundir/workspace")"
   else printf 'cleanup=no-owned-container\n' >> "$lease"; _chaining_lock_release; exit 0; fi
-  if _close_herdr_object "$kind" "$id" "closed expired chaining $kind $id" "$kind $id already gone"; then
-    printf 'cleanup=closed\n' >> "$lease"
+  if _close_herdr_object "$kind" "$id" "closed expired chaining $kind $id" "$kind $id already gone"; then # MUTATION-ANCHOR: 37-M14
+    printf 'cleanup=closed\n' >> "$lease" # MUTATION-ANCHOR: 37-M15
     _chaining_lock_release; exit 0
   fi
   printf 'cleanup=failed\n' >> "$lease"; _chaining_lock_release; return 1
@@ -7920,7 +7924,7 @@ _verify_at_close() {  # $1 = run directory, $2 = directory to run in, $3/$4 = pr
     warn "the $vproj suite lock could not be located — WORK is unset, so this verification runs UNSERIALISED"
     warn "if somebody else is running that lane's suite right now, these two are on the same tree"
   else
-    vlock="$(_suite_lock_dir "$vproj")"
+    vlock="$(_suite_lock_dir "$vproj")"  # MUTATION-ANCHOR: 142-M01
     if ! mkdir -p "$(dirname "$vlock")" 2>/dev/null; then
       warn "the $vproj suite lock could not be created under $WORK — this verification runs UNSERIALISED"
       warn "if somebody else is running that lane's suite right now, these two are on the same tree"
@@ -8161,7 +8165,7 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   # abstains, and the test passed for the wrong reason. setup/CLAUDE.md's own
   # rule: the stubbed path is not the path.
   local self_close=0
-  if [ -n "${HERDR_PANE_ID:-}" ] && [ "$pane" = "$HERDR_PANE_ID" ]; then
+  if [ -n "${HERDR_PANE_ID:-}" ] && [ "$pane" = "$HERDR_PANE_ID" ]; then  # MUTATION-ANCHOR: 150-M05
     self_close=1
   fi
   # AND AN UNANSWERED HERDR IS SAID OUT LOUD, NOT SWALLOWED. Blind judge A: a
@@ -8234,11 +8238,11 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
     reasons="${reasons}${reasons:+
 }  · task $seq is STRANDED: $pane published its report (done_state=undelivered) and the brainer never received it — no $(_run_done_marker "$rundir"). Closing the pane discards the only place that report can still be redelivered from." ;
   fi
-  if [ "$status" = working ] && [ "$self_close" = 0 ]; then
+  if [ "$status" = working ] && [ "$self_close" = 0 ]; then  # MUTATION-ANCHOR: 150-M01
     reasons="${reasons}${reasons:+
 }  · $pane is WORKING right now — a turn is in progress and this close would cut it mid-turn. hw dispatched no turn into it: after a report, hw next is the only re-task route and it advances the task counter first." ;
   fi
-  if [ -n "$post" ] && [ "$self_close" = 0 ]; then
+  if [ -n "$post" ] && [ "$self_close" = 0 ]; then  # MUTATION-ANCHOR: 150-M02
     reasons="${reasons}${reasons:+
 }  · $post turn(s) ended in $pane AFTER its report, and hw dispatched none of them. Somebody is talking to this pane." ;
   fi
@@ -8333,7 +8337,7 @@ cmd_done() {
   main="$(_lane_main_checkout "$proj")"
   wt="$(_lane_wt_dir "$proj" "$task")"
   [ -n "$wt" ] || wt="$WORK/$proj/$task"
-  branch="$(_lane_branch "$proj" "$task")"
+  branch="$(_lane_branch "$proj" "$task")"  # MUTATION-ANCHOR: 140-M06
 
   # Capture first: close verification can run for 900 seconds, and the live pane
   # is the only source for an old report that went to the wrong brainer.
@@ -8415,7 +8419,7 @@ cmd_done() {
   # in the room knew the command. It costs one line, and the only moment it is
   # useful is the moment before.
   _done_revive_pre="$(_done_revive_line "$proj" "$task" "$done_rundir")"
-  [ -z "$_done_revive_pre" ] || info "$_done_revive_pre"
+  [ -z "$_done_revive_pre" ] || info "$_done_revive_pre"  # MUTATION-ANCHOR: 150-M03
   _HERDR_CLOSE_RESULT=""
   if [ -n "$tab" ]; then
     _close_herdr_object tab "$tab" \
@@ -9474,7 +9478,7 @@ _workdir_disposition() {  # <project> <dir>
     fi
     return 0
   fi
-  if [ "$rc" != 128 ]; then
+  if [ "$rc" != 128 ]; then  # MUTATION-ANCHOR: 18-M02
     WD_VERDICT=undetermined
     WD_WHY="git rev-parse --show-toplevel exited $rc in $dir, so whether git owns this directory was never established — 128 is the only exit that means 'not a repository'"
     return 0
@@ -9502,7 +9506,7 @@ _workdir_disposition() {  # <project> <dir>
   fi
 
   # WHAT THE TASK PRODUCED, read from where the task was TOLD to put it.
-  adir="$(_artifacts_dir_for "$proj" "$dir")"
+  adir="$(_artifacts_dir_for "$proj" "$dir")"  # MUTATION-ANCHOR: 18-M01
   if [ -d "$adir" ]; then
     files="$(fd -H -t f . "$adir" 2>/dev/null)" || frc=$?
     # fd exits 0 with no output when nothing matches; 1 is tolerated for the
@@ -9907,7 +9911,7 @@ _check_reusable_executor() {
     marker="$(_run_done_marker "$rundir")"
     [ -f "$marker" ] || continue  # not reported yet — hw next's job, not this check's
     local mode=""
-    [ -r "$rundir/env" ] && mode="$(sed -n "s/^HW_LAUNCH_MODE='\(.*\)'\$/\1/p" "$rundir/env" | head -1)"
+    mode="$(_run_env_value "$rundir" HW_LAUNCH_MODE || true)"
     local why="" lease_live=0 prior_task="" lease_reason=""
     _chaining_lease_live "$rundir" && lease_live=1
     # A LIVE CHAINING LEASE, AND NOTHING ELSE. A reported `--here` run used to
@@ -9944,7 +9948,7 @@ _check_reusable_executor() {
       # have offered it.
       _REUSE_DISCARDED="${_REUSE_DISCARDED}${_REUSE_DISCARDED:+
 }discarded pane $pane (prior task ${candidate_task:-unknown}, reported, launch mode ${mode:-unrecorded}): no live chaining lease, so nobody declared it re-taskable and it may have a human in it. --keep-pane <duration> --why \"<why you are coming back>\" at ITS launch is what makes a pane reusable."
-      continue
+      continue  # MUTATION-ANCHOR: 71-M01
     fi
     _REUSE_PANE="$pane"
     _REUSE_RUNDIR="$rundir"
@@ -9955,7 +9959,7 @@ _check_reusable_executor() {
     # reusable executor found in this lane (default)" — a field stating the
     # opposite of what the same command was about to do. It was invisible while
     # the reuse route printed no manifest at all; printing one exposed it.
-    _REUSE_LINE="pane $pane selected (prior task ${candidate_task:-unknown}; $why)"
+    _REUSE_LINE="pane $pane selected (prior task ${candidate_task:-unknown}; $why)"  # MUTATION-ANCHOR: 123-M02
     prior_task="$candidate_task"
     [ -n "$prior_task" ] || prior_task="$(printf '%s' "$info" | jq -r '.result.agent.tokens.hw_task // empty' 2>/dev/null || true)"
     [ -n "$prior_task" ] || prior_task="$(_run_env_value "$rundir" HW_TASK || true)"
@@ -10116,7 +10120,7 @@ _route_forecast_check() {  # $1=project $2=task $3=route-now $4=detail-now
     info "a route forecast for $1:$2 existed but is ${age}s old (limit ${HW_ROUTE_FORECAST_TTL}s); it was discarded, and this launch is not bound by it"
     return 0
   fi
-  if [ "$recorded" = "$3" ]; then
+  if [ "$recorded" = "$3" ]; then  # MUTATION-ANCHOR: 71-M05
     info "route matches the dry run ${age}s ago: $recorded"
     return 0
   fi
@@ -10148,24 +10152,24 @@ _next_autoclosed_run_for_pane() {
 $_derived"
   fi
   roots="${HW_NEXT_EVIDENCE_ROOTS:-$_default_roots}"
-  HW_NEXT_PANE="$pane" HW_NEXT_ROOTS="$roots" python3 - <<'PYEOF' 2>/dev/null || true
-import json, os
+  HW_NEXT_PANE="$pane" HW_NEXT_ROOTS="$roots" HW_RUNENV="$HW_BIN_DIR/runenv" python3 - <<'PYEOF' 2>/dev/null || true
+import importlib.machinery, importlib.util, json, os, sys
 
+sys.dont_write_bytecode = True  # never a __pycache__ beside bin/runenv
 pane = os.environ["HW_NEXT_PANE"]
 roots = [r for r in os.environ.get("HW_NEXT_ROOTS", "").split("\n") if r]
 
+# bin/runenv is the one reader of a run's env file; loaded, not re-implemented.
+_loader = importlib.machinery.SourceFileLoader("runenv", os.environ["HW_RUNENV"])
+runenv = importlib.util.module_from_spec(importlib.util.spec_from_loader("runenv", _loader))
+_loader.exec_module(runenv)
+
 def env_value(path, key):
     try:
-        lines = open(path, encoding="utf-8").read().splitlines()
-    except OSError:
+        values = runenv.read(path, lenient=True, bare=True)
+    except runenv.Unusable:
         return None
-    for line in lines:
-        if line.startswith(key + "="):
-            value = line.split("=", 1)[1].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
-            return value
-    return None
+    return None if values is None else values.get(key)
 
 def receipt_pane(path):
     found = None
@@ -10237,29 +10241,22 @@ _next_missing_pane_message() {
 #
 # A dispatch's environment is the durable bridge between the brainer that
 # launched an executor and the brainer process that later calls `hw next`.
-# Never source it: the format is deliberately narrow, and this reads only the
-# decimal wait value we own.
+# Never source it: the format is deliberately narrow. bin/runenv reads it, and
+# this keeps only the decimal wait value we own.
 _next_wait_from_run() {
-  local rundir="$1" key value
-  [ -r "$rundir/env" ] || return 1
-  while IFS='=' read -r key value; do
-    [ "$key" = HW_NEXT_WAIT_MS ] || continue
-    value="${value#\'}"; value="${value%\'}"
-    case "$value" in ''|*[!0-9]*) return 1 ;; esac
-    printf '%s' "$value"
-    return 0
-  done < "$rundir/env"
-  return 1
+  local value
+  value="$(_run_env_value "$1" HW_NEXT_WAIT_MS)" || return 1
+  case "$value" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$value"
 }
 
+# `_run_env_value <rundir> <KEY>` — one value of a run's env file, read by
+# bin/runenv (the only reader of that file). Returns 1 when the file or the key
+# is absent, 2 when the file is damaged (runenv names the line on stderr).
+# --bare: this is read for runs of any age, so a bare KEY=value is taken as
+# its text rather than refused.
 _run_env_value() {
-  local rundir="$1" want="$2" key value
-  [ -r "$rundir/env" ] || return 1
-  while IFS='=' read -r key value; do
-    [ "$key" = "$want" ] || continue
-    value="${value#\'}"; value="${value%\'}"; printf '%s' "$value"; return 0
-  done < "$rundir/env"
-  return 1
+  "$HW_BIN_DIR/runenv" --bare get "$1/env" "$2"
 }
 
 # _next_busy_message <pane> <wait_ms> <info_json>
@@ -10349,7 +10346,7 @@ _next_finished_stale_stuck() {
     .result.agent.agent_status == "blocked"
     and .result.agent.tokens.blocked_reason == "stuck"
     and ((.result.agent.tokens.done_status == "done") or (.result.agent.tokens.done_status == "blocked"))
-    and .result.agent.tokens.done_state == "delivered"
+    and .result.agent.tokens.done_state == "delivered"  # MUTATION-ANCHOR: 72-M01 # MUTATION-ANCHOR: 12-M02
   ' >/dev/null 2>&1
 }
 
@@ -10481,7 +10478,7 @@ _pane_context() {  # $1 = pane
   # than a token count assembled from fragments. Widening it to stitch two lines
   # together would trade the contract for a figure whose provenance nobody can
   # check.
-  line="$(printf '%s' "$out" | sed 's/\xc2\xa0/ /g' | grep -E 'Ctx Used:' | tail -1 || true)"
+  line="$(printf '%s' "$out" | sed 's/\xc2\xa0/ /g' | grep -E 'Ctx Used:' | tail -1 || true)"  # MUTATION-ANCHOR: 138-M01
   [ -n "$line" ] || { printf 'no-statusline\t\t'; return 0; }
   printf '%s' "$line" | awk '
     {
@@ -10584,7 +10581,7 @@ _suite_lock_dir() { printf '%s/.locks/suite-%s' "$WORK" "$1"; }
 # The lock stays for every other lane, including those that share one tree.
 # Declared per lane in projects.json as `"suite_lock": "none"`; absent or
 # `"lane"` keeps the lock.
-_suite_lane_pooled() { [ "$(lane_get "$1" suite_lock || true)" = none ]; }
+_suite_lane_pooled() { [ "$(lane_get "$1" suite_lock || true)" = none ]; }  # MUTATION-ANCHOR: 139-M03
 
 # The identity of a running process, in a form that survives pid reuse. `ps -o
 # lstart=` is what channel-send uses for the same question; keeping the same
@@ -10621,10 +10618,10 @@ _suite_holder_alive() {  # <lockdir>
       # be read lets two runners into the same tree, which is the incident this
       # whole command exists to prevent. channel-send's delivery lock annotates
       # the identical construct for the identical reason.
-      [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null || true)" ] || return 0  # lint-shell: measured-elsewhere
+      [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null || true)" ] || return 0  # MUTATION-ANCHOR: 139-M02  # lint-shell: measured-elsewhere
       return 1 ;;
   esac
-  kill -0 "$owner" 2>/dev/null || return 1
+  kill -0 "$owner" 2>/dev/null || return 1  # MUTATION-ANCHOR: 139-M01
   start="$(cat "$lock/owner.start" 2>/dev/null || true)"
   # No recorded start means an older writer, or a holder caught mid-claim.
   # `kill -0` alone is the weaker answer, and the weaker answer here is the
@@ -10891,7 +10888,7 @@ _next_message() {
   preamble="$(
     BRIEF="$brief_path"
     HW_WORKDIR="$wtdir"
-    ENGRAM_PROJECT="$(_run_env_value "$rundir" ENGRAM_PROJECT 2>/dev/null || printf brain)"
+    ENGRAM_PROJECT="$(_run_env_value "$rundir" ENGRAM_PROJECT 2>/dev/null || printf brain)"  # MUTATION-ANCHOR: 12-M04
     # THE BASE, READ BACK RATHER THAN RECOMPUTED, for the reason the header of
     # this block already gives: `hw next` runs in the BRAINER process, where
     # neither PROJ nor a worktree path belongs to the executor. It is also the
@@ -10913,7 +10910,7 @@ _next_message() {
     # --report-to re-task belongs to a different lane entirely. This is what
     # lets _brief_preamble's one-lane-only policy line survive a
     # `hw next` re-task instead of silently dropping it.
-    PROJ="$(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || true)"
+    PROJ="$(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || true)"  # MUTATION-ANCHOR: 171-M07a
     # The engram session registered at launch, read back from the receipt. A
     # value starting with none is a failed registration, and says nothing.
     HW_ENGRAM_SESSION="$(jq -r 'select(.key=="engram_session") | .value' "$rundir/receipt.jsonl" 2>/dev/null | tail -1 || true)"
@@ -10926,7 +10923,7 @@ _next_message() {
   # end of its own substitution vanishes and two blocks run together. Same
   # reason _send_brief keeps its separators inside the format string.
   printf 'NEXT TASK (task %s of this session — the previous one is closed and reported).\nYour ask budget and your done-invoker are reset for it: report this one with\ndone-invoker when it is finished, exactly as you did the last.\n\n%s---\n\n%s\n\n---\n\n%s\n\n---\n\n%s' \
-    "$nextseq" "$entry_line" "$epistemic" "$preamble" "$text"
+    "$nextseq" "$entry_line" "$epistemic" "$preamble" "$text"  # MUTATION-ANCHOR: 12-M03
 }
 
 cmd_next() {
@@ -10963,8 +10960,10 @@ cmd_next() {
       # Accumulate and keep looping — a flag is valid in ANY position relative
       # to the task text, not just before it. `hw next <pane> "task" --dry-run`
       # used to swallow `--dry-run` into the text and dispatch for real.
+      # MUTATION-ANCHOR: 12-M01
       *)  if [ -n "$text" ]; then text="$text $1"; else text="$1"; fi
           shift ;;
+      # MUTATION-ANCHOR-END: 12-M01
     esac
   done
 
@@ -11106,7 +11105,7 @@ cmd_next() {
     chaining_seconds_dry="$(_run_env_value "$rundir" HW_CHAINING_LEASE_SECONDS || true)"
     if [ -n "$chaining_seconds_dry" ]; then
       chaining_state_dry="$(_chaining_lease_eligibility "$rundir" "$seq")"
-      if [ "$chaining_state_dry" != live ]; then
+      if [ "$chaining_state_dry" != live ]; then # MUTATION-ANCHOR: 37-M18a
         die "$(_chaining_lease_ineligible_message "$chaining_state_dry" "$seq" "$rundir")"
       fi
     fi
@@ -11283,7 +11282,7 @@ cmd_next() {
     fi
   fi
 
-  local send_rc=0
+  local send_rc=0  # MUTATION-ANCHOR: 05-M05
   if [ "$route" = opencode ]; then
     "$HW_BIN_DIR/channel-send" --require processed --id "$(basename "$rundir"):t$nextseq" \
       "$route" "$target" "$endpoint" "$msg" >/dev/null || send_rc=$?
@@ -11302,22 +11301,24 @@ cmd_next() {
   # the orchestrator — reasonably, given what hw told it — concluded the
   # executor was unreachable and closed it. Nothing proved the message had NOT
   # landed. Now the two outcomes have different exit codes and different words.
-  if [ "$send_rc" = 4 ] && [ "$route" = opencode ]; then
+  if [ "$send_rc" = 4 ] && [ "$route" = opencode ]; then  # MUTATION-ANCHOR: 05-M04
     warn "$pane ACCEPTED task $nextseq — it is in its session — but the turn it started did not complete (see the message above)."
     warn "that is a turn failure, not a delivery failure, so the counter advances: rolling it back would leave the executor holding a task its invokers do not know about."
     info "check what it did with: herdr agent read $pane --source recent-unwrapped"
   elif [ "$send_rc" != 0 ]; then
     rmdir "$rundir/t$nextseq" 2>/dev/null || true
     [ "$chaining_locked" = 0 ] || _chaining_lock_release
-    die "delivery to $pane failed via $route (exit $send_rc). The task counter was NOT advanced, so the executor is still on task $seq and its next done-invoker still refers to the task it actually ran. The pane is untouched and still usable — a failed delivery is not a reason to close an executor; fix the transport and retry."
+    die "delivery to $pane failed via $route (exit $send_rc). The task counter was NOT advanced, so the executor is still on task $seq and its next done-invoker still refers to the task it actually ran. The pane is untouched and still usable — a failed delivery is not a reason to close an executor; fix the transport and retry."  # MUTATION-ANCHOR: 71-M03
   fi
 
   # Only now. The counter is the executor's contract with its own invokers, and
   # advancing it before proven delivery is how a task gets a budget but no brief.
   if [ "$chaining_locked" = 1 ]; then
+    # MUTATION-ANCHOR: 37-M18
     printf 'state=consumed\nconsumed_at=%s\nconsumed_by=%s\n' \
       "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${HERDR_PANE_ID:-unknown}" >> "$(_chaining_lease_path "$rundir")" \
       || { _chaining_lock_release; die "task delivered, but its chaining lease could not be marked consumed; refusing to advance the counter"; }
+    # MUTATION-ANCHOR-END: 37-M18
   fi
   # THE NEW TASK'S BOUNDARY, when its brief declares one — keyed by the task
   # number, so done-invoker holds task N+1 to its own brief and not to task 1's.
@@ -11330,8 +11331,10 @@ cmd_next() {
     _receipt_into "$rundir" "design_boundary_t$nextseq" "$(_brief_boundary "$brief")" \
       "brief frontmatter boundary: in $brief at hw next — done-invoker requires an APPROVED design judgment"
   fi
+  # MUTATION-ANCHOR: 37-M19
   printf '%s\n' "$nextseq" > "$rundir/task" \
     || { [ "$chaining_locked" = 0 ] || _chaining_lock_release; die "delivered, but could not write $rundir/task — the executor is on task $nextseq and its invokers still think $seq. Write that file by hand before it reports."; }
+  # MUTATION-ANCHOR-END: 37-M19
   [ "$chaining_locked" = 0 ] || _chaining_lock_release
   ok "task $nextseq dispatched to $pane via $route (${vendor:-unknown} executor, $(printf '%s' "$msg" | wc -c | tr -d ' ') bytes)"
   info "state for it: $rundir/t$nextseq — fresh ask budget, no done marker"
@@ -11498,7 +11501,7 @@ cmd_wait_one() {
 
   local turn_state
   turn_state="$(printf '%s' "$info_json" | jq -r '.result.agent.tokens.turn_state // empty' 2>/dev/null || true)"
-  if [ "$turn_state" = handback_refused ]; then
+  if [ "$turn_state" = handback_refused ]; then  # MUTATION-ANCHOR: 44-M01
     warn "$pane ended a turn with no report, no delivered ask/challenge outstanding, and no named human-boundary exception."
     die_rc 8 "HAND-BACK REFUSED: no wait was started. The executor has every legal exit in front of it: continue working; report with \`done-invoker\`; report the blocking question with \`done-invoker --blocked \"<question and what would unblock it>\"\`; or, only for money/third-party/irreversible-outward/priority decisions, record \`hw human-boundary \"<specific boundary and why only ${HW_OPERATOR:-the operator} can decide>\"\` before ending the turn."
   fi
@@ -12152,7 +12155,7 @@ EOF
       info "keeping $kind $id — $(basename "$(dirname "$(dirname "$rundir")")") was reopened by hw revive and has not reported since"
       continue
     fi
-    if _chaining_lease_live "$rundir"; then
+    if _chaining_lease_live "$rundir"; then # MUTATION-ANCHOR: 37-M21
       info "keeping $kind $id — chaining lease until $(_chaining_lease_field "$rundir" until_h), holder $(_chaining_lease_field "$rundir" holder): $(_chaining_lease_field "$rundir" reason)"
       continue
     fi
@@ -12576,31 +12579,31 @@ def has_env(rundir):
 
 
 def _env_field(rundir, key):
-    """One `KEY='value'` line out of a run env file, unquoted, or None.
+    """One field of a run env file, or None. Read by bin/runenv, the one reader
+    of that file (hw, hw-reconcile and the invokers all ask it), `--bare` so a
+    hand-made run with unquoted values reads as before.
 
-    THE SINGLE READER FOR BOTH FIELDS, and it is single because it was double.
-    run_mode_of and invoker_pane_of carried this body byte-identical down to the
-    `.strip("'\"")`, and only invoker_pane_of had a test behind it: measured
-    2026-08-26, a mutant deleting run_mode_of's strip
-    SURVIVED the entire suite. That is what a duplicated line buys: one
-    test, two copies, and the mutant lives in the copy nobody asserted on. One
-    line now, and one mutant kills both callers.
+    THE SINGLE READER FOR BOTH FIELDS: run_mode_of and invoker_pane_of both come
+    through here, so one mutant on this function kills both callers.
 
-    `.strip()` runs before `.strip("'\"")` because hw writes `KEY='value'` but a
-    hand-made or hand-edited run directory may carry trailing whitespace or no
-    quotes at all. An empty value reads as None rather than "": to every caller
-    here, "the key is absent" and "the key is empty" are the same fact, and
-    returning "" would make `or`-chains downstream behave differently for two
-    inputs that mean the same thing."""
+    An empty value reads as None rather than "": to every caller here, "the key
+    is absent" and "the key is empty" are the same fact. A file runenv cannot
+    read is named once on stderr and also reads as None, never as a run that
+    sets nothing without a word."""
+    import importlib.machinery, importlib.util, sys
+    mod = _env_field.__dict__.get("runenv")
+    if mod is None:
+        sys.dont_write_bytecode = True
+        loader = importlib.machinery.SourceFileLoader("runenv", os.environ["HW_ST_RUNENV"])
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("runenv", loader))
+        loader.exec_module(mod)
+        _env_field.runenv = mod
     try:
-        with open(os.path.join(rundir, "env")) as fh:
-            body = fh.read()
-    except OSError:
+        values = mod.read(rundir, lenient=True, bare=True)
+    except mod.Unusable as e:
+        sys.stderr.write("hw status: %s\n" % e)
         return None
-    for line in body.split("\n"):
-        if line.startswith(key + "="):
-            return line.split("=", 1)[1].strip().strip("'\"") or None
-    return None
+    return (values or {}).get(key) or None
 
 
 def invoker_pane_of(rundir):
@@ -13656,7 +13659,7 @@ cmd_status() {
   server_started="$(_herdr_server_started)"
 
   _status_python_source |
-  HW_ST_OK="$herdr_ok" \
+  HW_ST_OK="$herdr_ok" HW_ST_RUNENV="$HW_BIN_DIR/runenv" \
   HW_ST_WS="$ws_json" HW_ST_PANES="$panes_json" HW_ST_AGENTS="$agents_json" \
   HW_ST_EXITED="$exited_ndjson" HW_ST_SERVER_STARTED="$server_started" \
   HW_ST_COLOUR="$([ -n "$C_0" ] && echo 1 || echo 0)" \
@@ -14108,6 +14111,18 @@ _usage_advanced() {
 ADVANCED
     Mechanisms a brain can opt into. A new install needs none of them.
 
+  PERMISSIONS
+    --permissions <ask|skip>
+                       skip (recommended, and the default): Claude Code gets
+                       --dangerously-skip-permissions, OpenCode --auto, Codex keeps
+                       its own approval_policy. ask: none of those flags, so every
+                       permission prompt stays on; an unattended executor then waits
+                       on it and a person must answer in its pane. Order: the flag,
+                       HW_PERMISSIONS, the machine file ~/.config/hw/permissions
+                       (one word; install.sh --permissions writes it), the default.
+                       The manifest's `permissions` line says which and from where.
+                       A running pane keeps what it launched with.
+
   ACCOUNTS
     --account <name>   default | personal. Which Claude Code account the executor
                        runs under (CLAUDE_CONFIG_DIR). A lane's own default is
@@ -14296,7 +14311,7 @@ PROJ="$(_canon_project "$1")"; TASK="$2"; shift 2
 # `(default)`, which was true and useless. That cost a worktree,
 # a dependency install, a database, a workspace and a port before a human
 # noticed. The table existed two files away.
-AGENT="$(project_default_kind "$PROJ" 2>/dev/null || printf 'claude')"
+AGENT="$(project_default_kind "$PROJ" 2>/dev/null || printf 'claude')" # MUTATION-ANCHOR: 136-M04b
 MODEL="$(project_default_model "$PROJ" 2>/dev/null || printf '')"
 MODEL_SRC=default; AGENT_EXPLICIT=0
 [ -n "$MODEL" ] && MODEL_SRC="lane default for $PROJ"
@@ -14306,15 +14321,16 @@ MODEL_SRC=default; AGENT_EXPLICIT=0
 # because the failure this replaces was a redirect that lived in a `.envrc`
 # nobody read, applied by `direnv allow`, announced nowhere.
 ACCOUNT="$(project_default_account "$PROJ" 2>/dev/null || printf 'default')"
-ACCOUNT_SRC="lane default for $PROJ"
+ACCOUNT_SRC="lane default for $PROJ" # MUTATION-ANCHOR: 136-M10b
+PERMISSIONS_FLAG=""
 WANT_DB=1; BRIEF=""; HERE=0; EFFORT=""; AGENT_ARGS=""; SDD=""
 # OFF BY DEFAULT, the inverse shape of --no-db: a product lane's QA moved to
 # staging-after-merge (decision of 2026-09-22), so a dev server hw starts by
 # default is an invitation to do exactly the local QA that was ruled out. Every
 # other lane ignores this var entirely and keeps starting its dev server
 # unconditionally.
-WANT_DEVSERVER=0; DEVSERVER_SRC=default
-WANT_REPORT=1; KEEP_PANE=0; KEEP_PANE_FOR=""; KEEP_PANE_SECONDS=""; KEEP_PANE_WHY=""
+WANT_DEVSERVER=0; DEVSERVER_SRC=default  # MUTATION-ANCHOR: 171-M01
+WANT_REPORT=1; KEEP_PANE=0; KEEP_PANE_FOR=""; KEEP_PANE_SECONDS=""; KEEP_PANE_WHY=""  # MUTATION-ANCHOR: 67-M06
 WANT_WT=1; WT_SRC=default; WT_EXPLICIT=0
 # WHICH DEFAULTS WERE ACTUALLY CHOSEN. `--sdd` got a (chosen/inherited) column on
 # 2026-08-21 and it is the reason the framework stopped being decided by accident.
@@ -14340,6 +14356,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --agent)  _need_val "$@"; AGENT="$2"; AGENT_SRC=chosen; AGENT_EXPLICIT=1; shift 2 ;;
     --account) _need_val "$@"; ACCOUNT="$2"; ACCOUNT_SRC=chosen; shift 2 ;;
+    --permissions) _need_val "$@"; PERMISSIONS_FLAG="$2"; shift 2 ;;
     --brief)  _need_val "$@"; BRIEF="$2";  shift 2 ;;
     --model)  _need_val "$@"; MODEL="$2"; MODEL_SRC=chosen; shift 2 ;;
     # The same declaration `decision:` makes in a brief, for a dispatch that has
@@ -14425,13 +14442,13 @@ while [ $# -gt 0 ]; do
     # work are real reasons to pay for a fresh executor, but they are explicit
     # and visible. --no-reuse-check keeps its old exact behaviour as an alias:
     # skipping discovery necessarily chooses a fresh session.
-    --fresh) CHECK_REUSE=0; FRESH_SOURCE="--fresh"; shift ;;
+    --fresh) CHECK_REUSE=0; FRESH_SOURCE="--fresh"; shift ;;  # MUTATION-ANCHOR: 71-M02
     --no-reuse-check) CHECK_REUSE=0; FRESH_SOURCE="--no-reuse-check (legacy alias for --fresh)"; shift ;;
     *) die "unknown option: $1" ;;
   esac
 done
 if [ "$KEEP_PANE" = 1 ]; then
-  [ -n "$KEEP_PANE_WHY" ] || die "--keep-pane needs --why \"<who or what will re-task it>\". Retention without a named holder is an unbounded leak with nicer syntax."
+  [ -n "$KEEP_PANE_WHY" ] || die "--keep-pane needs --why \"<who or what will re-task it>\". Retention without a named holder is an unbounded leak with nicer syntax." # MUTATION-ANCHOR: 37-M03
   [ "$WANT_REPORT" = 1 ] || die "--keep-pane and --no-report contradict each other: a chaining lease starts only after receiver-proved report delivery."
   case "$KEEP_PANE_WHY" in *$'\n'*) die "--why must be one line so the run env and lease records remain parseable" ;; esac
   KEEP_PANE_SECONDS="$(_lease_seconds "$KEEP_PANE_FOR")"
@@ -14510,6 +14527,7 @@ fi
 _check_model_floor
 # Before _build_agent_args: OpenCode argument construction allocates a port.
 _check_brief_measured_evidence
+hw_permissions_resolve "$PERMISSIONS_FLAG" || die "$PERMISSIONS_ERR"
 _build_agent_args
 _brain_guard_check
 _brain_guard_args
@@ -14711,7 +14729,7 @@ _deps_contending_others() {
     local rundir
     rundir="$(_next_run_dir "$cwd" 2>/dev/null || true)"
     [ -n "$rundir" ] || continue
-    [ -f "$(_run_done_marker "$rundir")" ] && continue  # reported — no longer working
+    [ -f "$(_run_done_marker "$rundir")" ] && continue  # reported — no longer working  # MUTATION-ANCHOR: 134-M02
     [ -n "$task" ] || task="$(_run_env_value "$rundir" HW_TASK 2>/dev/null || true)"
     printf 'pane %s (task %s)\n' "$pane" "${task:-unknown}"
   done <<< "$candidates"
@@ -14817,7 +14835,7 @@ _dispatch_manifest() {
     # otherwise reach the close unannounced.
     while IFS= read -r _vc; do
       [ -n "$_vc" ] || continue
-      if _verify_names_full_suite "$_vc"; then VERIFY_FULL_SUITE=1; fi
+      if _verify_names_full_suite "$_vc"; then VERIFY_FULL_SUITE=1; fi  # MUTATION-ANCHOR: 141-M01
     done <<VERIFY_CMDS_EOF
 $verify_cmds
 VERIFY_CMDS_EOF
@@ -14864,7 +14882,7 @@ VERIFY_CMDS_EOF
   # `chosen` would say a human picked it — which is the one thing this column
   # exists to distinguish. MODEL_SRC carries where it came from.
   if [ -n "$MODEL" ];  then mark="${MODEL_SRC:-chosen}"; else mark="inherited"; fi
-  local model_line="model=${MODEL:-<agent default>}  ($mark)$(_model_suggestion_note)"
+  local model_line="model=${MODEL:-<agent default>}  ($mark)$(_model_suggestion_note)"  # MUTATION-ANCHOR: 159-M01
   [ -z "${MODEL_PINNED:-}" ] || model_line="$model_line  — the lane pins the alias $MODEL to $MODEL_PINNED (projects.json model_pins), so the CLI gets --model $MODEL_PINNED"
   if [ -n "$EFFORT" ]; then mark="chosen"; else mark="inherited"; fi
   local effort_line="effort=${EFFORT:-<agent default>}  ($mark)"
@@ -14941,7 +14959,7 @@ VERIFY_CMDS_EOF
   case "$_dev" in
     always|opt-in)
       if [ "$WANT_WT" = 0 ]; then devserver_line="none — no worktree to run one in  ($WT_SRC)"
-      elif [ "$HERE" = 1 ]; then devserver_line="none — --here exits before a dev server would start  ($HERE_SRC)"
+      elif [ "$HERE" = 1 ]; then devserver_line="none — --here exits before a dev server would start  ($HERE_SRC)"  # MUTATION-ANCHOR: 171-M05  # MUTATION-ANCHOR: 171-M06
       elif [ "$_dev" = always ]; then devserver_line="always started (this lane has no opt-out)"
       elif [ "$WANT_DEVSERVER" = 1 ]; then devserver_line="$(lane_get "$PROJ" devserver_line)  ($DEVSERVER_SRC)"
       else devserver_line="$(lane_get "$PROJ" devserver_off)  ($DEVSERVER_SRC)"; fi
@@ -14969,8 +14987,10 @@ VERIFY_CMDS_EOF
     fi
   fi
   if [ "$KEEP_PANE" = 1 ]; then
+    # MUTATION-ANCHOR: 37-M02
     chaining_line="enabled — leased for ${KEEP_PANE_SECONDS}s  (chosen by --keep-pane ${KEEP_PANE_FOR:-4h}; expiry closes the pane)
   chaining why  $KEEP_PANE_WHY"
+    # MUTATION-ANCHOR-END: 37-M02
   else
     chaining_line="disabled  (default; proved reports close the owned pane)"
     # THE FIELD NAMES THE IRREVERSIBILITY, not just the setting — but only where
@@ -14980,7 +15000,7 @@ VERIFY_CMDS_EOF
     # `--here` owns no container (it writes neither .hw/<run>/tab nor
     # .hw/<run>/workspace), so its pane survives either way and this clause
     # would be a claim hw cannot support.
-    [ "$HERE" = 1 ] || chaining_line="$chaining_line — ONE-WAY FROM HERE: HW_CHAINING_ENABLED is baked into the executor's environment at spawn, so \`hw next\` cannot re-task this pane afterwards"
+    [ "$HERE" = 1 ] || chaining_line="$chaining_line — ONE-WAY FROM HERE: HW_CHAINING_ENABLED is baked into the executor's environment at spawn, so \`hw next\` cannot re-task this pane afterwards"  # MUTATION-ANCHOR: 67-M04
   fi
 
   # THE PROVIDER, SPELLED OUT. opencode already refuses a bare alias and takes
@@ -15033,6 +15053,17 @@ VERIFY_CMDS_EOF
     base_line="$(_lane_base_ref_prefix "$PROJ")$(_task_base)  ($BASE_SRC)"
   fi
 
+  # THE POLICY AND WHAT IT COSTS, in the manifest, because under `ask` the pane
+  # stops on a prompt and says nothing to the brainer.
+  local PERMISSIONS_LINE
+  case "$AGENT:$PERMISSIONS" in
+    claude:skip)   PERMISSIONS_LINE="skip  ($PERMISSIONS_SRC) — --dangerously-skip-permissions" ;;
+    opencode:skip) PERMISSIONS_LINE="skip  ($PERMISSIONS_SRC) — --auto (identical to \`opencode-auto\`)" ;;
+    codex:skip)    PERMISSIONS_LINE="skip  ($PERMISSIONS_SRC) — codex's own approval_policy applies; hw sets none" ;;
+    claude:ask)    PERMISSIONS_LINE="ask  ($PERMISSIONS_SRC) — no skip flag; the executor WAITS on every permission dialog, and nothing answers it in an unattended pane" ;;
+    opencode:ask)  PERMISSIONS_LINE="ask  ($PERMISSIONS_SRC) — no --auto; a prompt is reported blocked reason=permission, and a person has to answer it" ;;
+    codex:ask)     PERMISSIONS_LINE="ask  ($PERMISSIONS_SRC) — -a on-request; the executor WAITS on an approval nobody answers in an unattended pane" ;;
+  esac
   local provider_line
   case "$AGENT" in
     opencode)
@@ -15041,7 +15072,7 @@ VERIFY_CMDS_EOF
         else provider_line="${MODEL%%/*}  (direct, ${MODEL_SRC})"; fi
       else provider_line="<opencode default — no --model given>"; fi
       provider_line="$provider_line
-  permissions  --auto + OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true (identical to \`opencode-auto\`)
+  background  OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true (as \`opencode-auto\` sets it)
   endpoint    ${OPENCODE_AGENT_PORT:+http://127.0.0.1:}${OPENCODE_AGENT_PORT:-<not allocated>}  (this executor's own; \$HW_AGENT_ENDPOINT in its env)"
       [ -z "${OPENCODE_EXECUTOR_CONFIG:-}" ] || provider_line="$provider_line
   guard       $OPENCODE_EXECUTOR_CONFIG/plugin/deny-repo-writes.js  (OPENCODE_CONFIG_DIR, lane table: refuses writes into $PROJ's checkout)"
@@ -15130,6 +15161,7 @@ VERIFY_CMDS_EOF
     # Tools are fixed at the session's launch like its account: whatever this
     # command resolved cannot reach the live pane.
     ARTIFACTS_LINE="the REUSED session's own, fixed at ITS launch — hw next cannot add or remove a tool"
+    PERMISSIONS_LINE="the REUSED session's own, fixed at ITS launch — --permissions cannot change a live session"
     # MODEL, EFFORT AND AGENT GET THE SAME TREATMENT, and for the same reason:
     # `model_line`/`effort_line`/`agent_line` above were built from `$MODEL`/
     # `$EFFORT`/`$AGENT` — what THIS command asked for — and on the reuse
@@ -15150,7 +15182,7 @@ VERIFY_CMDS_EOF
     # after it is now `n/a`, never the requested model/effort: that pairing
     # is exactly the false claim this fix removes. The measured fact still
     # appears, just no longer under a label that makes it look chosen.
-    model_line="$(_reuse_model_field_line)"
+    model_line="$(_reuse_model_field_line)" # MUTATION-ANCHOR: 136-M08
     effort_line="$(_reuse_effort_field_line)"
     agent_line="$(_reuse_agent_field_line)"
   else
@@ -15200,6 +15232,7 @@ dispatch $PROJ:$TASK  run=$run_label
   $effort_line
   agent       $agent_line
   account     $ACCOUNT_LINE
+  permissions $PERMISSIONS_LINE
   artifacts   $ARTIFACTS_LINE$guard_line
   provider    $provider_line
   placement   $placement
@@ -15386,12 +15419,14 @@ EOF
   # nothing closes on its report and the pane survives regardless; warning there
   # would be a claim this tool cannot support. `--no-report` is already refused
   # in combination with --keep-pane, so chaining is not reachable there either.
-  if [ "$KEEP_PANE" = 0 ] && [ "$WANT_REPORT" = 1 ] && [ "$HERE" = 0 ]; then
+  # MUTATION-ANCHOR: 67-M05
+  if [ "$KEEP_PANE" = 0 ] && [ "$WANT_REPORT" = 1 ] && [ "$HERE" = 0 ]; then  # MUTATION-ANCHOR: 67-M01
     warn "no --keep-pane: this executor's pane CLOSES on its proved report, and that is IRREVERSIBLE"
-    warn "HW_CHAINING_ENABLED is baked in at spawn — it cannot be turned on afterwards, so"
+  # MUTATION-ANCHOR-END: 67-M05
+    warn "HW_CHAINING_ENABLED is baked in at spawn — it cannot be turned on afterwards, so"  # MUTATION-ANCHOR: 67-M02
     warn "\`hw next\` will have no pane to re-task and new scope means a fresh session that"
     warn "has learned nothing about this repo. Decide it NOW, while it is still free:"
-    warn "  --keep-pane [4h] --why \"<who or what will re-task it>\""
+    warn "  --keep-pane [4h] --why \"<who or what will re-task it>\""  # MUTATION-ANCHOR: 67-M03
   fi
   # THE BRIEF IS THE CONTRACT AND ITS NAME IS HOW YOU FIND IT AGAIN. An explicit
   # --brief pointing at another task's file is legal and occasionally right, but
@@ -15469,7 +15504,7 @@ if [ -n "$_REUSE_PANE" ]; then
   # The workdir is the REUSED session's, derived from its run directory, because
   # that is where this task will actually run.
   DISPATCH_ROUTE=reuse
-  _dispatch_manifest "$(dirname "$(dirname "$_REUSE_RUNDIR")")"
+  _dispatch_manifest "$(dirname "$(dirname "$_REUSE_RUNDIR")")"  # MUTATION-ANCHOR: 123-M01
 
   # ── SESSION FLAGS THAT CANNOT REACH A LIVE PANE ARE REFUSED, NOT ECHOED ────
   #
@@ -15551,13 +15586,15 @@ if [ -n "$_REUSE_PANE" ]; then
     # reuse dispatch in that lane, for nobody's request. Requiring `chosen`
     # means the carve-out only ever fires for an EXPLICIT `--agent codex`,
     # regardless of what any lane table does in the future.
+    # MUTATION-ANCHOR: 136-M04
     if [ "${AGENT_SRC:-}" = chosen ]; then
-      case "$AGENT:$SDD_EFFECTIVE_MODE" in
+      case "$AGENT:$SDD_EFFECTIVE_MODE" in # MUTATION-ANCHOR: 136-M03
         codex:speckit) _reuse_codex_handoff=1 ;;
       esac
     fi
+    # MUTATION-ANCHOR-END: 136-M04
   fi
-  if [ "${MODEL_SRC:-}" = chosen ] && [ "$_reuse_codex_handoff" = 0 ]; then
+  if [ "${MODEL_SRC:-}" = chosen ] && [ "$_reuse_codex_handoff" = 0 ]; then # MUTATION-ANCHOR: 136-M01
     _reuse_flag_decision "$MODEL" "$REUSE_MODEL"
     case "$_REUSE_FLAG_VERDICT" in
       match) : ;; # already true on the live pane; nothing this flag would change
@@ -15569,7 +15606,7 @@ if [ -n "$_REUSE_PANE" ]; then
         ;;
     esac
   fi
-  if [ "${AGENT_SRC:-}" = chosen ] && [ "$_reuse_codex_handoff" = 0 ]; then
+  if [ "${AGENT_SRC:-}" = chosen ] && [ "$_reuse_codex_handoff" = 0 ]; then # MUTATION-ANCHOR: 136-M05
     _reuse_flag_decision "$AGENT" "$REUSE_VENDOR"
     case "$_REUSE_FLAG_VERDICT" in
       match) : ;;
@@ -15586,7 +15623,7 @@ if [ -n "$_REUSE_PANE" ]; then
   # `--model` is, and the handoff succeeds for the SAME reason: the effort a
   # codex request named was never a claim about what the destination pane's
   # effort would be either.
-  if [ -n "$EFFORT" ] && [ "$_reuse_codex_handoff" = 0 ]; then
+  if [ -n "$EFFORT" ] && [ "$_reuse_codex_handoff" = 0 ]; then # MUTATION-ANCHOR: 136-M06
     _reuse_flag_decision "$EFFORT" "$REUSE_EFFORT"
     case "$_REUSE_FLAG_VERDICT" in
       match) : ;;
@@ -15640,7 +15677,7 @@ if [ -n "$_REUSE_PANE" ]; then
   # opposite — a positive measurement that the pane runs under the default
   # account (see `_reuse_measure_account`). Feeding it here would invert both
   # branches at once.
-  if [ "${ACCOUNT_SRC:-}" = chosen ]; then
+  if [ "${ACCOUNT_SRC:-}" = chosen ]; then # MUTATION-ANCHOR: 136-M09 # MUTATION-ANCHOR: 136-M10 # MUTATION-ANCHOR: 136-M13
     # THE VENDOR FACT AND THE ROUTE FACT ARE TWO DIFFERENT THINGS, and a reader
     # of a refusal needs to know which one stopped them. The route makes the
     # flag unreachable on THIS pane; a non-claude vendor makes it inapplicable
@@ -15676,7 +15713,7 @@ if [ -n "$_REUSE_PANE" ]; then
   # said to launch onto anyway.
   [ "${ALLOW_STALE_HOOKS:-0}" != 1 ] || _reuse_args+=(--allow-stale-hooks)
   [ "$DISPATCH_DRY" != 1 ] || _reuse_args+=(--dry-run)
-  warn "REUSE WARNING: automatic launch-time reuse selected pane $_REUSE_PANE; its prior task is ${_REUSE_TASK:-unknown}."
+  warn "REUSE WARNING: automatic launch-time reuse selected pane $_REUSE_PANE; its prior task is ${_REUSE_TASK:-unknown}."  # MUTATION-ANCHOR: 71-M04
   warn "That pane's prior context and worktree carry into this task. Use --fresh to launch without them."
   if [ "$_REUSE_WHY" = "reported, chaining lease live" ]; then
     warn "Its persisted chaining lease reason: ${_REUSE_LEASE_REASON:-<not recorded>}"

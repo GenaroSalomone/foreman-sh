@@ -310,12 +310,15 @@ invoker_publication_note() {
 # $WORK, if the caller set one, or nothing: the walk then finds no file and the
 # invoker's own checks decide.
 _invoker_roots_from_table() {
-  python3 - "${HW_PROJECTS_JSON:-${HW_BRAIN_ROOT:-$(dirname "$INVOKER_BIN_DIR")}/projects.json}" "${WORK:-}" <<'ROOTS' 2>/dev/null || true
+  python3 - "${HW_PROJECTS_JSON:-${HW_BRAIN_ROOT:-$(dirname "$INVOKER_BIN_DIR")}/projects.json}" "${WORK:-}" <<'ROOTS'
 import json, os, sys
 path, work = sys.argv[1], sys.argv[2]
 try:
     doc = json.load(open(path, encoding="utf-8"))
-except (OSError, ValueError):
+except FileNotFoundError:
+    doc = {}
+except (OSError, ValueError) as e:
+    sys.stderr.write("invoker-common: the lane table %s could not be read (%s); env roots are only the work directory\n" % (path, e))
     doc = {}
 if not isinstance(doc, dict):
     doc = {}
@@ -346,7 +349,10 @@ ROOTS
 INVOKER_ENV_ROOTS=""
 if [ -r "$INVOKER_BIN_DIR/project-spaces.sh" ]; then
   # shellcheck source=project-spaces.sh
-  . "$INVOKER_BIN_DIR/project-spaces.sh" 2>/dev/null || true
+  # Named, not silent: a library that does not load used to leave the roots
+  # empty with no trace. The fallback below still runs, so the channel lives.
+  . "$INVOKER_BIN_DIR/project-spaces.sh" \
+    || printf 'invoker-common: %s/project-spaces.sh did not load (exit %s); the lane roots fall back to reading the lane table directly\n' "$INVOKER_BIN_DIR" "$?" >&2
   # The lane table is brain/projects.json, one directory above this script's
   # own (or HW_BRAIN_ROOT). If it does not load, the fallback below reads it.
   if command -v lane_config_load >/dev/null 2>&1 \
@@ -379,6 +385,10 @@ INVOKER_ENV_PANE_FROM_FILE=0
 # that lost its environment falls back to, never an override for one that still
 # has it. Always returns 0 — an absent or rejected file is not an error here,
 # it just means the caller's own checks decide, exactly as before.
+# BASH 3.2 RE-PARSES the ENVFIND body below as part of the <( ... ), heredoc or
+# not: an odd count of apostrophes ends it early (setup/tests/23 asserts the
+# count), and a comprehension like {k: v for k, v in x} is mangled by brace
+# expansion into a Python SyntaxError. Plain loops, no braces with commas.
 invoker_adopt_env_file() {
   local rec key val found=""
   # python3, not shell: this walks a bounded path, stats for ownership and mode,
@@ -401,8 +411,10 @@ invoker_adopt_env_file() {
     eval "$key=\$val"
     export "$key"
     [ "$key" = HW_INVOKER_PANE ] && INVOKER_ENV_PANE_FROM_FILE=1
-  done < <(INVOKER_ENV_ROOTS="$INVOKER_ENV_ROOTS" HW_ENV_ROOTED_AT="${HW_WORKDIR:-}" HW_ENV_ROOTED_RUN="${HW_RUN:-}" python3 - <<'ENVFIND' 2>/dev/null || true
-import os, stat, sys
+  done < <(INVOKER_ENV_ROOTS="$INVOKER_ENV_ROOTS" HW_ENV_ROOTED_AT="${HW_WORKDIR:-}" HW_ENV_ROOTED_RUN="${HW_RUN:-}" INVOKER_RUNENV="$INVOKER_BIN_DIR/runenv" python3 - <<'ENVFIND'
+import importlib.machinery, importlib.util, os, stat, sys
+
+sys.dont_write_bytecode = True
 
 WANTED = ("HW_PROJECT", "HW_TASK", "HW_WORKDIR", "HW_RUN",
           "HW_ARTIFACTS", "HW_INVOKER_PANE", "ENGRAM_PROJECT", "HW_EXECUTOR_VENDOR",
@@ -471,23 +483,33 @@ def candidates(directory):
     return [p for _, p in sorted(found, reverse=True)]
 
 
+def load_runenv():
+    """bin/runenv is the one reader of a run env file; loaded, never copied."""
+    path = os.environ.get("INVOKER_RUNENV", "")
+    try:
+        loader = importlib.machinery.SourceFileLoader("runenv", path)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("runenv", loader))
+        loader.exec_module(mod)
+    except Exception as e:
+        sys.stderr.write("invoker-common: cannot load %s (%s), so no run env file can be read\n" % (path, e))
+        sys.exit(0)
+    return mod
+
+
+runenv = load_runenv()
+
+
 def parse(path):
-    """The fixed grammar hw writes: KEY='value', inner ' as '\\''."""
+    """The WANTED keys of one run env file; a file runenv refuses is named, not skipped in silence."""
     out = {}
     try:
-        with open(path) as fh:
-            lines = fh.read().split("\n")
-    except OSError:
+        values = runenv.read(path, lenient=True)
+    except runenv.Unusable as e:
+        sys.stderr.write("invoker-common: %s\n" % e)
         return out
-    for line in lines:
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key not in WANTED:
-            continue
-        if len(value) < 2 or value[0] != "'" or value[-1] != "'":
-            continue
-        out[key] = value[1:-1].replace("'\\''", "'")
+    for key in WANTED:
+        if values is not None and key in values:
+            out[key] = values[key]
     return out
 
 
@@ -746,7 +768,7 @@ invoker_release_run_lock() {
   lock="${INVOKER_RUN_LOCK:-}"
   [ -n "$lock" ] || return 0
   owner="$(cat "$lock/owner.pid" 2>/dev/null || true)"
-  [ "$owner" = "$$" ] || return 0
+  [ "$owner" = "$$" ] || return 0  # MUTATION-ANCHOR: 101-M01
   rm -f "$lock/owner.pid" "$lock/owner.start" 2>/dev/null || true
   rmdir "$lock" 2>/dev/null || true
   return 0
@@ -784,7 +806,7 @@ _invoker_reap_run_lock() { # <lock> <owner as read> <start as read>
   # is a mismatch, so the lock is left alone and the waiter waits.
   now_owner="$(cat "$lock/owner.pid" 2>/dev/null || true)"
   now_start="$(cat "$lock/owner.start" 2>/dev/null || true)"
-  if [ "$now_owner" = "$seen_owner" ] && [ "$now_start" = "$seen_start" ]; then
+  if [ "$now_owner" = "$seen_owner" ] && [ "$now_start" = "$seen_start" ]; then  # MUTATION-ANCHOR: 101-M06
     # A recorded pid was judged dead; anything else — nothing, or bytes that
     # are not a pid — was judged by age, so the age is asked again.
     case "$seen_owner" in
@@ -817,7 +839,7 @@ _invoker_reap_run_lock() { # <lock> <owner as read> <start as read>
 # the signals rather than spelling the trap themselves, so there is one copy.
 invoker_arm_lock_signals() {
   trap 'invoker_release_run_lock; exit 130' INT
-  trap 'invoker_release_run_lock; exit 143' TERM
+  trap 'invoker_release_run_lock; exit 143' TERM  # MUTATION-ANCHOR: 101-M05
 }
 
 invoker_run_lock() {
@@ -856,7 +878,7 @@ invoker_run_lock() {
           '') : ;;               # asked, and it is not old enough yet: wait
           *)
             claim_start="$(cat "$lock/owner.start" 2>/dev/null || true)"
-            if _invoker_reap_run_lock "$lock" "$owner" "$claim_start"; then
+            if _invoker_reap_run_lock "$lock" "$owner" "$claim_start"; then  # MUTATION-ANCHOR: 101-M07
               printf '%s: breaking an invoker lock that records no holder (%s, older than a minute). Nothing has been read or sent yet.\n' \
                 "${INVOKER_PROG:-invoker}" "$lock" >&2
               continue
@@ -880,7 +902,7 @@ invoker_run_lock() {
         # Only when a start time was recorded. A lock from a version that wrote
         # none falls through to `kill -0` alone, which is what that version
         # gave anyone anyway — an absent record is not evidence of reuse.
-        owner_start="$(cat "$lock/owner.start" 2>/dev/null || true)"
+        owner_start="$(cat "$lock/owner.start" 2>/dev/null || true)"  # MUTATION-ANCHOR: 101-M04
         if [ -n "$owner_start" ]; then
           live_start="$(_invoker_proc_start "$owner")"
           if [ -n "$live_start" ] && [ "$live_start" != "$owner_start" ] \
@@ -890,8 +912,10 @@ invoker_run_lock() {
             continue
           fi
         fi
+        # MUTATION-ANCHOR: 101-M02
         if ! kill -0 "$owner" 2>/dev/null \
            && _invoker_reap_run_lock "$lock" "$owner" "$owner_start"; then
+        # MUTATION-ANCHOR-END: 101-M02
           printf '%s: breaking an invoker lock whose holder is gone (%s, pid %s). That is a crashed or killed invoker, not a busy one.\n' \
             "${INVOKER_PROG:-invoker}" "$lock" "$owner" >&2
           continue

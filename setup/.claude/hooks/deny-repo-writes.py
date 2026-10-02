@@ -27,7 +27,7 @@ import json
 import pathlib
 import sys
 
-LANE = "setup"
+LANE = "setup"  # MUTATION-ANCHOR: 78-M04
 
 
 def _deny(reason):

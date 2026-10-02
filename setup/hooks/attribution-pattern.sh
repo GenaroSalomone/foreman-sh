@@ -88,7 +88,7 @@
 # this repo's own files write constantly, so it is named rather than closed.
 # Pinned by the `hash-gap` arm in
 # setup/tests/152-la-atribucion-muere-en-commit-msg.sh.
-ATTRIBUTION_PATTERN='^(co-authored-by:.*(claude|anthropic|gpt|codex|opencode|copilot)|generated with \[?claude|🤖 generated)'
+ATTRIBUTION_PATTERN='^(co-authored-by:.*(claude|anthropic|gpt|codex|opencode|copilot)|generated with \[?claude|🤖 generated)'  # MUTATION-ANCHOR: 152-M02  # MUTATION-ANCHOR: 152-M03
 
 # attribution_offending_lines [<indent>] — reads a commit message on stdin and
 # prints one human-facing line per offense, nothing at all when it is clean.

@@ -41,7 +41,7 @@ render() {
   '
 }
 
-RED='A BEHAVIOUR FIX SHIPS THE TEST THAT FAILS ON THE OLD CODE.'
+RED='A behaviour fix ships the test that fails on the old code.'
 
 brief "$TMP/build.md" build
 brief "$TMP/plain.md" ""
@@ -64,7 +64,7 @@ for c in "audit.md|abc123|" "explore.md|abc123|" "plain.md|abc123|audit" "plain.
   out="$(render "$TMP/$f" "$r" "$k")"
   case "$out" in
     *"$RED"*) fail "red test: a non-build preamble ($c) carries the rule" ;;
-    *"CLOSE WITH done-invoker"*) ;;
+    *"Close with done-invoker"*) ;;
     *) fail "red test: the non-build control ($c) rendered no preamble at all" ;;
   esac
 done

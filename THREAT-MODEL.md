@@ -8,8 +8,10 @@ harness assumes about the machine it runs on. The limitations register,
 ## What the harness assumes
 
 - One operator, one machine, one OS account. Every brainer and executor runs
-  as that account, with the agent's permission prompts turned off
-  (`--dangerously-skip-permissions` for Claude Code, the equivalent elsewhere).
+  as that account, with the agent's permission prompts turned off by default
+  (`--dangerously-skip-permissions` for Claude Code, `--auto` for OpenCode).
+  That is the recommended setting, not a fixed one: `hw --permissions ask`
+  leaves the prompts on, and the guards below do not depend on it.
 - The agents are **cooperative but fallible**: they follow instructions, and
   sometimes follow wrong ones. They are not assumed to be adversarial.
 - The operator trusts the content of the product repositories, the briefs, and

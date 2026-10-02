@@ -229,7 +229,7 @@ fi
 # binary with the real address still reaches the real brainer, because that is
 # the binary's job. This closes the accident, not the intent.
 if [ -n "${HW_INVOKER_PANE+set}" ] && [ -z "${HW_INVOKER_PANE:-}" ]; then
-  die "HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (\`unset HW_INVOKER_PANE\`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean."
+  die "HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (\`unset HW_INVOKER_PANE\`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean."  # MUTATION-ANCHOR: 68-M03
 fi
 
 invoker_adopt_env_file
@@ -303,8 +303,8 @@ esac
 STATE_DIR="$(invoker_state_dir)"
 mkdir -p "$STATE_DIR"
 if [ "$CHALLENGE" = 1 ]; then
-  COUNT_FILE="$STATE_DIR/challenge-count"
-  MAX_ASKS="$MAX_CHALLENGES"
+  COUNT_FILE="$STATE_DIR/challenge-count"  # MUTATION-ANCHOR: 09-M01
+  MAX_ASKS="$MAX_CHALLENGES"  # MUTATION-ANCHOR: 09-M02
 else
   COUNT_FILE="$STATE_DIR/ask-count"
 fi
@@ -313,9 +313,9 @@ case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
 
 if [ "$COUNT" -ge "$MAX_ASKS" ]; then
   if [ "$CHALLENGE" = 1 ]; then
-    die "already challenged this brief $COUNT times (limit $MAX_ASKS). A brief that is wrong in more than $MAX_ASKS places is not a brief to negotiate. Your legal exit is: done-invoker --blocked \"the brief needs another contract correction; include the unresolved prohibition and evidence\"."
+    die "already challenged this brief $COUNT times (limit $MAX_ASKS). A brief that is wrong in more than $MAX_ASKS places is not a brief to negotiate. Your legal exit is: done-invoker --blocked \"the brief needs another contract correction; include the unresolved prohibition and evidence\"."  # MUTATION-ANCHOR: 09-M03
   fi
-  die "already asked the brainer $COUNT times on this task (limit $MAX_ASKS). Repeated round-trips mean the brief was wrong. Your legal exit is: done-invoker --blocked \"<the unresolved question and what would unblock it>\". The cap never requires a silent turn."
+  die "already asked the brainer $COUNT times on this task (limit $MAX_ASKS). Repeated round-trips mean the brief was wrong. Your legal exit is: done-invoker --blocked \"<the unresolved question and what would unblock it>\". The cap never requires a silent turn."  # MUTATION-ANCHOR: 45-M01
 fi
 ASK_SEQ=$((COUNT + 1))
 
@@ -392,7 +392,7 @@ if [ "$CHALLENGE" = 1 ]; then
   # Intent is declared by the caller, never inferred from the opaque ruling
   # text. channel-send can therefore refuse an unsafe mid-work correction
   # without changing reports, ordinary answers, redirects, or hw next.
-  REPLY_COMMAND="$(invoker_reply_command "$ENVELOPE_ID:reply" ruling "$PENDING_REPLY")"
+  REPLY_COMMAND="$(invoker_reply_command "$ENVELOPE_ID:reply" ruling "$PENDING_REPLY")" # MUTATION-ANCHOR: 41-M04
 else
   REPLY_COMMAND="$(invoker_reply_command "$ENVELOPE_ID:reply" answer "$PENDING_REPLY")"
 fi

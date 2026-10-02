@@ -99,6 +99,10 @@ out = {
     "fast_gate_threshold_seconds": threshold,
     "files": files,
 }
+# Owned by hand like the threshold: the cap on the slow subjects the executor's
+# verify adds (setup/gate-select touched). A re-measure must not drop it.
+if "touched_budget_seconds" in existing:
+    out["touched_budget_seconds"] = existing["touched_budget_seconds"]
 pathlib.Path(out_path).write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
 print(f"wrote {out_path}: {len(files)} files classified, threshold {threshold}s")
 PY

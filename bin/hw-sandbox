@@ -153,7 +153,7 @@ cmd_profile() {
   # other sessions and some are executed by them: shell-snapshots/ is SOURCED
   # by the session that wrote it, session-env/ likewise, projects/*/memory is
   # loaded into other lanes' prompts, and .claude.json carries MCP servers.
-  printf '  (subpath %s)\n' "$(_lit "$cfg/projects/$projname")"
+  printf '  (subpath %s)\n' "$(_lit "$cfg/projects/$projname")"  # MUTATION-ANCHOR: 320-M02
   printf ')\n'
   if [ -n "$common" ] && [ "$common" != "$gitdir" ]; then
     printf ';; the linked worktree'"'"'s slice of the common .git — never hooks/ or config\n'
@@ -163,7 +163,7 @@ cmd_profile() {
     printf '  (regex #"^%s/packed-refs(\\.lock|\\.new)?$"))\n' "$(_re "$common")"
   fi
   printf ';; control sockets run code outside the sandbox: herdr, docker, ssh-agent\n'
-  printf '(deny network-outbound (remote unix-socket))\n'
+  printf '(deny network-outbound (remote unix-socket))\n'  # MUTATION-ANCHOR: 320-M01
   printf '(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))\n'
   printf ';; credentials that reach other machines\n'
   printf '(deny file-read* (subpath %s) (subpath %s) (subpath %s))\n' \
@@ -271,14 +271,18 @@ elif op == "claim":            # outbox pin workdir -> prints claimed ids
 elif op == "deliver":          # outbox pin src name
     ob, pin, src, name = sys.argv[2:6]
     try:
+        # MUTATION-ANCHOR: 322-M04
         fd = pinned(ob, pin)
         os.replace(src, name, dst_dir_fd=fd)
+        # MUTATION-ANCHOR-END: 322-M04
     except OSError:
         os.unlink(src)
 '
+# MUTATION-ANCHOR: 322-M03
 _deliver() {  # $1=outbox $2=pin $3=src $4=name — replace the ENTRY, or drop src
   python3 -c "$_OUTBOX_PY" deliver "$1" "$2" "${3:?}" "${4:?}" 2>/dev/null || rm -f "${3:?}"
 }
+# MUTATION-ANCHOR-END: 322-M03
 
 # ── arming a pane ───────────────────────────────────────────────────────────
 #
@@ -347,7 +351,7 @@ _serve_one() {  # $1=outbox $2=its pin $3=work dir $4=id
   rm -f "${w:?}/${id:?}.claimed"
   verb="${argv[0]:-}"
   case "$verb" in
-    done-invoker|ask-invoker)
+    done-invoker|ask-invoker)  # MUTATION-ANCHOR: 322-M01
       ( cd "${HW_WORKDIR:-.}" 2>/dev/null || true
         env -u HW_SANDBOX -u HW_SANDBOX_OUTBOX -u HW_SANDBOX_STATE "$BIN_DIR/$verb" "${argv[@]:1}" \
           </dev/null >"$w/$id.out" 2>"$w/$id.err" ) || rc=$?

@@ -275,30 +275,23 @@ fi
 # itself, so each mutant is a COPY of the tests directory with a patched
 # _common.sh — the real one is never touched, which is the rule the herdr-rpc
 # incident produced: a fixture goes in a temp dir, never over the file.
-mutate_common() { # <name> <old> <new>
+# Each mutant edits the line a `# MUTATION-ANCHOR: 54-Mnn` marker in _common.sh
+# (or in setup/test-channel-send) declares, not the prose it mutates; see
+# mutate_anchor in _common.sh.
+mutant_tests() { # <name> → MUTANT_DIR, a copy of the tests directory whose _common.sh the next mutate_anchor edits
   # Split: bash 3.2 does not make `name` visible to a later assignment in the
   # SAME `local` statement, so the one-liner dies under set -u.
   local name="$1"
   local dir="$TMP/mutant-$name"
   mkdir -p "$dir"
   cp "$TESTS_DIR"/*.sh "$dir/"
-  MUT_OLD="$2" MUT_NEW="$3" python3 - "$dir/_common.sh" <<'PY'
-import os, sys
-p = sys.argv[1]; s = open(p, encoding="utf-8").read()
-old = os.environ["MUT_OLD"]; new = os.environ["MUT_NEW"]
-n = s.count(old)
-if n != 1:
-    raise SystemExit("mutation anchor count %d, expected 1: %r" % (n, old[:90]))
-open(p, "w", encoding="utf-8").write(s.replace(old, new))
-PY
   MUTANT_DIR="$dir"
 }
 
 # M01 — the prefix sweep reverted to the three-name allowlist that shipped this
 # morning. This is the pre-fix state exactly, and the mutant announces itself so
 # a run that never reached the line is VACUOUS rather than dead.
-mutate_common M01 \
-  'for _v in ${!HW_@}; do' \
+mutant_tests M01; mutate_anchor 54-M01 "$MUTANT_DIR/_common.sh" \
   'printf "M01-ALLOWLIST-RESTORED\n" >&2; unset HW_INVOKER_PANE HW_CHAINING_ENABLED HW_DONE_KEEP_PANE 2>/dev/null || true; for _v in ; do'
 # The probe is re-pointed at the MUTANT's _common.sh, never the real one.
 sed "s|$COMMON|$MUTANT_DIR/_common.sh|" "$TMP/probe.sh" > "$MUTANT_DIR/probe-m01.sh"
@@ -313,8 +306,7 @@ saw_mutant "M01 reverts the sweep to the three-name allowlist, and the lease var
 # M02 — the sweep kept, but the inverted list dropped, so it eats the harness's
 # own inputs and silently disables 31's and 36's live arms. The mutant is the
 # plausible over-correction, which is why it needs its own arm.
-mutate_common M02 \
-  '_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING "' \
+mutant_tests M02; mutate_anchor 54-M02 "$MUTANT_DIR/_common.sh" \
   'printf "M02-INPUTS-NOT-SPARED\n" >&2; _HW_TEST_INPUTS=" "'
 sed "s|$COMMON|$MUTANT_DIR/_common.sh|" "$TMP/probe.sh" > "$MUTANT_DIR/probe-m02.sh"
 out="$(pollute HW_UNSTICK_BIN=/keep/unstick HW_CHECK_LIVE_REVIEW_DRIFT=1 \
@@ -328,8 +320,7 @@ saw_mutant "M02 empties the spared-input list, so a deliberate live-arm opt-in i
 
 # M03 — the two non-HW_ names dropped. They are outside the prefix, so nothing
 # else covers them, and both are pane state that hw bakes in.
-mutate_common M03 \
-  'unset ENGRAM_PROJECT AGENT_BROWSER_NAMESPACE 2>/dev/null || true' \
+mutant_tests M03; mutate_anchor 54-M03 "$MUTANT_DIR/_common.sh" \
   'printf "M03-NON-PREFIX-NAMES-DROPPED\n" >&2'
 sed "s|$COMMON|$MUTANT_DIR/_common.sh|" "$TMP/probe.sh" > "$MUTANT_DIR/probe-m03.sh"
 out="$(pollute bash "$MUTANT_DIR/probe-m03.sh" 2>&1 || true)"
@@ -349,18 +340,7 @@ mkdir -p "$CS_MUT/setup"
 cp -R "$ROOT/bin" "$CS_MUT/bin"
 cp "$ROOT/setup/test-channel-send" "$CS_MUT/setup/"
 chmod +x "$CS_MUT/setup/test-channel-send"
-python3 - "$CS_MUT/setup/test-channel-send" <<'PYM04'
-import sys
-p = sys.argv[1]
-s = open(p, encoding="utf-8").read()
-old = 'for _v in ${!HW_@}; do unset "$_v" 2>/dev/null || true; done\n'
-n = s.count(old)
-if n != 1:
-    raise SystemExit("M04 anchor count %d, expected 1" % n)
-new = ("printf 'M04-ENUMERATION-RESTORED\\n' >&2\n"
-       "unset HW_CHAINING_ENABLED HW_DONE_KEEP_PANE\n")
-open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
-PYM04
+mutate_anchor 54-M04 "$CS_MUT/setup/test-channel-send" $'printf \'M04-ENUMERATION-RESTORED\\n\' >&2\nunset HW_CHAINING_ENABLED HW_DONE_KEEP_PANE'
 grep -q 'M04-ENUMERATION-RESTORED' "$CS_MUT/setup/test-channel-send" \
   || fail "M04 did not apply — the prefix sweep in test-channel-send moved"
 # Both environments at once, for the same reason as the launch above; a red

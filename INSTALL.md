@@ -9,13 +9,15 @@ executor in its own worktree that reports back with `done-invoker`.
 - macOS, or Linux (Debian/Ubuntu-class, bash 5; tested in a container, see
   `KNOWN-LIMITATIONS.md` L1). Windows: WSL2, or native Windows under Git Bash,
   measured on a CI runner and a Windows 11 VM (see [Windows](#windows) below).
-- `git`, `jq` 1.7 or newer, `python3`. On Linux also `sd`, `fd` and `rg` (Debian:
-  `apt install sd fd-find ripgrep`, then link `fdfind` as `fd`) and Node 22.7 or newer
-  (the OpenCode guard plugin is an ES module in a `.js` file).
+- `git`, `jq` 1.7 or newer, `python3`, `sd`, `fd` and `rg` (`hw` calls all three).
+  On Linux (Debian: `apt install sd fd-find ripgrep`, then link `fdfind` as `fd`)
+  also Node 22.7 or newer (the OpenCode guard plugin is an ES module in a `.js` file).
+  On macOS, `--check` does not name `sd`, `fd` and `rg` yet; the Homebrew formula
+  and `--with-recommended` install them.
 - [herdr](https://herdr.dev), running, with its Claude Code integration:
   `herdr integration install claude`
 - [Claude Code](https://claude.com/claude-code), with its first run finished (below)
-- recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (hw's pickers), and `rg` on macOS
+- recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (hw's pickers)
 - for an OpenCode lane: [OpenCode](https://opencode.ai) 1.18.31 or newer, and herdr's OpenCode
   integration: `herdr integration install opencode` (run `opencode` once first,
   so its config directory exists)
@@ -25,6 +27,41 @@ writes nothing. It names anything missing with its install command, then lists
 the fixes in the order they must be done (tools, Claude Code's first run,
 herdr's integrations, engram, a lane) and ends with one line, `Next step: …`.
 Run it again after each fix.
+
+## Installing the dependencies: `--with-recommended`
+
+`install.sh --with-recommended` installs what is missing, required and
+recommended, through Homebrew: one `brew install` per package, each printed
+before it runs. A failed one is named and the rest are still tried. It exits 0
+only when nothing is left missing.
+
+| Package | Kind | Command it runs |
+|---|---|---|
+| herdr, jq (1.7 or newer), rg, fd, sd | required | `brew install herdr`, `brew install jq`, `brew install ripgrep`, `brew install fd`, `brew install sd` |
+| Claude Code | required | `brew install --cask claude-code` (macOS) |
+| engram | recommended | `brew install gentleman-programming/tap/engram` |
+| fzf | recommended | `brew install fzf` |
+
+What Homebrew does not install here is named with its own method and never
+run: `git` and `python3` (`xcode-select --install` on macOS, your distribution's
+packages on Linux), and Claude Code on Linux (https://claude.com/claude-code).
+Without Homebrew it installs nothing, names https://brew.sh and exits 1. On
+Linux the list also has Node (`brew install node`).
+
+It installs packages and configures nothing. Claude Code's first run,
+`herdr integration install claude` and `engram setup claude-code` stay yours;
+`--check` names them. OpenCode is not in the list: its Homebrew formula was
+1.18.30 when measured, below the 1.18.31 this harness was measured against, so
+an OpenCode lane keeps `npm install -g opencode-ai@latest`.
+
+```sh
+./install.sh --with-recommended --check   # prints the commands, runs none
+./install.sh --with-recommended           # runs them
+```
+
+With `--brain` it continues into the install once the packages are done. With
+`--check` it runs nothing. When `brew` is on your PATH and a required tool is
+missing, `--check` points at this flag.
 
 ## Claude Code's first run is yours
 
@@ -86,7 +123,21 @@ and it would add a second registration where the plugin already provides one.
 
 ## The command
 
-One line, on a machine without the repository. It clones the latest published
+On macOS, the Homebrew formula is the shortest way. It installs foreman-sh
+with herdr, jq, rg, fd and sd, and links `foreman-sh`, which is this
+`install.sh` with the same flags:
+
+```sh
+brew install GenaroSalomone/tap/foreman-sh
+foreman-sh --brain ~/brain --lane myapp --repo ~/code/myapp
+```
+
+The brain keeps its own copy of the mechanism. After `brew upgrade foreman-sh`,
+run your `foreman-sh --brain …` command again to refresh it. Claude Code is a
+cask, so the formula cannot depend on it: `foreman-sh --with-recommended`
+installs it (above).
+
+Without Homebrew, it is one line on a machine without the repository. It clones the latest published
 release tag into a temporary directory, runs that `install.sh` with your
 arguments and removes the directory (`git` and `curl` are required):
 
@@ -129,6 +180,32 @@ these options existed. A lane that already exists is never asked again and
 keeps its row; naming a different value for it is refused, and so is a
 different `--operator` over one already in `projects.json`. There is no
 per-lane default `--effort`: `hw` takes `--effort` per dispatch only.
+
+## Permissions: skip (recommended) or ask
+
+`hw` and `brain` launch agents with their permission prompts skipped: Claude
+Code with `--dangerously-skip-permissions`, OpenCode with `--auto`. Codex gets
+no flag and keeps its own `approval_policy`. That is **recommended** because
+an executor runs unattended, and it is a choice, not a requirement:
+
+```sh
+./install.sh --brain ~/brain --permissions ask   # or skip
+hw <lane> <task> --permissions ask               # one dispatch
+HW_PERMISSIONS=ask hw <lane> <task>              # one shell
+```
+
+The first form writes `~/.config/hw/permissions` (under `$XDG_CONFIG_HOME`),
+one word. In a terminal the installer asks once when nothing is set; with no
+terminal, a pipe, or `--check`, it asks nothing and writes nothing. The order
+is the flag, then `HW_PERMISSIONS`, then that file, then `skip`, and the
+manifest's `permissions` line shows which one won. Anything other than `ask`
+or `skip` is refused.
+
+The cost of `ask`: Claude Code and Codex then stop on every prompt, and
+`hw` cannot answer it or detect it (OpenCode shows it as `blocked
+reason=permission`). Codex is pinned to `-a on-request`. A running pane keeps
+what it launched with. The Bypass Permissions warning in "first run" above
+matters only for `skip`.
 
 ## Your own files in the bin directory
 
@@ -179,6 +256,7 @@ with another `--vendor` for the same lane is refused.
 | `~/brain/<lane>/` | `CLAUDE.md`, `decisions.md`, `briefs/`, and `.claude/` with the read-only guard |
 | `~/brain/<lane>/.opencode-executor/` | an OpenCode lane only: the executor's guard plugin and its policy |
 | `~/work/<lane>/<task>` | each task's git worktree: beside the brain, never inside it (the brain guard would refuse every command an executor ran there), and outside your repo. Set by `"work"` in `projects.json` |
+| `~/.config/hw/permissions` | only with `--permissions` or an answer in a terminal: `ask` or `skip` (see Permissions above) |
 | `~/.local/bin` | links: `hw`, `brain`, `done-invoker`, `ask-invoker`, `channel-send`, `decisions`, and `opencode-auto` for an OpenCode lane |
 | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | one Stop hook, merged; the previous file is kept as `settings.json.bak-brain-install` |
 | `~/.claude/skills/judgment-day/`, `~/.claude/agents/jd-*.md` | only with `--with-judgment-day` (see Judgment Day below) |
@@ -261,8 +339,16 @@ recall context when it is registered (see Memory above).
   can prove a Codex executor end to end today, so `--vendor codex` is refused.
   The installer does not write `~/.codex/hooks.json` either, so a Codex session
   is unguarded until you register the Codex guard yourself (L3, L5).
-- **An OpenCode lane's guard covers shell commands only.** It is a plugin on
-  the `bash` tool. OpenCode's own edit and write tools are not refused by it.
+- **An OpenCode lane's guard is a plugin, not `permission.edit`.** It judges
+  the `bash` tool and OpenCode's file tools (`write`, `edit`, `multiedit`,
+  `patch`, `apply_patch`) by absolute path. A lane's `permission.edit` deny on
+  a protected repo does not hold by itself: OpenCode 1.18.34 matches edit rules
+  against the path relative to the worktree, so an absolute pattern never
+  matches a file outside it. Any other tool that writes files is not judged.
+- **No OpenCode agent may carry `tools: {edit|write|bash: true}`.** That
+  legacy map appends an allow-all rule after every deny in the config, so
+  `permission` denies stop applying to that agent. Grant tools through
+  `permission` instead; `setup/check-machine` checks the live config.
 - **An OpenCode executor gets no `--agent`** unless `~/.config/opencode/opencode.json`
   defines the one `hw` asks for (`direct-worker` by default). Without it `hw`
   warns and OpenCode runs its default agent.

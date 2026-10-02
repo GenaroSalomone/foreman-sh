@@ -177,8 +177,8 @@ pass "the lane's repository — files, status, refs and worktrees — is byte-id
 # installs beside itself; nothing is written into $ROOT.
 MS="$TMP/mutant-src"; mkdir -p "$MS/lanes" "$MS/setup"
 cp -R "$ROOT/bin" "$ROOT/layouts" "$MS/"; cp "$ROOT/lanes/git-worktree.sh" "$MS/lanes/"; cp -R "$ROOT/setup/guards" "$MS/setup/"; cp "$ROOT/setup/brain-guard-programs.txt" "$MS/setup/"
-sed 's/theirs = \[c for c in cmds if "hw-stop-hook.sh" in c and c != stop_cmd\]/theirs = []/' "$INSTALL" > "$MS/install.sh"; chmod +x "$MS/install.sh"
-cmp -s "$INSTALL" "$MS/install.sh" && fail "M01: the sed did not change install.sh, so this mutant proves nothing"
+cp "$INSTALL" "$MS/install.sh"; chmod +x "$MS/install.sh"
+mutate_anchor 187-M01 "$MS/install.sh" 'theirs = []'
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash /x/bin/hw-stop-hook.sh stop"}]}]}}\n' > "$C2/settings.json"
 out="$(env CLAUDE_CONFIG_DIR="$C2" "$MS/install.sh" --brain "$TMP/m01-brain" --lane other --repo "$HOME/code/other" --bin-dir "$TMP/m01-bin" 2>&1 || true)"
 saw_mutant "M01 the Stop-hook clash check removed" "$(jq -r '[.hooks.Stop[].hooks[].command] | length' "$C2/settings.json" 2>&1) stop hooks after: $out" "2 stop hooks after"

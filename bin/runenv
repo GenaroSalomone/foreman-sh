@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""runenv — the one reader of a run's environment file, `<workdir>/.hw/<run>/env`.
+
+`hw` writes that file (the heredoc that builds `$dir/env`) in a fixed grammar:
+one `KEY='value'` per line, an inner `'` written as `'\\''`, a value with a
+newline never written, an empty value never written, `#` comments. This is the
+inverse of that writer and nothing else. Before this file six readers decoded
+it six ways (`read`, `sed`, three Python parsers, a `split`); they agree on a
+file `hw` wrote and diverge on a value with `=`, a quote or a blank, which is
+exactly where a hand-edited or damaged file lands.
+
+    runenv get <run-dir|env-file> KEY       value on stdout
+    runenv dump --sh  <run-dir|env-file>    KEY='value' lines, safe to `eval`/`.`
+    runenv dump --nul <run-dir|env-file>    KEY=value NUL records (a value may hold anything but NUL)
+
+Exit codes (the contract callers branch on):
+    0  answered
+    1  absent — no such file, or no such key. The common case, and silent.
+    2  UNUSABLE — the file exists but a line is outside the grammar, or it
+       cannot be read. Named on stderr. This is never "absent": a damaged file
+       must not read as a run that has no value.
+    64 usage
+
+Two looser readings, for callers whose contract is "adopt what is parseable":
+
+    --lenient  a line outside the quoted grammar is SKIPPED instead of exiting 2
+               (the invoker env walk).
+    --bare     implies --lenient, and also takes a BARE `KEY=value` (a run
+               hand-edited or older than the quoting) as its text with
+               surrounding blanks trimmed (`hw next`'s reads of a run of any age).
+
+The default is strict. An unreadable or non-UTF-8 file is exit 2 in every mode:
+a file that cannot be read is not a file with nothing in it.
+
+A key repeated in one file: the last one wins, as it does when the file is
+sourced (`set -a; . env`), which is how its header says to reconstruct it.
+"""
+import os
+import re
+import shlex
+import sys
+
+LINE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)='(.*)'$")
+BARE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+class Unusable(Exception):
+    pass
+
+
+def env_path(target):
+    return os.path.join(target, "env") if os.path.isdir(target) else target
+
+
+def read(target, lenient=False, bare=False):
+    """Return an ordered dict of KEY -> value, or None when there is no file."""
+    path = env_path(target)
+    try:
+        fh = open(path, encoding="utf-8", errors="strict")
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise Unusable("cannot read %s: %s" % (path, e.strerror or e))
+    values = {}
+    try:
+        with fh:
+            for n, raw in enumerate(fh, 1):
+                line = raw.rstrip("\n")
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                m = LINE_RE.match(line)
+                if m:
+                    values[m.group(1)] = m.group(2).replace("'\\''", "'")
+                    continue
+                if bare:
+                    b = BARE_RE.match(line)
+                    if b:
+                        values[b.group(1)] = b.group(2).strip()
+                    continue
+                if lenient:
+                    continue
+                raise Unusable("%s line %d is not KEY='value': %r" % (path, n, line))
+    except UnicodeDecodeError as e:
+        raise Unusable("%s is not UTF-8: %s" % (path, e))
+    return values
+
+
+def main(argv):
+    args = [a for a in argv if a not in ("--lenient", "--bare")]
+    bare = "--bare" in argv
+    lenient = bare or "--lenient" in argv
+    try:
+        if len(args) == 3 and args[0] == "get":
+            values = read(args[1], lenient, bare)
+            if values is None or args[2] not in values:
+                return 1
+            sys.stdout.write(values[args[2]])
+            return 0
+        if len(args) == 3 and args[0] == "dump" and args[1] in ("--sh", "--nul"):
+            values = read(args[2], lenient, bare)
+            if values is None:
+                return 1
+            if args[1] == "--sh":
+                for key, value in values.items():
+                    sys.stdout.write("%s=%s\n" % (key, shlex.quote(value)))
+            else:
+                for key, value in values.items():
+                    sys.stdout.write("%s=%s\0" % (key, value))
+            return 0
+    except Unusable as e:
+        sys.stderr.write("runenv: %s\n" % e)
+        return 2
+    sys.stderr.write("usage: runenv [--lenient|--bare] get <run-dir|env-file> KEY\n"
+                     "       runenv [--lenient|--bare] dump --sh|--nul <run-dir|env-file>\n")
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1944,6 +1944,53 @@ export const __internals = {
   maskQuotes, redirectLandsInProtected, isSpentWorktreeTeardown, shellSegments,
 };
 
+// ── OpenCode's own file tools ──────────────────────────────────────────────
+//
+// `permission.edit` was meant to be this half, and on 2026-10-01 it was
+// measured not to be (opencode 1.18.34, `opencode debug agent` plus live
+// `opencode run` in a sandbox): OpenCode matches an edit rule against the path
+// RELATIVE to the worktree, so a file outside it is asked about as
+// `../x/c.txt` and an absolute deny like `<product repo>/**` never matches. Every
+// protected root sits outside every lane's worktree, so every lane's edit deny
+// was void. The file tools are therefore judged here, by absolute path, with
+// the same boundary question the bash half asks (`insideProtected`). There is
+// no Python twin: Claude's Edit/Write go through `permissions.deny`, and
+// Codex's patch tool has its own reader in `deny-repo-writes-codex.py`.
+const FILE_TOOLS = new Set(["write", "edit", "multiedit", "patch", "apply_patch"]);
+const PATCH_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
+
+export function fileToolPaths(tool, args) {
+  if (tool === "apply_patch" || tool === "patch") {
+    const text = typeof args.patchText === "string" ? args.patchText
+      : typeof args.patch === "string" ? args.patch : null;
+    if (text === null) return null;
+    return [...text.matchAll(PATCH_HEADER)].map((m) => m[1].trim());
+  }
+  return typeof args.filePath === "string" && args.filePath ? [args.filePath] : null;
+}
+
+function judgeFileTool(lane, laneError, tool, output, sessionDir) {
+  if (laneError) {
+    throw new Error(`Blocked: ${laneError.message} Every file write is refused until a ` +
+      "lane this guard knows is named.");
+  }
+  const args = output?.args;
+  const paths = args !== null && typeof args === "object" && !Array.isArray(args)
+    ? fileToolPaths(tool, args) : null;
+  if (paths === null) {
+    throw new Error(`Blocked: the ${lane} read-only guard could not read which file the ` +
+      `${tool} call writes, so it cannot tell a protected tree from any other. Refused rather than guessed.`);
+  }
+  const cfg = config(lane);
+  for (const p of paths) {
+    const abs = normPath(isAbs(p) ? p : joinPath(sessionDir, p));
+    if (insideProtected(cfg, abs)) {
+      throw new Error(`Blocked: ${tool} would write ${abs}, inside a product repo or a live ` +
+        `worktree. The ${lane} lane is read-only there.`);
+    }
+  }
+}
+
 // The opencode plugin factory. Each lane's `.opencode/plugin/deny-repo-writes.js`
 // is a two-line shim that names its lane and re-exports the result.
 export function makeDenyRepoWrites(lane) {
@@ -1974,6 +2021,7 @@ export function makeDenyRepoWrites(lane) {
     const sessionDir = pluginInput?.directory ?? pluginInput?.worktree ?? process.cwd();
     return {
       "tool.execute.before": async (input, output) => {
+        if (FILE_TOOLS.has(input.tool)) return judgeFileTool(lane, laneError, input.tool, output, sessionDir);
         if (input.tool !== "bash") return;
         if (laneError) {
           throw new Error(

@@ -198,7 +198,7 @@ async function agentStatus() {
 // always clears the tokens. Only a real prompt-unblocking event may turn a
 // remaining blocked state into `stuck`; root session.idle is not enough proof.
 async function settle(scope, publishStuck = true) {
-  if (await hasPendingRuling()) {
+  if (await hasPendingRuling()) { // # MUTATION-ANCHOR: 42-M06
     await publish({ blocked_reason: "awaiting-ruling", blocked_scope: null });
     return;
   }

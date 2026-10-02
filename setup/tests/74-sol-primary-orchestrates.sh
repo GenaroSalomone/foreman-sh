@@ -33,7 +33,10 @@ def require(condition, message):
         raise SystemExit(1)
 
 require(sol.get("mode") == "primary", "sol-orchestrator is not a primary")
-require(sol.get("tools", {}).get("task") is True, "sol-orchestrator cannot delegate")
+# Delegation comes from permission.task below. A legacy `tools: {edit: true}`
+# appends `edit * allow` LAST and voids every edit deny (test 552), so the
+# primary must not grant tools that way.
+require(sol.get("tools", {}).get("task") is not False, "sol-orchestrator cannot delegate")
 
 task_policy = sol.get("permission", {}).get("task", {})
 allowed = {name for name, action in task_policy.items() if action == "allow"}
@@ -62,7 +65,7 @@ for name in expected:
 
 require(agents.get("general-sol", {}).get("tools", {}).get("task") is False, "general-sol can recursively delegate")
 
-print("ok - C01 sol-orchestrator is a task-capable primary")
+print("ok - C01 sol-orchestrator is a primary whose task tool is not disabled")
 print("ok - C02 its task policy is default-deny and names pinned economical workers plus bounded Sol exceptions")
 print("ok - C03 its prompt defines tier choice and dependency-based background use")
 print("ok - C04 SDD phase agents are excluded from its task permission")

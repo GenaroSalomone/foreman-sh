@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""holdfacts — the one validator of a `pending-reply-N` hold file.
+
+A hold is the disk fact an ask or a ruling leaves while its reply is owed:
+eight `key=value` rows. Two places decided whether one was valid, each with its
+own idea of strict: `hw`'s turn-end legality (`_executor_reply_facts_valid`)
+and `hw-reconcile`'s stale-hold detector. They shared a `required` set and
+nothing else, so a hold with an extra key, a repeated key or a stray row was
+"not a hold" to one and a hold to the other. This is the stricter reading
+(the one that decides whether an executor may end its turn), for both.
+
+    holdfacts check <file> --run RUN --pane PANE [--vendor VENDOR]
+        exit 0 valid, 1 not valid (the reason on stderr), 64 usage
+
+    holdfacts match <file> --intent answer|ruling --route ROUTE --target TARGET [--logical-id ID]
+        exit 0 valid AND addressed as asked, 1 not (the reason on stderr), 64 usage
+        The sender's reading (`channel-send --reply-hold`): the hold is checked
+        like any other, standing its own run, pane and route in for the ones a
+        sender cannot know, and must also be the hold of THIS reply (intent,
+        route, target and, when the sender has one, the logical id).
+
+As a module: `read_facts(path)` and `problem(facts, run, pane, vendor)`.
+A reader that cannot know the live pane or vendor (the reconciler reads runs
+that are no longer live) passes the hold's own recorded pane, and its own route
+as the vendor: those two comparisons then say nothing, and every other rule
+still applies.
+"""
+import os
+import re
+import sys
+
+REQUIRED = {"version", "state", "intent", "route", "target", "logical_id", "pane", "run"}
+
+
+def read_facts(path):
+    """KEY -> value of a hold file, or (None, reason). Strict: a row without
+    `=`, an empty key or a repeated key is not a hold."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = fh.read().splitlines()
+    except OSError as e:
+        return None, "cannot read: %s" % (e.strerror or e)
+    except UnicodeDecodeError:
+        return None, "not UTF-8"
+    facts = {}
+    for row in rows:
+        if "=" not in row:
+            return None, "row without '=': %r" % row
+        key, value = row.split("=", 1)
+        if not key or key in facts:
+            return None, "empty or repeated key: %r" % key
+        facts[key] = value
+    return facts, None
+
+
+def problem(facts, run, pane, vendor):
+    """None when the hold is valid for this run/pane/vendor, else the reason."""
+    if set(facts) != REQUIRED:
+        return "keys are not exactly %s" % sorted(REQUIRED)
+    if not run or not pane:
+        return "no run or pane to compare against"
+    if facts["version"] != "1":
+        return "version=%s, expected 1" % facts["version"]
+    if facts["state"] != "delivered":
+        return "state=%s, expected delivered" % facts["state"]
+    if facts["run"] != run or facts["pane"] != pane:
+        return "run or pane is not this one"
+    kind = {"answer": "ask", "ruling": "challenge"}.get(facts["intent"])
+    if kind is None:
+        return "intent is neither answer nor ruling"
+    prefix = re.escape(run) + r"(?::t(?:[2-9]|[1-9][0-9]+))?"
+    if not re.fullmatch(prefix + r":%s:[1-9][0-9]*:reply" % kind, facts["logical_id"]):
+        return "logical_id does not name this run's %s reply" % kind
+    route, target = facts["route"], facts["target"]
+    if route == "herdr":
+        if target != pane:
+            return "herdr route targets another pane"
+    elif route in ("opencode", "codex"):
+        if route != vendor or not target:
+            return "route does not match the executor vendor, or has no target"
+    else:
+        return "unknown route"
+    return None
+
+
+def mismatch(facts, intent, route, target, logical_id):
+    """None when a valid hold is the one this sender is answering, else why."""
+    for key, want in (("intent", intent), ("route", route), ("target", target),
+                      ("logical_id", logical_id)):
+        if want and facts.get(key) != want:
+            return "has %s=%s, expected %s" % (key, facts.get(key, "<missing>"), want)
+    return None
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[0] == "match":
+        opts = {"--intent": "", "--route": "", "--target": "", "--logical-id": ""}
+        rest = argv[2:]
+        while rest and rest[0] in opts and len(rest) >= 2:
+            opts[rest[0]] = rest[1]
+            rest = rest[2:]
+        if not rest and opts["--intent"] and opts["--route"] and opts["--target"]:
+            facts, why = read_facts(argv[1])
+            if facts is not None:
+                # Whose reply this is first: a hold for another target is named as
+                # that, not as the validator rule it also breaks.
+                why = mismatch(facts, opts["--intent"], opts["--route"], opts["--target"], opts["--logical-id"])
+                if why is None:
+                    why = problem(facts, facts.get("run", ""), facts.get("pane", ""), facts.get("route", ""))
+            if why is None:
+                return 0
+            sys.stderr.write("holdfacts: %s: %s\n" % (argv[1], why))
+            return 1
+        sys.stderr.write("usage: holdfacts match <file> --intent I --route R --target T [--logical-id ID]\n")
+        return 64
+    if len(argv) >= 2 and argv[0] == "check":
+        opts = {"--run": "", "--pane": "", "--vendor": ""}
+        rest = argv[2:]
+        while rest and rest[0] in opts and len(rest) >= 2:
+            opts[rest[0]] = rest[1]
+            rest = rest[2:]
+        if not rest:
+            facts, why = read_facts(argv[1])
+            if facts is not None:
+                why = problem(facts, opts["--run"], opts["--pane"], opts["--vendor"])
+            if why is None:
+                return 0
+            sys.stderr.write("holdfacts: %s: %s\n" % (argv[1], why))
+            return 1
+    sys.stderr.write("usage: holdfacts check <file> --run RUN --pane PANE [--vendor VENDOR]\n")
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

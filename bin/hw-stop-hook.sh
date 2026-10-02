@@ -247,7 +247,7 @@ STATE_DIR="$HW_WORKDIR/.hw/$HW_RUN"
 _task_seq=""
 [ -r "$STATE_DIR/task" ] && _task_seq="$(tr -dc '0-9' < "$STATE_DIR/task" 2>/dev/null || true)"
 case "$_task_seq" in ''|0|1) _task_done="$STATE_DIR/done" ;; *) _task_done="$STATE_DIR/t$_task_seq/done" ;; esac
-[ -f "$_task_done" ] && exit 0
+[ -f "$_task_done" ] && exit 0  # MUTATION-ANCHOR: 203-M03
 
 command -v python3 >/dev/null 2>&1 || exit 0
 command -v jq      >/dev/null 2>&1 || exit 0
@@ -290,6 +290,6 @@ INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)" || exit 0
 # the one legal turn end no disk fact carries. hw does the classifying, so
 # Claude, Codex and OpenCode cannot disagree about it; a vendor that sends no
 # payload simply has no fourth case, exactly as before.
-HW_TURN_END_PAYLOAD="$HOOK_INPUT" "$INVOKER_BIN_DIR/hw" executor-turn-end --hook-json 2>/dev/null || true
+HW_TURN_END_PAYLOAD="$HOOK_INPUT" "$INVOKER_BIN_DIR/hw" executor-turn-end --hook-json 2>/dev/null || true # MUTATION-ANCHOR: 43-M06
 
 exit 0

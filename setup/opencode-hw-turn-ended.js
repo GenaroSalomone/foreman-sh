@@ -46,7 +46,7 @@ async function publishTurnEnded() {
 
   try {
     const hw = join(brainBin(), "hw");
-    await execFileAsync(hw, ["executor-turn-end"], {
+    await execFileAsync(hw, ["executor-turn-end"], { // # MUTATION-ANCHOR: 43-M05
       timeout: 2_000,
     });
   } catch {

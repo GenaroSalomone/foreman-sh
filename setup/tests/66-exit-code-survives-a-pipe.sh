@@ -216,20 +216,13 @@ done
 # ONLY THE MUTANT PRODUCES — never by the absence of the original, which is
 # exactly what a mutant that died before reaching the mutated line produces.
 # `saw_mutant` in _common.sh is that shape.
-mutate() { # <name> <file> <old> <new>
+# Each mutant edits the line a `# MUTATION-ANCHOR: 66-Mnn` marker in the binary
+# declares, not the prose it mutates; see mutate_anchor in _common.sh.
+mutant_bins() { # <name> → MUTANT_DIR, a bin/ copy the next mutate_anchor edits
   local dir="$TMP/mutant-$1"; mkdir -p "$dir/bin"
   cp "$ROOT"/bin/* "$dir/bin/" 2>/dev/null || true
   cp "$H/bin/herdr" "$H/bin/herdr-rpc" "$dir/bin/"
-  MUT_OLD="$3" MUT_NEW="$4" python3 - "$dir/bin/$2" <<'PY'
-import os, sys
-p = sys.argv[1]; s = open(p, encoding="utf-8").read()
-old = os.environ["MUT_OLD"]; new = os.environ["MUT_NEW"]
-n = s.count(old)
-if n != 1:
-    raise SystemExit("mutation anchor count %d, expected 1: %r" % (n, old[:90]))
-open(p, "w", encoding="utf-8").write(s.replace(old, new))
-PY
-  chmod +x "$dir/bin/$2"; MUTANT_DIR="$dir/bin"
+  MUTANT_DIR="$dir/bin"
 }
 mut_piped() { # <binary> [args...]
   local bin="$1"; shift
@@ -244,8 +237,7 @@ mut_piped() { # <binary> [args...]
 # NOT lose it for a failed delivery: the second installation still covers that,
 # which is why two mutants are needed rather than one. Driven with no arguments
 # so the mutated gap is the path actually taken.
-mutate M01 channel-send \
-  "trap '_cs_exit_guard \"\$?\"' EXIT" \
+mutant_bins M01; mutate_anchor 66-M01 "$MUTANT_DIR/channel-send" \
   "printf 'channel-send: M01-EARLY-GUARD-REMOVED\\n' >&2"
 out="$(mut_piped channel-send || true)"
 case "$out" in
@@ -259,8 +251,7 @@ saw_mutant "M01 removes the early guard, so an exit above the delivery machinery
 # `trap … EXIT` after the guard silently removes it for every exit past that
 # line, which is every real delivery outcome. The mutant restores exactly the
 # pre-fix single-purpose trap and announces itself.
-mutate M02 channel-send \
-  "trap '_cs_rc=\$?; _release_lock || true; _cs_exit_guard \"\$_cs_rc\"' EXIT" \
+mutant_bins M02; mutate_anchor 66-M02 "$MUTANT_DIR/channel-send" \
   "printf 'channel-send: M02-GUARD-DROPPED-BY-SECOND-TRAP\\n' >&2; trap '_release_lock || true' EXIT"
 out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
 case "$out" in
@@ -272,8 +263,7 @@ saw_mutant "M02 lets the later EXIT trap replace the guard, losing it for every 
 # M03 — `$?` read after a command instead of before it. `_release_lock` runs a
 # command and a command clobbers `$?`, so the guard sees 0 and says nothing. The
 # mutant prints the status it computed, which is the evidence of its own path.
-mutate M03 channel-send \
-  "trap '_cs_rc=\$?; _release_lock || true; _cs_exit_guard \"\$_cs_rc\"' EXIT" \
+mutant_bins M03; mutate_anchor 66-M03 "$MUTANT_DIR/channel-send" \
   "trap '_release_lock || true; printf \"channel-send: M03-RC-AFTER-CLEANUP=\$?\\n\" >&2; _cs_exit_guard \"\$?\"' EXIT"
 out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
 case "$out" in
@@ -285,9 +275,8 @@ saw_mutant "M03 reads \$? after cleanup, so the guard sees 0 and a failure goes 
 # M04 — the tty test inverted, which is how a well-meaning refactor breaks this:
 # warn on a terminal (where it is false and gets muted) and stay silent through a
 # pipe (where it is the whole point).
-mutate M04 channel-send \
-  '  [ ! -t 1 ] || return 0' \
-  '  printf "channel-send: M04-TTY-TEST-INVERTED\\n" >&2; [ -t 1 ] || return 0'
+mutant_bins M04; mutate_anchor 66-M04 "$MUTANT_DIR/channel-send" \
+  'printf "channel-send: M04-TTY-TEST-INVERTED\\n" >&2; [ -t 1 ] || return 0'
 out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
 case "$out" in
   *'MY EXIT CODE IS 1'*) fail "M04 SURVIVED: the banner appeared with the tty test inverted" ;;
@@ -298,9 +287,10 @@ saw_mutant "M04 inverts the tty test, warning only where the warning is false" "
 # M05 — the guard fires but says nothing a reader can act on. This is the arm
 # that keeps the fix from decaying into a bare number: the brainer's failure was
 # not "no number", it was reading a number that belonged to tail.
-mutate M05 channel-send \
-  'NOT mine: read `${PIPESTATUS[0]}` or drop the pipe.' \
-  'M05-DISOWNING-REMOVED.'
+# The whole warning line is the replacement, with the disowning sentence swapped
+# for the mutant's own marker; the rest of the message is kept as it was.
+mutant_bins M05; mutate_anchor 66-M05 "$MUTANT_DIR/channel-send" \
+  $'printf \x27channel-send: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `channel-send … | tail` — then `$?` is TAIL\x27"\x27"\x27s status (0 whenever it reads a byte), M05-DISOWNING-REMOVED. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the delivery fact is %s, not whatever the shell shows.\\n\x27 "$rc" "$rc" >&2'
 out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
 case "$out" in
   *"NOT mine"*) fail "M05 SURVIVED: the disowning text is still there" ;;
@@ -317,8 +307,7 @@ saw_mutant "M05 drops the sentence that says the shell's number is not the tool'
 # done-invoker gets past adoption, and the stub herdr-rpc's exit 4 makes the
 # delivery fail after the lock. If it ever stops reaching that far the arm is
 # VACUOUS rather than passing, which is what saw_mutant is for.
-mutate M06 done-invoker \
-  'if [ -n "${INVOKER_RUN_LOCK:-}" ]; then' \
+mutant_bins M06; mutate_anchor 66-M06 "$MUTANT_DIR/done-invoker" \
   'printf "done-invoker: M06-REARM-SKIPPED\\n" >&2; if false; then'
 out="$( ( cd "$TMP" && env -u HW_WORKDIR -u HW_RUN HW_INVOKER_PANE=w9:pB HOME="$TMP" \
         PATH="$MUTANT_DIR:$PATH" bash -c '

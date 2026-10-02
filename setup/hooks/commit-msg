@@ -175,6 +175,6 @@ if [ -n "$offending" ]; then
     echo "Delete the line(s) above — or indent them, if they are evidence — and commit again."
     echo "If you are certain: git commit --no-verify"
   } >&2
-  exit 1
+  exit 1  # MUTATION-ANCHOR: 152-M01
 fi
 exit 0

@@ -187,6 +187,53 @@ def header_declares(path, key):
     return False
 
 
+def touched(root, changed, trigger):
+    """The slow subjects that name a changed path, ranked and cut by budget."""
+    tests = os.path.join(root, "setup", "tests")
+    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    threshold = budgets["fast_gate_threshold_seconds"]
+    cap = budgets.get("touched_budget_seconds", 180)
+    slow = {n: v["seconds"] for n, v in budgets["files"].items()
+            if v["seconds"] > threshold and os.path.isfile(os.path.join(tests, n))}
+    top, helpers = common_parts(os.path.join(tests, "_common.sh"))
+    stext = {n: subject_text(COMMENT.sub("", read(os.path.join(tests, n))), top, helpers)
+             for n in slow}
+    code = None
+    found = {}  # name -> (rank, path)
+    for path in changed:
+        if SUBJECT.match(path):
+            name = os.path.basename(path)
+            if name in slow:
+                found[name] = (0, path)
+            continue
+        if trigger is not None and trigger.search(path) is None:
+            for n, t in stext.items():
+                if names(t, path) and n not in found:
+                    found[n] = (0, path)
+            continue
+        if code is None:
+            code = universe(root)
+        reach = closure(path, code)
+        base = os.path.basename(path)
+        for n, t in stext.items():
+            direct = path in t or names(t, base)
+            if direct and found.get(n, (9,))[0] > 0:
+                found[n] = (0, path)
+                continue
+            if n in found:
+                continue
+            if any(r in t or names(t, os.path.basename(r)) for r in reach):
+                found[n] = (1, path)
+    spent = 0.0
+    for n in sorted(found, key=lambda n: (found[n][0], slow[n], n)):
+        if spent + slow[n] <= cap:
+            spent += slow[n]
+            print("touched %s %s" % (n, found[n][1]))
+        else:
+            print("touched-skipped %s %s %s" % (n, slow[n], found[n][1]))
+    return 0
+
+
 def main(argv):
     if len(argv) < 3:
         print("usage: gate-select <root> <changed-paths-file> [<trigger-regex>]", file=sys.stderr)
@@ -194,6 +241,8 @@ def main(argv):
     root, changed_file = argv[1], argv[2]
     trigger = re.compile(argv[3]) if len(argv) > 3 and argv[3] else None
     changed = [l.strip() for l in read(changed_file).split("\n") if l.strip()]
+    if len(argv) > 4 and argv[4] == "touched":
+        return touched(root, changed, trigger)
     if not changed:
         print("all no changed paths were named")
         return 0

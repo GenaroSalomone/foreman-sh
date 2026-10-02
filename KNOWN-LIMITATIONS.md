@@ -103,6 +103,25 @@ release candidate.
   the person's step: run OpenCode once so its config directory exists, then
   `herdr integration install opencode`.
 
+### L2b. Native install: Homebrew on macOS; a pipe elsewhere
+- **Scope:** `brew install GenaroSalomone/tap/foreman-sh` and
+  `install.sh --with-recommended`.
+- **Impact:** the formula cannot depend on Claude Code, which is a cask, so
+  Claude Code is one more step: `foreman-sh --with-recommended` or
+  `brew install --cask claude-code`. On Linux there is no native package. The
+  piped installer is the way, and `--with-recommended` works only where
+  Homebrew is on PATH. Without it, it names https://brew.sh and installs nothing.
+  On macOS, `install.sh --check` does not name `rg`, `fd` and `sd`, which `hw`
+  calls. The formula and `--with-recommended` install them.
+- **Evidence:** measured on macOS with Homebrew 7.0.7. The formula passes
+  `brew audit --strict`, installs from a local tap with `--build-from-source`,
+  its test assertions hold, and the installed `foreman-sh --check` runs. The
+  dependencies were not reinstalled, so that run used `--ignore-dependencies`.
+  The published tap, a real `--with-recommended` run, and Linux with Homebrew
+  are `unverified`: the suite drives `--with-recommended` against a stub `brew`.
+- **Workaround:** the piped or cloned `install.sh`, as before; `--check` names
+  every package with its install command.
+
 ## Agents
 
 ### L3. Codex is not set up by the installer, and is a reduced dispatch target
@@ -157,6 +176,13 @@ it leaves the brain directory, is unguarded even with the hook registered.
     through Codex's own patch tool is unguarded, and the Codex configuration this harness was
     developed against runs it without a sandbox or approval prompts. Whether editing the Codex guard script
     re-raises Codex's trust dialog is unknown.
+  - **OpenCode:** the plugin judges `bash` and the file tools `write`, `edit`,
+    `multiedit`, `patch` and `apply_patch` by absolute path. A file-writing
+    tool outside that list (a new built-in, an MCP server's) is not judged,
+    and `permission.edit` is no fallback: OpenCode 1.18.34 matches it against
+    the path relative to the worktree, so an absolute deny never matches a
+    file outside it. If a lane's shim cannot load the shared guard, it
+    refuses every `bash` call but not the file tools.
   - Where a write's destination cannot be resolved with confidence, the guard
     refuses on the command's content; it therefore may refuse a harmless
     command that merely names a protected path.
@@ -216,6 +242,20 @@ it leaves the brain directory, is unguarded even with the hook registered.
 - **Evidence:** measured on a fresh macOS user.
 - **Workaround:** run `claude --dangerously-skip-permissions` once, accept,
   `/exit`. `claude auth login` alone does not complete the welcome.
+
+### L12. With `--permissions ask`, an unattended executor waits on its prompts
+- **Scope:** any dispatch that resolves to `ask` (`hw --permissions ask`,
+  `HW_PERMISSIONS=ask`, or `install.sh --permissions ask`).
+- **Impact:** Claude Code and Codex are launched with their prompts on, and
+  an executor's pane has no one watching it. `hw` has no detector for a Claude
+  Code or Codex permission dialog: the pane stays where the dialog is until a
+  person answers it in the pane. For OpenCode the existing state witness
+  reports `blocked reason=permission`. Not measured live against Claude Code
+  or Codex here: what the manifest says about waiting follows from what the
+  flags mean, and the arguments were checked in `--dry-run`.
+- **Workaround:** keep `skip` (the default) for unattended work, or answer the
+  prompt in the executor's pane. `--permissions` cannot change a pane that is
+  already running.
 
 ### L7. `hw … --dry-run` from a plain terminal stops at the return channel
 - **Scope:** running `hw <lane> <task> --dry-run` outside a brainer pane, for

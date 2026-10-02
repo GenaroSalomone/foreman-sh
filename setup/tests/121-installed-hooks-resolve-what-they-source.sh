@@ -97,8 +97,8 @@ esac
 # M01 — put back the resolution that broke the push: source the shared file
 # relative to the hook's own path instead of the repo root. The mutant is killed
 # by the message it printed, which is the exact one the real push died with.
-sed 's|^\. "$(git rev-parse --show-toplevel)/setup/hooks/suite-trigger-pattern.sh"$|. "$(dirname "${BASH_SOURCE[0]}")/suite-trigger-pattern.sh"|' \
-  "$repo/setup/hooks/pre-push" > "$TMP/pre-push.mutant"
+cp "$repo/setup/hooks/pre-push" "$TMP/pre-push.mutant"
+mutate_anchor 121-M01 "$TMP/pre-push.mutant" '. "$(dirname "${BASH_SOURCE[0]}")/suite-trigger-pattern.sh"'
 grep -q 'dirname "${BASH_SOURCE\[0\]}"' "$TMP/pre-push.mutant" \
   || fail "M01 was not applied — the sourcing line moved; update this arm"
 cp "$TMP/pre-push.mutant" "$repo/setup/hooks/pre-push"

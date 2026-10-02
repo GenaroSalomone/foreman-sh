@@ -613,8 +613,10 @@ ruling_queue_add() {  # <run_dir> <tmp>
     m="${f##*/pending-ruling}"; m="${m#.}"
     if [ -z "$m" ] || [ "$((10#$m))" -lt "$n" ]; then ahead=$((ahead + 1)); fi
   done < <(ruling_queue_pending "$d")
+  # MUTATION-ANCHOR: 210-M01
   if [ "$ahead" -ge "$RULING_QUEUE_CAP" ] \
      && mv "$d/pending-ruling.$n" "$d/.pending-ruling.retracted.$n.$$" 2>/dev/null; then
+  # MUTATION-ANCHOR-END: 210-M01
     rm -f "$d/.pending-ruling.retracted.$n.$$"
     return 3
   fi
@@ -643,7 +645,7 @@ $text
 
 "
     fi
-    rm -f "$claim" 2>/dev/null || true
+    rm -f "$claim" 2>/dev/null || true  # MUTATION-ANCHOR: 133-M01  # MUTATION-ANCHOR: 210-M02
   done < <(ruling_queue_pending "$d")
   [ "$count" -gt 0 ] || return 1
   printf 'at=%s\nvia=%s\ncount=%s\n' "$at" "$via" "$count" > "$d/ruling-delivered" 2>/dev/null || true

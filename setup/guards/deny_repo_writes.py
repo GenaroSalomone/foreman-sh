@@ -2417,7 +2417,7 @@ def main(lane, stream=None):
     # silently, which is the precise failure mode the whole file is about.
     try:
         cfg = config(lane)
-    except KeyError as exc:
+    except KeyError as exc:  # MUTATION-ANCHOR: 78-M03
         deny("Blocked: %s Every Bash command is refused until a lane this guard "
              "knows is named, because a guard that cannot resolve its lane "
              "cannot tell a protected tree from any other directory."

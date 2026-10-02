@@ -475,12 +475,8 @@ esac
 # Targeted by its POSITION (the line right after the heredoc-style block's
 # `} >&2`), because the file has other `  exit 1` lines in its precondition
 # guards and mutating one of those would test something else.
-awk '
-  prev == "  } >&2" && $0 == "  exit 1" { print "  exit 0"; prev = $0; next }
-  { print; prev = $0 }
-' "$repo/setup/hooks/commit-msg" > "$TMP/commit-msg.mutant"
-diff -q "$repo/setup/hooks/commit-msg" "$TMP/commit-msg.mutant" >/dev/null \
-  && fail "M01 was not applied — the refusal branch moved; update this arm"
+cp "$repo/setup/hooks/commit-msg" "$TMP/commit-msg.mutant"
+mutate_anchor 152-M01 "$TMP/commit-msg.mutant" 'exit 0'
 bash -n "$TMP/commit-msg.mutant" \
   || fail "M01 produced a syntactically broken hook — a mutant that cannot run proves nothing"
 cp "$TMP/commit-msg.mutant" "$repo/setup/hooks/commit-msg"
@@ -521,8 +517,8 @@ esac
 #
 # The kill needle is the gate DOING SOMETHING DIFFERENT — a refusal that names
 # the quoted line — not a marker announcing that the patch applied.
-sed 's|^ATTRIBUTION_PATTERN=.\^(|ATTRIBUTION_PATTERN='"'"'^[[:space:]]*(|' \
-  "$ROOT/setup/hooks/attribution-pattern.sh" > "$TMP/pattern.m02"
+cp "$ROOT/setup/hooks/attribution-pattern.sh" "$TMP/pattern.m02"
+mutate_anchor 152-M02 "$TMP/pattern.m02" $'ATTRIBUTION_PATTERN=\'^[[:space:]]*(co-authored-by:.*(claude|anthropic|gpt|codex|opencode|copilot)|generated with \\[?claude|🤖 generated)\''
 grep -q '\^\[\[:space:\]\]\*(' "$TMP/pattern.m02" \
   || fail "M02 was not applied — ATTRIBUTION_PATTERN's assignment no longer has the shape this arm edits; update the arm"
 bash -n "$TMP/pattern.m02" || fail "M02 produced a syntactically broken pattern file — a mutant that cannot be sourced proves nothing"
@@ -546,8 +542,8 @@ esac
 # M03 — REMOVE THE ANCHOR ALTOGETHER, the other direction: `^(` becomes `(`, so
 # the detection matches anywhere on a line. The healthy gate accepts the
 # mid-line shell example (ARM 5g); the mutant must refuse it.
-sed 's|^ATTRIBUTION_PATTERN=.\^(|ATTRIBUTION_PATTERN='"'"'(|' \
-  "$ROOT/setup/hooks/attribution-pattern.sh" > "$TMP/pattern.m03"
+cp "$ROOT/setup/hooks/attribution-pattern.sh" "$TMP/pattern.m03"
+mutate_anchor 152-M03 "$TMP/pattern.m03" $'ATTRIBUTION_PATTERN=\'(co-authored-by:.*(claude|anthropic|gpt|codex|opencode|copilot)|generated with \\[?claude|🤖 generated)\''
 grep -qE "^ATTRIBUTION_PATTERN='\(co-authored-by" "$TMP/pattern.m03" \
   || fail "M03 was not applied — update this arm"
 bash -n "$TMP/pattern.m03" || fail "M03 produced a syntactically broken pattern file"

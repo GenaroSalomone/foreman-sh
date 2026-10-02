@@ -4,6 +4,57 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.2.0-rc.1] — 2026-10-01
+
+### Added
+- Skipping permission prompts is now a choice. `skip` stays the recommended
+  default (Claude Code `--dangerously-skip-permissions`, OpenCode `--auto`,
+  Codex keeps its own `approval_policy`); `ask` leaves the prompts on and pins
+  Codex to `-a on-request`. Pick it per dispatch with `hw --permissions ask|skip`,
+  per shell with `HW_PERMISSIONS`, or per machine with
+  `install.sh --permissions ask|skip` (it writes `~/.config/hw/permissions`, and
+  asks in a terminal). `brain` and a revived executor follow the same setting,
+  and `hw`'s manifest has a `permissions` line saying which one applies and
+  where it came from. A value that is not `ask` or `skip` is refused.
+- A Homebrew formula: `brew install GenaroSalomone/tap/foreman-sh` installs
+  foreman-sh with herdr, jq, rg, fd and sd, and links `foreman-sh`, which is
+  `install.sh` with the same flags. Its hints name `foreman-sh`, and
+  `--version` prints the packaged version.
+- `install.sh --with-recommended` installs the missing required and recommended
+  packages (herdr, jq, rg, fd, sd, Claude Code as a cask, engram, fzf). It runs
+  one `brew install` per package and prints each command before running it.
+  A failed install is named and the next one is still tried. With `--check` it
+  prints the commands and runs none, and without Homebrew it installs nothing.
+  Nothing is installed without the flag.
+- When `brew` is on PATH and a required tool is missing, `--check` names
+  `--with-recommended`.
+
+### Changed
+- `hw --help advanced` documents `--permissions`. The manifest's OpenCode
+  `permissions` line moved into the common `permissions` line.
+- The executor's prompt states `ask-invoker`'s limit (600 characters, 3 per
+  task) and its rules drop shouted capitals for the reason behind them, after
+  an audit against Anthropic's prompting guide for current Claude models.
+
+### Fixed
+- The OpenCode read-only guard now refuses OpenCode's own file tools (`write`,
+  `edit`, `multiedit`, `patch`, `apply_patch`) when they would write inside a
+  protected repository. Before, it judged `bash` only and left file tools to
+  `permission.edit`, whose absolute-path denies OpenCode never matches for a
+  file outside the worktree.
+- `setup/check-machine` fails when an OpenCode agent grants `edit`, `write` or
+  `bash` through the legacy `tools` map, which appends an allow-all after
+  every `permission` deny for that agent.
+- `curl … | bash` no longer ends in `curl: (23)`: `install.sh` drains the rest
+  of the script it is read from, and only when stdin is not a terminal.
+- `install-deps.sh` no longer stops after the first package when `brew` reads
+  stdin (a cask prompt, a post-install): it reads its package list on its own
+  file descriptor, so every package is installed or named.
+- An invoker whose `project-spaces.sh` does not load, or whose `projects.json`
+  is not valid JSON, says so on stderr instead of failing later without a cause.
+- `setup/e2e-cheap-executors` retries `agent start` while a fresh herdr pane
+  answers `agent_pane_busy`, instead of failing the run in its first second.
+
 ## [0.1.3] — 2026-10-01
 
 ### Added

@@ -323,6 +323,7 @@ herdr_json() {   # herdr_json <what> <jq array path> [args...]
   printf '%s' "$raw"
 }
 
+# MUTATION-ANCHOR: 102-M01
 herdr_list() {   # herdr_list <what> <jq array path> <jq select+extract> [args...]
   # SEPARATE `local` STATEMENTS and no cross-reference: bash 3.2 declares all
   # names in one `local` before assigning, so `local a=$1 b=$a` reads an unset a.
@@ -337,6 +338,7 @@ herdr_list() {   # herdr_list <what> <jq array path> <jq select+extract> [args..
   raw="$(herdr_json "$what" "$arr" "$@")" || return 1
   printf '%s' "$raw" | jq -r "$pick" 2>/dev/null | head -1 || true
 }
+# MUTATION-ANCHOR-END: 102-M01
 
 # `herdr agent get` PUTS ITS ANSWER ON WHICHEVER STREAM ITS ANSWER IS.
 #
@@ -408,7 +410,7 @@ PY
 brain_agent_get() {   # $1 = pane; prints whichever stream carried the body
   local err out
   err="$TMPDIR_BRAIN/herdr-agent-get.$$"
-  out="$(herdr agent get "$1" 2>"$err")" || true
+  out="$(herdr agent get "$1" 2>"$err")" || true  # MUTATION-ANCHOR: 153-M05
   if [ -n "$out" ]; then
     printf '%s' "$out"
   else
@@ -518,7 +520,7 @@ brain_reset_blockers() {  # $1 = project, $2 = brainer pane; stdin = herdr pane 
   panes="$(cat)"
   lane_unreported_runs "$proj" | while IFS="$(printf '\t')" read -r task run invoker wdir; do
     [ "$invoker" = "$pane" ] || continue
-    printf '%s' "$panes" | brain_live_agent_in "$wdir" || continue
+    printf '%s' "$panes" | brain_live_agent_in "$wdir" || continue  # MUTATION-ANCHOR: 137-M03
     printf '%s\t%s\n' "$task" "$run"
   done
 }
@@ -549,7 +551,7 @@ brain_blocker_gate() {  # $1 = project, $2 = brainer pane, $3 = flags; stdin = p
     return 1
   }
   blockers="$(printf '%s' "$panes" | brain_reset_blockers "$proj" "$pane")"
-  if [ -n "$blockers" ] && [ "$FORCE" != 1 ]; then
+  if [ -n "$blockers" ] && [ "$FORCE" != 1 ]; then  # MUTATION-ANCHOR: 137-M02
     printf 'brain: %s executor(s) of %s have not reported yet and their return address is THIS\n' "$(printf '%s\n' "$blockers" | wc -l | tr -d ' ')" "$proj" >&2
     printf 'brain: pane (%s):\n' "$pane" >&2
     printf '%s\n' "$blockers" | while IFS="$(printf '\t')" read -r bt br; do
@@ -621,7 +623,7 @@ if [ -n "$ws" ]; then
         # The arm is a child of the brainer's own pane, so it inherits that
         # pane's HERDR_PANE_ID; demanding it costs the real path nothing and
         # leaves no way to reach the wait from outside the pane being reset.
-        [ -n "${HERDR_PANE_ID:-}" ] && [ "${HERDR_PANE_ID:-}" = "$AWAIT_PANE" ] || {
+        [ -n "${HERDR_PANE_ID:-}" ] && [ "${HERDR_PANE_ID:-}" = "$AWAIT_PANE" ] || {  # MUTATION-ANCHOR: 153-M06
           printf 'brain: --await-idle is the second half of `--reset --self`, and it waits out a turn\n' >&2
           printf 'brain: instead of refusing it — so it is only ever legal from INSIDE the pane being\n' >&2
           printf 'brain: reset. You are %s and this names %s. Resetting somebody else is `brain %s\n' "${HERDR_PANE_ID:-nobody}" "$AWAIT_PANE" "$proj" >&2
@@ -664,13 +666,15 @@ if [ -n "$ws" ]; then
           # fail-closed, so nothing unsafe was observed — but a wait whose own
           # comment promises positive evidence has to keep that promise, so an
           # unreadable reply is polled through and named at the ceiling.
+          # MUTATION-ANCHOR: 153-M07
           if [ -z "$await_st" ]; then
             await_last=unreadable
           else
             await_last="$await_st"
             [ "$await_st" != working ] || await_saw_working=1
-            [ "$await_st" = working ] || break
+            [ "$await_st" = working ] || break  # MUTATION-ANCHOR: 153-M02
           fi
+          # MUTATION-ANCHOR-END: 153-M07
           [ "$waited" -lt "$await_max" ] || {
             if [ "$await_last" = unreadable ]; then
               printf 'brain: %s could not be read by `herdr agent get` once in the %ss since this reset was\n' "$pane" "$waited" >&2
@@ -737,7 +741,7 @@ if [ -n "$ws" ]; then
           printf 'brain: conversation. Nothing was sent and nothing was restarted.\n' >&2
           exit 1
         }
-        [ "$HERDR_PANE_ID" = "$pane" ] || {
+        [ "$HERDR_PANE_ID" = "$pane" ] || {  # MUTATION-ANCHOR: 153-M01
           printf 'brain: --self means "reset the pane I am in", but you are %s and the %s brainer is\n' "$HERDR_PANE_ID" "$proj" >&2
           printf 'brain: %s. Resetting somebody else is `brain %s --reset`, and that path refuses a\n' "$pane" "$proj" >&2
           printf 'brain: WORKING brainer — --self does not widen it, it only defers your own.\n' >&2
@@ -747,7 +751,7 @@ if [ -n "$ws" ]; then
         # THE SAME GATE THE OTHER PATH ASKS, ASKED EARLY. After the detach there
         # is nobody left to read a refusal, so every executor question is settled
         # here, in the conversation that can still act on the answer.
-        printf '%s' "$panes_json" | brain_blocker_gate "$proj" "$pane" "--reset --self" || exit 1
+        printf '%s' "$panes_json" | brain_blocker_gate "$proj" "$pane" "--reset --self" || exit 1  # MUTATION-ANCHOR: 153-M03
         # AND THE COUNT IS SAID OUT LOUD EVEN WHEN IT IS ZERO. R4 of the
         # 2026-09-16 audit: 32 of 79 never-reported runs are "the brainer's pane
         # is no longer there". A self-reset is the moment that number is cheap
@@ -831,6 +835,7 @@ PY
       # either discards work nobody asked to lose. `hw unstick` refuses on the
       # same two states for the same reason. An absent agent is a BARE SHELL,
       # and starting one there is the repair, not a risk.
+      # MUTATION-ANCHOR: 137-M01
       case "$pane_status" in
         working)
           printf 'brain: %s is WORKING (%s) — a turn is in flight, and a reset would discard it.\n' "$pane" "${pane_agent:-agent}" >&2
@@ -853,8 +858,8 @@ PY
         # (bin/hw:624), the delivery gate (bin/hw:9019) and the readiness probe
         # (bin/hw:1230). `working` and `blocked` are untouched: this accepts one
         # more settled state, it does not soften a live one.
-        idle|done|"") : ;;
-        unknown)
+        idle|done|"") : ;;  # MUTATION-ANCHOR: 153-M04
+        unknown)  # MUTATION-ANCHOR: 143-M01
           # `unknown` IS WHAT A PANE WITH NO AGENT REPORTS, and the catch-all
           # below read it as danger — the exact opposite of what it means.
           # The comment three lines above
@@ -889,6 +894,7 @@ PY
           printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
           exit 1 ;;
       esac
+      # MUTATION-ANCHOR-END: 137-M01
 
       printf '%s' "$panes_json" | brain_blocker_gate "$proj" "$pane" "--reset" || exit 1
 
@@ -903,6 +909,7 @@ PY
       # [ -n "$pane_agent" ]` would have missed: a pane the list showed as a bare
       # shell may have had an agent started in it since, and `agent start` over a
       # live conversation is the same accident from the other side.
+      # MUTATION-ANCHOR: 137-M06
       now="$(brain_agent_get "$pane")"
       now_status="$(printf '%s' "$now" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
       if printf '%s' "$now" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
@@ -924,6 +931,7 @@ PY
         printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
         exit 1
       fi
+      # MUTATION-ANCHOR-END: 137-M06
       if [ -n "$pane_agent" ]; then
         echo "brain: replacing the $pane_agent in $pane — the space, tab, pane and cwd all stay." >&2
         herdr pane send-text "$pane" '/exit' >/dev/null 2>&1 \
@@ -1032,6 +1040,7 @@ PY
       # root's own <project> directory, the deny-guard table treats the root
       # `brain` as a different lane from `setup`, and `hw` will refuse every
       # dispatch.
+      # MUTATION-ANCHOR: 137-M05
       case "$verdict" in
         mismatch*)
           printf 'brain: WARNING — %s is NOT the %s brainer: %s\n' "$pane" "$proj" "${verdict#*$(printf '\t')}" >&2
@@ -1039,6 +1048,7 @@ PY
           printf 'brain: rules, and `hw` refuses to dispatch from it. Fix it with: brain %s --reset\n' "$proj" >&2
           exit 3 ;;
       esac
+      # MUTATION-ANCHOR-END: 137-M05
       _brain_flush_outbox "$proj" "$pane"
       exit 0
     fi
@@ -1051,7 +1061,7 @@ fi
 # restarted." A refusal that has already acted is worse than no refusal, and this
 # one had the agent's own corpse behind it. This guard is only for the case it
 # names: a project with no brainer tab at all.
-[ "$RESET" = 0 ] || [ -n "${RESET_PANE:-}" ] || {
+[ "$RESET" = 0 ] || [ -n "${RESET_PANE:-}" ] || {  # MUTATION-ANCHOR: 137-M04
   printf 'brain: there is no %s brainer to reset (no %s tab in %s). Open one with: brain %s\n' \
     "$proj" "$tab_label" "${ws:-the $space space, which does not exist}" "$proj" >&2
   printf 'brain: Nothing was sent and nothing was restarted.\n' >&2
@@ -1152,6 +1162,7 @@ fi
 # rename that failed silently left the tab unlabelled, so the next `brain` for
 # this project found nothing and built a SECOND brainer tab beside this one —
 # and, unlike the workspace case, with nothing in the output to suggest why.
+# MUTATION-ANCHOR: 102-M02
 if [ -n "${tab:-}" ] && [ "$tab" != null ]; then
   rename_out="$(herdr tab rename "$tab" "$tab_label" 2>&1)" || {
     printf 'brain: `herdr tab rename %s %s` failed, so this tab has no queryable label and the\n' \
@@ -1162,15 +1173,21 @@ if [ -n "${tab:-}" ] && [ "$tab" != null ]; then
     exit 1
   }
 fi
+# MUTATION-ANCHOR-END: 102-M02
 herdr pane rename "$pane" brain >/dev/null
 # Retry, for the same reason hw does: a freshly created pane is not at its shell
 # prompt yet and `agent start` rejects it with agent_pane_busy. brain had no
 # retry at all, so it lost that race in silence and left you a bare shell.
+# skip or ask, resolved as hw resolves it (bin/project-spaces.sh). Under `ask` the
+# brainer's pane opens with each vendor's prompts on and answering them is yours.
+hw_permissions_resolve "" || { echo "brain: $PERMISSIONS_ERR" >&2; exit 1; }
+[ "$PERMISSIONS" = skip ] || echo "brain: permissions: ask ($PERMISSIONS_SRC) — the brainer will stop on permission prompts; answer them in its pane." >&2
 tries=0
 agent_args=()
 if [ "$kind" = opencode ]; then
   opencode_port="$(_free_port)"
-  agent_args=(-- --auto --port "$opencode_port")
+  agent_args=(-- --port "$opencode_port")
+  if [ "$PERMISSIONS" = skip ]; then agent_args=(-- --auto --port "$opencode_port"); fi
 else
   # THE FOLDER-TRUST QUESTION, ANSWERED THE WAY `hw` ANSWERS IT FOR EXECUTORS.
   # Measured 2026-09-24: hw trusted the executor's directory and brain did not
@@ -1199,7 +1216,8 @@ else
          '{mcpServers: {engram: {command: $p, args: ["--label", $l, "--", $e, "mcp", "--tools=agent"]}}}' > "$engram_mcp_file.$$" \
     && mv "$engram_mcp_file.$$" "$engram_mcp_file" \
     || { echo "brain: could not write the engram proxy's --mcp-config at $engram_mcp_file" >&2; exit 1; }
-  agent_args=(-- --dangerously-skip-permissions --mcp-config "$engram_mcp_file")
+  agent_args=(-- --mcp-config "$engram_mcp_file")
+  if [ "$PERMISSIONS" = skip ]; then agent_args=(-- --dangerously-skip-permissions --mcp-config "$engram_mcp_file"); fi
 fi
 while [ "$tries" -lt 15 ]; do
   # `${a[@]+"${a[@]}"}`, NOT `"${a[@]}"`. macOS ships bash 3.2 and under `set -u`

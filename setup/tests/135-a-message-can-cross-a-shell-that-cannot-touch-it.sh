@@ -144,15 +144,7 @@ case "$out" in *"given on argv AND as '-'"*) pass "hw ruling refuses a correctio
 # byte-for-byte assertion above must then fail, proving it exercises real
 # stdin plumbing and not just a string comparison somewhere else.
 mut="$TMP/m01"; mkdir -p "$mut"; cp "$CS_SRC" "$mut/channel-send"
-python3 - "$mut/channel-send" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p, encoding="utf-8").read()
-old = 'if [ "${1:-}" = "-" ]; then\n  [ $# -eq 1 ] || die "message given twice'
-assert s.count(old) == 1, ("not found", s.count(old))
-new = 'if false; then\n  [ $# -eq 1 ] || die "message given twice'
-open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
-PY
+mutate_anchor 135-M01 "$mut/channel-send" 'if false; then'
 chmod +x "$mut/channel-send"
 : > "$TMP/codex.log"
 PATH="$TMP/cxbin:$PATH" "$mut/channel-send" --require admitted codex fakethread /tmp/fake.sock - \
@@ -174,16 +166,8 @@ fi
 # is silently accepted with only the stdin half kept — proving assertion 3b's
 # done-invoker arm is load-bearing rather than incidentally true.
 mut="$TMP/m02"; mkdir -p "$mut"; cp "$DI_SRC" "$mut/done-invoker"
-cp "$ROOT/bin/invoker-common.sh" "$mut/invoker-common.sh"
-python3 - "$mut/done-invoker" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p, encoding="utf-8").read()
-old = '[ $# -eq 1 ] || die "the summary was given on argv AND as \'-\' for stdin — pass it ONE way, not both"\n'
-count = s.count(old)
-assert count == 1, ("not found in done-invoker", count)
-open(p, "w", encoding="utf-8").write(s.replace(old, "", 1))
-PY
+cp "$ROOT/bin/invoker-common.sh" "$mut/invoker-common.sh"; cp "$ROOT/bin/runenv" "$mut/runenv"
+mutate_anchor 135-M02 "$mut/done-invoker" ''
 chmod +x "$mut/done-invoker"
 out="$(printf 'from stdin' | env -u HW_INVOKER_PANE "$mut/done-invoker" - "from argv" 2>&1 || true)"
 saw_mutant "M02" "$out" "no HW_INVOKER_PANE"

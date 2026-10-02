@@ -168,17 +168,11 @@ stop_holder C "$C"
 
 # MUTANT M01: release by PATH, which is what shipped. The stale releaser above
 # then destroys the live successor's lock.
-# python3, not sed: these mutations contain `||`, which is also the delimiter
-# these seds were using, and the escaping is exactly where a mutant quietly
-# stops applying and its arm starts certifying nothing.
-python3 - "$LIB" "$TMP/m01.sh" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-old = '  [ "$owner" = "$$" ] || return 0\n'
-assert s.count(old) == 1, "the identity check in invoker_release_run_lock moved"
-open(dst, "w").write(s.replace(old, '  : # MUTANT: release by path\n', 1))
-PYMUT
+# Every mutant here edits the line or block a `# MUTATION-ANCHOR: 101-Mnn` marker
+# in the library (or channel-send) declares, not the prose of the lines it
+# mutates; see mutate_anchor in _common.sh.
+cp "$LIB" "$TMP/m01.sh"
+mutate_anchor 101-M01 "$TMP/m01.sh" ': # MUTANT: release by path'
 grep -q 'MUTANT: release by path' "$TMP/m01.sh" || fail "M01 did not apply"
 rm -rf "$LOCK"; mkdir -p "$LOCK"; printf 'ownedbysomeoneelse\n' > "$LOCK/owner.pid"
 printf '%s\n' 4242 > "$LOCK/owner.pid"
@@ -190,19 +184,8 @@ pass "mutant killed: M01 invoker_release_run_lock removes a lock owned by anothe
 
 # MUTANT M02: go back to the age rule with no owner check, so a live holder's
 # lock is reaped. The mutant's own stderr is the evidence.
-python3 - "$LIB" "$TMP/m02.sh" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-old = ('        if ! kill -0 "$owner" 2>/dev/null \\\n'
-       '           && _invoker_reap_run_lock "$lock" "$owner" "$owner_start"; then\n')
-assert s.count(old) == 1, "the liveness check in invoker_run_lock moved"
-new = ('        if [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null || true)" ]; then\n'
-       '          printf \'%s: MUTANT reaped by age\\n\' "${INVOKER_PROG:-invoker}" >&2\n'
-       '          rm -f "$lock/owner.pid" "$lock/owner.start" 2>/dev/null || true\n'
-       '          rmdir "$lock" 2>/dev/null || true\n')
-open(dst, "w").write(s.replace(old, new, 1))
-PYMUT
+cp "$LIB" "$TMP/m02.sh"
+mutate_anchor 101-M02 "$TMP/m02.sh" $'if [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null || true)" ]; then\n  printf \'%s: MUTANT reaped by age\\n\' "${INVOKER_PROG:-invoker}" >&2\n  rm -f "$lock/owner.pid" "$lock/owner.start" 2>/dev/null || true\n  rmdir "$lock" 2>/dev/null || true'
 grep -q 'MUTANT reaped by age' "$TMP/m02.sh" || fail "M02 did not apply"
 RUN2=r2
 LOCK2="$(lock_of "$RUN2")"
@@ -348,14 +331,8 @@ esac
 
 # MUTANT M03: identity by command name only, which is what shipped. The
 # symlinked sender in arm 5 then loses its lock.
-python3 - "$ROOT/bin/channel-send" "$cs/bin/channel-send" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-old = '            _owner_start_was="$(cat "$_lock/owner.start" 2>/dev/null || true)"\n'
-assert s.count(old) == 1, "the recorded start time is read somewhere else now"
-open(dst, "w").write(s.replace(old, '            _owner_start_was="" # MUTANT: name only\n', 1))
-PYMUT
+cp "$ROOT/bin/channel-send" "$cs/bin/channel-send"
+mutate_anchor 101-M03 "$cs/bin/channel-send" '_owner_start_was="" # MUTANT: name only'
 grep -q 'MUTANT: name only' "$cs/bin/channel-send" || fail "M03 did not apply"
 chmod +x "$cs/bin/channel-send"
 rm -rf "$lock"; mkdir -p "$lock"
@@ -502,16 +479,8 @@ esac
 
 # M04 — the start time is written and never consulted: the state the commit
 # message described as already fixed. Dies on arm 1.
-# python3, not sed: the line contains `||`, which is also sed's delimiter here.
-# Third time in this task; it is written down so it is the last.
-python3 - "$ROOT/bin/invoker-common.sh" "$TMP/m04.sh" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-old = '        owner_start="$(cat "$lock/owner.start" 2>/dev/null || true)"\n'
-assert old in s, "M04 anchor missing"
-open(dst, "w").write(s.replace(old, '        owner_start=""\n', 1))
-PYMUT
+cp "$ROOT/bin/invoker-common.sh" "$TMP/m04.sh"
+mutate_anchor 101-M04 "$TMP/m04.sh" 'owner_start=""'
 grep -q '^        owner_start=""$' "$TMP/m04.sh" || fail "M04 did not apply"
 bash -n "$TMP/m04.sh" || fail "M04 produced a syntactically invalid mutant, which kills nothing"
 plant 'Thu Jan  1 00:00:00 1970'
@@ -557,14 +526,8 @@ case "$(term_arm T1)" in
 esac
 
 # M05 — the trap releases and does not exit, which is what shipped.
-python3 - "$LIB" "$TMP/m05.sh" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-old = "  trap 'invoker_release_run_lock; exit 143' TERM\n"
-assert s.count(old) == 1, "the TERM trap in invoker_arm_lock_signals moved"
-open(dst, "w").write(s.replace(old, "  trap 'invoker_release_run_lock' TERM\n", 1))
-PYMUT
+cp "$LIB" "$TMP/m05.sh"
+mutate_anchor 101-M05 "$TMP/m05.sh" "trap 'invoker_release_run_lock' TERM"
 grep -q "^  trap 'invoker_release_run_lock' TERM$" "$TMP/m05.sh" || fail "M05 did not apply"
 saw_mutant "M05 the TERM trap releases the lock and carries on" "$(term_arm T2 "$TMP/m05.sh")" "alive-lock=no"
 
@@ -635,15 +598,8 @@ esac
 
 # M06 — the reap re-checks nothing, which is what shipped: judging a holder dead
 # is enough to remove whatever lock is at that path now.
-python3 - "$LIB" "$TMP/m06.sh" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-old = '  if [ "$now_owner" = "$seen_owner" ] && [ "$now_start" = "$seen_start" ]; then\n'
-assert s.count(old) == 1, "the identity check in _invoker_reap_run_lock moved"
-s = s.replace(old, '  if true; then\n', 1)
-open(dst, "w").write(s)
-PYMUT
+cp "$LIB" "$TMP/m06.sh"
+mutate_anchor 101-M06 "$TMP/m06.sh" 'if true; then'
 bash -n "$TMP/m06.sh" || fail "M06 produced a syntactically invalid mutant, which kills nothing"
 saw_mutant "M06 a waiter removes the lock at the path without re-checking who holds it" \
   "$(race_arm "$TMP/m06.sh")" "S=alive W=took rc=0 race=forced"
@@ -671,13 +627,7 @@ case "$(garbage_arm)" in
 esac
 
 # M07 — the no-holder branch hands the reap '' instead of the owner it read.
-python3 - "$LIB" "$TMP/m07.sh" <<'PYMUT'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-old = '            if _invoker_reap_run_lock "$lock" "$owner" "$claim_start"; then\n'
-assert s.count(old) == 1, "the no-holder reap call moved"
-open(dst, "w").write(s.replace(old, '            if _invoker_reap_run_lock "$lock" \'\' "$claim_start"; then\n', 1))
-PYMUT
+cp "$LIB" "$TMP/m07.sh"
+mutate_anchor 101-M07 "$TMP/m07.sh" "if _invoker_reap_run_lock \"\$lock\" '' \"\$claim_start\"; then"
 grep -q "_invoker_reap_run_lock \"\$lock\" '' " "$TMP/m07.sh" || fail "M07 did not apply"
 saw_mutant "M07 a non-numeric owner.pid is compared against '' and never broken" "$(garbage_arm "$TMP/m07.sh")" "rc=124"

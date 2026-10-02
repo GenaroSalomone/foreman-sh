@@ -48,7 +48,7 @@ render() {
   '
 }
 
-JD='CLOSING THIS CODE TASK: JUDGMENT DAY, THEN done-invoker.'
+JD='Closing this code task: Judgment Day, then done-invoker,'
 SK='A SPEC KIT PHASE IS NOT THE TASK.'
 
 brief "$TMP/build.md" build
@@ -59,7 +59,7 @@ brief "$TMP/explore.md" explore
 # ── 1. judgment day closes a build, over the branch hw computed ────────────
 out="$(render "$TMP/build.md" none none 0 abc123 "")"
 case "$out" in
-  *"$JD"*"hw review-range"*"IS that"*"authorization"*"APPROVED or ESCALATED"*"only ONE judge"*) pass "preamble: a declared build closes with judgment-day over HW_REVIEW_BASE_REF..HEAD, pre-authorized, verdict + single-judge findings in the report" ;;
+  *"$JD"*"hw review-range"*"is that"*"authorization"*"APPROVED or ESCALATED"*"only ONE judge"*) pass "preamble: a declared build closes with judgment-day over HW_REVIEW_BASE_REF..HEAD, pre-authorized, verdict + single-judge findings in the report" ;;
   *) fail "preamble: a declared build does not carry the judgment-day closing. got: $(printf '%s' "$out" | tail -c 600)" ;;
 esac
 case "$out" in
@@ -86,11 +86,11 @@ case "$(render "$TMP/build-comment.md" none none 0 abc123 "")" in
 esac
 # The base paragraph is JD's input, so it follows the same gate.
 case "$(render "$TMP/audit.md" none none 0 abc123 "")" in
-  *"THE BASE A JUDGMENT DAY TARGET"*) fail "preamble: kind: audit still gets the judgment-day base paragraph, with no diff to judge" ;;
+  *"The base a Judgment Day target"*) fail "preamble: kind: audit still gets the judgment-day base paragraph, with no diff to judge" ;;
   *) pass "preamble: kind: audit gets no base paragraph either" ;;
 esac
 case "$(render "$TMP/build.md" none none 0 abc123 "")" in
-  *"THE BASE A JUDGMENT DAY TARGET"*) pass "preamble: a build still gets the base paragraph" ;;
+  *"The base a Judgment Day target"*) pass "preamble: a build still gets the base paragraph" ;;
   *) fail "preamble: the base paragraph vanished from a build" ;;
 esac
 # The executor flow never launches the fix agent; the closing does not name it.

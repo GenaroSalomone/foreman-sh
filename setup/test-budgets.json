@@ -217,6 +217,14 @@
       "exit": 0,
       "seconds": 11.79
     },
+    "571-las-dependencias-se-instalan-si-se-piden.sh": {
+      "exit": 0,
+      "seconds": 3.66
+    },
+    "572-la-formula-instala-un-cerebro.sh": {
+      "exit": 0,
+      "seconds": 6.63
+    },
     "60-opencode-subagent-model.sh": {
       "exit": 0,
       "seconds": 0.46
@@ -306,5 +314,6 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-09-30T22:43:28Z"
+  "measured_at": "2026-10-01T14:47:15Z",
+  "touched_budget_seconds": 180
 }

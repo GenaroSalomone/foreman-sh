@@ -225,34 +225,22 @@ esac
 #
 # Each patches a COPY of the runner inside its own fixture repo, never the real
 # one, and is killed by text ONLY THE MUTANT PRODUCES.
-mutate_runner() { # <name> <old> <new> → sets REPO with a mutated runner
-  local name="$1"
-  make_repo "mutant-$name"
-  MUT_OLD="$2" MUT_NEW="$3" python3 - "$REPO/setup/test-hw" <<'PY'
-import os, sys
-p = sys.argv[1]; s = open(p, encoding="utf-8").read()
-old = os.environ["MUT_OLD"]; new = os.environ["MUT_NEW"]
-n = s.count(old)
-if n != 1:
-    raise SystemExit("mutation anchor count %d, expected 1: %r" % (n, old[:90]))
-open(p, "w", encoding="utf-8").write(s.replace(old, new))
-PY
-  chmod +x "$REPO/setup/test-hw"
+# Each mutant edits the line or block a `# MUTATION-ANCHOR: 55-Mnn` marker in
+# setup/test-hw declares, not the prose it mutates; see mutate_anchor in _common.sh.
+mutant_runner() { # <name> → sets REPO to a fresh fixture whose runner the next mutate_anchor edits
+  make_repo "mutant-$1"
 }
 
-# BACKSLASHES COME FROM A VARIABLE, NOT FROM ESCAPING. These anchors must match
-# the runner's `printf '\n…\n'` lines byte for byte, and this file is written
-# inside a QUOTED heredoc where every `\` is literal — so `\"` and `\$` land as
-# two characters and the anchor silently misses. Measured here: three of four
-# anchors were built that way and `mutation anchor count 0` was the result. `BS`
-# plus single-quoted bash strings makes what is written what bash sees.
+# BACKSLASHES COME FROM A VARIABLE, NOT FROM ESCAPING. The replacements carry
+# the runner's `printf '\n…\n'` text, and this file is written inside a QUOTED
+# heredoc where every `\` is literal. `BS` plus single-quoted bash strings makes
+# what is written what bash sees.
 BS='\'
 
 # M01 — THE PRE-FIX RUNNER, restored exactly: one integer over everything, with
 # no idea what is in the commit. The mutant prints its own headline text, so a
 # run that never reached the summary is VACUOUS rather than dead.
-mutate_runner M01 \
-  "printf '${BS}n%s tests passed  (TRACKED only — the number this commit can reproduce)${BS}n' "'"$TRACKED_OK"' \
+mutant_runner M01; mutate_anchor 55-M01 "$REPO/setup/test-hw" \
   "printf '${BS}nM01-UNSPLIT-HEADLINE %s tests passed${BS}n' "'"$TOTAL_OK"'
 subject "$REPO" 10-committed.sh 3
 subject "$REPO" 11-also-committed.sh 2
@@ -270,10 +258,8 @@ saw_mutant "M01 restores one integer spanning tracked and untracked, the number 
 # M02 — the split kept, the untracked line silenced. The plausible half-fix: a
 # correct headline with the qualification dropped, which is a tracked number
 # that reads as the whole suite.
-mutate_runner M02 \
-  "    printf '  + %s ok from UNTRACKED subjects, absent from the commit and NOT in the number above:%s${BS}n' ${BS}
-      "'"$UNTRACKED_OK" "$UNTRACKED_NAMES"' \
-  "    printf '  M02-UNTRACKED-LINE-SILENCED${BS}n'"
+mutant_runner M02; mutate_anchor 55-M02 "$REPO/setup/test-hw" \
+  "printf '  M02-UNTRACKED-LINE-SILENCED${BS}n'"
 subject "$REPO" 10-committed.sh 3
 commit_all "$REPO"
 subject "$REPO" 47-in-flight.sh 6
@@ -286,9 +272,8 @@ saw_mutant "M02 silences the untracked line, so a tracked count reads as the who
 
 # M03 — `unknown` folded into `tracked`: the unverified-absence mistake in its
 # purest form, a number claiming the commit contains work nothing checked.
-mutate_runner M03 \
-  '  if [ "$GIT_USABLE" != 1 ]; then printf '"'"'unknown'"'"'; return 0; fi' \
-  '  if [ "$GIT_USABLE" != 1 ]; then printf '"'"'M03-UNKNOWN-IS-TRACKED'"'"' >&2; printf '"'"'tracked'"'"'; return 0; fi'
+mutant_runner M03; mutate_anchor 55-M03 "$REPO/setup/test-hw" \
+  'if [ "$GIT_USABLE" != 1 ]; then printf '"'"'M03-UNKNOWN-IS-TRACKED'"'"' >&2; printf '"'"'tracked'"'"'; return 0; fi'
 subject "$REPO" 10-somesubject.sh 3
 rm -rf "$REPO/.git"
 out="$(run_runner "$REPO" || true)"
@@ -307,8 +292,7 @@ saw_mutant "M03 folds unclassifiable subjects into the tracked count, claiming t
 
 # M04 — the arithmetic self-check removed. A split that does not add up would put
 # a confident wrong number in the headline, which is worse than no split.
-mutate_runner M04 \
-  'if [ "$((TRACKED_OK + UNTRACKED_OK + UNKNOWN_OK))" -ne "$TOTAL_OK" ]; then' \
+mutant_runner M04; mutate_anchor 55-M04 "$REPO/setup/test-hw" \
   'printf "M04-SUM-CHECK-REMOVED'"$BS"'n" >&2; if false; then'
 subject "$REPO" 10-committed.sh 3
 commit_all "$REPO"
@@ -319,9 +303,8 @@ saw_mutant "M04 removes the arithmetic self-check that stops a mis-attributed he
 # M05 — THE PRE-FIX SPLIT RESTORED EXACTLY: an unqualified headline on stdout
 # with the correction on stderr. This is the reported defect, and the arm reads
 # ONLY stdout, which is what makes it the defect rather than a wording change.
-mutate_runner M05 \
-  "  printf '${BS}nNO TRACKED NUMBER — tracking could not be established here (no usable git work tree), so nothing can be attributed to a commit.${BS}n'" \
-  "  printf '${BS}nM05-UNQUALIFIED %s tests passed  (TRACKED only)${BS}n' "'"$TRACKED_OK"; printf '"'"'  no untracked subjects ran, so this is the whole suite'"$BS"'n'"'"'; printf '"'"'  ! could NOT be classified'"$BS"'n'"'"' >&2'
+mutant_runner M05; mutate_anchor 55-M05 "$REPO/setup/test-hw" \
+  "printf '${BS}nM05-UNQUALIFIED %s tests passed  (TRACKED only)${BS}n' "'"$TRACKED_OK"; printf '"'"'  no untracked subjects ran, so this is the whole suite'"$BS"'n'"'"'; printf '"'"'  ! could NOT be classified'"$BS"'n'"'"' >&2'
 subject "$REPO" 10-somesubject.sh 3
 rm -rf "$REPO/.git"
 out="$(stdout_only "$REPO" || true)"
@@ -333,8 +316,7 @@ saw_mutant "M05 puts the headline on stdout and its correction on stderr, so a c
 
 # M06 — the abort marker removed, so a stdout-only reader sees a tail of ok
 # lines and nothing saying the run died.
-mutate_runner M06 \
-  "abort_marker() { printf '${BS}nRUN ABORTED — no number for this run. See stderr for the failure.${BS}n'; }" \
+mutant_runner M06; mutate_anchor 55-M06 "$REPO/setup/test-hw" \
   "abort_marker() { printf 'M06-ABORT-MARKER-REMOVED${BS}n' >&2; }"
 subject "$REPO" 10-fine.sh 2
 { printf '%s\n' '#!/usr/bin/env bash' \

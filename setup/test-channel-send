@@ -22,7 +22,7 @@ set -euo pipefail
 #
 # `${!HW_@}` is bash 3.2 prefix name expansion, and it yields an empty word list
 # rather than an error under `set -u` when nothing matches.
-for _v in ${!HW_@}; do unset "$_v" 2>/dev/null || true; done
+for _v in ${!HW_@}; do unset "$_v" 2>/dev/null || true; done  # MUTATION-ANCHOR: 54-M04
 unset _v 2>/dev/null || true
 
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -397,7 +397,7 @@ unset -f herdr
 HARNESS="$TMP/invoker-harness"
 MOCK_BIN="$HARNESS/mock-bin"
 mkdir -p "$HARNESS/bin" "$MOCK_BIN"
-cp "$ROOT/bin/ask-invoker" "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/state-witness.sh" "$HARNESS/bin/"
+cp "$ROOT/bin/ask-invoker" "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/runenv" "$ROOT/bin/state-witness.sh" "$HARNESS/bin/"
 
 cat > "$HARNESS/bin/channel-send" <<'MOCK'
 #!/usr/bin/env bash
@@ -571,7 +571,7 @@ pass "an undelivered report still exits 1, so delivery and close stay distinguis
 NOHW_BIN="$HARNESS/nohw-bin"
 NOHW_WORK="$HARNESS/nohw-work"
 mkdir -p "$NOHW_BIN" "$NOHW_WORK/.hw/nohw-run"
-cp "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/state-witness.sh" "$NOHW_BIN/"
+cp "$ROOT/bin/done-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/runenv" "$ROOT/bin/state-witness.sh" "$NOHW_BIN/"
 cp "$HARNESS/bin/channel-send" "$HARNESS/bin/herdr-rpc" "$NOHW_BIN/"
 nohw_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=0 MOCK_METADATA_LOG="$HARNESS/nohw-metadata.jsonl" \
   HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \

@@ -305,7 +305,7 @@ def main():
         break
     if lane is None and root_fallback:
         lane = "brain"
-    if lane is None:
+    if lane is None:  # MUTATION-ANCHOR: 78-M02
         # Not a brainer. An executor's worktree, a repo checkout, anywhere else
         # — the same answer the per-directory registration gives the other two
         # vendors.
@@ -329,9 +329,9 @@ def main():
     # exit 2 blocks. (The lane is already known, so an executor is never reached.)
     try:
         if is_patch:
-            verdict = decide_patch(config(lane), command, shell_cwd(payload))
+            verdict = decide_patch(config(lane), command, shell_cwd(payload))  # MUTATION-ANCHOR: 78-M07
         else:
-            verdict = decide(config(lane), command, shell_cwd(payload))
+            verdict = decide(config(lane), command, shell_cwd(payload))  # MUTATION-ANCHOR: 78-M06
     except Exception as exc:  # noqa: BLE001 — ANY failure while deciding must refuse
         print(
             "BLOCKED by deny-repo-writes (codex, lane=%s): the guard CRASHED while "
@@ -346,7 +346,7 @@ def main():
             "BLOCKED by deny-repo-writes (codex, lane=%s): %s" % (lane, verdict[1]),
             file=sys.stderr,
         )
-        sys.exit(2)
+        sys.exit(2)  # MUTATION-ANCHOR: 78-M01
     sys.exit(0)
 
 

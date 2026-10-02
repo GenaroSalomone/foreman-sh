@@ -118,14 +118,7 @@ pass "shape: it is called from both sites, not defined and used once"
 # costing 900 seconds every time.
 mkdir -p "$TMP/mut/bin"
 cp "$ROOT/bin/"* "$TMP/mut/bin/" 2>/dev/null || true
-python3 - "$TMP/mut/bin/hw" <<'PY'
-import sys, io
-p = sys.argv[1]; s = io.open(p, encoding='utf-8').read()
-old = '      if _verify_names_full_suite "$_vc"; then VERIFY_FULL_SUITE=1; fi'
-if old not in s:
-    raise SystemExit("M01: the dispatch-side call to _verify_names_full_suite is not there any more")
-io.open(p, 'w', encoding='utf-8').write(s.replace(old, '      : "$_vc"  # M01: the dispatch no longer asks', 1))
-PY
+mutate_anchor 141-M01 "$TMP/mut/bin/hw" ': "$_vc"  # M01: the dispatch no longer asks'
 chmod +x "$TMP/mut/bin/hw"
 mut_out="$("$TMP/mut/bin/hw" setup probe-full --brief "$FULL" --sdd none --no-report --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
 case "$mut_out" in

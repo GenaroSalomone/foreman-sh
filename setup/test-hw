@@ -96,7 +96,7 @@ esac
 # directory (/tmp/x against /c/Users/<u>/AppData/Local/Temp/x). A mismatch here
 # re-snapshots forever, so the comparison must not depend on spelling.
 _snap_phys=""; [ -z "${TEST_HW_SNAPSHOT_ROOT:-}" ] || _snap_phys="$(cd "$TEST_HW_SNAPSHOT_ROOT" 2>/dev/null && pwd -P || true)"
-if [ "$_snap_phys" != "$SOURCE_ROOT" ]; then
+if [ "$_snap_phys" != "$SOURCE_ROOT" ]; then  # MUTATION-ANCHOR: 84-M01
   exec python3 "$HERE/test-hw-snapshot.py" "$SOURCE_ROOT"
 fi
 TESTS="$HERE/tests"
@@ -288,7 +288,7 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
         _narrowed+=("$f")
       fi
     done
-    FILES=(${_narrowed[@]+"${_narrowed[@]}"})
+    FILES=(${_narrowed[@]+"${_narrowed[@]}"})  # MUTATION-ANCHOR: 361-M01
     printf 'runner: SELECTED %s of %s fast subjects from the changed paths%s:\n' "${#FILES[@]}" "$FAST_TOTAL" \
       "$([ "$GATE_GUARDS" = 1 ] && printf ', plus the guard drivers')" >&2
     printf '%s\n' "$_gs_out" | sed -n 's/^core \(.*\)/    core     \1/p; s/^subject \([^ ]*\) \(.*\)/    \1  <- \2/p; s/^guards \(.*\)/    guards   <- \1/p; s/^deferred \(.*\)/    deferred \1 (slow: the full run at push, as always)/p' >&2
@@ -323,6 +323,58 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
         exit 1
       fi
     done < "$GATE_CHANGED"
+  fi
+fi
+
+# ── THE EXECUTOR'S VERIFY ALSO RUNS THE SLOW SUBJECTS THAT NAME WHAT IT CHANGED ─
+#
+# 142 of 254 subjects are slow, so only the full run (after the merge) ran them,
+# and 0.1.3 fell twice there (195, 78) on subjects that named the very files the
+# branch had touched. The executor's verify is `HW_TEST_GATE=fast bash
+# setup/test-hw` with no HW_TEST_CHANGED, so it asks setup/gate-select `touched`
+# about the branch's own diff against main and adds those subjects to the run,
+# capped by `touched_budget_seconds` (the ones cut are printed, never silent).
+#
+# STILL NOT THE FULL SUITE, AND IT WRITES NO FULL VERDICT. The whole fast gate
+# ran, so `<tree>.fast` keeps meaning exactly what it did (decisions.md:747,
+# :785); the extra subjects only make a red visible a merge earlier. NOT run by
+# pre-commit (it names HW_TEST_CHANGED), by a nested run (TEST_HW_NESTED: a
+# subject that runs this runner must not recurse into the slow ones), nor with
+# HW_TEST_NO_TOUCHED=1. No main to diff against, or a selector that errors, is
+# said and runs nothing extra: the fast gate of before, never a red for it.
+TOUCHED_RUN=0
+if [ "$HW_TEST_GATE" = fast ] && [ -z "${HW_TEST_CHANGED:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] \
+   && [ -z "${HW_TEST_NO_TOUCHED:-}" ] && [ -f "$HERE/gate-select" ]; then
+  _tc_live="${TEST_HW_LIVE_ROOT:-$SOURCE_ROOT}"   # the snapshot has no .git: the diff is the live checkout's
+  _tc_base=""
+  for _tc_ref in main origin/main; do
+    _tc_base="$(git -C "$_tc_live" merge-base HEAD "$_tc_ref" 2>/dev/null)" && [ -n "$_tc_base" ] && break
+    _tc_base=""
+  done
+  if [ -z "$_tc_base" ]; then
+    printf 'runner: no main to diff against — the fast gate runs no touched slow subject\n' >&2
+  else
+    _tc_file="$(mktemp "${TMPDIR:-/tmp}/hw-touched.XXXXXX")"
+    { git -C "$_tc_live" -c core.quotepath=off diff --name-only "$_tc_base"; git -C "$_tc_live" -c core.quotepath=off ls-files -o --exclude-standard; } \
+      2>/dev/null | sort -u > "$_tc_file"
+    _tc_pat=""
+    if [ -f "$HERE/hooks/suite-trigger-pattern.sh" ]; then
+      _tc_pat="$(. "$HERE/hooks/suite-trigger-pattern.sh" && printf '%s' "${SUITE_TRIGGER_PATTERN:-}")" || _tc_pat=""
+    fi
+    _tc_rc=0
+    _tc_out="$(python3 "$HERE/gate-select" "$SOURCE_ROOT" "$_tc_file" "$_tc_pat" touched 2>&1)" || _tc_rc=$?
+    rm -f "$_tc_file"
+    if [ "$_tc_rc" -ne 0 ]; then
+      printf 'runner: setup/gate-select touched failed (exit %s) — no touched slow subject runs: %s\n' "$_tc_rc" "$(printf '%s' "$_tc_out" | tail -1)" >&2
+    else
+      while read -r _tc_kind _tc_name _tc_rest; do
+        [ "$_tc_kind" = touched ] && [ -f "$TESTS/$_tc_name" ] && FILES+=("$TESTS/$_tc_name") && TOUCHED_RUN=$((TOUCHED_RUN + 1))
+      done <<< "$_tc_out"
+      if [ -n "$_tc_out" ]; then
+        printf 'runner: %s slow subject(s) name what this branch changed since %s and run with the fast gate:\n' "$TOUCHED_RUN" "$(printf '%s' "$_tc_base" | cut -c1-9)" >&2
+        printf '%s\n' "$_tc_out" | sed -n 's/^touched \([^ ]*\) \(.*\)/    touched  \1  <- \2/p; s/^touched-skipped \([^ ]*\) \([^ ]*\) \(.*\)/    SKIPPED  \1 (\2s, over touched_budget_seconds)  <- \3: left to the full run/p' >&2
+      fi
+    fi
   fi
 fi
 
@@ -374,7 +426,7 @@ _fast_verdict_write() { # <headline>
     printf 'runner: no fast-gate verdict cached — %s\n' "${FAST_VERDICT_WHY:-unknown}" >&2
     return 0
   fi
-  f="$FAST_VERDICT_DIR/$FAST_VERDICT_TREE.fast"
+  f="$FAST_VERDICT_DIR/$FAST_VERDICT_TREE.fast"  # MUTATION-ANCHOR: 250-M05
   tmp="$f.tmp.$$"
   if mkdir -p "$FAST_VERDICT_DIR" 2>/dev/null && {
        printf 'commit=%s\n' "$FAST_VERDICT_COMMIT"
@@ -459,7 +511,7 @@ UNKNOWN_NAMES=""
 # individually true, so this is not the same defect; it is one line of cheap
 # insurance against the same misreading. It changes no exit code and prints no
 # number.
-abort_marker() { printf '\nRUN ABORTED — no number for this run. See stderr for the failure.\n'; }
+abort_marker() { printf '\nRUN ABORTED — no number for this run. See stderr for the failure.\n'; }  # MUTATION-ANCHOR: 55-M06
 
 # `unknown` IS A REAL ANSWER AND IS NEVER FOLDED INTO `tracked`. Outside a git
 # work tree — an exported tarball, a copied directory — tracking cannot be
@@ -472,7 +524,7 @@ elif command -v git >/dev/null 2>&1 && git -C "$TESTS" rev-parse --is-inside-wor
   GIT_USABLE=1
 fi
 tracking_of() { # <path> → tracked | untracked | unknown
-  if [ "$GIT_USABLE" != 1 ]; then printf 'unknown'; return 0; fi
+  if [ "$GIT_USABLE" != 1 ]; then printf 'unknown'; return 0; fi  # MUTATION-ANCHOR: 55-M03
   if [ "$_snap_phys" = "$SOURCE_ROOT" ]; then
     python3 - "$TEST_HW_TRACKING_MANIFEST" "$SOURCE_ROOT" "$1" <<'PY'
 import json, pathlib, sys
@@ -686,7 +738,7 @@ _pool_blocked() {
 _pool_take_slot() {
   local idx="$1" k=0 d reclaimed=0
   _pool_blocked && return 1
-  while [ "$k" -lt "$MACHINE_JOBS" ]; do
+  while [ "$k" -lt "$MACHINE_JOBS" ]; do  # MUTATION-ANCHOR: 176-M02
     d="$POOL_DIR/slot.$k"
     if mkdir "$d" 2>/dev/null; then
       _pool_write_owner "$d" "$(basename "${JOB_PATH[$idx]}")"
@@ -813,7 +865,7 @@ _queue_line() { # <dir> — who, where, for which task, since when
   printf '%s%s' "$(_pool_holder_line "$1")" "${task:+, task $task}"
 }
 if [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ] && [ -z "${TEST_HW_NESTED:-}" ] \
-   && [ "${TEST_HW_SUITE_QUEUE:-on}" != off ] && mkdir -p "$QUEUE_DIR" 2>/dev/null; then
+   && [ "${TEST_HW_SUITE_QUEUE:-on}" != off ] && mkdir -p "$QUEUE_DIR" 2>/dev/null; then  # MUTATION-ANCHOR: 360-M01
   trap '_queue_release; exit 130' INT
   trap '_queue_release; exit 143' TERM
   _q_now="$(python3 -c 'import time; print("%020d" % time.time_ns())')"
@@ -1016,7 +1068,7 @@ if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$HW_TEST_GAT
       if _pool_waiter_alive "$_w"; then _pool_busy="$_w"; break; fi
     done
   fi
-  if [ -n "$_pool_busy" ]; then
+  if [ -n "$_pool_busy" ]; then  # MUTATION-ANCHOR: 251-M01
     JOBS=2
     printf 'runner: another suite is on this machine (%s) — this run takes 2 jobs at once, not %s (HW_TEST_JOBS overrides)\n' \
       "$(basename "$_pool_busy")" "$MACHINE_JOBS" >&2
@@ -1283,8 +1335,10 @@ while True:
   _w=0
   while [ ! -e "$WITNESS_SOCK" ] && [ "$_w" -lt 50 ]; do sleep 0.1; _w=$((_w + 1)); done
   if [ -e "$WITNESS_SOCK" ]; then
+    # MUTATION-ANCHOR: 176-M03
     export HERDR_ENV=1 HERDR_SOCKET_PATH="$WITNESS_SOCK" HERDR_PANE_ID="wWITNESS:pWITNESS" \
            HERDR_TAB_ID="wWITNESS:tWITNESS" HERDR_WORKSPACE_ID="wWITNESS"
+    # MUTATION-ANCHOR-END: 176-M03
   else
     printf 'runner: the herdr witness did not start — this run does NOT check that no job reaches the pane it was started from\n' >&2
     kill "$WITNESS_PID" 2>/dev/null || true
@@ -1563,7 +1617,7 @@ _top_up() {
           # ALONE ON THE MACHINE, not just in this run: see the pool.
           if [ "$POOL_ON" = 1 ]; then
             if [ "$POOL_BACKOFF" -gt 0 ]; then POOL_BACKOFF=$((POOL_BACKOFF - 1)); break; fi
-            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; _tm_wait excl begin; break; fi
+            if ! _pool_excl_step "$idx"; then POOL_BACKOFF=5; _tm_wait excl begin; break; fi  # MUTATION-ANCHOR: 176-M01
           fi
           _tm_wait excl end
           _launch_job "$idx"; break
@@ -1775,7 +1829,7 @@ fi
 # worse than no split: it would put a confident wrong number in the headline.
 TOTAL_OK="$(grep -c '^ok - ' "$TALLY" || true)"
 case "$TOTAL_OK" in ''|*[!0-9]*) TOTAL_OK=0 ;; esac
-if [ "$((TRACKED_OK + UNTRACKED_OK + UNKNOWN_OK))" -ne "$TOTAL_OK" ]; then
+if [ "$((TRACKED_OK + UNTRACKED_OK + UNKNOWN_OK))" -ne "$TOTAL_OK" ]; then  # MUTATION-ANCHOR: 55-M04
   printf '\nnot ok - runner: the tracked/untracked split does not add up (%s + %s + %s != %s total ok). The headline below cannot be trusted; fix the attribution before quoting any number.\n' \
     "$TRACKED_OK" "$UNTRACKED_OK" "$UNKNOWN_OK" "$TOTAL_OK" >&2
   abort_marker; exit 1
@@ -1832,7 +1886,7 @@ if [ -n "$UNKNOWN_NAMES" ]; then
   # under that label is a count of nothing. The total IS printed, because it is
   # true and useful — but labelled as unclassified, which is not a release number
   # and does not read like one.
-  printf '\nNO TRACKED NUMBER — tracking could not be established here (no usable git work tree), so nothing can be attributed to a commit.\n'
+  printf '\nNO TRACKED NUMBER — tracking could not be established here (no usable git work tree), so nothing can be attributed to a commit.\n'  # MUTATION-ANCHOR: 55-M05
   printf '  %s ok ran in total; %s of it is UNCLASSIFIED and none of it is quotable as a release number:%s\n' \
     "$TOTAL_OK" "$UNKNOWN_OK" "$UNKNOWN_NAMES"
   if [ "$TRACKED_OK" != 0 ] || [ "$UNTRACKED_OK" != 0 ]; then
@@ -1847,14 +1901,16 @@ else
     printf '\nFAST GATE (SELECTED): %s tests passed  (TRACKED only — %s of the %s fast subject files, chosen from the changed paths; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
       "$TRACKED_OK" "${#FILES[@]}" "$FAST_TOTAL"
   elif [ "$HW_TEST_GATE" = fast ]; then
-    printf '\nFAST GATE: %s tests passed  (TRACKED only — %s of %s subject files; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
-      "$TRACKED_OK" "${#FILES[@]}" "$(printf '%s\n' "$TESTS"/[0-9][0-9]*-*.sh | grep -c .)"
+    printf '\nFAST GATE: %s tests passed  (TRACKED only — %s of %s subject files, %s of them slow subjects that name what this branch changed; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
+      "$TRACKED_OK" "${#FILES[@]}" "$(printf '%s\n' "$TESTS"/[0-9][0-9]*-*.sh | grep -c .)" "$TOUCHED_RUN"
   else
-    printf '\n%s tests passed  (TRACKED only — the number this commit can reproduce)\n' "$TRACKED_OK"
+    printf '\n%s tests passed  (TRACKED only — the number this commit can reproduce)\n' "$TRACKED_OK"  # MUTATION-ANCHOR: 55-M01
   fi
   if [ -n "$UNTRACKED_NAMES" ]; then
+    # MUTATION-ANCHOR: 55-M02
     printf '  + %s ok from UNTRACKED subjects, absent from the commit and NOT in the number above:%s\n' \
       "$UNTRACKED_OK" "$UNTRACKED_NAMES"
+    # MUTATION-ANCHOR-END: 55-M02
     printf '  Quote the tracked number for a release; quote both, labelled, for a working tree.\n'
   elif [ "$HW_TEST_GATE" = fast ]; then
     printf '  no untracked subjects ran; this is the fast gate only, never the whole suite — see above\n'

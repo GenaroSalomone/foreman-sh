@@ -346,7 +346,7 @@ model_tier() {
     haiku|haiku-*|*haiku*)   printf '1' ;;
     sonnet|sonnet-*|*sonnet*) printf '2' ;;
     opus|opus-*|*opus*)      printf '3' ;;
-    *) : ;;
+    *) : ;;  # MUTATION-ANCHOR: 159-M03
   esac
 }
 
@@ -561,6 +561,9 @@ $ALL_KNOWN_PROJECTS
 EOF
 }
 
+# Where bin/runenv lives: beside this file, however it was sourced.
+_PS_BIN_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # WHERE A RUN'S REPORT WAS SENT, from disk alone. `env` is the authoritative
 # record — it is what the executor process actually received — and the dispatch
 # manifest is the fallback for runs written before hw kept an env file.
@@ -571,7 +574,15 @@ EOF
 run_invoker_pane() {  # $1 = run directory
   local rundir="$1" pane=""
   if [ -r "$rundir/env" ]; then
-    pane="$(sed -n "s/^HW_INVOKER_PANE='\(.*\)'$/\1/p" "$rundir/env" 2>/dev/null | tail -1 || true)"
+    # bin/runenv is the one reader of this file. Exit 1 is "no such key" and
+    # silent; anything else (a file it cannot read, runenv itself missing) is
+    # named, because an empty pane here sends a report nowhere.
+    local rc=0
+    pane="$("$_PS_BIN_DIR/runenv" --lenient get "$rundir" HW_INVOKER_PANE)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      pane=""
+      [ "$rc" -eq 1 ] || printf 'run_invoker_pane: %s/env could not be read (runenv exit %s)\n' "$rundir" "$rc" >&2
+    fi
   fi
   if [ -z "$pane" ] && [ -r "$rundir/dispatch" ]; then
     pane="$(sed -n 's/^ *invoker  *\([A-Za-z0-9]*:[A-Za-z0-9]*\).*$/\1/p' "$rundir/dispatch" 2>/dev/null | tail -1 || true)"
@@ -663,6 +674,36 @@ for p in panes:
 # human's to give. These functions report them, with the command that clears
 # them; they never write `bypassPermissionsModeAccepted`,
 # `skipDangerousModePermissionPrompt` or `hasCompletedOnboarding`.
+
+# ── permissions: skip (recommended) or ask ────────────────────────────────────
+# Whether the agents hw and brain launch run with their permission prompts
+# skipped. `skip` is the recommended default and what every earlier version did;
+# `ask` leaves each vendor's own prompts on. ONE resolver for hw, brain and
+# install.sh, so the three cannot disagree. Precedence, highest first:
+#   1. the caller's flag value (`hw --permissions`, `install.sh --permissions`)
+#   2. HW_PERMISSIONS in the environment
+#   3. the machine file ($XDG_CONFIG_HOME/hw/permissions, one word: ask|skip)
+#   4. the default, skip
+# An unreadable or invalid machine file is NOT silently skip: it is reported.
+hw_permissions_file() { printf '%s/hw/permissions' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
+
+# hw_permissions_resolve [<flag value>] — sets PERMISSIONS (ask|skip) and
+# PERMISSIONS_SRC (where it came from). Returns 1, with PERMISSIONS_ERR set, when
+# the value that won is neither ask nor skip.
+hw_permissions_resolve() {
+  local v="${1:-}" src="" f; PERMISSIONS_ERR=""
+  f="$(hw_permissions_file)"
+  if [ -n "$v" ]; then src="chosen (--permissions)"
+  elif [ -n "${HW_PERMISSIONS:-}" ]; then v="$HW_PERMISSIONS"; src="HW_PERMISSIONS"
+  elif [ -f "$f" ]; then v="$(tr -d '[:space:]' < "$f" 2>/dev/null || true)"; src="machine config $f"
+  else v=skip; src="default (recommended)"; fi
+  case "$v" in
+    ask|skip) PERMISSIONS="$v"; PERMISSIONS_SRC="$src"; return 0 ;;
+  esac
+  PERMISSIONS=skip; PERMISSIONS_SRC="$src"
+  PERMISSIONS_ERR="permissions must be ask or skip (got: '$v', from $src)"
+  return 1
+}
 
 # The account's global config file. CLAUDE_CONFIG_DIR moves it inside that
 # directory; without it Claude Code reads the legacy ~/.claude.json.

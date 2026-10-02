@@ -180,23 +180,10 @@ make_harness() { # make_harness <name>; sets HARNESS
   HARNESS="$dir/setup/tests/_common.sh"
 }
 
-patch_harness() { # patch_harness <file> <old> <new>
-  MUT_OLD="$2" MUT_NEW="$3" python3 - "$1" <<'PY'
-import os, sys
-p = sys.argv[1]
-s = open(p, encoding="utf-8").read()
-old, new = os.environ["MUT_OLD"], os.environ["MUT_NEW"]
-n = s.count(old)
-if n != 1:
-    raise SystemExit("mutation anchor count %d, expected 1: %r" % (n, old[:90]))
-open(p, "w", encoding="utf-8").write(s.replace(old, new))
-PY
-}
-
-# The two anchors, named once so a mutant that stops matching says so here
-# rather than three cases later.
-SWEEP_ANCHOR='for _v in ${!HERDR_@}; do'
-SOCKET_ANCHOR='export HERDR_SOCKET_PATH="$TMP/no-such-herdr.sock"'
+# The two anchors are the lines of setup/tests/_common.sh that carry a
+# `# MUTATION-ANCHOR: 145-Mnn` marker (the sweep loop, the socket re-point): a
+# mutant edits the line a marker declares, not the prose of it, and mutate_anchor
+# dies when the marker is gone.
 
 # ── C01. THE CONTROL: without the sweep, the write lands on the live pane ────
 #
@@ -204,8 +191,8 @@ SOCKET_ANCHOR='export HERDR_SOCKET_PATH="$TMP/no-such-herdr.sock"'
 # the incident, reproduced in a directory, and it is what makes C02's silence
 # evidence instead of an assumption.
 make_harness prefix
-patch_harness "$HARNESS" "$SWEEP_ANCHOR" 'printf "PREFIX-NO-HERDR-SWEEP\n" >&2; for _v in ; do'
-patch_harness "$HARNESS" "$SOCKET_ANCHOR" ': # socket left where the caller pointed it'
+mutate_anchor 145-M01a "$HARNESS" 'printf "PREFIX-NO-HERDR-SWEEP\n" >&2; for _v in ; do'
+mutate_anchor 145-M01b "$HARNESS" ': # socket left where the caller pointed it'
 drive "$HARNESS" control
 case "$DRIVE_LOG" in
   *'"pane_id": "'"$LIVE_PANE"'"'*) : ;;
@@ -285,7 +272,7 @@ saw_mutant "M01 reverts both cuts and the fixture run id lands on a live pane ag
 # is the thing the sweep exists to remove. Without it a later "simplification"
 # could drop the sweep and every absence claim above would still pass.
 make_harness m02
-patch_harness "$HARNESS" "$SWEEP_ANCHOR" 'printf "M02-IDENTITY-KEPT\n" >&2; for _v in ; do'
+mutate_anchor 145-M02 "$HARNESS" 'printf "M02-IDENTITY-KEPT\n" >&2; for _v in ; do'
 out="$(pollute bash "$TMP/probe.sh" "$HARNESS" 2>&1 || true)"
 case "$out" in
   *M02-IDENTITY-KEPT*) : ;;
@@ -305,7 +292,7 @@ saw_mutant "M02 drops the identity sweep, and a live pane's id survives into eve
 # harness. Killed by the address being merely ABSENT, which is the state the
 # re-point exists to replace.
 make_harness m03
-patch_harness "$HARNESS" "$SOCKET_ANCHOR" 'printf "M03-ADDRESS-KEPT\n" >&2'
+mutate_anchor 145-M03 "$HARNESS" 'printf "M03-ADDRESS-KEPT\n" >&2'
 out="$(pollute bash "$TMP/probe.sh" "$HARNESS" 2>&1 || true)"
 case "$out" in
   *M03-ADDRESS-KEPT*) : ;;

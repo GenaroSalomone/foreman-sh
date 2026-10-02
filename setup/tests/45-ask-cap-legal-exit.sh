@@ -3,7 +3,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 HARNESS="$TMP/harness"; WORK="$TMP/work"; mkdir -p "$HARNESS/bin" "$WORK/.hw/run"
-cp "$ROOT/bin/ask-invoker" "$ROOT/bin/invoker-common.sh" "$HARNESS/bin/"
+cp "$ROOT/bin/ask-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/runenv" "$HARNESS/bin/"
 cat > "$HARNESS/bin/herdr-rpc" <<'STUB'
 #!/usr/bin/env bash
 exit 0
@@ -40,14 +40,7 @@ case "$out" in *'done-invoker --blocked "<the unresolved question and what would
 # that cannot run must FAIL this arm rather than satisfy it by dying.
   MUTDIR="$TMP/m01"; mkdir -p "$MUTDIR"; cp "$HARNESS/bin"/* "$MUTDIR/"
   MUT="$MUTDIR/ask-invoker"
-  python3 - "$MUT" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read()
-old='Your legal exit is: done-invoker --blocked \\"<the unresolved question and what would unblock it>\\". The cap never requires a silent turn.'
-new='Stop in this pane. The cap is final.'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
+  mutate_anchor 45-M01 "$MUT" 'die "Stop in this pane. The cap is final."'
   chmod +x "$MUT"
   mout="$(run_cap "$MUT" || true)"
   case "$mout" in *'done-invoker --blocked'*) fail "M01 SURVIVED: capped ask still named the legal exit: $mout" ;; esac

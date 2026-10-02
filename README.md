@@ -63,9 +63,14 @@ foreman-sh answers each one with a mechanism:
   `herdr integration install claude`.
 - **[Claude Code](https://claude.com/claude-code)**, with its first run
   finished: run `claude --dangerously-skip-permissions`, complete the welcome
-  and login, accept the warning, then `/exit`.
-- `git`, `jq` 1.7 or newer and `python3`. On Linux, also `rg`, `fd`, `sd` and
+  and login, accept the warning, then `/exit`. Skipping permission prompts is
+  the recommended setting, not a requirement: `install.sh --permissions ask`
+  leaves them on ([INSTALL.md](INSTALL.md#permissions-skip-recommended-or-ask)).
+- `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`. On Linux, also
   Node 22.7 or newer.
+
+On macOS, Homebrew installs all of these but Claude Code's first run (see the
+Quickstart).
 
 [engram](https://github.com/Gentleman-Programming/engram) is recommended, and
 two more tools are optional:
@@ -83,6 +88,27 @@ two more tools are optional:
   `./install.sh … --vendor opencode`.
 
 ## Quickstart
+
+On macOS, with [Homebrew](https://brew.sh):
+
+```sh
+brew install GenaroSalomone/tap/foreman-sh                    # foreman-sh, with herdr, jq, rg, fd and sd
+foreman-sh --with-recommended                                 # what is still missing: Claude Code, engram, fzf
+foreman-sh --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
+export PATH="$HOME/.local/bin:$PATH"                          # puts hw and brain on your PATH
+brain myapp                                                   # opens the brainer
+```
+
+`foreman-sh` is `install.sh`, packaged: it takes the same flags. Only the
+first and third lines are required. `--with-recommended` installs each missing
+package with its own `brew install` (Claude Code as the `claude-code` cask)
+and prints the command before running it. Nothing is installed unless you ask
+for it this way. `foreman-sh --with-recommended --check` prints the commands
+without running them. Before your first `brain`, finish Claude Code's first run
+and wire herdr and engram into it: `foreman-sh --brain ~/brain --check` names
+each step, in order.
+
+On Linux, or without Homebrew, the installer runs from a pipe:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --check   # checks everything, writes nothing

@@ -181,30 +181,19 @@ pass "C10 the shape refusal is decided before the exercised-arms check, so a vac
 # predicate's behaviour and the mutants that pin it.
 
 # ── mutation arms, ungated on purpose — this file is the reason why ──────────
-# `mut <name> <old> <new>` prints the path of a mutated copy of the predicate.
-#
-# OLD AND NEW ARE SEPARATE ARGUMENTS, not one string with a NUL separator. The
-# first version passed `printf 'old\x00new'` through `$( )`, and bash STRIPS NUL
-# bytes from a command substitution — so python received one field, `split`
-# raised, `chmod` reported a missing file, and the arm read as `M01 SURVIVED`.
-# A mutation harness that fails to build its own mutant must never be able to
-# look like a surviving mutant, so the assert below is what speaks.
+# `mut <name>` prints the path of a copy of the predicate; the caller then edits it
+# with `mutate_anchor <id> "$path" <replacement>`. The edit lands on the line (or block) a `# MUTATION-ANCHOR: 46-Mnn`
+# marker in setup/mutation-coverage declares, not on the prose of that line; see
+# mutate_anchor in _common.sh, which fails loudly when its anchor is gone, so a
+# harness that cannot build its mutant never reads as a surviving one.
 mut() {
   # THREE STATEMENTS, NOT ONE `local`. `local a="$1" b="$TMP/x.$a"` reads as
   # left-to-right and is not: under `set -u` bash 3.2 evaluates the whole
   # declaration before binding any of it, so `$a` is unbound. This suite runs
   # under bash 3.2 on purpose (see _common.sh) and this is one of its traps.
   local name="$1"
-  local old="$2"
-  local new="$3"
   local out="$TMP/cov.$name"
-  python3 - "$COV" "$out" "$old" "$new" <<'PY' || return 1
-import sys
-src, dst, old, new = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-s = open(src).read()
-assert s.count(old) == 1, "anchor moved: %d matches for %r" % (s.count(old), old[:60])
-open(dst, "w").write(s.replace(old, new))
-PY
+  cp "$COV" "$out" || return 1
   chmod +x "$out" || return 1
   printf '%s' "$out"
 }
@@ -212,33 +201,32 @@ PY
 # rc <mutant> <subject> <output>  → the mutant's exit status, nothing else
 rc() { "$1" "$2" "$3" >/dev/null 2>&1; printf '%s' "$?"; }
 
-M1="$(mut m01 \
-  "$(printf 'if ! grep -Ev "$COMMENT" "$SUBJECT" | grep -Eq "$DECLARE_MARKER"; then\n  exit 0\nfi\n')" \
-  "$(printf 'exit 0\n')")" || fail "M01 could not be built"
+M1="$(mut m01)" || fail "M01 could not be built"
+mutate_anchor 46-M01 "$M1" 'exit 0' || fail "M01 could not be built"
 [ "$(rc "$M1" "$FIX/says-spaced.sh" "$FIX/out-silent")" = 0 ] \
   || fail "M01 SURVIVED: short-circuiting the declaration check did not turn C01 into a pass"
 pass "mutant killed: M01 short-circuiting the declaration check turns the C01 finding into a pass"
 
-M2="$(mut m02 \
-  "$(printf 'if grep -Eq "$MARKER" "$OUTPUT"; then\n  exit 0\nfi\n')" \
-  "$(printf 'exit 0\n')")" || fail "M02 could not be built"
+M2="$(mut m02)" || fail "M02 could not be built"
+mutate_anchor 46-M02 "$M2" 'exit 0' || fail "M02 could not be built"
 [ "$(rc "$M2" "$FIX/says-spaced.sh" "$FIX/out-silent")" = 0 ] \
   || fail "M02 SURVIVED: ignoring the evidence marker did not let a silent run pass"
 pass "mutant killed: M02 accepting any output as evidence lets a silent run pass C01"
 
-M3="$(mut m03 \
-  "$(printf 'if [ ! -r "$OUTPUT" ]; then\n')" \
-  "$(printf 'if [ -r "$OUTPUT" ] && false; then\n')")" || fail "M03 could not be built"
+M3="$(mut m03)" || fail "M03 could not be built"
+mutate_anchor 46-M03 "$M3" 'if [ -r "$OUTPUT" ] && false; then' || fail "M03 could not be built"
 [ "$(rc "$M3" "$FIX/says-spaced.sh" "$FIX/no-such-output")" != 2 ] \
   || fail "M03 SURVIVED: dropping the unreadable-output guard still produced the usage status"
 pass "mutant killed: M03 dropping the unreadable-output guard stops an absent run being its own status"
 
-M4="$(mut m04 "COMMENT='^[[:space:]]*#'" "COMMENT='^\$a^'")" || fail "M04 could not be built"
+M4="$(mut m04)" || fail "M04 could not be built"
+mutate_anchor 46-M04 "$M4" 'COMMENT='\''^\$a^'\''' || fail "M04 could not be built"
 [ "$(rc "$M4" "$FIX/prose.sh" "$FIX/out-silent")" = 1 ] \
   || fail "M04 SURVIVED: dropping the comment exclusion did not make prose a declaration"
 pass "mutant killed: M04 dropping the comment exclusion makes a comment a declaration, which C05 refuses"
 
-M5="$(mut m05 "MARKER='mutant[ _-]killed'" "MARKER='mutant killed'")" || fail "M05 could not be built"
+M5="$(mut m05)" || fail "M05 could not be built"
+mutate_anchor 46-M05 "$M5" 'MARKER='\''mutant killed'\''' || fail "M05 could not be built"
 [ "$(rc "$M5" "$FIX/calls-helper.sh" "$FIX/out-silent")" = 0 ] \
   || fail "M05 SURVIVED: narrowing the marker to one convention still saw the helper form"
 pass "mutant killed: M05 narrowing the marker to one convention blinds it to the helper form, which C03 refuses"
@@ -247,30 +235,26 @@ pass "mutant killed: M05 narrowing the marker to one convention blinds it to the
 # `= 0` is positive evidence here: the correct predicate answers 3, and a mutant
 # that failed to build or crashed answers 2, 126 or 127 — nothing but the
 # mutated logic can answer 0 on these fixtures.
-M6="$(mut m06 \
-  "$(printf '  exit 3\nfi\n')" \
-  "$(printf '  exit 0\nfi\n')")" || fail "M06 could not be built"
+M6="$(mut m06)" || fail "M06 could not be built"
+mutate_anchor 46-M06 "$M6" 'exit 0' || fail "M06 could not be built"
 [ "$(rc "$M6" "$FIX/catchall-oneline.sh" "$FIX/out-spaced")" = 0 ] \
   || fail "M06 SURVIVED: turning the shape refusal into a pass did not let a catch-all kill through"
 pass "mutant killed: M06 turning the catch-all refusal into a pass lets a vacuous arm through, which C07 refuses"
 
-M7="$(mut m07 \
-  '      else if (prev ~ /^[[:space:]]*\*\)[[:space:]]*$/) print NR ": " line' \
-  '      else if (0) print NR ": " line')" || fail "M07 could not be built"
+M7="$(mut m07)" || fail "M07 could not be built"
+mutate_anchor 46-M07 "$M7" 'else if (0) print NR ": " line' || fail "M07 could not be built"
 [ "$(rc "$M7" "$FIX/catchall-nextline.sh" "$FIX/out-spaced")" = 0 ] \
   || fail "M07 SURVIVED: dropping the previous-line branch still saw a catch-all on its own line"
 pass "mutant killed: M07 dropping the previous-line spelling blinds the check to a catch-all on its own line, which C07 refuses"
 
-M8="$(mut m08 \
-  '      else if (line ~ /;;[[:space:]]*\*\)[[:space:]]*(pass|mutant_killed)/) print NR ": " line' \
-  '      else if (0) print NR ": " line')" || fail "M08 could not be built"
+M8="$(mut m08)" || fail "M08 could not be built"
+mutate_anchor 46-M08 "$M8" 'else if (0) print NR ": " line' || fail "M08 could not be built"
 [ "$(rc "$M8" "$FIX/catchall-oneline.sh" "$FIX/out-spaced")" = 0 ] \
   || fail "M08 SURVIVED: dropping the one-line-case branch still saw an inline catch-all"
 pass "mutant killed: M08 dropping the one-line-case spelling blinds the check to an inline catch-all, which C07 refuses"
 
-M9="$(mut m09 \
-  '[Mm]uta(nt|tion)/) {' \
-  '[Mm]utant killed/) {')" || fail "M09 could not be built"
+M9="$(mut m09)" || fail "M09 could not be built"
+mutate_anchor 46-M09 "$M9" 'if (line ~ /mutant_killed[[:space:]]+["'\''"'\''"'\'']/ || line ~ /pass[[:space:]]+["'\''"'\''"'\''][^"'\''"'\''"'\'']*[Mm]utant killed/) {' || fail "M09 could not be built"
 [ "$(rc "$M9" "$FIX/catchall-mutation-word.sh" "$FIX/out-spaced")" = 0 ] \
   || fail "M09 SURVIVED: narrowing the arm wording to the marker still caught a 'mutation:' arm"
 pass "mutant killed: M09 narrowing the shape net to the marker convention misses the 'mutation:' wording five subjects use, which C07 refuses"
@@ -280,16 +264,14 @@ pass "mutant killed: M09 narrowing the shape net to the marker convention misses
 # C09b and C11 are new claims, so they get new mutants. Without these the fix
 # could be reverted and 46 would stay green — which is exactly the history being
 # closed here.
-M10="$(mut M10 \
-  'DECLARE_MARKER="$MARKER|saw_mutant"' \
-  'DECLARE_MARKER="$MARKER"')" || fail "M10 could not be built"
+M10="$(mut M10)" || fail "M10 could not be built"
+mutate_anchor 46-M10 "$M10" 'DECLARE_MARKER="$MARKER"' || fail "M10 could not be built"
 [ "$(rc "$M10" "$FIX/positive-helper.sh" "$FIX/out-silent")" = 0 ] \
   || fail "M10 SURVIVED: with saw_mutant removed from the declaration pattern the helper form was still enforced"
 pass "mutant killed: M10 drops saw_mutant from the declaration pattern, and the helper form goes unenforced again — the reviewer's finding"
 
-M11="$(mut M11 \
-  "if ! grep -q '[^[:space:]]' \"\$OUTPUT\" 2>/dev/null; then" \
-  'if false; then')" || fail "M11 could not be built"
+M11="$(mut M11)" || fail "M11 could not be built"
+mutate_anchor 46-M11 "$M11" 'if false; then' || fail "M11 could not be built"
 [ "$(rc "$M11" "$FIX/says-spaced.sh" "$FIX/out-empty")" = 1 ] \
   || fail "M11 SURVIVED: an empty output was still given its own status with the emptiness gate removed"
 [ "$(rc "$M11" "$FIX/declares-not.sh" "$FIX/out-empty")" = 0 ] \

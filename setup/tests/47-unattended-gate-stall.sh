@@ -57,12 +57,14 @@ render() {
 contains() { case "$(<"$1")" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 assert_surface_excluded() {
-  contains "$1" 'THIS TASK RUNS OUTSIDE THE FRAMEWORK FLOW' &&
-    contains "$1" 'enter any part of that framework surface' &&
-    contains "$1" 'do NOT run a phase command, review or' &&
-    contains "$1" 'verify flow, or orchestrator preflight' &&
-    contains "$1" 'loaded skill demands a blocking' &&
-    contains "$1" 'it does not apply to this task: do not answer it and do not STOP on'
+  contains "$1" 'This task runs outside the framework flow' &&
+    contains "$1" 'dispatched with' &&
+    contains "$1" '--sdd none, so the brief is the whole contract' &&
+    contains "$1" 'leave their phase commands, review or verify flows' &&
+    contains "$1" 'preflights unused here' &&
+    contains "$1" 'a skill that asks for a blocking' &&
+    contains "$1" 'preflight does not' &&
+    contains "$1" 'apply to this task'
 }
 
 assert_unattended() {
@@ -94,9 +96,10 @@ for prompt in "$SPECKIT" "$SPECKIT_FLOW"; do
 done
 pass "B01 every dispatch says the pane is unattended, ask-invoker is the channel and limitations are reported"
 
-contains "$UNKNOWN" 'THIS TASK RUNS OUTSIDE THE FRAMEWORK FLOW' &&
-  contains "$UNKNOWN" 'framework mode could not be determined' &&
-  contains "$UNKNOWN" 'does not enter any part of that surface' &&
+contains "$UNKNOWN" 'This task runs outside the framework flow' &&
+  contains "$UNKNOWN" 'mode' &&
+  contains "$UNKNOWN" 'could not be determined' &&
+  contains "$UNKNOWN" 'preflights unused here' &&
   ! contains "$UNKNOWN" 'in <undetermined> mode' \
   || fail "C01 undetermined framework suppressed or falsely named the outside-flow statement"
 pass "C01 --sdd none still excludes the flow when framework mode is undetermined without naming a mode"
@@ -118,7 +121,7 @@ PY
 
 # One ungated mutation per behavioural claim; setup/test-hw verifies each
 # declared arm emitted its kill marker during the full run.
-mutant="$(mutate surface-breadth 'review or\nverify flow, or orchestrator preflight' 'review flow')"
+mutant="$(mutate surface-breadth 'review or verify flows and\npreflights unused here' 'review flows and\npreflights unused here')"
 render "$mutant" none speckit 0 "$TMP/mutant-surface.prompt"
 assert_surface_excluded "$TMP/mutant-surface.prompt" && fail "M01 SURVIVED: surface-breadth"
 pass "mutant killed: M01 narrowing the outside-flow prohibition drops review/verify or preflight coverage"
@@ -128,9 +131,9 @@ render "$mutant" none speckit 0 "$TMP/mutant-unattended.prompt"
 assert_unattended "$TMP/mutant-unattended.prompt" && fail "M02 SURVIVED: unattended-channel"
 pass "mutant killed: M02 removing ask-invoker from the unattended rule leaves the pane without a human channel"
 
-mutant="$(mutate undetermined-branch 'The directory framework mode could not be determined' 'The directory framework mode is hidden')"
+mutant="$(mutate undetermined-branch 'The directory framework mode\ncould not be determined' 'The directory framework mode\nis hidden')"
 render "$mutant" none '<undetermined>' 0 "$TMP/mutant-undetermined.prompt"
-contains "$TMP/mutant-undetermined.prompt" 'framework mode could not be determined' \
+contains "$TMP/mutant-undetermined.prompt" 'could not be determined' \
   && fail "M03 SURVIVED: undetermined-branch"
 pass "mutant killed: M03 hiding the undetermined-mode branch removes the mode-safe outside-flow statement"
 

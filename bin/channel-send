@@ -106,12 +106,12 @@ _cs_exit_guard() {
   [ "$_CS_EXIT_SPOKEN" = 0 ] || return 0
   _CS_EXIT_SPOKEN=1
   [ "$rc" -ne 0 ] 2>/dev/null || return 0
-  [ ! -t 1 ] || return 0
+  [ ! -t 1 ] || return 0  # MUTATION-ANCHOR: 66-M04
   printf 'channel-send: ══ MY EXIT CODE IS %s: %s ══\n' "$rc" "$(_cs_exit_meaning "$rc")" >&2
-  printf 'channel-send: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `channel-send … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: read `${PIPESTATUS[0]}` or drop the pipe. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the delivery fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2
+  printf 'channel-send: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `channel-send … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: read `${PIPESTATUS[0]}` or drop the pipe. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the delivery fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2  # MUTATION-ANCHOR: 66-M05
   return 0
 }
-trap '_cs_exit_guard "$?"' EXIT
+trap '_cs_exit_guard "$?"' EXIT  # MUTATION-ANCHOR: 66-M01
 
 die() { printf 'channel-send: %s\n' "$*" >&2; exit 1; }
 
@@ -126,7 +126,7 @@ REQUIRED_RECEIPT=admitted
 DELIVERY_KEY=""
 ALLOW_TURN_ENDED=0
 IS_REPORT=0
-IS_RULING=0
+IS_RULING=0 # MUTATION-ANCHOR: 41-M02
 REPLY_HOLD=""
 REPORT_STATE=""
 while :; do
@@ -184,7 +184,7 @@ shift 3
 # three distinct mistakes: text given both ways, an unreadable/failed stdin
 # read, and stdin that read but was empty. An empty message delivered would be
 # worse than any of these refusals.
-if [ "${1:-}" = "-" ]; then
+if [ "${1:-}" = "-" ]; then  # MUTATION-ANCHOR: 135-M01
   [ $# -eq 1 ] || die "message given twice: as '-' for stdin AND as more argv text after it — pass it ONE way, not both"
   [ ! -t 0 ] || die "message is '-' (read from stdin), but stdin is a terminal — pipe or redirect the text in, e.g. channel-send ... - - <<'EOF'"
   MESSAGE="$(cat -)" || die "could not read the message from stdin"
@@ -200,6 +200,14 @@ fi
 # reply is still outstanding. ask-invoker records exactly that fact beside the
 # run. The generated reply command names the file; arbitrary --ruling calls do
 # not acquire this exception.
+# The directory this script lives in (symlinks followed), for its sibling tools.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 HOLD_PROVEN=0
 if [ -n "$REPLY_HOLD" ]; then
   case "$REPLY_HOLD" in /*) ;; *) die "--reply-hold must be an absolute path" ;; esac
@@ -207,48 +215,12 @@ if [ -n "$REPLY_HOLD" ]; then
     || die "--reply-hold is valid only for a declared --report answer or --ruling"
   _hold_intent=answer
   [ "$IS_RULING" = 0 ] || _hold_intent=ruling
-  _hold_error="$(REPLY_HOLD="$REPLY_HOLD" HOLD_INTENT="$_hold_intent" HOLD_VENDOR="$VENDOR" \
-    HOLD_TARGET="$TARGET" HOLD_DELIVERY_KEY="$DELIVERY_KEY" python3 <<'PY'
-import os
-from pathlib import Path
-
-path = Path(os.environ["REPLY_HOLD"])
-try:
-    rows = path.read_text(encoding="utf-8").splitlines()
-except OSError as exc:
-    print(f"cannot read pending reply fact: {exc}")
-    raise SystemExit
-
-facts = {}
-for row in rows:
-    if "=" not in row:
-        print("pending reply fact contains a malformed row")
-        raise SystemExit
-    key, value = row.split("=", 1)
-    if key in facts:
-        print(f"pending reply fact repeats {key}")
-        raise SystemExit
-    facts[key] = value
-
-expected = {
-    "version": "1",
-    "state": "delivered",
-    "intent": os.environ["HOLD_INTENT"],
-    "route": os.environ["HOLD_VENDOR"],
-    "target": os.environ["HOLD_TARGET"],
-}
-delivery_key = os.environ["HOLD_DELIVERY_KEY"]
-if delivery_key:
-    expected["logical_id"] = delivery_key
-for key, value in expected.items():
-    if facts.get(key) != value:
-        print(f"pending reply fact has {key}={facts.get(key, '<missing>')}, expected {value}")
-        raise SystemExit
-if not facts.get("pane") or not facts.get("run"):
-    print("pending reply fact does not identify its pane and run")
-    raise SystemExit
-PY
-)"
+  # bin/holdfacts is the one validator of a hold file (hw and hw-reconcile ask it
+  # too); `match` adds only what a sender knows: whose reply this is.
+  _hold_rc=0
+  _hold_error="$("$BIN_DIR/holdfacts" match "$REPLY_HOLD" --intent "$_hold_intent" \
+    --route "$VENDOR" --target "$TARGET" ${DELIVERY_KEY:+--logical-id "$DELIVERY_KEY"} 2>&1)" || _hold_rc=$?
+  [ "$_hold_rc" -le 1 ] || _hold_error="holdfacts did not run (exit $_hold_rc): $_hold_error"
   [ -z "$_hold_error" ] || die "--reply-hold REFUSED before delivery: $_hold_error. NOTHING was sent."
   HOLD_PROVEN=1
 fi
@@ -314,7 +286,9 @@ target = os.environ["REPORT_TARGET"]
 if facts.get("HW_INVOKER_PANE") != target:
     print(f"dispatch env has HW_INVOKER_PANE={facts.get('HW_INVOKER_PANE', '<missing>')}, expected {target}")
     raise SystemExit
+# MUTATION-ANCHOR: 42-M10
 if (state / "done").exists():
+# MUTATION-ANCHOR-END: 42-M10
     print("task state already has a done marker")
     raise SystemExit
 PY
@@ -334,13 +308,6 @@ _clear_reply_hold() {
   rm -f -- "$REPLY_HOLD" 2>/dev/null || true
 }
 
-_src="${BASH_SOURCE[0]}"
-while [ -L "$_src" ]; do
-  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
-  _src="$(readlink "$_src")"
-  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
-done
-BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 
 # The person a message tells the caller to leave a prompt to: projects.json's
 # `operator`, read only when a message needs it, "the operator" without one.
@@ -475,7 +442,7 @@ trap '_cs_on_signal INT' INT
 # do both jobs or the pipe warning silently stops existing for every exit past
 # this line, which is every real delivery outcome. `$?` is read FIRST and passed
 # by value: `_release_lock` runs a command, and a command clobbers `$?`.
-trap '_cs_rc=$?; _release_lock || true; _cs_exit_guard "$_cs_rc"' EXIT
+trap '_cs_rc=$?; _release_lock || true; _cs_exit_guard "$_cs_rc"' EXIT  # MUTATION-ANCHOR: 66-M02  # MUTATION-ANCHOR: 66-M03
 
 # ── A REFUSAL NAMES ITS FALLBACK, AND NAMES WHAT THE FALLBACK IS NOT ─────────
 #
@@ -703,11 +670,11 @@ _awaiting_child_warning() {
   # and the send goes through. Shortening anything there would be pure loss, and
   # it is the common case for a backgrounded shell child (measured above).
   _status="$(printf '%s' "$_info" | jq -r '.result.agent.agent_status // ""' 2>/dev/null || true)"
-  case "$_status" in idle|done) return 1 ;; esac
+  case "$_status" in idle|done) return 1 ;; esac # MUTATION-ANCHOR: 111-M02
   _state="$(printf '%s' "$_info" | jq -r '.result.agent.tokens.turn_state // ""' 2>/dev/null || true)"
-  case "$_state" in ended*) ;; *) return 1 ;; esac
+  case "$_state" in ended*) ;; *) return 1 ;; esac # MUTATION-ANCHOR: 111-M04
   _children="$(printf '%s' "$_info" | jq -r '.result.agent.tokens.children_running // ""' 2>/dev/null || true)"
-  [ -n "$_children" ] || return 1
+  [ -n "$_children" ] || return 1 # MUTATION-ANCHOR: 111-M03
   _at="$(printf '%s' "$_info" | jq -r '.result.agent.tokens.turn_ended_at // ""' 2>/dev/null || true)"
   printf '%s\t%s\t%s' "$_state" "$_children" "${_at:-unknown}"
 }
@@ -826,7 +793,7 @@ _ruling_gate() {
   _line="$(witness_executor_state "$_pane")"
   IFS=$'\037' read -r _verdict _status _state _children _ _ <<< "$_line" || true
   case "$_verdict" in
-    idle) return 0 ;;
+    idle) return 0 ;; # MUTATION-ANCHOR: 41-M05
     reported) case "$_status" in idle|done) return 0 ;; esac ;;
   esac
   case "$_verdict" in
@@ -1148,25 +1115,27 @@ async function preflightDefaultAgent() {
       fetch(`${endpoint}/config`, { signal: AbortSignal.timeout(preflightTimeout) }),
       fetch(`${endpoint}/agent`, { signal: AbortSignal.timeout(preflightTimeout) }),
     ])
-    if (!configResponse.ok || !agentResponse.ok) return
+    if (!configResponse.ok || !agentResponse.ok) return // # MUTATION-ANCHOR: 26-M08
     config = await configResponse.json()
     agents = await agentResponse.json()
+  // # MUTATION-ANCHOR: 26-M07
   } catch {
     return
   }
+  // # MUTATION-ANCHOR-END: 26-M07
 
   const defaultAgent = typeof config?.default_agent === "string"
     ? config.default_agent.trim()
     : ""
-  if (!defaultAgent) return
+  if (!defaultAgent) return // # MUTATION-ANCHOR: 26-M09
   if (!Array.isArray(agents)) return
   const resolved = agents
     .map((agent) => (typeof agent?.name === "string" ? agent.name : null))
     .filter((name) => name !== null)
   // An empty resolved set is not evidence of a broken default — it is evidence
   // that this endpoint does not report its agents the way we assumed.
-  if (resolved.length === 0) return
-  if (resolved.includes(defaultAgent)) return
+  if (resolved.length === 0) return // # MUTATION-ANCHOR: 26-M04
+  if (resolved.includes(defaultAgent)) return // # MUTATION-ANCHOR: 26-M03 // # MUTATION-ANCHOR: 26-M05 // # MUTATION-ANCHOR: 26-M10
 
   const declared = config?.agent && typeof config.agent === "object" && !Array.isArray(config.agent)
     ? config.agent[defaultAgent]
@@ -1207,7 +1176,7 @@ async function preflightDefaultAgent() {
       `or without --id, cannot succeed.${scopes}\n  fix: make default_agent name a ` +
       `resolvable agent (or stop disabling this one), then RESTART the receiver — ` +
       `the merged config is read at startup.`,
-    6,
+    6, // # MUTATION-ANCHOR: 26-M02
   )
 }
 
@@ -1251,13 +1220,13 @@ async function waitForProcessing() {
     const processed = messages.some((message) =>
       message?.info?.role === "assistant" &&
       message.info.parentID === deliveryID &&
-      !message.info.error &&
+      !message.info.error && // # MUTATION-ANCHOR: 05-M02
       typeof message.info.time?.completed === "number",
     )
     if (processed) return
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  fail("message processing", `${deliveryID} IS in the receiver's session — admitted and persisted — but no completed assistant response was causally parented to it within ${deliveryTimeout}ms. The delivery succeeded; the turn did not.`, 4)
+  fail("message processing", `${deliveryID} IS in the receiver's session — admitted and persisted — but no completed assistant response was causally parented to it within ${deliveryTimeout}ms. The delivery succeeded; the turn did not.`, 4)  // # MUTATION-ANCHOR: 05-M01
 }
 
 function exactUserMessage(message) {
@@ -1270,7 +1239,7 @@ function exactUserMessage(message) {
 
 // FIRST, before the session lookup: a receiver that cannot run any prompt makes
 // every downstream diagnostic misleading, and this costs two concurrent GETs.
-await preflightDefaultAgent()
+await preflightDefaultAgent() // # MUTATION-ANCHOR: 26-M01
 await json(`/session/${session}`, "session-identity")
 if (deliveryKey) {
   const existing = await request(
@@ -1298,7 +1267,7 @@ const [statuses, pending] = await Promise.all([
   blockers(),
 ])
 const status = statuses[process.env.CHANNEL_TARGET]
-if (isRuling && !holdProven && (pending.length || (status && ["busy", "retry"].includes(status.type)))) {
+if (isRuling && !holdProven && (pending.length || (status && ["busy", "retry"].includes(status.type)))) { // # MUTATION-ANCHOR: 41-M03
   const state = pending.length ? `blocked by ${pending.join(", ")}` : status.type
   fail(
     "ruling safety",
@@ -1361,7 +1330,7 @@ if (status && !["busy", "retry"].includes(status.type)) {
   // setup/test-channel-send, every one "aborted due to timeout" after a 204.
   // The poll keeps going until the deadline and the last error is reported
   // under exit 5 with the rest.
-  const deadline = Date.now() + persistenceTimeout
+  const deadline = Date.now() + persistenceTimeout // # MUTATION-ANCHOR: 26-M06
   let lastPollError = ""
   while (Date.now() < deadline) {
     let persisted
@@ -1459,7 +1428,7 @@ NODE
     _uw_full_ms="$CLAUDE_WAIT_MS"
     _uw_warning=""
     # $CLAUDE_PANE, never $_CS_TARGET: this argument reaches `herdr agent get`.
-    if _uw_warning="$(_awaiting_child_shorten "$CLAUDE_PANE" "$CLAUDE_WAIT_MS")"; then
+    if _uw_warning="$(_awaiting_child_shorten "$CLAUDE_PANE" "$CLAUDE_WAIT_MS")"; then # MUTATION-ANCHOR: 111-M07
       CLAUDE_WAIT_MS="$HW_AWAITING_CHILD_PROBE_MS"
       _CS_BUDGET_MS="$CLAUDE_WAIT_MS"
     else
@@ -1477,9 +1446,11 @@ NODE
       # defect being fixed. The measured admitted-but-inert delivery is why
       # immediacy buys nothing here anyway.
       if [ -n "$_uw_warning" ]; then
+        # MUTATION-ANCHOR: 111-M05
         _awaiting_child_refusal "$CLAUDE_PANE (claude session $TARGET)" "$CLAUDE_PANE" \
           "$_uw_warning" "$_uw_full_ms" \
           "THERE IS NO SEND-NOW TRADE ON THIS ROUTE: --allow-turn-ended is not consulted here, because a mid-turn SendMessage is admitted and displayed while no turn ever opens on it — immediacy would buy an inert message, not an early one. If this cannot wait for the child, send it over the herdr route against pane $CLAUDE_PANE, where a mid-turn delivery is at least acted on."
+        # MUTATION-ANCHOR-END: 111-M05
       fi
       die "$CLAUDE_PANE (claude session $TARGET) was still working after $((CLAUDE_WAIT_MS / 1000))s, so NOTHING was sent. A mid-turn SendMessage is admitted and displayed but does not open a turn, which is exactly the delivery this route used to report as a success. Retry, or raise the budget with a matching Bash timeout: HW_INVOKER_WAIT_MS=540000 channel-send …"
     fi
@@ -1583,7 +1554,7 @@ PY
     [ -z "$DELIVERY_KEY" ] || die "herdr does not expose idempotent caller-supplied delivery ids"
     [ "$REQUIRED_RECEIPT" = admitted ] || die "herdr does not expose causal processed receipt proof"
     [ -n "$TARGET" ] || die "Herdr target pane is empty"
-    if [ "$IS_RULING" = 1 ] && [ "$HOLD_PROVEN" = 0 ]; then
+    if [ "$IS_RULING" = 1 ] && [ "$HOLD_PROVEN" = 0 ]; then # MUTATION-ANCHOR: 41-M01
       _ruling_gate "$TARGET" "$TARGET"
     fi
     # THE DEFAULT BUDGET WAS CALIBRATED AGAINST A BRAINER, AND THIS PATH IS ALSO
@@ -1650,7 +1621,7 @@ PY
       _skip_wait=1
       printf 'channel-send: --report: not waiting for %s to be idle. A report is not a redirect — the receiver is waiting for it, and mid-turn delivery on this route is acted on, never dropped (measured 2026-08-25). The idle gate is what deadlocked a brainer against its own executor on 2026-08-27; it is kept for redirects and `hw next`, which is why this is a declaration and not the default.\n' "$TARGET" >&2
     fi
-    if [ "$IS_RULING" = 1 ] && [ "$HOLD_PROVEN" = 1 ]; then
+    if [ "$IS_RULING" = 1 ] && [ "$HOLD_PROVEN" = 1 ]; then # MUTATION-ANCHOR: 42-M01
       _skip_wait=1
       printf 'channel-send: --ruling: not waiting for %s to become idle because its delivered challenge is still outstanding in %s. This reply is the work it is holding for, not a redirect into work in flight.\n' "$TARGET" "$REPLY_HOLD" >&2
     fi
@@ -1671,8 +1642,8 @@ PY
     # signal the case that needs it never sees.
     _uw_warning=""
     _uw_full_ms="$WAIT_MS"
-    if [ "$_skip_wait" = 0 ]; then
-      if _uw_warning="$(_awaiting_child_shorten "$TARGET" "$WAIT_MS")"; then
+    if [ "$_skip_wait" = 0 ]; then # MUTATION-ANCHOR: 111-M06
+      if _uw_warning="$(_awaiting_child_shorten "$TARGET" "$WAIT_MS")"; then # MUTATION-ANCHOR: 111-M01
         WAIT_MS="$HW_AWAITING_CHILD_PROBE_MS"
         _CS_BUDGET_MS="$WAIT_MS"
       else
@@ -1771,7 +1742,7 @@ PY
       # sender has held the delivery lock ... NOTHING was sent". A blind judge
       # caught it; the first version of this comment called the coupling
       # deliberate, which was a rationalisation of an accident.
-      _lock_budget_s=$(( _uw_full_ms / 1000 + 5 ))
+      _lock_budget_s=$(( _uw_full_ms / 1000 + 5 )) # MUTATION-ANCHOR: 111-M08
     fi
     _deadline=$(( $(date +%s) + _lock_budget_s ))
     _lock_announced=0
@@ -1833,7 +1804,7 @@ PY
             # took the lock", and pid plus start time answers exactly that. It
             # also answers the case the name check was built for — a reused or
             # orphaned pid — POSITIVELY rather than by inference from a name.
-            _owner_start_was="$(cat "$_lock/owner.start" 2>/dev/null || true)"
+            _owner_start_was="$(cat "$_lock/owner.start" 2>/dev/null || true)"  # MUTATION-ANCHOR: 101-M03
             if [ -n "$_owner_start_was" ]; then
               _owner_start_now="$(_cs_proc_start "$_owner" || true)"
               if [ -z "$_owner_start_now" ]; then
@@ -1973,7 +1944,7 @@ PY
     # window between the prompt landing and the lock coming off must report the
     # delivery that happened, never "nothing was sent" for a message the
     # receiver is already holding — that inversion is what makes a caller resend.
-    _CS_SENT=inflight
+    _CS_SENT=inflight # MUTATION-ANCHOR: 42-M04
     _prompt_rc=0
     _prompt_out="$(herdr agent prompt "$TARGET" "$MESSAGE" 2>&1)" || _prompt_rc=$?
     if [ "$_prompt_rc" -ne 0 ]; then
@@ -1984,19 +1955,21 @@ PY
       _CS_SENT=0
       _blocked_fallback=""
       if printf '%s' "$_prompt_out" | grep -q '"code"[[:space:]]*:[[:space:]]*"agent_blocked"'; then
-        if [ "$HOLD_PROVEN" = 1 ]; then
+        if [ "$HOLD_PROVEN" = 1 ]; then # MUTATION-ANCHOR: 42-M05
           if [ "$IS_RULING" = 1 ]; then
             _blocked_fallback=ruling
             printf 'channel-send: herdr agent prompt rejected the proved held ruling with agent_blocked (exit %s): %s\n' \
               "$_prompt_rc" "$_prompt_out" >&2
+          # MUTATION-ANCHOR: 42-M12
           else
             _blocked_fallback=answer
+          # MUTATION-ANCHOR-END: 42-M12
             printf 'channel-send: herdr agent prompt rejected the proved held ask answer with agent_blocked (exit %s): %s\n' \
               "$_prompt_rc" "$_prompt_out" >&2
           fi
           printf 'channel-send: falling back ONLY for this receiver-owned reply hold to raw pane input; generic reports, rulings and redirects cannot use this proof.\n' >&2
-        elif [ "$IS_REPORT" = 1 ] && [ "$REPORT_PROVEN" = 1 ]; then
-          witness_state "$TARGET"
+        elif [ "$IS_REPORT" = 1 ] && [ "$REPORT_PROVEN" = 1 ]; then # MUTATION-ANCHOR: 42-M08
+          witness_state "$TARGET" # MUTATION-ANCHOR: 42-M09
           case "$WITNESS_VERDICT" in
             awaiting-human)
               die "herdr agent prompt rejected this proved run report because $TARGET is blocked, and state-witness confirms it is WAITING FOR A PERSON: $WITNESS_DETAIL NOTHING was sent; raw pane input would overwrite a real human prompt. Answer that prompt, then retry the identical report."
@@ -2099,7 +2072,7 @@ PY
           printf 'channel-send: message submitted to %s through the blocked-pane fallback after agent_blocked (its own endpoint confirmed nothing pending).\n' "$TARGET" >&2
         fi
       else
-        [ -z "$_prompt_out" ] || printf 'channel-send: herdr agent prompt rejected delivery to %s (exit %s): %s\n' "$TARGET" "$_prompt_rc" "$_prompt_out" >&2
+        [ -z "$_prompt_out" ] || printf 'channel-send: herdr agent prompt rejected delivery to %s (exit %s): %s\n' "$TARGET" "$_prompt_rc" "$_prompt_out" >&2 # MUTATION-ANCHOR: 42-M07
         die "herdr agent prompt failed before delivery to $TARGET. NOTHING was sent."
       fi
     else

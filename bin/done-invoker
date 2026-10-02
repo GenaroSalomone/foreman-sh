@@ -160,7 +160,7 @@ INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 # profile denies every unix socket. The call is handed, argv only, to the
 # broker outside, which runs THIS invoker with the dispatch's own environment
 # and replays its output and exit status here (bin/hw-sandbox, "the broker").
-if [ "${HW_SANDBOX:-0}" = 1 ]; then
+if [ "${HW_SANDBOX:-0}" = 1 ]; then  # MUTATION-ANCHOR: 322-M02
   [ -x "$INVOKER_BIN_DIR/hw-sandbox" ] || die "running in the sandbox, but $INVOKER_BIN_DIR/hw-sandbox is missing, so nothing can leave it. NOTHING was sent."
   exec "$INVOKER_BIN_DIR/hw-sandbox" request done-invoker "$@"
 fi
@@ -207,7 +207,7 @@ esac
 # single-quoted heredoc: done-invoker - <<'EOF' ... EOF. Three distinct
 # refusals below, because they are three distinct mistakes.
 if [ "${1:-}" = "-" ]; then
-  [ $# -eq 1 ] || die "the summary was given on argv AND as '-' for stdin — pass it ONE way, not both"
+  [ $# -eq 1 ] || die "the summary was given on argv AND as '-' for stdin — pass it ONE way, not both"  # MUTATION-ANCHOR: 135-M02
   [ ! -t 0 ] || die "'-' reads the summary from stdin, but stdin is a terminal — pipe or redirect the text in"
   SUMMARY="$(cat -)" || die "could not read the summary from stdin"
   case "$SUMMARY" in
@@ -257,7 +257,7 @@ fi
 # WHAT IT DOES NOT COVER, stated rather than implied: an operator who runs this
 # binary with the real address still reaches the real brainer, because that is
 # the binary's job. This closes the accident, not the intent.
-if [ -n "${HW_INVOKER_PANE+set}" ] && [ -z "${HW_INVOKER_PANE:-}" ]; then
+if [ -n "${HW_INVOKER_PANE+set}" ] && [ -z "${HW_INVOKER_PANE:-}" ]; then  # MUTATION-ANCHOR: 68-M01  # MUTATION-ANCHOR: 68-M02
   die "HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (\`unset HW_INVOKER_PANE\`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean."
 fi
 
@@ -286,7 +286,7 @@ invoker_run_lock
 # library, and both callers have to go through it or the fix is only half
 # installed. The library is no longer off-limits — the note about uncommitted
 # work from another author was true when this was written and is not now.
-if [ -n "${INVOKER_RUN_LOCK:-}" ]; then
+if [ -n "${INVOKER_RUN_LOCK:-}" ]; then  # MUTATION-ANCHOR: 66-M06
   trap '_inv_rc=$?; [ -z "${REPORTING_MARKER:-}" ] || rm -f "$REPORTING_MARKER" 2>/dev/null || true; invoker_release_run_lock; _inv_exit_guard "$_inv_rc"' EXIT
   invoker_arm_lock_signals
 fi
@@ -565,7 +565,7 @@ RULING_RUN_DIR="$(invoker_run_dir)"
   || die "cannot find state-witness.sh beside $INVOKER_BIN_DIR, so queued rulings cannot be checked before this task closes. Nothing was reported; this brain/bin is incomplete."
 # shellcheck source=state-witness.sh
 . "$INVOKER_BIN_DIR/state-witness.sh"
-if RULING_TEXT="$(ruling_queue_claim_all "$RULING_RUN_DIR" done-invoker)"; then
+if RULING_TEXT="$(ruling_queue_claim_all "$RULING_RUN_DIR" done-invoker)"; then  # MUTATION-ANCHOR: 203-M01
   # stdout AND stderr: whichever the caller shows, the ruling is in it.
   RULING_MSG="NOT REPORTED — RULING FROM YOUR BRAINER, queued with \`hw ruling\` while you were working. It changes the premise of your work, so your report was held and NOTHING was sent. Read it, act on it — and if it contradicts what you have already done, say so rather than quietly redoing it — then run done-invoker again.
 

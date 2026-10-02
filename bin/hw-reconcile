@@ -54,8 +54,22 @@ FINDINGS="$TMP/findings"
 # It does not supply live truth. Live candidates are cross-checked below through
 # state-witness.sh rather than interpreting agent_status ourselves.
 HW_RECONCILE_ROOTS="$ROOTS" HW_RECONCILE_HOLD_SECONDS="$HOLD_SECONDS" \
-HW_RECONCILE_NOW="$NOW" HW_RECONCILE_REPO_LANES="$REPO_LANES" python3 - > "$CANDIDATES" <<'PY'
-import json, os, re, stat as stat_module, sys
+HW_RECONCILE_NOW="$NOW" HW_RECONCILE_REPO_LANES="$REPO_LANES" HW_HOLDFACTS="$BIN_DIR/holdfacts" HW_RUNENV="$BIN_DIR/runenv" python3 - > "$CANDIDATES" <<'PY'
+import importlib.machinery, importlib.util, json, os, re, stat as stat_module, sys
+
+sys.dont_write_bytecode = True  # never a __pycache__ beside bin/holdfacts or bin/runenv
+
+
+def load_sibling(name, path):
+    """bin/<name> is the one reader or validator of its file; loaded, not copied."""
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+holdfacts = load_sibling("holdfacts", os.environ["HW_HOLDFACTS"])
+runenv = load_sibling("runenv", os.environ["HW_RUNENV"])
 
 roots = [p for p in os.environ.get("HW_RECONCILE_ROOTS", "").split("\n") if p]
 repo_lanes = {p for p in os.environ.get("HW_RECONCILE_REPO_LANES", "").split("\n") if p}
@@ -65,20 +79,14 @@ run_re = re.compile(r"^2[0-9]{7}-[0-9]{6}-[0-9]+$")
 skip = {".hw", ".git", "node_modules", ".venv", ".next", "dist", "__pycache__"}
 
 def env_fields(run):
-    out = {}
+    """KEY -> value of the run's env file, read by bin/runenv (the one reader).
+    A run with no env file has no fields; a file runenv cannot read is named on
+    stderr and also has none, so it is never mistaken for a run that sets nothing."""
     try:
-        lines = open(os.path.join(run, "env"), encoding="utf-8", errors="replace")
-    except OSError:
-        return out
-    for line in lines:
-        m = re.match(r"^([A-Z0-9_]+)=(.*)$", line.rstrip("\n"))
-        if not m:
-            continue
-        value = m.group(2).strip()
-        if len(value) >= 2 and value[0] == value[-1] == "'":
-            value = value[1:-1].replace("'\\''", "'")
-        out[m.group(1)] = value
-    return out
+        return runenv.read(run, lenient=True, bare=True) or {}
+    except runenv.Unusable as e:
+        sys.stderr.write("hw-reconcile: %s\n" % e)
+        return {}
 
 def current_done(run):
     try:
@@ -187,22 +195,13 @@ def artifact_count(directory):
     return count
 
 def valid_hold(path, run_id):
-    facts = {}
-    try:
-        for line in open(path, encoding="utf-8", errors="replace"):
-            if "=" in line:
-                key, value = line.rstrip("\n").split("=", 1)
-                facts[key] = value
-    except OSError:
+    facts, why = holdfacts.read_facts(path)
+    if facts is None:
         return None
-    required = {"version", "state", "intent", "route", "target", "logical_id", "pane", "run"}
-    if not required.issubset(facts) or facts["version"] != "1" or facts["state"] != "delivered":
-        return None
-    if facts["run"] != run_id or facts["intent"] not in {"answer", "ruling"}:
-        return None
-    if facts["route"] == "herdr" and facts["target"] != facts["pane"]:
-        return None
-    if facts["route"] not in {"herdr", "opencode", "codex"}:
+    # The live pane and vendor are not knowable for a run that is no longer
+    # live: the hold's own pane and route stand in, so those two comparisons say
+    # nothing and every other rule of the shared validator still applies.
+    if holdfacts.problem(facts, run_id, facts.get("pane", ""), facts.get("route", "")) is not None:
         return None
     age = now - int(os.path.getmtime(path))
     if age < hold_seconds:  # MUTATION_ANCHOR_HOLD_AGE
@@ -341,8 +340,10 @@ while IFS= read -r candidate; do
   # jq 1.6 (Debian/Ubuntu) exits 0 on EMPTY input even under -e, where jq 1.7 exits 4,
   # so an empty reply is refused here rather than left to jq.
   [ -n "$info" ] || info_rc=1
+  # MUTATION-ANCHOR: 102-M03
   if [ "$info_rc" = 0 ] && printf '%s' "$info" | jq -e --arg p "$pane" \
        '(.result.agent | type) == "object" and .result.agent.pane_id == $p' >/dev/null 2>&1; then
+  # MUTATION-ANCHOR-END: 102-M03
     agent_readable=1
   fi
   if [ "$agent_readable" = 1 ]; then # MUTATION_ANCHOR_AGENT_READABLE

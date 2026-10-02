@@ -70,7 +70,7 @@ if [ ! -r "$SUBJECT" ]; then
   printf 'mutation-coverage: cannot read subject %s\n' "$SUBJECT" >&2
   exit 2
 fi
-if [ ! -r "$OUTPUT" ]; then
+if [ ! -r "$OUTPUT" ]; then # MUTATION-ANCHOR: 46-M03
   printf 'mutation-coverage: cannot read output %s\n' "$OUTPUT" >&2
   exit 2
 fi
@@ -89,7 +89,7 @@ fi
 # empty capture, and it gets its own status rather than being folded into 1
 # ("declares arms and exercised none"), which would be a claim about arms this
 # cannot support when it has no output at all.
-if ! grep -q '[^[:space:]]' "$OUTPUT" 2>/dev/null; then
+if ! grep -q '[^[:space:]]' "$OUTPUT" 2>/dev/null; then # MUTATION-ANCHOR: 46-M11
   printf 'mutation-coverage: %s produced NO OUTPUT AT ALL (%s is empty), so nothing about its arms can be established — a subject that printed nothing did not run, and an empty capture must never read as coverage\n' \
     "$(basename "$SUBJECT")" "$OUTPUT" >&2
   exit 4
@@ -102,7 +102,7 @@ fi
 #   35 × `mutant_killed`   — a per-file helper CALL
 #    3 × `mutant-killed`   — what that helper prints: `mutant-killed - M01 …`
 # So one character class spans all three, present and future mixes included.
-MARKER='mutant[ _-]killed'
+MARKER='mutant[ _-]killed' # MUTATION-ANCHOR: 46-M05
 
 # AND THE HELPER CALL, WHICH THIS COULD NOT SEE. Measured 2026-09-02 by the opus
 # Judgment Day reviewer: `saw_mutant` — the positive shape tests/_common.sh
@@ -125,7 +125,7 @@ MARKER='mutant[ _-]killed'
 # literals, so 46's M05 mutant (which narrows $MARKER to one convention) only
 # narrowed half of it and its claim stopped holding. Breadth is one property and
 # it lives in one place; this adds the helper call to it and nothing else.
-DECLARE_MARKER="$MARKER|saw_mutant"
+DECLARE_MARKER="$MARKER|saw_mutant" # MUTATION-ANCHOR: 46-M10
 
 # NOT EXTENDED TO THE CATCH-ALL SHAPE CHECK BELOW, deliberately. That check
 # refuses a kill certified by a `*)` branch because such a kill passes on the
@@ -145,7 +145,7 @@ DECLARE_MARKER="$MARKER|saw_mutant"
 # `mutant_killed "M01 …"`, which is how 35 of the calls in this suite are
 # written — never matched. grep -E has no lookahead, so the comment exclusion
 # and the marker search are two steps.
-COMMENT='^[[:space:]]*#'
+COMMENT='^[[:space:]]*#' # MUTATION-ANCHOR: 46-M04
 
 # THE CATCH-ALL SHAPE IS REFUSED FIRST, before the declaration gate, and on a
 # WIDER net than $MARKER: `pass "mutation: …"` and `pass "mutant: …"` are arms
@@ -164,10 +164,10 @@ catchall="$(awk '
     line = $0
     if (line ~ /^[[:space:]]*#/) next
     if (line ~ /^[[:space:]]*$/) next
-    if (line ~ /mutant_killed[[:space:]]+["'"'"']/ || line ~ /pass[[:space:]]+["'"'"'][^"'"'"']*[Mm]uta(nt|tion)/) {
+    if (line ~ /mutant_killed[[:space:]]+["'"'"']/ || line ~ /pass[[:space:]]+["'"'"'][^"'"'"']*[Mm]uta(nt|tion)/) { # MUTATION-ANCHOR: 46-M09
       if (line ~ /^[[:space:]]*\*\)[[:space:]]*(pass|mutant_killed)/) print NR ": " line
-      else if (line ~ /;;[[:space:]]*\*\)[[:space:]]*(pass|mutant_killed)/) print NR ": " line
-      else if (prev ~ /^[[:space:]]*\*\)[[:space:]]*$/) print NR ": " line
+      else if (line ~ /;;[[:space:]]*\*\)[[:space:]]*(pass|mutant_killed)/) print NR ": " line # MUTATION-ANCHOR: 46-M08
+      else if (prev ~ /^[[:space:]]*\*\)[[:space:]]*$/) print NR ": " line # MUTATION-ANCHOR: 46-M07
     }
     prev = line
   }' "$SUBJECT")"
@@ -175,20 +175,24 @@ if [ -n "$catchall" ]; then
   printf 'mutation-coverage: %s certifies a mutant kill from a `*)` catch-all branch — that arm passes on the ABSENCE of the original text, so a mutant that died before running the mutated line passes it too (8f5c8ef). Match the mutant'"'"'s OWN text in a positive branch, or use saw_mutant:\n' \
     "$(basename "$SUBJECT")" >&2
   printf '%s\n' "$catchall" | sed 's/^/    /' >&2
-  exit 3
+  exit 3 # MUTATION-ANCHOR: 46-M06
 fi
 
+# MUTATION-ANCHOR: 46-M01
 if ! grep -Ev "$COMMENT" "$SUBJECT" | grep -Eq "$DECLARE_MARKER"; then
   exit 0
 fi
+# MUTATION-ANCHOR-END: 46-M01
 
 # EVIDENCE: any of the three forms, anywhere in what the run printed. Looser
 # than the declaration on purpose — `ok - mutant killed: …`, `mutant-killed - …`
 # and a `coverage -` summary all mean an arm ran, and any one is enough for the
 # narrow claim above.
+# MUTATION-ANCHOR: 46-M02
 if grep -Eq "$MARKER" "$OUTPUT"; then
   exit 0
 fi
+# MUTATION-ANCHOR-END: 46-M02
 
 printf 'mutation-coverage: %s declares mutation arms and this run exercised none\n' \
   "$(basename "$SUBJECT")" >&2

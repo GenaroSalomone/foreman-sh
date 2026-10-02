@@ -141,8 +141,8 @@ unset _v 2>/dev/null || true
 # deliberate opt-in off, which is the "an arm nobody runs is not coverage"
 # failure `setup/mutation-coverage` exists to catch — a fix that caused it would
 # be worse than the bug.
-_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING "
-for _v in ${!HW_@}; do
+_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING "  # MUTATION-ANCHOR: 54-M02
+for _v in ${!HW_@}; do  # MUTATION-ANCHOR: 54-M01
   case "$_HW_TEST_INPUTS" in *" $_v "*) continue ;; esac
   unset "$_v" 2>/dev/null || true
 done
@@ -151,7 +151,7 @@ unset _v _HW_TEST_INPUTS 2>/dev/null || true
 # outside the prefix, so they are named — and they are pane state, not inputs:
 # 09 passes ENGRAM_PROJECT explicitly where it needs one, and 13 asserts about
 # the namespace by reading hw's output rather than its own environment.
-unset ENGRAM_PROJECT AGENT_BROWSER_NAMESPACE 2>/dev/null || true
+unset ENGRAM_PROJECT AGENT_BROWSER_NAMESPACE 2>/dev/null || true  # MUTATION-ANCHOR: 54-M03
 
 # AND THE HERDR ADDRESS FAMILY — THE FOURTH INSTANCE, AND THE FIRST ONE THAT
 # MUTATED SOMETHING OUTSIDE THIS SUITE.
@@ -232,7 +232,7 @@ unset ENGRAM_PROJECT AGENT_BROWSER_NAMESPACE 2>/dev/null || true
 # defensively. It exists so that adding a deliberate input is one word here
 # rather than a redesign.
 _HERDR_TEST_INPUTS=" "
-for _v in ${!HERDR_@}; do
+for _v in ${!HERDR_@}; do  # MUTATION-ANCHOR: 145-M01a  # MUTATION-ANCHOR: 145-M02
   case "$_HERDR_TEST_INPUTS" in *" $_v "*) continue ;; esac
   unset "$_v" 2>/dev/null || true
 done
@@ -262,7 +262,7 @@ trap 'rm -rf "$TMP"' EXIT
 # call a connect failure against an address this directory owns: nothing live is
 # read, nothing live is written, and a call that should not have happened names
 # the harness in its own error text.
-export HERDR_SOCKET_PATH="$TMP/no-such-herdr.sock"
+export HERDR_SOCKET_PATH="$TMP/no-such-herdr.sock"  # MUTATION-ANCHOR: 145-M01b  # MUTATION-ANCHOR: 145-M03
 export LC_ALL=en_US.UTF-8
 
 # AND THE ENGRAM ADDRESS, THE SAME CUT FOR THE SAME REASON.
@@ -629,4 +629,44 @@ expect_absent() {
   local label="$1" pat="$2"; shift 2
   local out; out="$(hw_dry "$@" || true)"
   case "$out" in *"$pat"*) fail "$label — '$pat' should NOT appear" ;; *) pass "$label" ;; esac
+}
+
+# mutate_anchor <id> <file> <replacement>
+#
+# A MUTANT IS ANCHORED ON A MARKER THE SOURCE DECLARES, NEVER ON ITS PROSE.
+# Measured 2026-10-01: 78's M06 matched the literal text of the guard's verdict
+# line, so a refactor that left the behaviour alone (the verdict line gained a
+# branch) turned the suite red with no defect anywhere. The source now carries
+# `# MUTATION-ANCHOR: <id>` on the line a mutant replaces; `mutate_anchor` finds
+# that line in <file> (a copy the caller owns), and replaces the WHOLE line with
+# <replacement>, each of its lines prefixed with the anchor line's indent. A block
+# is anchored by a second `# MUTATION-ANCHOR-END: <id>` line: the span from one to
+# the other, both included, is what is replaced. The
+# id must occur exactly once or the call dies: a mutant that did not apply is a
+# vacuous arm, never a kill. `setup/mutation-anchors.tsv` registers every id and
+# the source file that carries it; `setup/tests/540-*` holds the registry honest.
+mutate_anchor() {
+  local id="$1" file="$2" repl="$3"
+  [ $# -eq 3 ] || fail "mutate_anchor <id> <file> <replacement>"
+  python3 - "$id" "$file" "$repl" <<'PYANCHOR' || fail "mutate_anchor $id: anchor not applied in $file"
+import pathlib, re, sys
+anchor_id, path, repl = sys.argv[1:4]
+p = pathlib.Path(path)
+lines = p.read_text().split("\n")
+pat = re.compile(r"MUTATION-ANCHOR: " + re.escape(anchor_id) + r"(?![\w-])")
+hits = [i for i, l in enumerate(lines) if pat.search(l)]
+if len(hits) != 1:
+    sys.exit("anchor %r matched %d lines" % (anchor_id, len(hits)))
+i = hits[0]
+j = i
+endpat = re.compile(r"MUTATION-ANCHOR-END: " + re.escape(anchor_id) + r"(?![\w-])")
+ends = [k for k, l in enumerate(lines) if endpat.search(l)]
+if ends:
+    if len(ends) != 1 or ends[0] < i:
+        sys.exit("anchor %r has a misplaced or repeated END marker" % anchor_id)
+    j = ends[0]
+indent = re.match(r"\s*", lines[i]).group(0)
+lines[i:j + 1] = [indent + r if r else r for r in repl.split("\n")]
+p.write_text("\n".join(lines))
+PYANCHOR
 }

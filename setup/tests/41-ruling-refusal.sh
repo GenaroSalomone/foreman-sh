@@ -98,7 +98,7 @@ posts="$(curl -fsS "http://127.0.0.1:$PORT/admin" | jq -r .posts)"
 # opaque ruling text is never inspected; ask-invoker passes a structural intent
 # argument and the generated reply command carries --ruling.
 HARNESS="$TMP/harness"; mkdir -p "$HARNESS/bin" "$HARNESS/work/.hw/run"
-cp "$ROOT/bin/ask-invoker" "$ROOT/bin/invoker-common.sh" "$HARNESS/bin/"
+cp "$ROOT/bin/ask-invoker" "$ROOT/bin/invoker-common.sh" "$ROOT/bin/runenv" "$HARNESS/bin/"
 cat > "$HARNESS/bin/channel-send" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$DELIVERY_RECORD"
@@ -137,14 +137,7 @@ pass "C05 a ruling at a clean idle boundary is delivered exactly once"
   # M01 removes the immediate refusal. The same working target then reaches the
   # ordinary wait, proving the test distinguishes the policy from a timeout.
   M1="$TMP/m1"; mkdir -p "$M1"; cp "$BIN"/* "$M1/" 2>/dev/null || true
-  python3 - "$M1/channel-send" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read()
-old='if [ "$IS_RULING" = 1 ] && [ "$HOLD_PROVEN" = 0 ]; then\n      _ruling_gate "$TARGET" "$TARGET"'
-new='if false; then\n      _ruling_gate "$TARGET" "$TARGET"'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
+  mutate_anchor 41-M01 "$M1/channel-send" 'if false; then'
   chmod +x "$M1/channel-send"; cp "$BIN/herdr-rpc" "$M1/herdr-rpc"
   mout="$(run_ruling "$M1/channel-send" || true)"
   [ "$(grep -c '^wait-agent ' "$LOG" || true)" -ge 1 ] || fail "M01 SURVIVED: ruling still refused before the wait"
@@ -153,12 +146,7 @@ PY
   # M02 makes ruling the default. A generic redirect is then refused before its
   # ordinary gate, proving C02 is about preserved behavior rather than prose.
   M2="$TMP/m2"; mkdir -p "$M2"; cp "$BIN"/* "$M2/" 2>/dev/null || true
-  python3 - "$M2/channel-send" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read(); old='IS_RULING=0\n'; new='IS_RULING=1\n'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
+  mutate_anchor 41-M02 "$M2/channel-send" 'IS_RULING=1'
   chmod +x "$M2/channel-send"; cp "$BIN/herdr-rpc" "$M2/herdr-rpc"
   mredirect="$(run_redirect "$M2/channel-send" || true)"
   [ "$(grep -c '^wait-agent ' "$LOG" || true)" = 0 ] || fail "M02 SURVIVED: generic redirect still used its ordinary gate"
@@ -167,12 +155,7 @@ PY
   # M03 removes the native busy pre-POST refusal. The same server then records
   # prompt_async, which C03 explicitly forbids.
   M3="$TMP/m3"; mkdir -p "$M3"; cp "$BIN"/* "$M3/" 2>/dev/null || true
-  python3 - "$M3/channel-send" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read(); old='if (isRuling && !holdProven && (pending.length ||'; new='if (false && !holdProven && (pending.length ||'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
+  mutate_anchor 41-M03 "$M3/channel-send" 'if (false && !holdProven && (pending.length || (status && ["busy", "retry"].includes(status.type)))) {'
   chmod +x "$M3/channel-send"
   CHANNEL_DELIVERY_TIMEOUT_MS=500 CHANNEL_PERSISTENCE_TIMEOUT_MS=100 \
     "$M3/channel-send" --ruling --require processed --id ruling-mutant \
@@ -184,14 +167,7 @@ PY
   # M04 disconnects the known challenge caller from the marker. The resulting
   # delivery still succeeds, but its reply command silently becomes an answer.
   M4="$TMP/m4"; mkdir -p "$M4"; cp "$HARNESS/bin"/* "$M4/"
-  python3 - "$M4/ask-invoker" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read()
-old='invoker_reply_command "$ENVELOPE_ID:reply" ruling'
-new='invoker_reply_command "$ENVELOPE_ID:reply" answer'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
+  mutate_anchor 41-M04 "$M4/ask-invoker" 'REPLY_COMMAND="$(invoker_reply_command "$ENVELOPE_ID:reply" answer "$PENDING_REPLY")"'
   chmod +x "$M4/ask-invoker"
   run_challenge "$M4/ask-invoker" "$TMP/m4-work" "$TMP/m4-delivery"
   # KILLED BY WHAT THE MUTANT SAID. `invoker_reply_command` prints two different
@@ -212,14 +188,7 @@ PY
   # M05 rejects even a clean idle target, turning the safety boundary into a
   # blanket ban. C05 requires one ordered delivery and kills that regression.
   M5="$TMP/m5"; mkdir -p "$M5"; cp "$BIN"/* "$M5/" 2>/dev/null || true
-  python3 - "$M5/channel-send" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read()
-old='    idle) return 0 ;;\n    reported)'
-new='    never) return 0 ;;\n    reported)'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
+  mutate_anchor 41-M05 "$M5/channel-send" 'never) return 0 ;;'
   chmod +x "$M5/channel-send"; cp "$BIN/herdr-rpc" "$M5/herdr-rpc"
   midle="$(RULING_STATE=idle RULING_WAIT_RC=0 run_ruling "$M5/channel-send" || true)"
   [ ! -s "$SENT" ] || fail "M05 SURVIVED: idle ruling still delivered"

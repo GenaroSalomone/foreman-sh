@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Report Codex's thread id to Herdr as soon as a user prompt is submitted.
-set -uo pipefail
+set -uo pipefail  # MUTATION-ANCHOR: 102-M04
 # NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
 # file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
 # and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this

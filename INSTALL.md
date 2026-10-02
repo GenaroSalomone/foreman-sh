@@ -257,6 +257,7 @@ with another `--vendor` for the same lane is refused.
 | `~/brain/<lane>/.opencode-executor/` | an OpenCode lane only: the executor's guard plugin and its policy |
 | `~/work/<lane>/<task>` | each task's git worktree: beside the brain, never inside it (the brain guard would refuse every command an executor ran there), and outside your repo. Set by `"work"` in `projects.json` |
 | `~/.config/hw/permissions` | only with `--permissions` or an answer in a terminal: `ask` or `skip` (see Permissions above) |
+| `~/archive/<lane>/<task>/` | what `hw reap --apply` and `hw done` keep of a merged task before removing its worktree: its `.artifacts`, `qa-report`, `test-results`, `playwright-report`, and a `pg_dump -Fc` of its database on a lane with `db.provisioned`. Beside `"work"`; `HW_ARCHIVE_ROOT` moves it |
 | `~/.local/bin` | links: `hw`, `brain`, `done-invoker`, `ask-invoker`, `channel-send`, `decisions`, and `opencode-auto` for an OpenCode lane |
 | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | one Stop hook, merged; the previous file is kept as `settings.json.bak-brain-install` |
 | `~/.claude/skills/judgment-day/`, `~/.claude/agents/jd-*.md` | only with `--with-judgment-day` (see Judgment Day below) |

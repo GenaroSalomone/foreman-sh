@@ -577,6 +577,32 @@ cmd_handle() {
   return "$rc"
 }
 
+# `hw train add|status|push <project> …` — the merge train, in bin/hw-train.
+# Only a lane whose checkout IS brain has one: a product repo lands through its
+# PRs, and a train branch would be a ref this setup writes into it.
+cmd_train() {
+  local verb="${1:-}" proj co
+  case "$verb" in add|status|push) ;; *) die "usage: hw train add <project> <task> | status <project> | push <project>" ;; esac
+  [ $# -ge 2 ] || die "usage: hw train $verb <project>$([ "$verb" = add ] && echo ' <task>')"
+  proj="$(_canon_project "$2")"
+  lane_known "$proj" || die "unknown project: $2 (expected: $(lane_names_hint))"
+  co="$(lane_checkout "$proj")"
+  if [ -z "$co" ] || [ ! -d "$co" ] || [ "$(cd -P "$co" && pwd)" != "$(cd -P "$BRAIN" && pwd)" ]; then
+    die "hw train: $proj's checkout is not brain ($BRAIN), so it has no train — its repo lands through PRs"
+  fi
+  if [ "$verb" = add ]; then
+    [ $# -eq 3 ] || die "usage: hw train add <project> <task>"
+    _check_task "$3"
+    export HW_TRAIN_TASK_BRANCH HW_TRAIN_TASK_WT
+    HW_TRAIN_TASK_BRANCH="$(lane_path "$proj" branch "$3")"
+    HW_TRAIN_TASK_WT="$(lane_path "$proj" worktree "$3")"
+  else
+    [ $# -eq 2 ] || die "usage: hw train $verb <project>"
+  fi
+  HW_TRAIN_CHECKOUT="$co" HW_TRAIN_BASE="$(lane_get "$proj" base_ref_prefix)$(lane_get "$proj" base)" \
+    "$HW_BIN_DIR/hw-train" "$verb" "$proj" "${@:3}"
+}
+
 # COLOUR IS FOR A PERSON LOOKING. Off under NO_COLOR (any non-empty value, the
 # convention), TERM=dumb, and whenever stdout or stderr is not a terminal: a pipe
 # to `tee` or a log file must not carry escape codes.
@@ -1485,7 +1511,7 @@ _build_space() {
   # one open.
   if [ "${TAB:-0}" = 1 ]; then
     local live_tab
-    live_tab="$(printf '%s' "$LAYOUT_OUT" | jq -r '.layout.tab_id // .result.layout.tab_id // empty' 2>/dev/null || true)"
+    live_tab="$(printf '%s' "$LAYOUT_OUT" | jq -r '.layout.tab_id // .result.layout.tab_id // empty' 2>/dev/null || true)"  # MUTATION-ANCHOR: 650-M01
     [ -n "$live_tab" ] || live_tab="$HW_TAB"
     HW_TAB="$live_tab"; export HW_TAB
     herdr tab rename "$HW_TAB" "$LABEL" >/dev/null 2>&1 \
@@ -8116,6 +8142,22 @@ _done_pane_for_run() {  # $1=rundir
   [ -r "$1/receipt.jsonl" ] || return 0
   jq -r 'select(.key=="pane") | .value' "$1/receipt.jsonl" 2>/dev/null | tail -1 || true
 }
+# Turns that ended in a pane after the report of task $2, disk first and the
+# token as fallback (see the guard's comment above). Empty when none.
+_done_post_report_turns() {  # $1=rundir $2=seq $3=herdr agent-get json
+  local rundir="$1" seq="$2" info="$3" post="" rec rec_seq tok tok_seq
+  if [ -r "$rundir/turns-post-report" ]; then
+    rec="$(cat "$rundir/turns-post-report" 2>/dev/null || true)"
+    rec_seq="${rec%% *}"
+    [ "$rec_seq" = "$seq" ] && post="$(printf '%s' "${rec##* }" | tr -dc '0-9' || true)"
+  else
+    tok="$(printf '%s' "$info" | jq -r '.result.agent.tokens.turns_post_report // empty' 2>/dev/null || true)"
+    tok_seq="${tok%% *}"
+    [ -n "$tok" ] && [ "$tok_seq" = "$seq" ] && post="$(printf '%s' "${tok##* }" | tr -dc '0-9' || true)"
+  fi
+  case "$post" in ''|0) post="" ;; esac
+  printf '%s' "$post"
+}
 _done_in_use_guard() {  # $1=project $2=task $3=rundir
   local proj="$1" task="$2" rundir="$3"
   local pane info status focus post ev seq reasons="" revive_note _has_agent=0
@@ -8204,20 +8246,12 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   # do not match — and falling through to the token there would hand `hw done`
   # task 1's stale count and refuse task 2's ordinary close, which is the very
   # bug the seq exists to prevent, rebuilt one line lower.
-  post=""
-  if [ -r "$rundir/turns-post-report" ]; then
-    local rec rec_seq
-    rec="$(cat "$rundir/turns-post-report" 2>/dev/null || true)"
-    rec_seq="${rec%% *}"
-    [ "$rec_seq" = "$seq" ] && post="$(printf '%s' "${rec##* }" | tr -dc '0-9' || true)"
-  else
-    # Same `<seq> <count>` record, parsed the same way. One shape, two places.
-    local tok tok_seq
-    tok="$(printf '%s' "$info" | jq -r '.result.agent.tokens.turns_post_report // empty' 2>/dev/null || true)"
-    tok_seq="${tok%% *}"
-    [ -n "$tok" ] && [ "$tok_seq" = "$seq" ] && post="$(printf '%s' "${tok##* }" | tr -dc '0-9' || true)"
-  fi
-  case "$post" in ''|0) post="" ;; esac
+  post="$(_done_post_report_turns "$rundir" "$seq" "$info")"
+  # A COUNT OF 1 WHILE THE PANE STILL SAYS `working` IS THE REPORT'S OWN TURN: its
+  # Stop hook has already counted it (the marker exists by then — measured with a
+  # real claude and `hw executor-turn-end`) and herdr has not caught up. It is
+  # "finishing", not "somebody is talking to it"; 2+ is still the latter.
+  if [ "$post" = 1 ] && [ "$status" = working ] && [ "$self_close" = 0 ]; then post=""; fi
 
   # `done_state=undelivered` IS A REPORT THAT NEVER REACHED THE BRAINER, NOT ONE
   # THAT DID. done-invoker publishes it before it tries to deliver and rewrites
@@ -8261,6 +8295,44 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   if [ "$ev" != none ] && [ "$stranded" = 0 ] && [ "$status" = working ] && [ "$self_close" = 0 ] && [ -z "$post" ] && [ "$focus" != true ]; then
     finishing=1
   fi
+  # THE ONLY REASON IS THE TURN THAT SENT THE REPORT: WAIT FOR IT, DO NOT HAND
+  # THE RETRY BACK. Measured 2026-10-01, five times: the brainer re-ran `hw done`
+  # by hand a few seconds later and it closed. Poll the same herdr answer; close
+  # when the pane stops working with no turn after the report; refuse as before
+  # when the cap passes (HW_DONE_TURN_WAIT, default 60s) or a turn ENDS after the
+  # report (somebody is talking to it). --force never reaches here.
+  if [ "$finishing" = 1 ]; then
+    local cap="${HW_DONE_TURN_WAIT:-60}" poll="${HW_DONE_TURN_POLL:-1}" t0 ninfo
+    case "$cap" in ''|*[!0-9]*) cap=60 ;; esac
+    case "$poll" in ''|*[!0-9.]*|*.*.*) poll=1 ;; esac
+    t0=$(date +%s)
+    info "$pane reported and is finishing the turn that sent it — waiting up to ${cap}s for it to end before closing $proj:$task"
+    while [ $(( $(date +%s) - t0 )) -lt "$cap" ]; do
+      sleep "$poll"
+      ninfo="$(herdr agent get "$pane" 2>/dev/null || true)"
+      if ! printf '%s' "$ninfo" | jq -e '.result.agent' >/dev/null 2>&1; then
+        # Same stance as an unanswered herdr at the top of the guard: say it, proceed.
+        warn "herdr stopped answering for $pane while hw waited for its last turn — it may be gone; closing WITHOUT the rest of the check."
+        return 0
+      fi
+      info="$ninfo"
+      status="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
+      post="$(_done_post_report_turns "$rundir" "$seq" "$info")"
+      # THE REPORT'S OWN TURN END IS COUNTED BY THE STOP HOOK AS `<seq> 1` (the
+      # marker exists by then — measured with `hw executor-turn-end`), so 1 is
+      # the turn we are waiting for, not somebody talking to the pane. A second
+      # turn end (2+) is. A 1 with the pane working again is just waited out.
+      if [ -n "$post" ] && [ "$post" -gt 1 ]; then
+        reasons="  · $post turn(s) ended in $pane AFTER its report, and hw dispatched none of them. Somebody is talking to this pane."
+        finishing=0
+        break
+      fi
+      if [ "$status" != working ]; then
+        info "$pane finished the turn that sent the report — closing $proj:$task"
+        return 0
+      fi
+    done
+  fi
   if [ "$finishing" = 1 ]; then
     warn "hw done REFUSED for $proj:$task — its pane has REPORTED and is STILL FINISHING its last turn:"
   else
@@ -8276,7 +8348,7 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   revive_note="$(_done_revive_line "$proj" "$task" "$rundir")"
   [ -z "$revive_note" ] || info "$revive_note"
   if [ "$finishing" = 1 ]; then
-    die "NOT CLOSED YET — nothing was closed: the report is in and hw sees no turn after it, so this is most likely the turn that sent it ending (if the pane is still working after a minute, somebody is talking to it — hw status). Run the same command again in a few seconds: hw done $proj $task   (--force would cut that turn)"
+    die "NOT CLOSED YET — nothing was closed: the report is in and hw sees no turn after it, so this is most likely the turn that sent it ending (hw already waited HW_DONE_TURN_WAIT seconds for it and it is still working, so somebody is talking to it — hw status). Run the same command again: hw done $proj $task   (--force would cut that turn)"
   fi
   if [ "$stranded" = 1 ]; then
     die "nothing was closed: the report is STRANDED. Redeliver it first (\`hw outbox flush $proj --to <brainer-pane>\`; do NOT re-run done-invoker if its exit was 5 — the report may already be there); close it deliberately, discarding the undelivered report, with: hw done $proj $task --force"
@@ -8470,6 +8542,7 @@ cmd_done() {
   # would silently destroy work whose only copy is in that database. Which lane
   # has one is the table's `db.provisioned`; every other lane gets the same
   # one line, spelled with its own name.
+  local done_db_live=""
   if [ -n "$(lane_get "$proj" db_provisioned)" ]; then
     local db; db="$(basename "$wt" | tr '\-/' '__')"
     if psql -U "$(id -un)" -d postgres -Atc "select 1 from pg_database where datname = '$db'" 2>/dev/null | grep -q 1; then
@@ -8481,7 +8554,9 @@ cmd_done() {
           warn "could not drop $db — open connections? try again once the panes are gone"
         fi
       else
-        warn "database $db is STILL LIVE ($size) — drop it with: hw done $proj $task --drop-db"
+        # Decided below, with the worktree: a disposable worktree takes its
+        # database with it (pg_dump into the archive first, see _reap_db).
+        done_db_live="$db ($size)"
       fi
     else
       info "no database named $db"
@@ -8626,44 +8701,44 @@ EOF
   fi
   if [ ! -d "$wt" ]; then
     printf '  %sno worktree for %s — already removed, or it never had one%s\n\n' "$C_DIM" "$branch" "$C_0"
+    [ -z "$done_db_live" ] || warn "database $done_db_live is STILL LIVE — drop it with: hw done $proj $task --drop-db"
     _done_took
     return "$close_failed"
   fi
-  _wt_disposition "$main" "$wt" "$branch" "${BASE_BRANCH:-main}"
-  if [ "$WT_VERDICT" = safe ]; then
+  # THE BRANCH THE WORKTREE IS ON, not the one its task name derives. Now that
+  # this path removes, a worktree left detached (or switched) with commits of
+  # its own would read `safe` against a merged `task/<name>` and lose them to
+  # `git worktree remove` — the gate `hw reap` already has by reading HEAD.
+  # Only when git can read the tree: the lost-.git case still needs the
+  # derived name (see _wt_disposition).
+  local wt_branch="$branch"
+  if git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
+    wt_branch="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+  fi
+  _wt_disposition "$main" "$wt" "$wt_branch" "${BASE_BRANCH:-main}"
+  if [ "$WT_VERDICT" = safe ] || [ "$WT_VERDICT" = archivable ]; then
+    # `hw done` REAPS ITS OWN TASK. It used to print the two commands below and
+    # run neither, and "hw reap after every hw done" was a rule nobody ran:
+    # measured 2026-10-01, 16 worktrees `safe` for weeks in one lane and 191
+    # more held only by their outputs. Same body as `hw reap --apply`, same
+    # gates, re-asked after the archive.
+    #
     # `safe` answers "does git need this directory". It does not answer "does a
     # recorded session need it": `hw revive` repeats the cwd from the receipt
-    # and refuses when it is gone, so removing a safe worktree is also the one
-    # act that makes its session unrevivable. Said on the line that gets pasted.
-    local revive_note=""
+    # and refuses when it is gone, so removing it is also the act that makes
+    # the session unrevivable. Said before it happens.
     if [ -n "$done_rundir" ] && [ -r "$done_rundir/receipt.jsonl" ] \
        && [ -n "$(jq -r 'select(.key=="session_resume") | .value' "$done_rundir/receipt.jsonl" 2>/dev/null | tail -1)" ]; then
-      revive_note="  ${C_DIM}# its session is still revivable with: hw revive $proj $task — removing the worktree closes that door${C_0}"$'\n'
+      info "removing the worktree also ends \`hw revive $proj $task\` for this session"
     fi
-    # Same rule as the merge recipe above: a lane with no `origin` is not told
-    # to delete a branch from one.
-    local push_line
-    case "$ahead_ref" in
-      # `$branch`, NOT `\$branch`. The value is built HERE and interpolated into
-      # the heredoc below, and a heredoc expands what it is given exactly once —
-      # it does not re-scan the substituted text. Escaped, the recipe printed the
-      # seven literal characters `$branch` on every lane that HAS an origin,
-      # which is the four product lanes: the everyday
-      # case, not the no-origin lane this whole block was written for. The line
-      # directly under it in the same heredoc, `git branch -d $branch`,
-      # substitutes correctly — so the recipe contradicted itself two lines
-      # apart. Caught by both Judgment Day judges and reproduced before fixing.
-      origin/*) push_line="  git push origin --delete $branch   ${C_DIM}# only if it was pushed${C_0}"$'\n' ;;
-      *)        push_line="  ${C_DIM}# no origin in $main — the branch exists only here${C_0}"$'\n' ;;
-    esac
-    cat <<EOF
-${C_B}Then remove it — checked, and safe:${C_0}
-  ${C_DIM}$WT_WHY${C_0}
-$revive_note
-  git worktree remove $wt
-  git branch -d $branch
-$push_line
-EOF
+    printf '%sReaping it — %s%s\n' "$C_B" "$C_0" "$WT_WHY"
+    if _reap_worktree "$proj" "$main" "$wt" "$wt_branch" "${BASE_BRANCH:-main}"; then
+      [ -z "$REAP_ARCHIVE_DIR" ] || info "its outputs are in $REAP_ARCHIVE_DIR"
+      case "$ahead_ref" in
+        origin/*) info "a pushed branch stays on origin: git -C $main push origin --delete $branch" ;;
+      esac
+      done_db_live=""
+    fi
   else
     printf '  %s%s DO NOT REMOVE THIS WORKTREE YET%s\n' "$C_WARN" "!" "$C_0"
     printf '      %s%s%s\n' "$C_DIM" "$WT_WHY" "$C_0"
@@ -8691,6 +8766,7 @@ EOF
     esac
     printf '      %sSurvey every worktree the same way: hw reap %s%s\n\n' "$C_DIM" "$proj" "$C_0"
   fi
+  [ -z "$done_db_live" ] || warn "database $done_db_live is STILL LIVE — drop it with: hw done $proj $task --drop-db"
   _done_took
   return "$close_failed"
 }
@@ -8762,18 +8838,134 @@ cmd_preview() {
   return 0
 }
 
+# ── reap's removal: ONE body for `hw reap --apply` and `hw done` ────────────
+#
+# Acts on the verdict the caller JUST computed with _wt_disposition, and only on
+# `safe` or `archivable`; every other verdict is a KEEP and returns 1 untouched,
+# so `safe` stays an allowlist (90-a-verdict-that-could-not-be-measured.sh).
+#
+# `archivable` is the path that did not exist: task outputs (WT_ARCHIVABLE) are
+# copied to $(_archive_root)/<lane>/<task>/, each copy compared byte for byte
+# with `diff -r`, the originals removed, and the worktree's verdict asked AGAIN —
+# it is removed only if it now reads `safe` by the same gates as any other.
+# Then the branch (`-d`, which refuses anything git does not see as merged) and,
+# on a lane with `db.provisioned`, the worktree's database: `pg_dump -Fc` into
+# the same archive, checked with `pg_restore -l`, and only then dropped.
+#
+# Sets REAP_ARCHIVE_DIR to where anything went; empty when nothing was moved.
+REAP_ARCHIVE_DIR=""
+_reap_archive_dest() {  # <proj> <wt> — a path that does not exist yet
+  local d; d="$(_archive_root)/$1/$(basename "$2")"
+  [ ! -e "$d" ] || d="$d.$(date +%Y%m%d-%H%M%S)"
+  printf '%s' "$d"
+}
+
+_reap_archive_entries() {  # <wt> <dest>; the entries on stdin, one per line
+  local wt="$1" dest="$2" rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mkdir -p "$dest/$(dirname "$rel")" || return 1
+    cp -pR "$wt/$rel" "$dest/$rel" 2>/dev/null || return 1
+    # THE COPY IS VERIFIED, NOT ASSUMED: a truncated copy followed by a removal
+    # is the one outcome worse than keeping the worktree forever.
+    diff -rq "$wt/$rel" "$dest/$rel" >/dev/null 2>&1 || return 1
+  done
+  return 0
+}
+
+_reap_db() {  # <proj> <main> <wt> <archive dir, or empty>
+  local proj="$1" main="$2" wt="$3" dest="$4" db main_db u
+  [ -n "$(lane_get "$proj" db_provisioned)" ] || return 0
+  db="$(basename "$wt" | tr '\-/' '__')"
+  main_db="$(basename "$main" | tr '\-/' '__')"
+  [ "$db" != "$main_db" ] || { warn "kept database $db — it is the main checkout's name"; return 0; }
+  u="$(id -un)"
+  psql -U "$u" -d postgres -Atc "select 1 from pg_database where datname = '$db'" 2>/dev/null | grep -q 1 || return 0
+  [ -n "$dest" ] || dest="$(_reap_archive_dest "$proj" "$wt")"
+  mkdir -p "$dest" || { warn "kept database $db — could not create $dest"; return 0; }
+  if pg_dump -U "$u" -Fc -f "$dest/$db.dump" "$db" 2>/dev/null \
+     && [ -s "$dest/$db.dump" ] && pg_restore -l "$dest/$db.dump" >/dev/null 2>&1; then
+    REAP_ARCHIVE_DIR="$dest"
+    if psql -U "$u" -d postgres -q -c "DROP DATABASE \"$db\"" 2>/dev/null; then
+      ok "database $db dumped to $dest/$db.dump and dropped"
+    else
+      warn "database $db dumped to $dest/$db.dump but NOT dropped — open connections? drop it by hand"
+    fi
+  else
+    warn "kept database $db — its pg_dump into $dest could not be verified, so it was not dropped"
+  fi
+  return 0
+}
+
+_reap_worktree() {  # <proj> <main> <wt> <branch> <base>
+  local proj="$1" main="$2" wt="$3" branch="$4" base="$5" dest="" rel entries
+  REAP_ARCHIVE_DIR=""
+  case "$WT_VERDICT" in safe|archivable) ;; *) return 1 ;; esac
+  if [ "$WT_VERDICT" = archivable ]; then
+    entries="$WT_ARCHIVE"
+    dest="$(_reap_archive_dest "$proj" "$wt")"
+    if ! printf '%s\n' "$entries" | _reap_archive_entries "$wt" "$dest"; then
+      # The partial copy goes: the originals are untouched, and a copy left
+      # here would be repeated by every later reap under a new timestamp.
+      _reap_rm_workdir "$dest" || true
+      warn "kept $(basename "$wt") — the copy into $dest could not be verified, so nothing was removed"
+      return 1
+    fi
+    REAP_ARCHIVE_DIR="$dest"
+    ok "archived $(printf '%s' "$entries" | tr '\n' ' ')→ $dest"
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      _reap_rm_workdir "$wt/$rel" || true
+    done <<< "$entries"
+    _wt_disposition "$main" "$wt" "$branch" "$base"
+    if [ "$WT_VERDICT" != safe ]; then
+      warn "kept $(basename "$wt") — with its outputs archived it reads $WT_VERDICT: $WT_WHY"
+      return 1
+    fi
+  fi
+  if ! git -C "$main" worktree remove "$wt" 2>/dev/null; then
+    warn "could not remove $wt — run it by hand and read what git says"
+    return 1
+  fi
+  ok "removed $(basename "$wt")"
+  if git -C "$main" branch -d "$branch" >/dev/null 2>&1; then
+    info "deleted $branch"
+  else
+    warn "kept $branch — git refused a safe delete, so something is not merged after all"
+  fi
+  _reap_db "$proj" "$main" "$wt" "$dest"
+  return 0
+}
+
+# The lane's task branches no worktree holds any more, merged into the base.
+# Measured 2026-10-01: 50 such branches across three
+# repositories — what is left when a worktree was removed by hand. Only the lane's own
+# task-branch namespace (`_lane_branch`), never another branch; `-d` only.
+_reap_orphan_branches() {  # <proj> <main> <base> — prints them, one per line
+  local proj="$1" main="$2" base="$3" prefix held b
+  prefix="$(_lane_branch "$proj" X)"; prefix="${prefix%X}"
+  [ -n "$prefix" ] && [ "$prefix" != "$(_lane_branch "$proj" X)" ] || return 0
+  held="$(git -C "$main" worktree list --porcelain 2>/dev/null | sed -n 's:^branch refs/heads/::p')" || return 0
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    printf '%s\n' "$held" | grep -qxF "$b" && continue
+    _wt_branch_merged "$main" "$b" "$base" && printf '%s\n' "$b"
+  done < <(git -C "$main" for-each-ref --format='%(refname:short)' "refs/heads/$prefix" 2>/dev/null)
+  return 0
+}
+
 cmd_reap() {
   local apply=0 proj_filter=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --apply) apply=1; shift ;;
-      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees AND the loose work dirs beside them ($WORK/<lane>), which git worktree list cannot see" >&2; return 0 ;;
+      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees, its merged task branches no worktree holds, AND the loose work dirs beside them ($WORK/<lane>). --apply removes what is safe; a merged worktree whose only ignored content is .artifacts/qa-report/test-results/playwright-report has it copied to $(_archive_root)/<lane>/<task>/ and verified first, and a db.provisioned lane's database is pg_dump'ed there before it is dropped. Dirty, unmerged and occupied stay." >&2; return 0 ;;
       -*) die "unknown option: $1" ;;
       *) proj_filter="$(_canon_project "$1")"; shift ;;
     esac
   done
 
-  local proj main base total_safe=0 total_kept=0
+  local proj main base total_safe=0 total_kept=0 total_removed=0
   while IFS= read -r proj; do
     [ -z "$proj_filter" ] || [ "$proj_filter" = "$proj" ] || continue
     main="$(_wt_main "$proj")" || continue
@@ -8794,21 +8986,16 @@ cmd_reap() {
       [ "$wt" = "$main" ] && continue
       branch="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || echo detached)"
       _wt_disposition "$main" "$wt" "$branch" "$base"
-      if [ "$WT_VERDICT" = safe ]; then
+      if [ "$WT_VERDICT" = safe ] || [ "$WT_VERDICT" = archivable ]; then
         total_safe=$((total_safe + 1))
         if [ "$apply" = 1 ]; then
-          if git -C "$main" worktree remove "$wt" 2>/dev/null; then
-            ok "removed $(basename "$wt")"
-            if git -C "$main" branch -d "$branch" >/dev/null 2>&1; then
-              info "deleted $branch"
-            else
-              warn "kept $branch — git refused a safe delete, so something is not merged after all"
-            fi
-          else
-            warn "could not remove $wt — run it by hand and read what git says"
+          if _reap_worktree "$proj" "$main" "$wt" "$branch" "$base"; then
+            total_removed=$((total_removed + 1))
           fi
         else
           ok "$(basename "$wt")  ${C_DIM}$WT_WHY${C_0}"
+          [ "$WT_VERDICT" != archivable ] \
+            || printf '      %sarchive to %s/%s/%s, then remove%s\n' "$C_DIM" "$(_archive_root)" "$proj" "$(basename "$wt")" "$C_0"
           printf '      %sgit -C %s worktree remove %s && git -C %s branch -d %s%s\n' \
             "$C_DIM" "$main" "$wt" "$main" "$branch" "$C_0"
         fi
@@ -8818,6 +9005,24 @@ cmd_reap() {
           "$C_DIM" "$WT_VERDICT" "$WT_WHY" "$C_0"
       fi
     done < <(git -C "$main" worktree list --porcelain 2>/dev/null | rg '^worktree ' | sd '^worktree ' '')
+
+    # ── the merged task branches no worktree holds ────────────────────────
+    local ob
+    while IFS= read -r ob; do
+      [ -n "$ob" ] || continue
+      total_safe=$((total_safe + 1))
+      if [ "$apply" = 1 ]; then
+        if git -C "$main" branch -d "$ob" >/dev/null 2>&1; then
+          total_removed=$((total_removed + 1))
+          ok "deleted $ob  ${C_DIM}(merged, no worktree)${C_0}"
+        else
+          warn "kept $ob — git refused a safe delete, so git does not see it as merged"
+        fi
+      else
+        ok "$ob  ${C_DIM}branch merged into $base, no worktree holds it${C_0}"
+        printf '      %sgit -C %s branch -d %s%s\n' "$C_DIM" "$main" "$ob" "$C_0"
+      fi
+    done < <(_reap_orphan_branches "$proj" "$main" "$base")
 
     # ── second pass: the loose work dirs ──────────────────────────────────
     #
@@ -8842,6 +9047,7 @@ cmd_reap() {
           total_safe=$((total_safe + 1))
           if [ "$apply" = 1 ]; then
             if _reap_rm_workdir "$wd"; then
+              total_removed=$((total_removed + 1))
               ok "removed $(basename "$wd")  ${C_DIM}(loose work dir)${C_0}"
             else
               warn "could not remove $wd — it read as safe and the delete failed, which is the one outcome worse than keeping it. Run it by hand and read what rm says."
@@ -8867,7 +9073,7 @@ cmd_reap() {
 
   printf '\n'
   if [ "$apply" = 1 ]; then
-    ok "$total_safe removed, $total_kept kept"
+    ok "$total_removed removed, $total_kept kept$([ "$total_removed" = "$total_safe" ] || printf ' — %s disposable could not be removed, read the lines above' "$((total_safe - total_removed))")"
   else
     info "$total_safe safe to remove, $total_kept kept. Add --apply to remove the safe ones."
     [ "$total_kept" = 0 ] || info "nothing kept is ever removed by --apply, whatever the reason says"
@@ -9076,8 +9282,26 @@ json.dump(r, sys.stdout)' 2>"$err")" || ! d="$(python3 -c 'import os, sys; print
 # from wt.sh itself, and a path matching it is disposable only while main still
 # holds the file it was copied from (same argument as the .env.local case,
 # generalized instead of hardcoded).
-WT_REGENERABLE='.agents .atl .claude .codex .opencode .hw .specify .venv .ruff_cache .pytest_cache .mypy_cache __pycache__ node_modules dist build .next .turbo .DS_Store AGENTS.md PROGRESS.md opencode.json local next-env.d.ts'
+#
+# `tsconfig.tsbuildinfo` (tsc's incremental cache) and `.astro` (Astro's
+# generated types) joined on 2026-10-01: they alone kept 25 merged worktrees
+# of one TypeScript lane and 3 Astro ones `irreplaceable`, measured over the reap
+# survey of that day. Both are rebuilt by the next build.
+WT_REGENERABLE='.agents .atl .claude .codex .opencode .hw .specify .venv .ruff_cache .pytest_cache .mypy_cache __pycache__ node_modules dist build .next .turbo .DS_Store AGENTS.md PROGRESS.md opencode.json local next-env.d.ts tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo .astro'
 WT_REGENERABLE="$WT_REGENERABLE ${HW_WT_REGENERABLE:-}"
+
+# ARCHIVABLE IS NOT REGENERABLE: these are a task's OUTPUT, unreproducible, and
+# that is exactly why they are moved rather than deleted. A merged, clean
+# worktree whose only ignored content is under these names reads `archivable`
+# instead of `irreplaceable`, and `hw reap --apply` / `hw done` copy them to
+# $HW_ARCHIVE_ROOT/<lane>/<task>/ (default: archive/ beside the work dir), verify the copy
+# byte for byte, and only then remove the worktree. Measured 2026-10-01: 191
+# merged worktrees across the lanes were kept `irreplaceable` for good, and
+# `.artifacts`/`qa-report` were the whole reason in 160 of them — no path led
+# from there to `safe`. Anything else ignored still keeps the worktree.
+WT_ARCHIVABLE='.artifacts qa-report test-results playwright-report'
+# Read per call, not frozen at load: WORK comes from the lane table.
+_archive_root() { printf '%s' "${HW_ARCHIVE_ROOT:-$(dirname "$WORK")/archive}"; }
 
 # Ignored top-level entries that are NOT on the allowlist and hold at least one
 # file. Printed one per line, empty when there are none.
@@ -9389,6 +9613,28 @@ _wt_disposition() {
     return 0
   fi
   keep="$(_wt_irreplaceable "$wt")"
+  # ARCHIVABLE: every kept entry is a task output under a WT_ARCHIVABLE name.
+  # An entry `_wt_irreplaceable` could not read carries a " (" suffix and is
+  # never archivable — an unread directory cannot be verified as copied.
+  WT_ARCHIVE=""
+  if [ -n "$keep" ]; then
+    local rel1 first1 other=0
+    while IFS= read -r rel1; do
+      [ -n "$rel1" ] || continue
+      first1="${rel1%%/*}"
+      case "$rel1" in *" ("*) other=1; break ;; esac
+      case " $WT_ARCHIVABLE " in
+        *" $first1 "*) WT_ARCHIVE="${WT_ARCHIVE:+$WT_ARCHIVE$'\n'}$rel1" ;;
+        *) other=1; break ;;
+      esac
+    done <<< "$keep"
+    if [ "$other" = 0 ] && [ -n "$WT_ARCHIVE" ]; then
+      WT_VERDICT=archivable
+      WT_WHY="merged into $base and clean; its only ignored content is task output, archived before removal: $(printf '%s' "$WT_ARCHIVE" | tr '\n' ' ')"
+      return 0
+    fi
+    WT_ARCHIVE=""
+  fi
   if [ -n "$keep" ]; then
     WT_VERDICT=irreplaceable
     WT_WHY="git-ignored and unreproducible: $(printf '%s' "$keep" | tr '\n' ' ')"
@@ -12046,7 +12292,7 @@ _reap_quiet() {
     if [ "$mins" -lt 60 ]; then age="${mins}m ago"; else age="$(( mins / 60 ))h ago"; fi
   fi
   printf '\n'
-  warn "$n worktree(s) were disposable as of the last survey ($age) — hw reap --apply"
+  warn "$n worktree(s), branch(es) or work dir(s) were disposable as of the last survey ($age) — hw reap --apply"
   info "re-survey with \`hw reap\`; nothing kept is ever removed"
 }
 
@@ -13485,6 +13731,13 @@ limits, orphans, cleanup_backlog = status_report_tasks(
     dead_by_ws, session_start, herdr_ok)
 status_report_cleanup(cleanup_backlog)
 status_report_orphans(orphans, panes)
+# For the brainer's SessionStart (setup/guards/lane_housekeeping.py): the same
+# queue, machine-readable, so the hook does not parse the coloured table.
+if os.environ.get("HW_STATUS_ORPHANS_JSON"):
+    _live = {p.get("pane_id") for p in panes if p.get("pane_id")}
+    with open(os.environ["HW_STATUS_ORPHANS_JSON"], "w", encoding="utf-8") as _f:
+        json.dump([{"key": o["key"], "at": o.get("at"), "turns": o.get("turns"),
+                    "why": orphan_why(o, _live)} for o in orphans], _f)
 status_report_caveats(herdr_ok, limits)
 HW_STATUS_PY
 }
@@ -13701,6 +13954,7 @@ if [ "$_HW_CALLER_EXECUTOR" = 1 ]; then
     sweep)    case " $* " in *" --apply "*) _executor_refuse "sweep --apply" "does not close other runs" ;; esac ;;
     preview)  _executor_refuse preview "does not keep or release another run's preview" ;;
     revive)   _executor_refuse revive "does not reopen another run's pane" ;;
+    train)    _executor_refuse train "does not merge other tasks' branches or advance main" ;;
     done)
       if [ $# -ge 3 ]; then   # shorter: the verb's own usage error follows
         [ "$(_canon_project "$2" 2>/dev/null || printf '%s' "$2")" = "$(_canon_project "$HW_PROJECT" 2>/dev/null || printf '%s' "$HW_PROJECT")" ] \
@@ -13768,6 +14022,7 @@ if [ "${1:-}" = sweep ]; then shift; cmd_sweep "$@"; exit 0; fi
 if [ "${1:-}" = review-range ]; then shift; cmd_review_range "$@" || exit 1; exit 0; fi
 if [ "${1:-}" = review-delta ]; then shift; set +e; cmd_review_delta "$@"; _rc=$?; set -e; exit "$_rc"; fi
 if [ "${1:-}" = handle ]; then shift; cmd_handle "$@" || exit 1; exit 0; fi
+if [ "${1:-}" = train ]; then shift; set +e; cmd_train "$@"; _rc=$?; set -e; exit "$_rc"; fi
 if [ "${1:-}" = gentle-home ]; then shift; cmd_gentle_home "$@" || exit 1; exit 0; fi
 if [ "${1:-}" = next ]; then
   # `next` is dispatched before the global help scan below. Its help is the
@@ -13979,11 +14234,22 @@ OTHER COMMANDS
     hw output tree <path>...        executor declaration of repository-tree output
     hw output none | outside <ref>  executor declaration of no-tree / external output
     hw stage                        brainer check: which executor declared each staged path
+    hw train add <project> <task>   merge the task's branch into train-<project>; only a
+                                    setup/test-budgets.json conflict is resolved, any other
+                                    is named with the task that should resolve it
+    hw train status <project>       the tasks the train carries over the base
+    hw train push <project>         full suite (setup/verify-for-push) on the train, then
+                                    advance the base keeping uncommitted edits in the
+                                    checkout; prints the remote pushes, does not run them
     hw done <project> <task> [--drop-db] [--force]
         Refuses a pane it cannot establish is free: a task that never reported,
         a pane WORKING right now, or turns that ended in it after its report
-        and hw did not dispatch. --force is the only exit. The `hw revive`
-        command prints BEFORE the close, not after it.
+        and hw did not dispatch. --force is the only exit. A pane that only has
+        not finished the turn that SENT its report is waited for (up to
+        HW_DONE_TURN_WAIT seconds, default 60), then closed. The `hw revive`
+        command prints BEFORE the close, not after it. After the close it reaps
+        its own task exactly as `hw reap --apply` would: merged, clean and
+        unoccupied, its outputs archived and its database dumped first.
     hw done <project> <task> --keep-preview [<duration>] --why "<who still reads it>"
         Releases the AGENT and keeps the preview: tab, dev server, ports and
         database survive, under a lease that expires (default 4h, max 24h).
@@ -14032,7 +14298,11 @@ RECOVERY AND CLEANUP
                                      blocked_reason=stuck + blocked_scope=root|child;
                                      refuses live questions/permissions, then restarts
                                      OpenCode in the same pane and verifies idle/working
-    hw reap [<project>] [--apply]   merge-clean worktrees AND loose work dirs, only where provably safe
+    hw reap [<project>] [--apply]   merge-clean worktrees, merged task branches AND loose work dirs, only where
+                                    provably safe; task outputs (.artifacts, qa-report) are archived to
+                                    $HW_ARCHIVE_ROOT/<lane>/<task>/ (default: archive/ beside the work dir) and
+                                    verified before removal, a provisioned DB is pg_dump'ed there, then dropped.
+                                    A brainer's SessionStart runs it in the background for its own lane.
     hw sweep [--apply]              close tabs of runs that REPORTED, only hw's own
     hw worktrees [<project>] [--migrate]
                                     worktrees outside their repo's canonical root
@@ -14103,6 +14373,29 @@ ENVIRONMENT
                       is honoured FIRST and still checked: one that is not live,
                       or that names an executor pane, is refused rather than
                       handed to an executor as an address that goes nowhere.
+USAGE
+}
+
+_usage_lanes() {
+  cat <<'USAGE'
+LANES (projects.json)
+    One entry per lane under `lanes`; the file is read once per process and a
+    wrong key or shape loads nothing. Full table, defaults and examples:
+    "Customizing a lane (`projects.json`)" in the README.
+
+    identity    space (required), engram, hw_aliases, brain_aliases, hint_aliases
+    agent       vendor, model, model_floor, model_pins, account, artifacts,
+                requested_by, sdd_modes, suite_lock, opencode_config_dir, brain_guard
+    repository  checkout, checkout_var, base, base_ref_prefix, branch,
+                worktree_root, worktree, build, repoless, product_repo, agents_from
+    resources   deps, db, devserver, ports
+    cleanup     reap, sweep
+    prompt      brief_note
+
+    brief_note  text hw appends to the preamble of every executor prompt of the
+                lane, `hw next` included: one rule for the lane, such as a pull
+                request template, instead of a line in every brief.
+        "brief_note": "Open every pull request with .github/pull_request_template.md."
 USAGE
 }
 
@@ -14214,6 +14507,7 @@ HELP TOPICS                            hw help <topic>
     exit-codes   what each exit status means
     recovery     revive, unstick, reap, sweep, worktrees
     advanced     what only some brains use: accounts, model floors, secrets, suites
+    lanes        the fields of a lane in projects.json, and `brief_note`
     all          every topic, in one page
 
     -h, --help      this page            -V, --version   print the version
@@ -14231,6 +14525,7 @@ _usage_all() {
   _usage_projects
   _usage_environment
   _usage_advanced
+  _usage_lanes
 }
 
 # `hw help [<topic>]`: the short page, or one topic. Topics answer on stdout.
@@ -14243,8 +14538,9 @@ cmd_help() {
     exit-codes) _usage_exits ;;
     recovery)   _usage_recovery ;;
     advanced)   _usage_advanced ;;
+    lanes)      _usage_lanes ;;
     all)        _usage_all ;;
-    *) die "no help topic '$1' — hw help lists them: dispatch, flags, commands, exit-codes, recovery, advanced, all" ;;
+    *) die "no help topic '$1' — hw help lists them: dispatch, flags, commands, exit-codes, recovery, advanced, lanes, all" ;;
   esac
 }
 

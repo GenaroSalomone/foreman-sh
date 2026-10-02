@@ -26,6 +26,12 @@ A vulnerability is not an issue: see [`SECURITY.md`](SECURITY.md).
    multiplied by 3, and the runner prints that it is: a shared runner cannot
    judge wall-clock time. `HW_TEST_BUDGET_FACTOR=<n>` sets the factor
    yourself; the budgets themselves are in `setup/test-budgets.json`.
+   A subject that hangs is cut at its budget times `HW_TEST_TIMEOUT_FACTOR`
+   (default 5, floor `HW_TEST_TIMEOUT_FLOOR` seconds, default 60; 0 turns it
+   off): only its process group is killed and the run names it as red. The
+   ceiling is spent in loaded seconds: on a machine with more load than cpus a
+   second of wall counts less, up to `HW_TEST_TIMEOUT_LOAD_MAX` (default 4)
+   times less, so a healthy subject on a busy machine is not cut.
 3. A change to what a guard allows or refuses comes with a vector in
    `setup/guards/` for the new case.
 4. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)

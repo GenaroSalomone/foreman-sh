@@ -1437,7 +1437,7 @@ _run_job() {
       # file for the runner's own overhead. The old sequential loop bracketed
       # exactly this, and the bracket is the assertion.
       started="$(date +%s)"
-      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" bash "$f"
+      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f"
       rc=$?
       # A TIMING SUBJECT THAT FAILED IS RUN ONCE MORE (the subject by itself, not the suite), and only one that
       # declared it (_timing_of). The first run's output is kept aside, so the
@@ -1446,7 +1446,7 @@ _run_job() {
         retried=1; first_rc="$rc"
         mv -f "$JOBDIR/$idx.out" "$JOBDIR/$idx.first.out"
         mv -f "$JOBDIR/$idx.err" "$JOBDIR/$idx.first.err"
-        fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" bash "$f"
+        fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f"
         rc=$?
       fi
       ended="$(date +%s)"
@@ -1460,7 +1460,7 @@ _run_job() {
         _try=0
         while [ "$wall_ms" -gt "$_b_ms" ] && [ "$_try" -lt 2 ]; do
           _try=$((_try + 1))
-          fg_time_cmd "$JOBDIR/$idx.rerun.out" "$JOBDIR/$idx.rerun.err" bash "$f" || { rerun_rc=$?; break; }
+          fg_time_cmd "$JOBDIR/$idx.rerun.out" "$JOBDIR/$idx.rerun.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f" || { rerun_rc=$?; break; }
           [ "$FG_WALL_MS" -ge "$wall_ms" ] || wall_ms="$FG_WALL_MS"
           if [ "$cpu_ms" -le 0 ] || { [ "$FG_CPU_MS" -gt 0 ] && [ "$FG_CPU_MS" -lt "$cpu_ms" ]; }; then cpu_ms="$FG_CPU_MS"; fi
         done
@@ -1716,6 +1716,14 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   cat "$JOBDIR/$_i.out" >> "$TALLY"
   [ ! -s "$JOBDIR/$_i.err" ] || cat "$JOBDIR/$_i.err" >&2
   if [ "$rc" -ne 0 ]; then
+    # A SUBJECT CUT BY ITS CEILING IS NAMED, with the time it had and the ceiling
+    # (setup/fast-gate-budget.sh, "THE PER-TEST CEILING"). Nothing else is
+    # killed: the other subjects ran on.
+    if [ -s "$JOBDIR/$_i.timeout" ]; then
+      read -r _to_el _to_cap < "$JOBDIR/$_i.timeout"
+      printf '\nnot ok - runner: setup/tests/%s TIMED OUT after %ss, over its %ss ceiling (budget x HW_TEST_TIMEOUT_FACTOR=%s, floor HW_TEST_TIMEOUT_FLOOR=%s, spent in loaded seconds: up to HW_TEST_TIMEOUT_LOAD_MAX=%s times the wall on a busy machine) — its process group was killed, nothing else\n' \
+        "$(basename "$f")" "$_to_el" "$_to_cap" "${HW_TEST_TIMEOUT_FACTOR:-5}" "${HW_TEST_TIMEOUT_FLOOR:-60}" "${HW_TEST_TIMEOUT_LOAD_MAX:-4}" >&2
+    fi
     _stops="the run stops here"; [ "$KEEP_GOING" != 1 ] || _stops="continuing (--keep-going)"
     case "${JOB_KIND[$_i]}" in
       subject)

@@ -13,6 +13,20 @@ setup/hooks/pre-commit to read:
     guards <path>          run the guard drivers too (a guard changed)
     deferred <name>        a changed SLOW subject: not in the fast gate, as today
 
+With `touched` as the fourth argument it answers instead which SLOW subjects
+name a changed path, cheapest and most direct first, cut at
+touched_budget_seconds:
+
+    touched <name> <path>                  run it beside the fast gate
+    touched-skipped <name> <secs> <path>   over the budget: left to the full run
+
+A subject that declares `# gate-reference:` compares against a reference output
+(a golden, the previous installer) that goes stale whenever what it names
+changes. Those are the reds a branch is likeliest to push and the full suite
+likeliest to find: 174 and 491 three times in two days, 207 once. They are
+expensive, so cheapest-first cut every one of them; a declared one that names a
+changed path is now taken first and never cut.
+
 WHY IT IS DERIVED AND NOT DECLARED. 104 subjects with a hand-kept `# covers:`
 line each is 104 lists that go stale in silence, and a stale one
 UNDER-selects: the only direction here that loses a red. What a subject
@@ -224,9 +238,10 @@ def touched(root, changed, trigger):
                 continue
             if any(r in t or names(t, os.path.basename(r)) for r in reach):
                 found[n] = (1, path)
+    pinned = {n for n in found if header_declares(os.path.join(tests, n), "gate-reference")}
     spent = 0.0
-    for n in sorted(found, key=lambda n: (found[n][0], slow[n], n)):
-        if spent + slow[n] <= cap:
+    for n in sorted(found, key=lambda n: (n not in pinned, found[n][0], slow[n], n)):
+        if n in pinned or spent + slow[n] <= cap:
             spent += slow[n]
             print("touched %s %s" % (n, found[n][1]))
         else:

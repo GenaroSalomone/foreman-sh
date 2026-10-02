@@ -24,8 +24,10 @@ import tempfile
 # An hw executor's run state, at the root of its worktree: `.hw/` (written by
 # its own Stop hook at every turn end) and `.artifacts/` ($HW_ARTIFACTS, where
 # a release cut writes its evidence while its gates run). Neither is source,
-# and a write there during the capture aborted a cut's test-hw gate.
-RUN_STATE = {'.hw', '.artifacts'}
+# and a write there during the capture aborted a cut's test-hw gate. So is
+# `.hw-reap-count` (gitignored), the survey count `hw reap` writes at the brain
+# root: since 2026-10-01 `hw done` reaps too, and a subject's `hw done` wrote it.
+RUN_STATE = {'.hw', '.artifacts', '.hw-reap-count'}
 
 
 def copy_ignore(root):
@@ -160,10 +162,14 @@ def main():
             else:
                 print(line, end='', flush=True)
         rc = proc.wait()
-        intact = frozen == inventory(candidate)
+        ended = inventory(candidate)
+        intact = frozen == ended
         settle_fast_verdict(handoff, intact and rc == 0)
         if not intact:
-            raise RuntimeError('private candidate changed during execution; no summary is valid')
+            diff = sorted(k for k in set(frozen) | set(ended) if frozen.get(k) != ended.get(k))[:5]
+            raise RuntimeError('private candidate changed during execution; no summary is valid'
+                               + ' (first differences: %s)' % ', '.join(
+                                   '%s %r != %r' % (k, frozen.get(k), ended.get(k)) for k in diff))
         if rc == 0:
             print(''.join(pending), end='', flush=True)
         return rc

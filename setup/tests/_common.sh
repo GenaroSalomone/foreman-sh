@@ -291,6 +291,10 @@ export ENGRAM_DATA_DIR="$TMP/home/.engram"
 export ENGRAM_PORT=9
 # brain waits for a serve to start; port 9 never will, so no subject pays the timeout
 export HW_ENGRAM_WAIT=0
+# NO SUBJECT STARTS THE BRAINER'S HOUSEKEEPING (setup/guards/lane_housekeeping.py):
+# a SessionStart driven here would run `hw status` and detach a real
+# `hw reap --apply`. 640 turns it back on, against its own fixture.
+export HW_HOUSEKEEPING=0
 
 # ── A HOME THAT IS NOT THIS MACHINE'S ──────────────────────────────────────
 #

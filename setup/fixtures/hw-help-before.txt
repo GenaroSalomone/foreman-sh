@@ -115,11 +115,22 @@ OTHER COMMANDS
     hw output tree <path>...        executor declaration of repository-tree output
     hw output none | outside <ref>  executor declaration of no-tree / external output
     hw stage                        brainer check: which executor declared each staged path
+    hw train add <project> <task>   merge the task's branch into train-<project>; only a
+                                    setup/test-budgets.json conflict is resolved, any other
+                                    is named with the task that should resolve it
+    hw train status <project>       the tasks the train carries over the base
+    hw train push <project>         full suite (setup/verify-for-push) on the train, then
+                                    advance the base keeping uncommitted edits in the
+                                    checkout; prints the remote pushes, does not run them
     hw done <project> <task> [--drop-db] [--force]
         Refuses a pane it cannot establish is free: a task that never reported,
         a pane WORKING right now, or turns that ended in it after its report
-        and hw did not dispatch. --force is the only exit. The `hw revive`
-        command prints BEFORE the close, not after it.
+        and hw did not dispatch. --force is the only exit. A pane that only has
+        not finished the turn that SENT its report is waited for (up to
+        HW_DONE_TURN_WAIT seconds, default 60), then closed. The `hw revive`
+        command prints BEFORE the close, not after it. After the close it reaps
+        its own task exactly as `hw reap --apply` would: merged, clean and
+        unoccupied, its outputs archived and its database dumped first.
     hw done <project> <task> --keep-preview [<duration>] --why "<who still reads it>"
         Releases the AGENT and keeps the preview: tab, dev server, ports and
         database survive, under a lease that expires (default 4h, max 24h).
@@ -163,7 +174,11 @@ RECOVERY AND CLEANUP
                                      blocked_reason=stuck + blocked_scope=root|child;
                                      refuses live questions/permissions, then restarts
                                      OpenCode in the same pane and verifies idle/working
-    hw reap [<project>] [--apply]   merge-clean worktrees AND loose work dirs, only where provably safe
+    hw reap [<project>] [--apply]   merge-clean worktrees, merged task branches AND loose work dirs, only where
+                                    provably safe; task outputs (.artifacts, qa-report) are archived to
+                                    $HW_ARCHIVE_ROOT/<lane>/<task>/ (default: archive/ beside the work dir) and
+                                    verified before removal, a provisioned DB is pg_dump'ed there, then dropped.
+                                    A brainer's SessionStart runs it in the background for its own lane.
     hw sweep [--apply]              close tabs of runs that REPORTED, only hw's own
     hw worktrees [<project>] [--migrate]
                                     worktrees outside their repo's canonical root
@@ -273,3 +288,21 @@ ADVANCED
         left ambiguous. Every other provider status is relayed unchanged, and
         1 remains hw's own single refusal code.
 
+LANES (projects.json)
+    One entry per lane under `lanes`; the file is read once per process and a
+    wrong key or shape loads nothing. Full table, defaults and examples:
+    "Customizing a lane (`projects.json`)" in the README.
+
+    identity    space (required), engram, hw_aliases, brain_aliases, hint_aliases
+    agent       vendor, model, model_floor, model_pins, account, artifacts,
+                requested_by, sdd_modes, suite_lock, opencode_config_dir, brain_guard
+    repository  checkout, checkout_var, base, base_ref_prefix, branch,
+                worktree_root, worktree, build, repoless, product_repo, agents_from
+    resources   deps, db, devserver, ports
+    cleanup     reap, sweep
+    prompt      brief_note
+
+    brief_note  text hw appends to the preamble of every executor prompt of the
+                lane, `hw next` included: one rule for the lane, such as a pull
+                request template, instead of a line in every brief.
+        "brief_note": "Open every pull request with .github/pull_request_template.md."

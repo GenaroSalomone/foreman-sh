@@ -115,3 +115,96 @@ fg_drift_warn() {
   local base=$(( $(fg_ms "$3") + 1000 ))
   [ "$2" -gt 0 ] && [ $(( $2 * 2 )) -gt "$base" ] && [ $(( $1 * 2 )) -gt $(( $2 * 3 )) ]
 }
+
+# THE PER-TEST CEILING (decided 2026-10-01, setup/decisions.md). A subject that
+# hangs used to hang the whole suite: the runner timed things and killed
+# nothing, so test 481 held `verify-for-push` for 1h50 and a suite-pool slot.
+# The ceiling is the subject's committed budget (setup/test-budgets.json) x
+# HW_TEST_TIMEOUT_FACTOR (default 5), never under HW_TEST_TIMEOUT_FLOOR seconds
+# (default 60: it is also the whole ceiling of a subject with no budget, and
+# keeps a 0.2s subject from being cut at 1s on a busy machine). Factor 0 turns
+# the ceiling off.
+#
+# THE CEILING IS SPENT IN LOADED SECONDS, NOT WALL SECONDS. The budgets were
+# measured on an idle machine; under a train's load (load1 30-70 on 14 cpus)
+# a healthy subject stretches past budget x 5 — 136, budget 15s, was killed
+# while working. So each second of wall counts 1 / max(1, load1 / cpus): on an
+# oversubscribed machine the subject gets the wall its share of the cpus needs.
+# The stretch is capped at HW_TEST_TIMEOUT_LOAD_MAX (default 4), so a hung
+# subject is still killed, at most 4x later. HW_TEST_CAP_LOAD=<load1> pins the
+# load the ceiling reads (the subjects that prove this use it); 1 per cpu or
+# less is no stretch at all, and so is a python with no load average (Git
+# Bash): there the ceiling stays the plain wall one.
+#
+# WHAT IS KILLED IS ONE PROCESS GROUP. The subject runs in a session of its own
+# (start_new_session), so killpg reaches it and everything it spawned and
+# nothing else — no pkill by pattern, which setup/guards/deny-blind-process-kill
+# refuses and which would also take the sibling subjects of a parallel run.
+# TERM first, KILL after 2s, then a reap so the CPU the wrapper reports is the
+# subject's. On a cut the wrapper writes "<elapsed_s> <cap_s>" to <status-file>
+# and exits 124; the runner turns that into the red line.
+#
+# NO APOSTROPHES in the program below: it lives in a single-quoted variable.
+_FG_CAP_PY='
+import json, os, signal, subprocess, sys, time
+budgets, name, factor, floor, status, loadmax = sys.argv[1:7]
+cmd = sys.argv[7:]
+def num(v, d):
+    try:
+        v = float(v)
+    except ValueError:
+        return d
+    return v if v >= 0 else d
+factor, floor, loadmax = num(factor, 5.0), num(floor, 60.0), max(1.0, num(loadmax, 4.0))
+cpus = float(os.cpu_count() or 1)
+def stretch():
+    pinned = os.environ.get("HW_TEST_CAP_LOAD", "")
+    try:
+        load = float(pinned) if pinned else os.getloadavg()[0]
+    except (ValueError, OSError, AttributeError):  # AttributeError: no os.getloadavg (Git Bash)
+        load = 0.0
+    return min(loadmax, max(1.0, load / cpus))
+own = None
+try:
+    own = float(json.load(open(budgets))["files"][name]["seconds"])
+except (OSError, ValueError, KeyError, TypeError):
+    pass
+cap = None if factor == 0 else max(floor, (own or 0) * factor)
+p = subprocess.Popen(cmd, start_new_session=True)
+t0 = last = time.time()
+spent, rc = 0.0, None
+while rc is None:
+    try:
+        rc = p.wait(timeout=None if cap is None else max(0.05, min(1.0, (cap - spent) * stretch())))
+    except subprocess.TimeoutExpired:
+        now = time.time()
+        spent += (now - last) / stretch()
+        last = now
+        if spent >= cap:
+            break
+if rc is None:
+    elapsed = time.time() - t0
+    for sig, grace in ((signal.SIGTERM, 2), (signal.SIGKILL, None)):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            break
+        try:
+            p.wait(timeout=grace)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+    p.wait()
+    with open(status, "w") as f:
+        f.write("%.1f %.1f\n" % (elapsed, cap))
+    sys.exit(124)
+sys.exit(128 - rc if rc < 0 else rc)
+'
+
+# fg_capped <budgets.json> <subject-file-name> <status-file> <cmd...> — the
+# command under the per-test ceiling above. Returns its status, 124 when cut.
+fg_capped() {
+  local b="$1" n="$2" s="$3"; shift 3
+  python3 -c "$_FG_CAP_PY" "$b" "$n" "${HW_TEST_TIMEOUT_FACTOR:-5}" "${HW_TEST_TIMEOUT_FLOOR:-60}" "$s" \
+    "${HW_TEST_TIMEOUT_LOAD_MAX:-4}" "$@"
+}

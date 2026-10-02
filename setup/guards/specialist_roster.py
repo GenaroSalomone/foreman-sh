@@ -210,12 +210,36 @@ def render_context(lane, roster):
     return "\n".join(lines)
 
 
+def _session_source():
+    """SessionStart's `source` (startup|resume|clear|compact), "" when unread."""
+    import json
+    import sys
+
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return ""
+        return str(json.loads(sys.stdin.read() or "{}").get("source") or "")
+    except Exception:  # noqa: BLE001 — an unreadable payload is not a crash
+        return ""
+
+
 def main(lane):
     import json
 
-    context = render_context(lane, specialists(lane))
-    if context is None:
+    parts = [render_context(lane, specialists(lane))]
+    # The lane's leftovers (setup/guards/lane_housekeeping.py): the tasks that
+    # never reported, and a background `hw reap <lane> --apply`. Its own module
+    # because it is not about specialists; here because this is the one
+    # SessionStart hook every lane already registers.
+    try:
+        from lane_housekeeping import context as housekeeping
+        parts.append(housekeeping(lane, _session_source))
+    except Exception:  # noqa: BLE001 — housekeeping must never cost the session
+        pass
+    parts = [p for p in parts if p]
+    if not parts:
         return
+    context = "\n\n".join(parts)
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

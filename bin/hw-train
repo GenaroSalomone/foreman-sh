@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# hw-train — the merge train for a lane whose repo is brain itself: accepted
+# task branches go into one integration branch, the full suite runs ONCE on it,
+# and main advances to it without touching other brainers' uncommitted edits.
+#
+# Called by `hw train`, which resolves the lane and exports:
+#   HW_TRAIN_CHECKOUT    the lane's checkout (brain's main working tree)
+#   HW_TRAIN_BASE        the branch the train lands on (main)
+#   HW_TRAIN_TASK_BRANCH the task's branch, for `add`
+#   HW_TRAIN_TASK_WT     the task's worktree, for `add` (may not exist)
+#
+#   hw-train add    <project> <task>   merge the task's branch into the train
+#   hw-train status <project>          what the train carries over the base
+#   hw-train push   <project>          full suite on the train, then advance the base
+#
+# WHAT THIS REPLACES, measured 2026-09-30/10-01: the brainer integrated by hand
+# in a scratchpad clone — `git merge --no-ff --no-commit`, resolve-budgets.py
+# for setup/test-budgets.json, `commit-tree`, then chain-push.sh (suite, safe
+# advance of main, push). Those two scripts are the specification of this one.
+#
+# THE TRAIN IS A BRANCH, `train-<project>`. `refs/heads/train` already exists in
+# brain, so `train/<project>` cannot be created next to it.
+#
+# A MERGE HERE NEVER TOUCHES A WORKING TREE. `git merge-tree --write-tree`
+# computes it, `commit-tree` records it, `update-ref` moves the branch with the
+# old value as a guard. So nothing runs pre-commit, and that is chosen:
+#   * the hook's lane guard catches a `git add -A` sweep — a person staging
+#     another agent's files. A merge built here stages nothing by hand: its
+#     tree is git's merge of two committed tips, plus the budgets resolution
+#     below. Every incoming commit already met the guard when it was made, and
+#     a sync of the base into the train carries commits from several lanes BY
+#     DEFINITION, which is exactly what the guard refuses.
+#   * the hook runs the full suite when bin/ is staged: ~7 min per merge, where
+#     the train runs it once per batch at `push` (setup/decisions.md,
+#     2026-09-30, "La suite completa corre una vez por tanda de merges").
+#
+# THE ONLY CONFLICT RESOLVED IS setup/test-budgets.json, and only when both
+# sides parse: per key, three-way — a side that left a key as the base had it
+# takes the other side's value (a deletion included), and where both changed it
+# the train's wins, as resolve-budgets.py did. Every other conflict is named,
+# with the train's tasks that touched the file, and left to the incoming task.
+#
+# THE BASE IS ADVANCED, NOT PUSHED. `push` ends by printing the remote pushes;
+# sending them is a separate, explicit step.
+set -euo pipefail
+
+say()    { printf 'hw train: %s\n' "$*"; }
+refuse() { printf 'hw train: %s\n' "$*" >&2; exit 1; }
+
+verb="${1:-}"; P="${2:-}"
+CO="${HW_TRAIN_CHECKOUT:-}"; BASE="${HW_TRAIN_BASE:-}"
+[ -n "$verb" ] && [ -n "$P" ] && [ -n "$CO" ] && [ -n "$BASE" ] \
+  || refuse "usage: hw train add <project> <task> | status <project> | push <project>"
+g() { git -C "$CO" "$@"; }
+g rev-parse --verify --quiet "refs/heads/$BASE^{commit}" >/dev/null \
+  || refuse "the base branch $BASE does not exist in $CO"
+T="train-$P"
+TREF="refs/heads/$T"
+BUDGETS="setup/test-budgets.json"
+COMMON="$(cd "$CO" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+STATE="$COMMON/hw-train"
+mkdir -p "$STATE"
+
+# One train mutation at a time, and one push per lane: a push holds its own
+# lock for the whole run, because every push of a lane checks out and tests in
+# the same worktree, and a second one switching it under a running suite would
+# get a verdict cached for a tree that never ran clean. mkdir is atomic; a lock
+# whose holder is gone is taken over, so a killed run does not wedge the lane.
+LOCK="$STATE/$P.lock"
+PUSH_LOCK="$STATE/$P.push.lock"
+HAVE_LOCK=""; HAVE_PUSH=""
+release() {
+  [ -z "$HAVE_LOCK" ] || rm -rf "$LOCK"
+  [ -z "$HAVE_PUSH" ] || rm -rf "$PUSH_LOCK"
+}
+trap release EXIT
+take() {  # <lock dir> <what its holder is doing>
+  local pid
+  until mkdir "$1" 2>/dev/null; do
+    pid="$(cat "$1/pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      refuse "the $T train is $2 by pid $pid — run again when it finishes"
+    fi
+    rm -rf "$1"
+  done
+  printf '%s\n' "$$" > "$1/pid"
+}
+lock()   { take "$LOCK" "being changed"; HAVE_LOCK=1; }
+unlock() { rm -rf "$LOCK"; HAVE_LOCK=""; }
+
+tip()  { g rev-parse --verify --quiet "$1^{commit}" 2>/dev/null; }
+has()  { g merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
+
+# The train's own merges, newest first: "<sha> <task branch>".
+train_tasks() {
+  g log --first-parent --merges --format='%H %s' "$BASE..$TREF" 2>/dev/null \
+    | sed -n "s/^\([0-9a-f]*\) merge(train): \(.*\) into $T\$/\1 \2/p"
+}
+
+# resolve_budgets <base> <ours> <theirs> — the merged file on stdout; exit 1
+# when a side does not parse.
+resolve_budgets() {
+  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/hw-train.XXXXXX")"
+  g show "$1:$BUDGETS" > "$d/base" 2>/dev/null || printf '{}' > "$d/base"
+  g show "$2:$BUDGETS" > "$d/ours" 2>/dev/null || { rm -rf "$d"; return 1; }
+  g show "$3:$BUDGETS" > "$d/theirs" 2>/dev/null || { rm -rf "$d"; return 1; }
+  python3 - "$d/base" "$d/ours" "$d/theirs" <<'PY' || { rm -rf "$d"; return 1; }
+import json, sys
+b, o, t = (json.load(open(p)) for p in sys.argv[1:4])
+GONE = object()
+def m(b, o, t):
+    if o == t: return o
+    if b == o: return t
+    if b == t: return o
+    if all(isinstance(x, dict) for x in (b, o, t)):
+        out = {}
+        for k in list(o) + [k for k in t if k not in o]:
+            r = m(b.get(k, GONE), o.get(k, GONE), t.get(k, GONE))
+            if r is not GONE: out[k] = r
+        return out
+    return o
+r = m(b, o, t)
+if r is GONE: sys.exit(1)
+sys.stdout.write(json.dumps(r, indent=2, sort_keys=True) + "\n")
+PY
+  rm -rf "$d"
+}
+
+# merge_in <sha> <label> — record "merge(train): <label> into <T>" on the
+# train, or refuse naming every conflict and who should resolve it.
+merge_in() {
+  local theirs="$1" label="$2" ours out rc=0 tree files msgs f idx blob new owners
+  ours="$(tip "$TREF")"
+  out="$(g merge-tree --write-tree --name-only "$ours" "$theirs" 2>&1)" || rc=$?
+  [ "$rc" -le 1 ] || refuse "git merge-tree failed merging $label: $out"
+  tree="$(printf '%s\n' "$out" | sed -n 1p)"
+  files="$(printf '%s\n' "$out" | sed -n '2,/^$/p' | sed '/^$/d')"
+  msgs="$(printf '%s\n' "$out" | sed -n '/^$/,$p' | grep '^CONFLICT' || true)"
+  if [ "$rc" = 1 ]; then
+    if [ "$files" = "$BUDGETS" ] \
+       && [ "$msgs" = "CONFLICT (content): Merge conflict in $BUDGETS" ] \
+       && blob="$(resolve_budgets "$(g merge-base "$ours" "$theirs")" "$ours" "$theirs" \
+                  | g hash-object -w --stdin)"; then
+      idx="$(mktemp "${TMPDIR:-/tmp}/hw-train-index.XXXXXX")"
+      GIT_INDEX_FILE="$idx" g read-tree "$tree"
+      GIT_INDEX_FILE="$idx" g update-index --cacheinfo "100644,$blob,$BUDGETS"
+      tree="$(GIT_INDEX_FILE="$idx" g write-tree)"
+      rm -f "$idx"
+      say "$BUDGETS: conflict resolved key by key"
+    else
+      {
+        printf 'hw train: %s does not merge into %s — nothing was recorded.\n' "$label" "$T"
+        printf '%s\n' "$msgs" | sed 's/^/    /'
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          owners="$(train_tasks | while read -r m b; do
+                      g diff --quiet "$m^1" "$m" -- "$f" || printf ' %s' "$b"; done)"
+          printf '  %s — on the train side:%s\n' "$f" "${owners:- $BASE}"
+        done <<< "$files"
+        case "$label" in
+          "$BASE") printf 'The train cannot take %s: rebuild it (git branch -D %s) after the conflicting task rebases onto %s.\n' "$BASE" "$T" "$BASE" ;;
+          *) printf 'Resolve it in %s: rebase it onto %s in its worktree, then hw train add %s again.\n' "$label" "$T" "$P" ;;
+        esac
+      } >&2
+      exit 1
+    fi
+  fi
+  new="$(g commit-tree "$tree" -p "$ours" -p "$theirs" -m "merge(train): $label into $T")"
+  g update-ref -m "hw train: $label" "$TREF" "$new" "$ours"
+  say "merged $label into $T ($(g rev-parse --short "$new"))"
+}
+
+# The train starts at the base, restarts there once it has landed, and takes
+# the base in when the base moved under it.
+sync_base() {
+  local b; b="$(tip "refs/heads/$BASE")"
+  if ! tip "$TREF" >/dev/null; then
+    g update-ref -m "hw train: start" "$TREF" "$b" ""
+    say "started $T at $BASE ($(g rev-parse --short "$b"))"
+  elif has "$TREF" "$b"; then
+    [ "$(tip "$TREF")" = "$b" ] || {
+      g update-ref -m "hw train: landed, restart" "$TREF" "$b"
+      say "$T had landed in $BASE; restarted at $(g rev-parse --short "$b")"
+    }
+  elif ! has "$b" "$TREF"; then
+    merge_in "$b" "$BASE"
+  fi
+}
+
+cmd_add() {
+  local task="${1:-}" br="${HW_TRAIN_TASK_BRANCH:-}" wt="${HW_TRAIN_TASK_WT:-}" sha dirty
+  [ -n "$task" ] && [ -n "$br" ] || refuse "usage: hw train add <project> <task>"
+  sha="$(tip "refs/heads/$br")" || refuse "task $task has no branch $br in $CO"
+  if [ -n "$wt" ] && [ -d "$wt" ] \
+     && dirty="$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null)" && [ -n "$dirty" ]; then
+    say "WARNING: $wt has uncommitted tracked changes — they are not on $br and do not travel"
+  fi
+  lock
+  sync_base
+  if has "$sha" "$TREF"; then
+    say "$br ($(g rev-parse --short "$sha")) is already in $T — nothing to do"
+  else
+    merge_in "$sha" "$br"
+  fi
+  unlock
+  cmd_status
+}
+
+cmd_status() {
+  local n
+  if ! tip "$TREF" >/dev/null; then say "no $T yet — hw train add $P <task> starts it"; return 0; fi
+  n="$(g rev-list --count "$BASE..$TREF")"
+  if [ "$n" = 0 ]; then say "$T carries nothing over $BASE"; return 0; fi
+  say "$T: $n commit(s) over $BASE, tip $(g rev-parse --short "$TREF")"
+  train_tasks | while read -r _ b; do printf '    %s\n' "$b"; done
+  has "refs/heads/$BASE" "$TREF" || say "$BASE moved since; the next add or push takes it in"
+}
+
+# advance <new> — move the base from <old> to <new> in the checkout, keeping
+# every uncommitted edit in it (chain-push.sh). A dirty file the advance also
+# changes gets the advance's diff applied ON TOP of the edit; one that does not
+# apply refuses before anything moves.
+advance() {
+  local H="$1" C="$2" head F f bak
+  head="$(g symbolic-ref -q HEAD || true)"
+  if [ "$head" != "refs/heads/$BASE" ]; then
+    g update-ref -m "hw train push" "refs/heads/$BASE" "$C" "$H"
+    return 0
+  fi
+  F="$(comm -12 <(g diff --name-only "$H" "$C" | sort) <(g diff --name-only | sort))"
+  for f in $F; do
+    (cd "$CO" && git diff "$H" "$C" -- "$f" | git apply --check 2>/dev/null) \
+      || refuse "LOCAL EDIT CONFLICT: $CO/$f has an uncommitted edit the advance does not apply on top of — nothing moved"
+  done
+  bak="$STATE/advance-bak-$$"
+  for f in $F; do
+    mkdir -p "$bak/$(dirname "$f")"
+    cp -p "$CO/$f" "$bak/$f.orig"
+    (cd "$CO" && git diff "$H" "$C" -- "$f" | git apply)
+    cp -p "$CO/$f" "$bak/$f.merged"
+    g checkout "$H" -- "$f"
+  done
+  restore() { local x; for x in $F; do cp -p "$bak/$x.orig" "$CO/$x"; done; }
+  if ! g read-tree -m -u "$H" "$C"; then
+    restore
+    refuse "ADVANCE FAILED: git read-tree refused (staged changes or untracked files in the way) — $BASE stays at $(g rev-parse --short "$H"), local edits restored (copies in $bak)"
+  fi
+  if ! g update-ref -m "hw train push" "refs/heads/$BASE" "$C" "$H"; then
+    g read-tree -m -u "$C" "$H" || true
+    restore
+    refuse "ADVANCE FAILED: $BASE moved during the advance — the tree was put back, local edits restored (copies in $bak)"
+  fi
+  for f in $F; do cp -p "$bak/$f.merged" "$CO/$f"; done
+  rm -rf "$bak"
+  [ -z "$F" ] || say "uncommitted edits carried across: $(printf '%s ' $F)"
+}
+
+cmd_push() {
+  local C H W r
+  tip "$TREF" >/dev/null || refuse "there is no $T — hw train add $P <task> first"
+  take "$PUSH_LOCK" "being pushed"; HAVE_PUSH=1
+  lock; sync_base; unlock
+  C="$(tip "$TREF")"
+  [ "$(g rev-list --count "$BASE..$C")" != 0 ] || refuse "$T carries nothing over $BASE — nothing to push"
+  # The suite runs in the train's own detached worktree under the shared git
+  # dir: the verdict cache setup/verify-for-push writes is then the checkout's,
+  # and `hw worktrees` lists it as internal, not as a stray.
+  W="$STATE/$P"
+  if [ -e "$W/.git" ]; then
+    git -C "$W" checkout -q --detach -f "$C"
+  else
+    g worktree prune
+    g worktree add -q --detach "$W" "$C"
+  fi
+  [ -f "$W/setup/verify-for-push" ] || refuse "$T has no setup/verify-for-push, so there is no full suite to run — nothing moved"
+  say "full suite on $T at $(g rev-parse --short "$C") in $W"
+  (cd "$W" && bash setup/verify-for-push) || refuse "VERIFY FAILED on $(g rev-parse --short "$C") — $BASE did not move"
+  H="$(tip "refs/heads/$BASE")"
+  has "$H" "$C" || refuse "MAIN MOVED: $BASE is at $(g rev-parse --short "$H"), not in the verified $(g rev-parse --short "$C") — run hw train push $P again"
+  advance "$H" "$C"
+  [ ! -f "$CO/setup/install-hooks.sh" ] || (cd "$CO" && bash setup/install-hooks.sh >/dev/null 2>&1) \
+    || say "WARNING: setup/install-hooks.sh failed after the advance — run it by hand"
+  say "$BASE advanced $(g rev-parse --short "$H") -> $(g rev-parse --short "$C"). Not pushed; to publish:"
+  for r in $(g remote); do printf '    git -C %s push %s %s\n' "$CO" "$r" "$BASE"; done
+}
+
+case "$verb" in
+  add)    cmd_add "${@:3}" ;;
+  status) cmd_status ;;
+  push)   cmd_push ;;
+  *)      refuse "unknown verb $verb — usage: hw train add <project> <task> | status <project> | push <project>" ;;
+esac

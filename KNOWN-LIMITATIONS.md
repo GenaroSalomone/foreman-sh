@@ -287,12 +287,21 @@ it leaves the brain directory, is unguarded even with the hook registered.
 
 ## Tests
 
-### L9. The suite is hermetic, and so it does not exercise live herdr
+### L9. The suite runs live herdr, but never a real agent
 - **Scope:** `setup/test-hw` and `setup/test-channel-send`.
-- **Impact:** every subject runs under a HOME of its own with herdr stubbed and
-  every dispatch a dry run. A green suite proves the boundary each test
-  observes, not that a real pane, agent and return channel worked.
-- **Evidence:** by design.
+- **Impact:** every subject but one runs under a HOME of its own with herdr
+  stubbed and every dispatch a dry run. `setup/tests/650` drives the live path
+  against a private herdr server: a real `hw` dispatch, the brief through
+  `herdr agent prompt`, the Stop hook's turn tokens, `done-invoker` through
+  `channel-send --report` into a brainer pane, and `hw done` closing the tab.
+  The agent in both panes is a shell stand-in, so nothing about the Claude Code
+  or OpenCode runtimes themselves is exercised: their startup dialogs, the
+  session id herdr reads from them, or the screen herdr reads their state from.
+  Without herdr installed, 650 skips and says so.
+- **Evidence:** measured; 650 kills a dispatch that records the tab id it asked
+  `layout.apply` for instead of the one herdr answered — `hw done` then reports
+  "nothing to close" and leaves the executor's tab open — a defect no stubbed
+  subject sees, because none of them parses a real `layout.apply` reply.
 - **Workaround:** the demo lane (`examples/demo/`) exercises the real path once
   by hand. Before each release candidate is published the maintainer runs one
   end-to-end pass with a real herdr server and real Claude Code and OpenCode
@@ -366,3 +375,31 @@ it leaves the brain directory, is unguarded even with the hook registered.
   the profile was designed, not by this dispatch.
 - **Workaround:** off macOS, run executors under a separate OS account or in a
   container if you need a hard boundary; for TCP, a host firewall.
+
+## Cleanup
+
+### L13. The background reap needs the lane's SessionStart hook, and closes only what is merged
+- **Scope:** `hw reap --apply`, `hw done`, the brainer's SessionStart.
+- **Impact:**
+  - The background `hw reap <lane> --apply` and the list of tasks that never
+    reported come from `setup/guards/lane_housekeeping.py`, called by the
+    lane's SessionStart hook. The installer copies the module but does not
+    register a SessionStart hook in a lane's `.claude/settings.json`; a lane
+    without one gets neither, and `hw reap` stays a command you run.
+  - `hw done` called by `done-invoker` closes the executor's own tab and ends
+    with it, so it reaps nothing; the branch is usually not merged yet anyway.
+    A task is removed by the next background reap after its merge.
+  - What reap never removes: a dirty or unmerged worktree, one an agent sits
+    in, a leased preview, and any ignored file outside `.artifacts`,
+    `qa-report`, `test-results` and `playwright-report` (credentials, notes,
+    exports). Those keep their worktree until you move them.
+  - A branch merged by squash is removed with its worktree only when
+    `git branch -d` agrees it is merged; otherwise reap says so and keeps it.
+  - A database whose worktree is already gone is not dumped or dropped: with
+    no worktree there is no merge to check.
+  - The archive is never pruned.
+- **Evidence:** `measured` by `setup/tests/640-la-mugre-no-se-acumula.sh`
+  (old/new against the previous binary) and one run on a disposable clone.
+- **Workaround:** register the hook (`.claude/hooks/session-start-*.py`
+  calling `specialist_roster.main(<lane>)`), or run `hw reap <lane> --apply`
+  after merging.

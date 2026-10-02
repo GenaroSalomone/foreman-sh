@@ -921,7 +921,7 @@ put() {  # <src file> <dst file>
 sync_dir "$SRC/bin" "$BRAIN/bin"
 sync_dir "$SRC/layouts" "$BRAIN/layouts"
 put "$SRC/lanes/git-worktree.sh" "$BRAIN/lanes/git-worktree.sh"
-for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py specialist_roster.py; do
+for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py specialist_roster.py lane_housekeeping.py; do
   put "$SRC/setup/guards/$g" "$BRAIN/setup/guards/$g"
 done
 # The brain guard: a product lane's executor is not launched without it, so it

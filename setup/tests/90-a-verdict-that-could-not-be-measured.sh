@@ -214,8 +214,22 @@ if end < 0:
 gate = src[start:end]
 gate = gate.replace('_wt_disposition "$main" "$wt" "$branch" "$base"',
                     'WT_VERDICT="$FORCE_VERDICT"; WT_WHY=forced')
+# Since 2026-10-01 the removal itself is `_reap_worktree`, shared with `hw done`:
+# its real body comes too, so the gate is still what acts. Its archive and
+# database halves are stubbed to refuse — they are 640's subject, not this one.
+m = re.search(r"^_reap_worktree\(\) \{.*?^\}$", src, re.S | re.M)
+if not m:
+    raise SystemExit("_reap_worktree not found")
+helpers = (m.group(0) + "\n"
+           "_reap_archive_dest(){ printf /nonexistent; }\n"
+           "_reap_archive_entries(){ return 1; }\n"
+           "_reap_rm_workdir(){ return 1; }\n"
+           "_reap_db(){ :; }\n"
+           "_wt_disposition(){ :; }\n")
 open(sys.argv[2], "w", encoding="utf-8").write(
     "set -uo pipefail\n"
+    "proj=demo; total_removed=0\n"
+    + helpers +
     "total_safe=0; apply=1; main=/main; wt=/wt; branch=task/x; base=main\n"
     "ok(){ :; }; info(){ :; }; warn(){ :; }\n"
     "C_DIM=; C_0=\n"

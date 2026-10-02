@@ -113,7 +113,11 @@ trap 'rm -f "$log"' EXIT
 # says whether the seconds went to subjects, to the machine's pool or to the
 # drain before the subjects that run alone.
 timings="${HW_TEST_TIMINGS:-${TMPDIR:-/tmp}/verify-for-push-timings.$tree.tsv}"
-HW_TEST_TIMINGS="$timings" HW_TEST_GATE=full bash setup/test-hw 2>&1 | tee "$log" || rc=$?
+# AND IT KEEPS GOING PAST A RED (--keep-going, setup/test-hw): the run that
+# stopped at its first red cost one ~13-minute run per red — 0.3.0-rc.1 needed
+# three in a row, each showing one problem. Every job runs, every red is listed
+# at the end, and the exit is still red, so nothing is cached below.
+HW_TEST_TIMINGS="$timings" HW_TEST_GATE=full bash setup/test-hw --keep-going 2>&1 | tee "$log" || rc=$?
 out="$(cat "$log")"
 elapsed=$(( $(date +%s) - started ))
 if [ "$rc" -ne 0 ]; then

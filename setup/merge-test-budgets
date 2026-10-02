@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""merge-test-budgets — git merge driver for setup/test-budgets.json.
+
+    merge-test-budgets BASE OURS THEIRS      # git runs it as  %O %A %B
+
+Every branch that adds or edits a test re-measures it, so every branch rewrites
+setup/test-budgets.json: one new key in `files` and a new `measured_at`. Two such
+branches touch neighbouring lines of one JSON object and git's text merge stops
+on all of them, though the two changes never disagree. This driver merges the
+DOCUMENT, not the lines, and writes the result to OURS in the format
+setup/measure-tests.sh writes (indent 2, sorted keys, trailing newline):
+
+  - `files`, key by key, three ways: a key only one side added, changed or
+    removed takes that side; both sides with the same value take it.
+  - A key both sides changed to different measurements takes the slower one
+    and the failing exit, if either failed (the runner refuses a failed budget,
+    so a red measurement is never hidden).
+  - `measured_at` takes the later of the two.
+  - Anything else both sides changed differently (the threshold, the touched
+    budget, a key one side removed and the other re-measured) is a real
+    conflict: exit 1 with the key named, OURS left as it was.
+
+Installed by setup/install-hooks.sh (`merge.test-budgets.driver`) and bound to
+the file by .gitattributes. Without that config git merges the file as text, as
+it always did.
+"""
+import json
+import pathlib
+import sys
+
+MISSING = object()
+
+
+def load(path):
+    try:
+        return json.loads(pathlib.Path(path).read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError) as e:
+        sys.exit("merge-test-budgets: %s is not a readable JSON budget file: %s" % (path, e))
+
+
+def three_way(name, base, ours, theirs, conflicts):
+    if ours == theirs:
+        return ours
+    if ours == base:
+        return theirs
+    if theirs == base:
+        return ours
+    conflicts.append(name)
+    return ours
+
+
+def merge_entry(name, base, ours, theirs, conflicts):
+    if ours == theirs or theirs == base:
+        return ours
+    if ours == base:
+        return theirs
+    if ours is MISSING or theirs is MISSING:  # one side removed it, the other re-measured it
+        conflicts.append("files." + name)
+        return ours
+    out = dict(ours)
+    out["seconds"] = max(ours.get("seconds", 0), theirs.get("seconds", 0))
+    out["exit"] = ours.get("exit", 0) or theirs.get("exit", 0)
+    return out
+
+
+def main(argv):
+    if len(argv) != 4:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    base, ours, theirs = (load(p) for p in argv[1:4])
+    conflicts = []
+    out = {}
+    for key in sorted(set(base) | set(ours) | set(theirs)):
+        b, o, t = base.get(key, MISSING), ours.get(key, MISSING), theirs.get(key, MISSING)
+        if key == "files":
+            b, o, t = (x if x is not MISSING else {} for x in (b, o, t))
+            files = {}
+            for name in sorted(set(b) | set(o) | set(t)):
+                v = merge_entry(name, b.get(name, MISSING), o.get(name, MISSING), t.get(name, MISSING), conflicts)
+                if v is not MISSING:
+                    files[name] = v
+            out[key] = files
+        elif key == "measured_at" and MISSING not in (o, t):
+            out[key] = max(o, t)
+        else:
+            v = three_way(key, b, o, t, conflicts)
+            if v is not MISSING:
+                out[key] = v
+    if conflicts:
+        print("merge-test-budgets: both sides changed %s differently — merge by hand" % ", ".join(conflicts), file=sys.stderr)
+        return 1
+    pathlib.Path(argv[2]).write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

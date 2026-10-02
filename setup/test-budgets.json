@@ -233,6 +233,10 @@
       "exit": 0,
       "seconds": 1.45
     },
+    "650-la-suite-toca-herdr-real.sh": {
+      "exit": 0,
+      "seconds": 32.27
+    },
     "66-exit-code-survives-a-pipe.sh": {
       "exit": 0,
       "seconds": 7.42
@@ -287,7 +291,7 @@
     },
     "90-a-verdict-that-could-not-be-measured.sh": {
       "exit": 0,
-      "seconds": 3.14
+      "seconds": 9.1
     },
     "92-a-clean-bill-covers-only-what-was-read.sh": {
       "exit": 0,
@@ -314,6 +318,6 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-10-01T14:47:15Z",
+  "measured_at": "2026-10-02T03:43:17Z",
   "touched_budget_seconds": 180
 }

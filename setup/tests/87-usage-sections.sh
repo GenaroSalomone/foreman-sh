@@ -12,7 +12,7 @@
 #     import pathlib, re, subprocess
 #     src = pathlib.Path("bin/hw").read_text(); out = ""
 #     pre = 'BRAIN=$PWD; . bin/project-spaces.sh; lane_config_load "$BRAIN" || exit 9\n'
-#     for n in ['launch','placement','flags','commands','recovery','exits','projects','environment','advanced']:
+#     for n in ['launch','placement','flags','commands','recovery','exits','projects','environment','advanced','lanes']:
 #         m = re.search(r'^_usage_' + n + r"\(\) \{\n.*?^}", src, re.M | re.S)
 #         out += subprocess.run(['bash','-c', pre + m.group() + '\n_usage_' + n],
 #                               capture_output=True, text=True).stdout
@@ -27,7 +27,7 @@
 #
 # Then READ `git diff setup/fixtures/hw-help-before.txt` before committing: if
 # it carries a line you did not mean to write, the golden just absorbed drift
-# instead of catching it. Last moved 2026-09-30: hw outbox, --sandbox and the brief keys, +22; 2026-10-01: --permissions, +12.
+# instead of catching it. Last moved 2026-09-30: hw outbox, --sandbox and the brief keys, +22; hw help lanes, +18; 2026-10-01: --permissions, +12; hw train, +7.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 python3 - "${HELP_SUBJECT:-$ROOT/bin/hw}" "$ROOT/setup/fixtures/hw-help-before.txt" ${HELP_TABLE:+"$HELP_TABLE"} <<'PY'
 import pathlib, re, subprocess, sys
@@ -37,8 +37,8 @@ root = str(pathlib.Path(sys.argv[1]).resolve().parent.parent)
 table = sys.argv[3] if len(sys.argv) > 3 else root + '/projects.json'
 pre = ('BRAIN=' + root + '; HW_PROJECTS_JSON=' + table + '; . ' + root + '/bin/project-spaces.sh; '
        'lane_config_load "$BRAIN" || exit 9\n')
-names = ['launch','placement','flags','commands','recovery','exits','projects','environment','advanced']
-markers = ['PLACEMENT AND ISOLATION', 'FLAGS\n', 'OTHER COMMANDS\n', 'RECOVERY AND CLEANUP\n', 'EXIT STATUS\n', 'PROJECTS\n', 'ENVIRONMENT\n', 'ADVANCED\n']
+names = ['launch','placement','flags','commands','recovery','exits','projects','environment','advanced','lanes']
+markers = ['PLACEMENT AND ISOLATION', 'FLAGS\n', 'OTHER COMMANDS\n', 'RECOVERY AND CLEANUP\n', 'EXIT STATUS\n', 'PROJECTS\n', 'ENVIRONMENT\n', 'ADVANCED\n', 'LANES (projects.json)\n']
 positions = [0] + [golden.index(marker) for marker in markers] + [len(golden)]
 definitions = {}
 combined = ''

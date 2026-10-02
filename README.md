@@ -167,7 +167,9 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 4. **Report.** The executor finishes with `done-invoker`. The report arrives
    in the brainer as a message, with no polling.
 5. **Close.** `hw done` runs the brief's verification, records the result and
-   closes the tab. Merging is always up to you.
+   closes the tab. Merging is always up to you; once a task is merged, its
+   worktree, branch and database are removed by `hw reap`, which the brainer's
+   session start runs in the background, after archiving the task's outputs.
 
 ## Commands
 
@@ -179,8 +181,10 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 | `hw log <lane> <task>` | What a task asked and reported. |
 | `hw ruling <pane> "<correction>"` | Correct an executor that is still working. |
 | `hw next <pane> --brief <path>` | Give the next task to an executor launched with `--keep-pane`. |
-| `hw done <lane> <task>` | Run the brief's verification and close the task's tab. Removes no worktree or branch. |
-| `hw reap [<lane>]` | List worktrees that are safe to remove. Add `--apply` to remove them. |
+| `hw done <lane> <task>` | Run the brief's verification and close the task's tab. Waits up to 60 s for the report's own turn to end. A merged, clean task is then reaped like `hw reap --apply`. |
+| `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove. `--apply` removes them, archiving `.artifacts`/`qa-report` to `archive/<lane>/<task>/` beside the work directory first. Dirty, unmerged or occupied work is never removed. |
+| `hw train add <lane> <task>` | Merge a reported task's branch into `train-<lane>`. Only a `setup/test-budgets.json` conflict is resolved; any other is named. |
+| `hw train push <lane>` | Run the full suite on the train, then move `main` to it, keeping uncommitted edits in the checkout. Pushes nothing. |
 
 `<pane>` is the executor's herdr pane, as `hw status` lists it. `hw help all`
 lists every command and flag; `hw help <topic>` shows one part.
@@ -188,6 +192,82 @@ lists every command and flag; `hw help <topic>` shows one part.
 `--sdd speckit` runs a task through [Spec Kit](https://github.com/github/spec-kit)
 when its skills are in the repository. To use another methodology your
 repository already has, name it in the brief.
+
+## Customizing a lane (`projects.json`)
+
+`projects.json` at the brain root is the one place a lane's settings live.
+`hw`, `brain` and the invokers read it once per process, and a lane you add
+there needs no change to `bin/`. An unknown key, or a value of a shape the
+loader checks (`requested_by`, `suite_lock`, `artifacts`, `model_floor`,
+`model_pins`, `sdd_modes`, `ports`), makes the whole file fail to load:
+nothing is read from it. Other values are not checked.
+`hw help lanes` prints this table in short form.
+
+Paths accept a leading `~` (your home). `{brain}` is the brain root, `{work}`
+the top-level `work` directory, `{checkout}` the lane's checkout, `{lane}` its
+name and `{task}` the task name.
+
+| Field | Type | What it does | Default |
+|---|---|---|---|
+| `space` | string | The herdr workspace label for the lane. Required. | none: the file fails to load |
+| `engram` | string | The engram project label the lane's memory is filed under. | `brain` |
+| `vendor` | string | The agent `brain <lane>` and `hw` default to: `claude` or `opencode`. Not validated at load. | `claude` |
+| `model` | string | The model executors get when the dispatch passes no `--model`. | empty: the vendor's own |
+| `model_floor` | object | `tier` (`haiku`, `sonnet` or `opus`) is the lowest Claude tier `hw` launches without `--below-floor-why`; `accepts` lists off-ladder model ids the lane admits. | no floor |
+| `model_pins` | object | Maps an alias (`haiku`, `sonnet`, `opus`, `fable`) to the full `claude-*` id `hw` passes in its place. | the alias as typed |
+| `account` | string | The Claude Code account the lane's sessions run under: `default` or `personal`. | `default` |
+| `artifacts` | string | Where executors may publish claude.ai artifacts: `deny`, `default` or `personal`. | the lane's `account` |
+| `requested_by` | string | `required` refuses a dispatch whose brief cites no request; `warn` says so and launches. | off |
+| `brief_note` | string | Text `hw` appends to the preamble of every executor prompt of this lane. See below. | none |
+| `sdd_modes` | array | Frameworks the lane adds to `speckit` and `none`. The only one is `gentle`. | none |
+| `suite_lock` | string | `none` lets `hw suite` and a task's close verification run at once; `lane` serializes them. | `lane` |
+| `checkout` | path | The lane's repository checkout. | none: no checkout |
+| `checkout_var` | string | An upper-case environment variable that overrides `checkout` when set. | none |
+| `base` | string | The branch a task's worktree is built from, and the base a review is measured against. | none |
+| `base_ref_prefix` | string | Prefix of the ref the base is read from; `""` means a local branch. | `origin/` |
+| `branch` | string | The branch name template for a task. | `task/{task}` |
+| `worktree_root` | path | The directory that holds the lane's worktrees. | none |
+| `worktree` | path | One task's worktree. | none |
+| `build` | path | The script, relative to `projects.json`, that builds a worktree (`lanes/<lane>.sh`). A lane with a worktree and no `build` refuses to launch. | none |
+| `repoless` | boolean | The lane has no repository: no checkout, no worktree. | `false` |
+| `product_repo` | boolean | The checkout is a product repository; framework and agent lookups read it. | `false` |
+| `agents_from` | string | Where a task's `.claude/agents/` come from: `checkout` or `base`. | none |
+| `brain_guard` | boolean | `false` stops `hw` from loading the brain-write guard into the lane's executors, the one that keeps a product executor from writing in the brain. | `true` |
+| `opencode_config_dir` | path | An OpenCode config layer for the lane's executors; it must contain `plugin/deny-repo-writes.js` or `hw` refuses to launch. | none |
+| `sweep` | boolean | `false` leaves the lane's worktree root out of `hw sweep`. | `true` |
+| `reap` | object | `copies`: patterns of files that are copies of the main checkout's, so `hw reap` does not count them as unsaved work. `copies_from`: the worktree script whose own copy list extends them. | none |
+| `deps` | object | `line`: the sentence the dry run prints about dependencies. `contention`: `true` when a task's install can break other tasks. | none |
+| `db` | object | `provisioned` (one database per worktree), `line`, `no_worktree` and `no_db_inert`: what the dry run says about the database. | none |
+| `devserver` | object | `start`: `always` starts a dev server on every task, `opt-in` only with `--dev-server`. `line` and `off` are the text the dry run prints. | no dev server |
+| `ports` | object | Base port per name, such as `{"web": 3100}`. | none |
+| `hw_aliases` | array | Other names `hw <lane>` accepts. | none |
+| `brain_aliases` | array | Other names `brain <lane>` accepts. | none |
+| `hint_aliases` | array | The aliases the refusal messages print beside the lane name. | none |
+
+At the top level of the file: `work` (required), `lanes` (required),
+`operator` (the person messages tell an agent to leave a decision to),
+`survey_order` (the order `hw reap` and `hw worktrees` walk the lanes),
+`metrics_direct` and `comment`.
+
+### `brief_note`: one rule for every executor of a lane
+
+A brief says what one task needs. A rule that holds for every task of a lane,
+such as a pull request template, would otherwise be copied into each brief and
+forgotten in one of them. Put it in `brief_note` instead: `hw` appends it to
+the preamble of every prompt it builds for that lane, including a task sent
+with `hw next`.
+
+```json
+"myapp": {
+  "space": "myapp",
+  "checkout": "~/code/myapp",
+  "base": "main",
+  "brief_note": "Open every pull request with .github/pull_request_template.md and keep its headings as they are. Do not add sections of your own."
+}
+```
+
+`hw <lane> <task> --dry-run` shows the note inside the prompt. The note is
+plain text, one string, with no tokens expanded.
 
 ## How it compares
 

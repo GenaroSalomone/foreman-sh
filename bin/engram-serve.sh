@@ -50,14 +50,16 @@ engram_store_dir() {
 # installed: there is no serve to wait for, and a launch must not pay for it.
 # Measured 2026-09-30, first `brain demo`: the serve was starting and the one
 # probe ran before it answered, so the session was reported NOT registered.
+# The wait is a deadline, not a tick count: on native Windows a curl to a
+# closed localhost port takes ~1s by itself, so counted ticks made a 1s wait 5s.
 engram_serve_wait() {
-  local url="${1:-$(engram_serve_url)}" max="${2:-${HW_ENGRAM_WAIT:-6}}" i=0 ticks
+  local url="${1:-$(engram_serve_url)}" max="${2:-${HW_ENGRAM_WAIT:-6}}" deadline
   command -v engram >/dev/null 2>&1 || return 0
   case "$max" in ''|*[!0-9]*) max=6 ;; esac
-  ticks=$((max * 2))
+  deadline=$((SECONDS + max))
   while ! curl -sf -m 1 "$url/health" >/dev/null 2>&1; do
-    [ "$i" -lt "$ticks" ] || return 1
-    sleep 0.5; i=$((i + 1))
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep 0.5
   done
   return 0
 }

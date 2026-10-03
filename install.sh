@@ -51,7 +51,7 @@ _self="${BASH_SOURCE[0]:-}"
 if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
   _repo="${FOREMAN_SH_REPO:-https://github.com/GenaroSalomone/foreman-sh}"
   for _need in git curl; do
-    command -v "$_need" >/dev/null 2>&1 || { printf 'install: %s is required to fetch foreman-sh and was not found on PATH\n' "$_need" >&2; exit 1; }
+    type -P "$_need" >/dev/null 2>&1 || { printf 'install: %s is required to fetch foreman-sh and was not found on PATH\n' "$_need" >&2; exit 1; }
   done
   _refs="$(git ls-remote --tags --refs "$_repo" 'v*' 2>/dev/null)" || { printf 'install: cannot list the tags of %s\n' "$_repo" >&2; exit 1; }
   # a release tag is vMAJOR.MINOR.PATCH; a pre-release (-rc.1) is only taken when no release exists
@@ -385,7 +385,7 @@ print_next_steps() {
   local n=0 first="" line cmd replay a
   step() { n=$((n + 1)); printf '  %s. %s\n' "$n" "$1"; [ -n "$first" ] || first="$2"; }
   printf '\nfixes, in the order they must be done (each needs the ones above it)\n'
-  if [ -n "$FIX_TOOLS" ] && [ "$WITH_REC" = 0 ] && command -v brew >/dev/null 2>&1; then
+  if [ -n "$FIX_TOOLS" ] && [ "$WITH_REC" = 0 ] && type -P brew >/dev/null 2>&1; then
     printf '  (Homebrew can install the missing packages in one step: %s --with-recommended)\n' "$INSTALL_CMD"
   fi
   while IFS= read -r line; do [ -z "$line" ] || step "install: $line" "$line"; done <<FIXES
@@ -450,7 +450,7 @@ NL=$'\n'
 fix_tool() { FIX_TOOLS="${FIX_TOOLS}${FIX_TOOLS:+$NL}$1"; }
 fix_integration() { FIX_INTEGRATIONS="${FIX_INTEGRATIONS}${FIX_INTEGRATIONS:+$NL}$1"; }
 need() {  # <command> <why> <how>
-  if command -v "$1" >/dev/null 2>&1; then ok "$1"
+  if type -P "$1" >/dev/null 2>&1; then ok "$1"
   else printf '  MISSING %s — %s. Install: %s\n' "$1" "$2" "$3"; missing=1; fix_tool "$3"; fi
 }
 [ "$(uname -s)" = Linux ] && PKG="apt install" || PKG="brew install"
@@ -458,7 +458,7 @@ need git     "worktrees and branches"                "$([ "$(uname -s)" = Linux 
 need jq      "hw reads projects.json with it"        "$PKG jq"
 # jq 1.6 (Debian 12, Ubuntu 22.04) exits 0 on EMPTY input under `jq -e`; 1.7 exits 4. Several
 # checks read "jq -e succeeded" as "the reply was what I asked for", so an old jq is refused.
-if command -v jq >/dev/null 2>&1; then
+if type -P jq >/dev/null 2>&1; then
   jq_ver="$(jq --version 2>/dev/null | sed -E 's/^jq-([0-9]+)\.([0-9]+).*/\1.\2/' || true)"
   case "$jq_ver" in
     [0-9]*.[0-9]*)
@@ -475,7 +475,7 @@ if [ "$(uname -s)" = Linux ]; then
   need sd "hw and the lane scripts edit files with it" "apt install sd"
   need fd "hw finds files with it" "apt install fd-find, then link fdfind as fd"
   need rg "hw and the guards search with it" "apt install ripgrep"
-  if command -v node >/dev/null 2>&1; then
+  if type -P node >/dev/null 2>&1; then
     node_ver="$(node --version 2>/dev/null | sed -E 's/^v//' || true)"
     node_mm="$(printf '%s' "$node_ver" | sed -E 's/^([0-9]+)\.([0-9]+).*/\1 \2/')"
     if [ "${node_mm% *}" -gt 22 ] 2>/dev/null || { [ "${node_mm% *}" -eq 22 ] 2>/dev/null && [ "${node_mm#* }" -ge 7 ] 2>/dev/null; }; then ok "node $node_ver (>= 22.7)"
@@ -484,7 +484,7 @@ if [ "$(uname -s)" = Linux ]; then
     printf '  MISSING node — the OpenCode guard plugin is an ES module in a .js file (22.7 or newer). Install: https://nodejs.org/en/download\n'; missing=1; fix_tool "node >= 22.7: https://nodejs.org/en/download"
   fi
 fi
-command -v python3 >/dev/null 2>&1 || die "python3 is required to continue"
+type -P python3 >/dev/null 2>&1 || die "python3 is required to continue"
 MODEL_GIVEN="$MODEL"
 [ -z "$LANE" ] || adopt_lane_row
 : "${VENDOR:=claude}"
@@ -515,7 +515,7 @@ case "$(uname -s)" in
   *)      say "WARN  $(uname -s) is not supported — macOS and Linux only" ;;
 esac
 [ "$bash_major" -ge 3 ] || { printf '  MISSING bash >= 3\n'; missing=1; fix_tool "bash >= 3"; }
-if command -v herdr >/dev/null 2>&1; then
+if type -P herdr >/dev/null 2>&1; then
   # Captured first: `| grep -q` exits on the first match, herdr takes SIGPIPE,
   # and pipefail turns an installed integration into a missing one.
   herdr_int="$(herdr integration status 2>/dev/null || true)"
@@ -528,7 +528,7 @@ if command -v herdr >/dev/null 2>&1; then
 fi
 if [ "$VENDOR" = opencode ]; then
   need opencode "this lane's executors run in it" "https://opencode.ai"
-  if command -v opencode >/dev/null 2>&1; then
+  if type -P opencode >/dev/null 2>&1; then
     oc_ver="$(opencode --version 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
     if python3 - "$oc_ver" "$OPENCODE_MIN" <<'PY'
 import re, sys
@@ -544,7 +544,7 @@ PY
       missing=1; fix_tool "npm install -g opencode-ai@latest"
     fi
   fi
-  if command -v herdr >/dev/null 2>&1; then
+  if type -P herdr >/dev/null 2>&1; then
     if printf '%s\n' "$herdr_int" | grep -q '^opencode: current'; then
       ok "herdr's opencode integration"
     else
@@ -555,7 +555,7 @@ PY
 fi
 _soft="engram fzf rg"; [ "$(uname -s)" != Linux ] || _soft="engram fzf"   # rg is required on Linux, above
 for soft in $_soft; do
-  if command -v "$soft" >/dev/null 2>&1; then ok "$soft"
+  if type -P "$soft" >/dev/null 2>&1; then ok "$soft"
   else
     case "$soft" in
       engram) ENGRAM_MISSING=1; say "WARN  engram not found — optional: persistent memory for brainers and executors (brew install gentleman-programming/tap/engram)" ;;
@@ -631,7 +631,7 @@ fi
 # second registration where the engram plugin already provides one. So the
 # check is here, with the command; the choice to run it is the person's.
 ENGRAM_WIRED=""
-if command -v engram >/dev/null 2>&1; then
+if type -P engram >/dev/null 2>&1; then
   ENGRAM_WIRED="$(CFG_JSON="$(claude_account_json "${CLAUDE_CONFIG_DIR:-}")" CFG_SETTINGS="$CLAUDE_CFG/settings.json" python3 -c '
 import json, os
 def load(p):
@@ -856,7 +856,7 @@ sync_dir() {  # <src dir> <dst dir> — the installer owns dst: mirror it
   # Git for Windows ships no rsync: the same mirror in Python (checksum, mode,
   # links, deletions), counted the same way. A mirror that failed is fatal:
   # counting its empty output once said "up to date" over a brain with no bin/.
-  if command -v rsync >/dev/null 2>&1; then
+  if type -P rsync >/dev/null 2>&1; then
     out="$(rsync -a --delete --checksum --itemize-changes "$1/" "$2/")" || die "rsync could not mirror $1 into $2"
     n="$(printf '%s\n' "$out" | grep -c '^[<>c*]' || true)"
   else

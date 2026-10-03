@@ -29,6 +29,7 @@ function brainBin() {
 
 const childSessions = new Set();
 let rootSessionID;
+let inputSinceIdle = false;
 
 function isHwExecutor() {
   return (
@@ -41,13 +42,18 @@ function isHwExecutor() {
   );
 }
 
-async function publishTurnEnded() {
+async function publishTurnEnded(hadInput) {
   if (!isHwExecutor()) return;
 
   try {
     const hw = join(brainBin(), "hw");
     await execFileAsync(hw, ["executor-turn-end"], { // # MUTATION-ANCHOR: 43-M05
       timeout: 2_000,
+      // Whether a message reached the root session since its last idle. One
+      // prompt can end in more than one `session.idle` (measured 2026-10-02 on
+      // a failed request: two), and hw counts turns after a report; a repeated
+      // idle with nothing new said to the pane is not one.
+      env: { ...process.env, HW_TURN_HAD_INPUT: hadInput ? "1" : "0" },
     });
   } catch {
     // OpenCode event handlers cannot veto session.idle. hw records a refused
@@ -57,7 +63,10 @@ async function publishTurnEnded() {
 
 export const HwTurnEndedPlugin = async () => ({
   "chat.message": async ({ sessionID }) => {
-    if (sessionID && !childSessions.has(sessionID)) rootSessionID = sessionID;
+    if (sessionID && !childSessions.has(sessionID)) {
+      rootSessionID = sessionID;
+      inputSinceIdle = true;
+    }
   },
   event: async ({ event }) => {
     const properties = event?.properties ?? {};
@@ -67,6 +76,8 @@ export const HwTurnEndedPlugin = async () => ({
     if (info?.id && info.parentID) childSessions.add(info.id);
     if (event?.type !== "session.idle" || !sessionID) return;
     if (childSessions.has(sessionID) || sessionID !== rootSessionID) return;
-    await publishTurnEnded();
+    const hadInput = inputSinceIdle;
+    inputSinceIdle = false;
+    await publishTurnEnded(hadInput);
   },
 });

@@ -21,7 +21,11 @@
 #      full suite in verify-for-push still runs the timing subjects.
 #   4. where CPU time or the load average cannot be read (a platform whose
 #      `time` reports zero, or whose python has no os.getloadavg — Git Bash),
-#      the judgment stays on wall time with the re-run, and says so.
+#      the judgment stays on wall time with the re-run, and says so. Native
+#      Windows (OSTYPE msys*/cygwin*) is such a platform for CPU: bash's `time`
+#      there does not count a native child's CPU (a 0.4s spin read 92 ms), so
+#      fg_time_cmd reports CPU as 0 — unmeasurable — rather than a number too
+#      small that would let CPU drift through a saturated gate.
 #
 #   5. THE CEILING IS max(threshold + 1s, 2 x THE SUBJECT'S OWN NUMBER in
 #      test-budgets.json). Measured 2026-09-29: subject 95 (single-threaded, its
@@ -63,7 +67,7 @@ fg_load_ncpu() {
 
 # fg_time_cmd <stdout-file> <stderr-file> <cmd...> — runs it with stdin from
 # /dev/null and sets FG_WALL_MS / FG_CPU_MS (CPU = user+sys of the whole tree).
-# Returns the command's own status.
+# Returns the command's own status. On native Windows FG_CPU_MS is 0 (point 4).
 fg_time_cmd() {
   local o="$1" e="$2" tf rc r u s; shift 2
   tf="$(mktemp)"
@@ -73,6 +77,7 @@ fg_time_cmd() {
   rm -f "$tf"
   FG_WALL_MS="$(fg_ms "${r:-0}")"
   FG_CPU_MS="$(( $(fg_ms "${u:-0}") + $(fg_ms "${s:-0}") ))"
+  case "${OSTYPE:-}" in msys*|cygwin*) FG_CPU_MS=0 ;; esac
   return "$rc"
 }
 
@@ -144,6 +149,14 @@ fg_drift_warn() {
 # subject's. On a cut the wrapper writes "<elapsed_s> <cap_s>" to <status-file>
 # and exits 124; the runner turns that into the red line.
 #
+# NATIVE WINDOWS (Git Bash: native python, sys.platform win32) has neither
+# killpg nor SIGKILL, and start_new_session makes no group there: the cut is
+# `taskkill /T /F`, which ends the subject and the tree it spawned. And there
+# every process start costs ~10x (the HW_TEST_SLOW of setup/tests/_common.sh),
+# so the ceiling is x10: measured 2026-10-02 (windows.yml run 37011929022),
+# subject 01 (budget 2.4s) ran past the 60s floor working, and the cut then
+# died on `signal.SIGKILL` instead of killing it.
+#
 # NO APOSTROPHES in the program below: it lives in a single-quoted variable.
 _FG_CAP_PY='
 import json, os, signal, subprocess, sys, time
@@ -169,8 +182,31 @@ try:
     own = float(json.load(open(budgets))["files"][name]["seconds"])
 except (OSError, ValueError, KeyError, TypeError):
     pass
-cap = None if factor == 0 else max(floor, (own or 0) * factor)
-p = subprocess.Popen(cmd, start_new_session=True)
+windows = sys.platform == "win32"
+cap = None if factor == 0 else max(floor, (own or 0) * factor) * (10 if windows else 1)
+# On native Windows the subject starts SUSPENDED inside a Job Object, so every
+# process it ever spawns is in the job whatever its parent chain: taskkill /T
+# walks parent pids, and an msys exec chain leaves a grandchild outside that
+# tree, alive, holding the pipe and its directory (585-588 hung 2400s on
+# windows.yml 37032873682). No WinDLL (the simulation in 609): taskkill only.
+job = None
+k32 = getattr(__import__("ctypes"), "WinDLL", None) if windows else None
+if k32:
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = ctypes.c_void_p
+    k32.AssignProcessToJobObject.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+    k32.TerminateJobObject.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+    job = k32.CreateJobObjectW(None, None)
+if job:
+    p = subprocess.Popen(cmd, creationflags=0x4)  # CREATE_SUSPENDED
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = (ctypes.c_void_p,)
+    if not k32.AssignProcessToJobObject(job, int(p._handle)):
+        job = None
+    ntdll.NtResumeProcess(int(p._handle))
+else:
+    p = subprocess.Popen(cmd, start_new_session=True)
 t0 = last = time.time()
 spent, rc = 0.0, None
 while rc is None:
@@ -184,16 +220,22 @@ while rc is None:
             break
 if rc is None:
     elapsed = time.time() - t0
-    for sig, grace in ((signal.SIGTERM, 2), (signal.SIGKILL, None)):
-        try:
-            os.killpg(p.pid, sig)
-        except ProcessLookupError:
-            break
-        try:
-            p.wait(timeout=grace)
-            break
-        except subprocess.TimeoutExpired:
-            pass
+    if windows:
+        if job:
+            k32.TerminateJobObject(job, 1)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        for sig, grace in ((signal.SIGTERM, 2), (signal.SIGKILL, None)):
+            try:
+                os.killpg(p.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                p.wait(timeout=grace)
+                break
+            except subprocess.TimeoutExpired:
+                pass
     p.wait()
     with open(status, "w") as f:
         f.write("%.1f %.1f\n" % (elapsed, cap))

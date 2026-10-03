@@ -367,13 +367,21 @@ mutate js-content-only-preservation-pointer "$GUARD_JS" \
 # The filesystem answer to "is this path the protected tree?" — same inode,
 # whatever the case — is what keeps a case-flipped root spelling out on APFS. Dropping
 # it leaves every text comparison intact and every lower-case vector green, so
-# only the sandbox case vectors can see it.
-mutate python-same-tree-identity "$GUARD_PY" \
-    '    return any(_same_tree(cfg, cand) for cand in cands)' \
-    '    return False'
-mutate js-same-tree-identity "$GUARD_JS" \
-    '  return cands.some((cand) => sameTree(cfg, cand));' \
-    '  return false;'
+# only the sandbox case vectors can see it. Those vectors assert identity only
+# where the filesystem folds case (APFS, NTFS); on ext4 a case-variant spelling
+# is another, absent path, nothing can kill these two, and they are skipped by
+# name — the same probe the vector driver makes.
+mkdir -p "$BASE/case-probe"
+if [ -e "$BASE/CASE-PROBE" ]; then
+  mutate python-same-tree-identity "$GUARD_PY" \
+      '    return any(_same_tree(cfg, cand) for cand in cands)' \
+      '    return False'
+  mutate js-same-tree-identity "$GUARD_JS" \
+      '  return cands.some((cand) => sameTree(cfg, cand));' \
+      '  return false;'
+else
+  printf 'skip - mutants python-same-tree-identity, js-same-tree-identity: this filesystem is case-sensitive, so no case-variant spelling names the protected tree\n'
+fi
 
 # ── Where a word really lands (2026-09-29, audit F5-F9) ─────────────────────
 # Each piece of the shell reading must be visible on its own: the gate asking

@@ -235,13 +235,27 @@ cmd_armed() {  # 0 armed, 1 never, 2 cannot tell — never 1 by accident
 # that it is still that directory, and acts relative to its descriptor.
 _OUTBOX_PY='
 import os, re, stat, sys
+# Where the platform cannot open a directory O_NOFOLLOW and act relative to
+# its descriptor — native Windows Python has neither flag, no dir_fd and no
+# listdir(fd), so every call here died before claiming anything — the pin is
+# checked by lstat on the path right before each act. That is a window the
+# descriptor closes, and it is open only where no agent is sandboxed (the
+# sandbox is macOS-only); the outbox is still served there, as 322 requires.
+BY_FD = hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
 def pinned(path, pin):
+    if not BY_FD:
+        st = os.lstat(path)
+        if not stat.S_ISDIR(st.st_mode) or "%d:%d" % (st.st_dev, st.st_ino) != pin:
+            raise OSError("outbox %s is no longer the directory the broker started with" % path)
+        return None
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     st = os.fstat(fd)
     if "%d:%d" % (st.st_dev, st.st_ino) != pin:
         os.close(fd)
         raise OSError("outbox %s is no longer the directory the broker started with" % path)
     return fd
+def at(ob, fd, name):   # (path, dir_fd) for an entry of the pinned outbox
+    return (name, fd) if fd is not None else (os.path.join(ob, name), None)
 op = sys.argv[1]
 if op == "pin":
     st = os.lstat(sys.argv[2])
@@ -251,16 +265,19 @@ if op == "pin":
 elif op == "claim":            # outbox pin workdir -> prints claimed ids
     ob, pin, w = sys.argv[2:5]
     fd = pinned(ob, pin)
-    for name in os.listdir(fd):
+    for name in os.listdir(fd if fd is not None else ob):
         if not name.endswith(".req"):
             continue
         rid = name[:-4]
+        p, d = at(ob, fd, name)
         if not re.fullmatch(r"[A-Za-z0-9._-]+", rid):
-            try: os.unlink(name, dir_fd=fd)
+            try: os.unlink(p, dir_fd=d)
             except OSError: pass
             continue
         dst = os.path.join(w, rid + ".claimed")
-        try: os.rename(name, dst, src_dir_fd=fd)
+        try:
+            if fd is None: pinned(ob, pin)
+            os.rename(p, dst, src_dir_fd=d)
         except OSError: continue
         st = os.lstat(dst)
         if not stat.S_ISREG(st.st_mode):
@@ -273,7 +290,8 @@ elif op == "deliver":          # outbox pin src name
     try:
         # MUTATION-ANCHOR: 322-M04
         fd = pinned(ob, pin)
-        os.replace(src, name, dst_dir_fd=fd)
+        p, d = at(ob, fd, name)
+        os.replace(src, p, dst_dir_fd=d)
         # MUTATION-ANCHOR-END: 322-M04
     except OSError:
         os.unlink(src)
@@ -401,7 +419,9 @@ cmd_broker() {
 # ── the client (inside) ─────────────────────────────────────────────────────
 # A broker that has not touched its heartbeat for this long is gone.
 STALE_S="${HW_SANDBOX_STALE_S:-20}"
-_age() { local m; m="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0)"; echo $(( $(date +%s) - m )); }
+# GNU stat first: its `-f` is filesystem status, which prints a block AND fails
+# on `%m`, so the BSD spelling tried first left that block in $m.
+_age() { local m; m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)"; echo $(( $(date +%s) - m )); }
 cmd_request() {
   local ob="${HW_SANDBOX_OUTBOX:-}" st="${HW_SANDBOX_STATE:-}" id verb="${1:-}" rc
   { [ -n "$ob" ] && [ -n "$st" ]; } || die "HW_SANDBOX_OUTBOX/HW_SANDBOX_STATE are unset — this is not a sandboxed executor"

@@ -294,7 +294,7 @@ esac
 # runs: an executor could start already at the ask cap, or be unable to report
 # done because a previous run had.
 #
-# STILL 3, DELIBERATELY. The cap's rationale is weakened by
+# STILL 3 (4 UNDER GENTLE, below), DELIBERATELY. The cap's rationale is weakened by
 # this change: the cap existed partly because each ask was an intrusion into the
 # brainer's turn, and a deferred ask is not an intrusion. That is an argument for
 # raising it, not for raising it blind — and it says so explicitly: do not remove
@@ -307,6 +307,13 @@ if [ "$CHALLENGE" = 1 ]; then
   MAX_ASKS="$MAX_CHALLENGES"  # MUTATION-ANCHOR: 09-M02
 else
   COUNT_FILE="$STATE_DIR/ask-count"
+  # Under gentle the phase-1 proposal is approved through this same channel, so
+  # that approval takes one of the three. Rather than a marker an executor could
+  # replay to skip the cap, the cap is one higher for the whole run: the
+  # approval is covered and nothing else changes. Only hw's own dispatch record
+  # says gentle, and the executor does not write it.
+  _framework="$(awk '/^  framework[[:space:]]/{ print $2; exit }' "$(invoker_run_dir)/dispatch" 2>/dev/null || true)"
+  [ "$_framework" != gentle ] || MAX_ASKS=$((MAX_ASKS + 1))
 fi
 COUNT="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
 case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac

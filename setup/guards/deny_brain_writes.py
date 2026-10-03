@@ -548,6 +548,15 @@ def _head(seg):
     return i, (words[i][0] if i < len(words) else "")
 
 
+def _looks_up(prefix):
+    """True when the wrappers before the verb are `command -v`/`-V`: the verb is
+    looked up, the way `H=$(command -v hw); $H …` finds a program to run later."""
+    for i, (w, _) in enumerate(prefix):
+        if os.path.basename(w) == "command":
+            return any(re.match(r"^-[a-zA-Z]*[vV]", f) for f, _ in prefix[i + 1:])
+    return False
+
+
 def _flag(args, letters, longs=()):
     """A short flag among `letters`, alone or in a cluster (`-uo`, `-HX`), or
     a long one starting with one of `longs`."""
@@ -652,6 +661,11 @@ def _judge(cfg, seg, cwd, local=None, env=None):
         rest = args[1:] if via else args
         if want is None or want[0] != via or (want[1] and (
                 len(rest) < 1 or rest[0] not in want[1].split(","))):
+            if _looks_up(prefix):
+                return _refuse("run", "`command -v %s` looks a brain program up to run it "
+                               "through a variable, and the guard cannot know what a "
+                               "variable runs: call `%s` by its name or by its path, "
+                               "not through a variable" % (name, name))
             return _refuse("run", "`%s` is not one of the brain programs a product "
                            "executor runs (%s)" % (rel, _programs_named(cfg)))
         if rel == "bin/channel-send" and via is None:

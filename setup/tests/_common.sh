@@ -430,6 +430,20 @@ home_opencode_config() {
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
+# link_tool <program path> <dir> [<name>] — one program on a PATH of single links.
+# Windows looks a program's DLLs up beside the LINK, so a lone link to bash.exe
+# dies on `error while loading shared libraries`; under msys/cygwin the DLLs of
+# the program's own directory are linked in beside it.
+link_tool() {
+  local p="$1" d="$2" n="${3:-${1##*/}}" dll
+  ln -sf "$p" "$d/$n" || return 1
+  case "${OSTYPE:-}" in msys*|cygwin*)
+    for dll in "${p%/*}"/*.dll; do
+      if [ -e "$dll" ] && [ ! -e "$d/${dll##*/}" ]; then ln -s "$dll" "$d/${dll##*/}" 2>/dev/null || true; fi
+    done ;;
+  esac
+}
+
 # saw_mutant <arm> <output> <needle> [<needle>...]
 #
 # A MUTANT IS KILLED BY WHAT IT SAID, NEVER BY WHAT IT DID NOT SAY. Measured

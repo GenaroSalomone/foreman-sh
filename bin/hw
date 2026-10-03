@@ -829,6 +829,14 @@ cmd_ruling() {
   [ -n "$rundir" ] \
     || die "no hw run directory at or above the cwd herdr reports for $pane — that pane was not launched by hw, so it has no turn-end hook to deliver a ruling from. Nothing was written."
 
+  # A TASK THAT REPORTED BLOCKED IS WAITING FOR EXACTLY THIS. done-invoker kept
+  # its pane (`blocked-waiting` beside `done`), so the ruling RESUMES the same
+  # task in the same session instead of being refused as "already reported".
+  if [ "$verdict" = reported ] && [ -f "$(witness_task_dir "$rundir")/blocked-waiting" ]; then
+    _ruling_resume_blocked "$pane" "$rundir" "$seq" "$text" "$dry"
+    return $?
+  fi
+
   case "$verdict" in
     # A REPORTED TASK HAS NO TURN LEFT TO DELIVER INTO. Queueing here would
     # write a file nothing ever reads, and the brainer would believe a
@@ -890,6 +898,77 @@ cmd_ruling() {
   fi
   transcript_append "$rundir" "RULING-QUEUED" "ruling:${entry##*.} task=$seq" "$text"
   ok "ruling queued for $pane ($verdict, task $seq), number $pos in its queue — delivered at its next turn end, or by its done-invoker if it reports first; either way before the task can close, and after every ruling queued ahead of it. It is NOT delivered yet; $rundir/ruling-delivered.${entry##*.} records it once it lands."
+}
+
+# RESUME A TASK THAT REPORTED BLOCKED, in the pane done-invoker kept for it.
+#
+# The executor is idle — its turn ended with the report — so there is no turn
+# end to queue for: the ruling is SENT now, through the same route `hw next`
+# uses. The task counter does not move: this is the same task, and its next
+# done-invoker reports it (under its own envelope, `:r<N>`).
+#
+# ORDER. Claim `blocked-waiting` and set `done` aside BEFORE the send, so the
+# executor's own done-invoker can never find the old marker; put both back if
+# the send provably did not land, so a failed delivery leaves the task exactly
+# as blocked-waiting as it was.
+_ruling_resume_blocked() {  # <pane> <rundir> <seq> <text> <dry>
+  local pane="$1" rundir="$2" seq="$3" text="$4" dry="$5" taskdir marker claim done_claim since msg
+  local route target endpoint send_rc=0
+  taskdir="$(witness_task_dir "$rundir")"
+  marker="$taskdir/blocked-waiting"
+  if [ "$dry" = 1 ]; then
+    printf '  would RESUME %s: task %s reported BLOCKED and is waiting for a ruling (since %s); the ruling is sent to it now, the task reopens in the same session, and it reports again with its own done-invoker. Nothing is sent by this dry run\n' \
+      "$pane" "$seq" "$(date -r "$(_blocked_field "$marker" since)" '+%d %b %H:%M' 2>/dev/null || echo '?')"
+    return 0
+  fi
+  claim="$taskdir/.blocked-waiting.resuming.$$"
+  mv "$marker" "$claim" 2>/dev/null \
+    || die "$pane's blocked task $seq stopped waiting while this ruling was being sent — it was resumed or closed by someone else. Nothing was sent."
+  done_claim="$taskdir/.done.resuming.$$"
+  if ! mv "$taskdir/done" "$done_claim" 2>/dev/null; then
+    mv "$claim" "$marker" 2>/dev/null || true
+    die "could not reopen task $seq of $(basename "$rundir") (its done marker would not move). Nothing was sent; it is still blocked-waiting."
+  fi
+  since="$(_blocked_field "$claim" since)"
+
+  _next_load_invoker_lib
+  invoker_resolve_sender "$pane"
+  if _vendor_has_native_transport "${INVOKER_SENDER_VENDOR:-}" \
+     && [ -n "$INVOKER_SENDER_SESSION" ] && [ -n "$INVOKER_SENDER_ENDPOINT" ]; then
+    route="$INVOKER_SENDER_VENDOR"; target="$INVOKER_SENDER_SESSION"; endpoint="$INVOKER_SENDER_ENDPOINT"
+  else
+    route=herdr; target="$pane"; endpoint=-
+  fi
+  msg="RULING FROM YOUR BRAINER, answering your --blocked report on task $seq. It RESUMES THE SAME TASK in this session: keep what you have, act on the ruling — and if it contradicts what you already did, say so rather than quietly redoing it — then report again with done-invoker (no --retask: the task counter did not move).
+
+$text"
+  if [ "$route" = opencode ]; then
+    "$HW_BIN_DIR/channel-send" --require processed --id "$(basename "$rundir"):t$seq:resume" \
+      "$route" "$target" "$endpoint" "$msg" >/dev/null || send_rc=$?
+  else
+    "$HW_BIN_DIR/channel-send" "$route" "$target" "$endpoint" "$msg" >/dev/null || send_rc=$?
+  fi
+  # 4 on a native route and 5 anywhere mean the message is, or may be, in the
+  # receiver: putting `done` back would refuse the report it is about to make.
+  case "$send_rc" in
+    0) ;;
+    4) [ "$route" != herdr ] || send_rc=1 ;;
+    5) warn "delivery to $pane is UNCERTAIN (channel-send exit 5): the ruling may already be in its session, so the task is treated as resumed. Read the pane before sending anything again: herdr agent read $pane --source recent-unwrapped" ;;
+  esac
+  case "$send_rc" in
+    0|4|5) ;;
+    *)
+      mv "$done_claim" "$taskdir/done" 2>/dev/null || true
+      mv "$claim" "$marker" 2>/dev/null || true
+      die "delivery to $pane failed via $route (exit $send_rc). Nothing changed: task $seq is still blocked-waiting and its pane is untouched. Fix the transport and retry." ;;
+  esac
+  printf '%s %s\n' "$(date +%s)" "${since:-?}" >> "$taskdir/blocked-resumed"
+  # The task is open again: turns after the NEXT report are counted from zero,
+  # not on top of whatever happened while it waited.
+  rm -f "$rundir/turns-post-report" 2>/dev/null || true
+  rm -f "$claim" "$done_claim"
+  transcript_append "$rundir" "RULING-RESUMED" "ruling:resume task=$seq" "$text"
+  ok "$pane RESUMED: task $seq had reported BLOCKED and was waiting; the ruling was sent via $route and the task is open again in the same session. It reports again with its own done-invoker."
 }
 
 # KEEP THE EXECUTOR'S ENGRAM SESSION SELECTABLE, at every turn end.
@@ -999,7 +1078,31 @@ cmd_executor_turn_end() {
     fi
     case "$post" in ''|*[!0-9]*) post=0 ;; esac
     [ "$post_seq" = "$cur_seq" ] || post=0
-    post=$((post + 1))  # MUTATION-ANCHOR: 150-M04
+    # THE TURN THAT SENT A BLOCKED REPORT IS NOT A TURN AFTER IT. A success
+    # report closes its own pane from inside that turn, so its end is never
+    # counted; a --blocked report keeps the pane, and the end of the very turn
+    # that ran done-invoker landed here as `<seq> 1`. `hw done` then refused the
+    # idle, waiting pane ("1 turn(s) ended ... AFTER its report"), and so did
+    # the expiry `hw reap` runs through it: nobody could close it. MEASURED
+    # 2026-10-02 by Judgment Day on the tren-12 train. The first turn end after
+    # the marker is written is that turn's; it is stamped on the marker, once,
+    # and every later one counts.
+    #
+    # AND A TURN END NOBODY SAID ANYTHING BEFORE IS NOT A TURN. OpenCode can end
+    # one prompt in two `session.idle` events (measured 2026-10-02 on probe
+    # panes, a failed request: the counter went to 2 for one prompt), and its
+    # adapter now says whether a message reached the pane since the last one
+    # (`HW_TURN_HAD_INPUT`). `0` is a repeat and counts nothing; unset (Claude
+    # and Codex, whose Stop hook stops before this on a reported task) counts as
+    # before.
+    local blocked_mk; blocked_mk="$(_run_blocked_marker "$state_dir")"
+    if [ "${HW_TURN_HAD_INPUT:-}" = 0 ]; then
+      :
+    elif [ -f "$blocked_mk" ] && ! grep -q '^report_turn_ended=' "$blocked_mk" 2>/dev/null; then
+      printf 'report_turn_ended=%s\n' "$(date +%s)" >> "$blocked_mk" 2>/dev/null || true
+    else
+      post=$((post + 1))  # MUTATION-ANCHOR: 150-M04
+    fi
     printf '%s %s\n' "$cur_seq" "$post" > "$state_dir/turns-post-report" 2>/dev/null || true
     [ ! -r "$state_dir/turns" ] || turns="$(tr -dc '0-9' < "$state_dir/turns" 2>/dev/null || true)"
     case "$turns" in ''|*[!0-9]*) turns=0 ;; esac
@@ -1358,6 +1461,7 @@ base_env = {k: os.environ[k] for k in
              "HW_REVIEW_BASE_REF", "HW_REVIEW_BASE_BRANCH",
              "AGENT_BROWSER_NAMESPACE", "HW_BROWSER_PROFILE",
              "CLAUDE_CONFIG_DIR",  # MUTATION-ANCHOR: 122-M01
+             "CLAUDE_CODE_DISABLE_AUTO_MEMORY",  # MUTATION-ANCHOR: 07-AM01
              "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS",
              # --effort for opencode. hw exports these only when THIS dispatch
              # built an overlay, and unsets them otherwise — see
@@ -1608,8 +1712,10 @@ _check_sandbox() {
   SANDBOX_LINE=""
   [ "${SANDBOX:-0}" = 1 ] || return 0
   local why
-  why="$("$HW_BIN_DIR/hw-sandbox" supported 2>&1)" || die "--sandbox refused: $why NOTHING was built."  # MUTATION-ANCHOR: 321-M01
+  # The vendor first: it does not depend on the machine, so it is said on every
+  # platform (on Linux the platform refusal used to hide it).
   [ "$AGENT" = claude ] || die "--sandbox refused: it is measured for claude only, and this dispatch runs $AGENT. Dispatch with --agent claude, or without --sandbox. NOTHING was built."
+  why="$("$HW_BIN_DIR/hw-sandbox" supported 2>&1)" || die "--sandbox refused: $why NOTHING was built."  # MUTATION-ANCHOR: 321-M01
   SANDBOX_LINE="on ($SANDBOX_SRC) — Seatbelt hard profile: writes only in the workdir, artifacts, TMPDIR and the agent's own state; no unix sockets (herdr, docker, ssh-agent); ~/.ssh, ~/.config/gh, ~/.docker unreadable. Reports leave through the outbox broker. TCP is NOT confined."
 }
 
@@ -1842,6 +1948,18 @@ _export_hw_env() {
     OPENCODE_CONFIG="$(_brain_guard_opencode_config)"; export OPENCODE_CONFIG
   else
     unset OPENCODE_CONFIG
+  fi
+  # NO AUTO-MEMORY IN AN EXECUTOR. Claude Code loads the whole MEMORY.md of the
+  # git root's auto-memory into every session, and every lane under brain shares
+  # one: a brainer's working preferences reached every executor as rules. An
+  # executor's contract is its brief and its lane's CLAUDE.md
+  # (docs/brief-and-memory.md § Memory). The unset is load-bearing for the
+  # account's reason: base_env copies this process, so a brainer that carries
+  # the variable must not hand it to an opencode or codex pane by accident.
+  if [ "$AGENT" = claude ]; then
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY=1; export CLAUDE_CODE_DISABLE_AUTO_MEMORY  # MUTATION-ANCHOR: 07-AM03
+  else
+    unset CLAUDE_CODE_DISABLE_AUTO_MEMORY
   fi
   ENGRAM_PROJECT="$(_engram_label "$PROJ")"
   # WHY THIS EXISTS. "Artifacts go in the work directory, never inside the
@@ -2239,6 +2357,8 @@ _hw_env() {
   if [ "${ACCOUNT_APPLIES:-0}" = 1 ] && [ -n "${ACCOUNT_CONFIG_DIR:-}" ]; then
     printf -- ' --env CLAUDE_CONFIG_DIR=%s' "$ACCOUNT_CONFIG_DIR"
   fi
+  # No auto-memory in a Claude executor; see _export_hw_env.
+  [ "$AGENT" != claude ] || printf -- ' --env CLAUDE_CODE_DISABLE_AUTO_MEMORY=1'  # MUTATION-ANCHOR: 07-AM02
   # THIS IS THE `opencode-auto` PARITY, and it is the whole of it.
   # bin/opencode-auto (versioned here; install.sh links it onto PATH) is
   # `export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; exec opencode --auto "$@"`.
@@ -2514,6 +2634,9 @@ values.update({
     # Empty values are dropped below, so `default` persists as an ABSENT name
     # rather than as an empty one — which is what a restored pane needs to see.
     "CLAUDE_CONFIG_DIR":       os.environ.get("CLAUDE_CONFIG_DIR", ""),
+    # `hw revive` replays every key, so a revived claude executor keeps its
+    # auto-memory off; absent for any other vendor (_export_hw_env unsets it).
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY", ""),  # MUTATION-ANCHOR: 07-AM04
     "OPENCODE_CONFIG_DIR":     os.environ.get("OPENCODE_EXECUTOR_CONFIG", ""),
     # The opencode half of the brain guard; absent off a product lane.
     "OPENCODE_CONFIG":         os.environ.get("OPENCODE_CONFIG", ""),
@@ -5589,7 +5712,7 @@ They are not tools, and no tool of those names exists. Run them the way you run
 any other command:
 
     done-invoker "<one paragraph: what you established, and the engram ids>"
-    done-invoker --blocked "<what stopped you, and what would unblock it>"
+    done-invoker --blocked "<what stopped you, and what would unblock it>"  # keeps this pane
     ask-invoker  "<one question, at most 600 characters>"   # 3 per task; your brainer answers
     ask-invoker --challenge "<what the brief forbids> :: <what you observed>"
 
@@ -5597,6 +5720,8 @@ If the brief forbids something you have evidence is wrong, challenge it instead
 of stopping — obey-or-stop are not your only two moves.
 A challenge does not spend an ask; it has its own budget. It needs the evidence,
 not the opinion. Until your brainer rules, hold.
+A --blocked report does not close you: wait. A ruling that answers it resumes
+THIS task — act on it, then report again with done-invoker (no --retask).
 
 If your shell cannot find them, they are at %s/done-invoker and
 %s/ask-invoker — run them by absolute path rather than concluding they do not
@@ -8446,6 +8571,17 @@ cmd_done() {
   # carries a brain path. The push guard sees the same scan, but a branch the
   # operator pushes or merges after this never passes through it.
   PROJ="$proj" _brain_leak_at_close "$proj" "$wt" "$branch"
+  # A blocked executor kept waiting for a ruling stops waiting when it is closed:
+  # the marker moves aside (`blocked-closed`) so sweep, reap and status stop
+  # treating a closed run as one that can still be resumed. AFTER THE
+  # VERIFICATION AND THE LEAK SCAN, not before: the scan can refuse the close
+  # and a verification of up to 900s can be interrupted, and a close stopped
+  # there had already moved the marker — a live pane nobody could resume and
+  # nothing would expire.
+  if [ -n "$done_rundir" ] && [ -f "$(_run_blocked_marker "$done_rundir")" ]; then
+    mv -f "$(_run_blocked_marker "$done_rundir")" "$(dirname "$(_run_blocked_marker "$done_rundir")")/blocked-closed" 2>/dev/null || true
+    info "it had reported BLOCKED and was waiting for a ruling; closing it ends the wait"
+  fi
 
   # TAB FIRST, AND A TAB RECORD CAN NEVER CLOSE A WORKSPACE. hw has closed other
   # people's agents before — a cleanup that worked by exclusion once
@@ -8959,7 +9095,7 @@ cmd_reap() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --apply) apply=1; shift ;;
-      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees, its merged task branches no worktree holds, AND the loose work dirs beside them ($WORK/<lane>). --apply removes what is safe; a merged worktree whose only ignored content is .artifacts/qa-report/test-results/playwright-report has it copied to $(_archive_root)/<lane>/<task>/ and verified first, and a db.provisioned lane's database is pg_dump'ed there before it is dropped. Dirty, unmerged and occupied stay." >&2; return 0 ;;
+      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees, its merged task branches no worktree holds, AND the loose work dirs beside them ($WORK/<lane>). --apply removes what is safe; a merged worktree whose only ignored content is .artifacts/qa-report/test-results/playwright-report has it copied to $(_archive_root)/<lane>/<task>/ and verified first, and a db.provisioned lane's database is pg_dump'ed there before it is dropped. Dirty, unmerged and occupied stay. It also closes an executor kept after a --blocked report and left unanswered past HW_BLOCKED_WAIT_HOURS (default 24)." >&2; return 0 ;;
       -*) die "unknown option: $1" ;;
       *) proj_filter="$(_canon_project "$1")"; shift ;;
     esac
@@ -9066,6 +9202,40 @@ cmd_reap() {
     [ "$loose_seen" != 0 ] || info "no loose work dirs under $wd_root"
   done < <(_repo_lanes)
 
+  # ── third pass: executors that reported BLOCKED and are still waiting ──
+  #
+  # done-invoker keeps a blocked executor's pane so `hw ruling` can resume the
+  # same session. One nobody answers is closed here, once it has waited
+  # HW_BLOCKED_WAIT_HOURS (default 24) — never before, whatever --apply says.
+  local rd mk left bproj btask bpane seen_b=0 hours
+  hours="$(_blocked_wait_hours)"
+  while IFS= read -r rd; do
+    [ -n "$rd" ] || continue
+    mk="$(_run_blocked_marker "$rd")"
+    [ -f "$mk" ] || continue
+    bproj="$(_blocked_field "$mk" project)"; btask="$(_blocked_field "$mk" task)"; bpane="$(_blocked_field "$mk" pane)"
+    [ -n "$bproj" ] && [ -n "$btask" ] || continue
+    [ -z "$proj_filter" ] || [ "$proj_filter" = "$bproj" ] || continue
+    if [ "$seen_b" = 0 ]; then
+      printf '\n  %sblocked, waiting for a ruling%s  (closed after %sh unanswered — HW_BLOCKED_WAIT_HOURS)\n' "$C_B" "$C_0" "$hours"
+      seen_b=1
+    fi
+    left="$(_blocked_seconds_left "$mk")"
+    if [ "$left" -gt 0 ]; then
+      printf '  %s·%s %-42s %swaiting, %dh%02dm left — hw ruling %s "<the unblock>" resumes it%s\n' \
+        "$C_DIM" "$C_0" "$bproj:$btask" "$C_DIM" "$((left / 3600))" "$((left % 3600 / 60))" "${bpane:-<pane>}" "$C_0"
+    elif [ "$apply" = 1 ]; then
+      if "$HW_BIN_DIR/hw" done "$bproj" "$btask" --blocked; then
+        ok "closed $bproj:$btask — reported BLOCKED and unanswered for over ${hours}h"
+      else
+        warn "could not close $bproj:$btask (blocked, unanswered for over ${hours}h) — run hw done $bproj $btask --blocked by hand and read what it says"
+      fi
+    else
+      ok "$bproj:$btask  ${C_DIM}reported BLOCKED, unanswered for over ${hours}h${C_0}"
+      printf '      %shw done %s %s --blocked%s\n' "$C_DIM" "$bproj" "$btask" "$C_0"
+    fi
+  done < <(_hw_run_dirs --every-lane)
+
   # Leave the count where `hw status` can show it without repeating the survey.
   # See _reap_quiet: this whole scan is ~4s of git, which is fine for a command
   # you run on purpose and wrong for a glance you run at every session start.
@@ -9113,6 +9283,40 @@ _run_done_marker() {
 _run_reopened_marker() {
   local m; m="$(_run_done_marker "$1")"
   printf '%s/reopened' "${m%/done}"
+}
+
+# ALSO BESIDE IT: `blocked-waiting`, written by done-invoker when a --blocked
+# report lands. The report was delivered (so `done` exists too), but the
+# executor is KEPT, waiting for an answer: `hw ruling <pane>` resumes the same
+# task, `hw done` closes it on purpose, and `hw reap` closes one nobody answered
+# after HW_BLOCKED_WAIT_HOURS (default 24). Sweep keeps it until then.
+# MEASURED 2026-10-01: closing on a blocked report cost a whole session — the
+# ruling that would have unblocked it found "herdr knows no pane".
+_run_blocked_marker() {
+  local m; m="$(_run_done_marker "$1")"
+  printf '%s/blocked-waiting' "${m%/done}"
+}
+
+_blocked_wait_hours() {
+  local h="${HW_BLOCKED_WAIT_HOURS:-24}"
+  case "$h" in ''|*[!0-9]*) h=24 ;; esac
+  printf '%s' "$h"
+}
+
+_blocked_field() {  # <marker> <key>
+  awk -F= -v k="$2" '$1==k {print substr($0, index($0,"=")+1); exit}' "$1" 2>/dev/null || true
+}
+
+# Seconds left before an unanswered blocked executor may be closed; 0 = expired.
+# A marker with no readable `since` counts from its own mtime, never as expired.
+_blocked_seconds_left() {  # <marker>
+  local since now left
+  since="$(_blocked_field "$1" since)"
+  case "$since" in ''|*[!0-9]*) since="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s)" ;; esac
+  now="$(date +%s)"
+  left=$(( since + $(_blocked_wait_hours) * 3600 - now ))
+  [ "$left" -gt 0 ] || left=0
+  printf '%s' "$left"
 }
 
 # ── hw worktrees: one location per repo, across every harness ───────────────
@@ -12359,22 +12563,50 @@ _decisions_quiet() {
 # A run with no `done` is left alone even though hw owns it: an executor that has
 # not reported is either working or has stopped without saying so, and neither is
 # something a cleanup command gets to decide. `--dry-run` is the default.
-cmd_sweep() {
-  local apply=0 failed=0
-  [ "${1:-}" = --apply ] && apply=1
-  local found=0 closed=0
+# Every hw run directory sweep can see, one per line.
+#
+# `--every-lane` is `hw reap`'s blocked-executor pass, and it sees MORE: every
+# lane's worktree root, `sweep: false` included. MEASURED 2026-10-02 by Judgment
+# Day on the tren-14 train: with sweep's roots, a blocked executor of the
+# `sweep: false` lane was never expired: it waited forever.
+# Expiring a blocked run closes only what `blocked-waiting` names, through
+# `hw done --blocked`, so it does not widen sweep's blast radius.
+#
+# AND OUTSIDE $WORK IT GLOBS, it does not ask fd: a worktree's `.hw/` is in the
+# repo's exclude file (`_ensure_artifacts_dir`), which fd honours, so fd lists
+# no run there at all. A run directory is always `<root>/<task>/.hw/<run>`.
+_hw_run_dirs() {
   # $WORK, then each lane's worktree root outside it, in survey order — except
   # a lane whose `sweep` is false in projects.json (see below).
-  local _sweep_roots=("$WORK") _sl _sr
+  local _every=0 _sweep_roots=("$WORK") _sl _sr _rd
+  [ "${1:-}" = --every-lane ] && _every=1
   while IFS= read -r _sl; do
     [ -n "$_sl" ] || continue
-    [ "$(lane_get "$_sl" sweep)" != 0 ] || continue
+    [ "$_every" = 1 ] || [ "$(lane_get "$_sl" sweep)" != 0 ] || continue
     _sr="$(lane_path "$_sl" worktree_root)"
     case "$_sr" in ''|"$WORK"|"$WORK"/*) continue ;; esac
     _sweep_roots+=("$_sr")
   done <<EOF
 $HW_LANES_SURVEY
 EOF
+  if [ "$_every" = 0 ]; then
+    fd -H -t d '^2[0-9]{7}-[0-9]{6}-[0-9]+$' "${_sweep_roots[@]}" 2>/dev/null || true
+    return 0
+  fi
+  fd -H -t d '^2[0-9]{7}-[0-9]{6}-[0-9]+$' "$WORK" 2>/dev/null || true
+  for _sr in "${_sweep_roots[@]:1}"; do
+    for _rd in "$_sr"/*/.hw/2*; do
+      [ -d "$_rd" ] || continue
+      [[ "${_rd##*/}" =~ ^2[0-9]{7}-[0-9]{6}-[0-9]+$ ]] && printf '%s\n' "$_rd"
+    done
+  done
+  return 0
+}
+
+cmd_sweep() {
+  local apply=0 failed=0
+  [ "${1:-}" = --apply ] && apply=1
+  local found=0 closed=0
 
   while IFS= read -r rundir; do
     [ -n "$rundir" ] || continue
@@ -12399,6 +12631,11 @@ EOF
     # started, on the strength of a report that predates it.
     if [ -f "$(_run_reopened_marker "$rundir")" ]; then
       info "keeping $kind $id — $(basename "$(dirname "$(dirname "$rundir")")") was reopened by hw revive and has not reported since"
+      continue
+    fi
+    if [ -f "$(_run_blocked_marker "$rundir")" ] \
+       && [ "$(_blocked_seconds_left "$(_run_blocked_marker "$rundir")")" -gt 0 ]; then
+      info "keeping $kind $id — $(basename "$(dirname "$(dirname "$rundir")")") reported BLOCKED and is waiting for a ruling (hw ruling resumes it; hw reap closes it after $(_blocked_wait_hours)h)"
       continue
     fi
     if _chaining_lease_live "$rundir"; then # MUTATION-ANCHOR: 37-M21
@@ -12431,7 +12668,7 @@ EOF
   # (`sweep: false` in projects.json): that gap is older than the table and is
   # NOT widened by it, because surfacing every stale run of that lane is its own
   # piece of work with its own blast radius.
-done < <(fd -H -t d '^2[0-9]{7}-[0-9]{6}-[0-9]+$' "${_sweep_roots[@]}" 2>/dev/null || true)
+done < <(_hw_run_dirs)
 
   if [ "$found" = 0 ]; then
     info "no run recorded a workspace id — nothing hw can prove it owns"
@@ -12786,6 +13023,38 @@ def task_done(rundir):
     return os.path.isfile(os.path.join(d, "done")) and not os.path.isfile(os.path.join(d, "reopened"))
 
 
+def blocked_since(rundir):
+    """When the CURRENT task's --blocked report landed, if its executor is still
+    kept waiting for a ruling (`blocked-waiting`, written by done-invoker);
+    None otherwise. A marker without a readable `since` uses its mtime."""
+    p = os.path.join(task_state_dir(rundir), "blocked-waiting")
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p) as fh:
+            for line in fh:
+                if line.startswith("since="):
+                    return int(line.split("=", 1)[1].strip())
+    except (OSError, ValueError):
+        pass
+    try:
+        return int(os.path.getmtime(p))
+    except OSError:
+        return None
+
+
+def blocked_wait_hours():
+    h = os.environ.get("HW_BLOCKED_WAIT_HOURS", "24")
+    return int(h) if h.isdigit() else 24
+
+
+def task_resumed(rundir):
+    """`hw ruling` resumed this task after a blocked report, and it has not
+    reported since: open again, whatever the pane's old done tokens say."""
+    d = task_state_dir(rundir)
+    return os.path.isfile(os.path.join(d, "blocked-resumed")) and not task_done(rundir)
+
+
 def turns_of(rundir):
     """How many of this run's TURNS the harness watched end. Written by
     bin/hw-stop-hook.sh (claude, codex) and the opencode `hw-turn-ended` plugin at
@@ -12952,6 +13221,7 @@ def runs_of(workdir):
                 started = None
         out.append({"name": name, "dir": d, "done": task_done(d), "task": task_seq(d),
                     "reopened": task_reopened(d),
+                    "blocked_since": blocked_since(d), "resumed": task_resumed(d),
                     "started": started, "here": run_is_here(d),
                     "mode": run_mode_of(d),
                     "turns": turns_of(d), "turns_at": turns_at(d),
@@ -13297,6 +13567,7 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
         done_state = tok.get("done_state")
         done_tok = (done_status == "done") or bool(tok.get("hw_done") or tok.get("done"))
         blocked_tok = done_status == "blocked"
+        blocked_now = blocked_tok or bool(newest and newest.get("blocked_since"))
         done_disk = any(r["done"] for r in runs)
         # The NEWEST run's marker only. `hw done` keeps a repo-less work directory
         # and the next run reuses it, so "any run ever reported" must not be allowed
@@ -13407,7 +13678,15 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
                 # any more) nor as a fresh launch (it has a report behind it).
                 mark, state, tint = "●", "reopened", OK
                 notes.append("reopened by hw revive after reporting done — a new done-invoker is expected, without --retask")
-            elif done_tok or done_newest:
+            elif newest and newest.get("resumed"):
+                # `hw ruling` answered a blocked report and the task is open again
+                # in the same session; the pane's old `blocked` tokens predate it.
+                mark, state, tint = "●", "resumed", OK
+                notes.append("resumed by hw ruling after a BLOCKED report — same task, same session; a new done-invoker is expected")
+            # A BLOCKED REPORT ALSO WRITES `done` (it was delivered), so the disk
+            # marker alone cannot say which ending happened; `blocked-waiting` or
+            # the blocked token can, and either one outranks it.
+            elif (done_tok or done_newest) and not blocked_now:
                 # A real report always outranks the turn hook: it knows a turn
                 # ended, done-invoker knows the task did.
                 if done_state == "undelivered" and not done_newest:
@@ -13429,15 +13708,26 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
                     notes.append("reported done, pane still open")
                 if stranded:
                     strand_note()
-            elif blocked_tok:
+            elif blocked_now:
                 if done_state == "undelivered" and not done_newest:
                     if stranded:
                         mark, state, tint = "!", "blocked-STRANDED", WARN
                     else:
                         mark, state, tint = "!", "blocked-NOT-delivered", WARN
+                elif newest and newest.get("blocked_since"):
+                    mark, state, tint = "!", "blocked-waiting", WARN
                 else:
                     mark, state, tint = "!", "reported-blocked", WARN
-                notes.append("reported BLOCKED and stopped, pane still open")
+                if state == "blocked-waiting":
+                    until = newest["blocked_since"] + blocked_wait_hours() * 3600
+                    notes.append("reported BLOCKED and is WAITING for a ruling since %s — pane and session kept"
+                                 % time.strftime("%d %b %H:%M", time.localtime(newest["blocked_since"])))
+                    notes.append("answer it: `hw ruling %s \"<the unblock>\"` resumes the same task; `hw done %s --blocked` closes it; "
+                                 "`hw reap --apply` closes it unanswered after %s (HW_BLOCKED_WAIT_HOURS=%d)"
+                                 % ((a or {}).get("pane_id") or "<pane>", key.replace(":", " ", 1),
+                                    time.strftime("%d %b %H:%M", time.localtime(until)), blocked_wait_hours()))
+                else:
+                    notes.append("reported BLOCKED and stopped, pane still open")
                 if stranded:
                     strand_note()
             elif turn_ended:
@@ -13799,7 +14089,9 @@ _outbox_metas() {  # $1=project (optional) — oldest first
     [ -n "$r" ] || continue
     find "$r" -maxdepth 8 \( -name node_modules -o -name .git \) -prune -o -type f -name '*.meta' -path '*/.hw/*/outbox/*' -print 2>/dev/null
   done <<< "$(_outbox_roots "${1:-}")" | sort -u | while IFS= read -r m; do
-    printf '%s %s\n' "$(stat -f %m "$m" 2>/dev/null || stat -c %Y "$m" 2>/dev/null || echo 0)" "$m"
+    # GNU stat first: its `-f` is filesystem status, which prints a block AND fails
+    # on `%m`, so the BSD spelling tried first left that block in the sort key.
+    printf '%s %s\n' "$(stat -c %Y "$m" 2>/dev/null || stat -f %m "$m" 2>/dev/null || echo 0)" "$m"
   done | sort -n | cut -d' ' -f2-
 }
 _outbox_field() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
@@ -13923,6 +14215,9 @@ cmd_status() {
   # THE LABELS THE PROXY DID NOT HOLD (design §5): read-only, one line, never a
   # failed status. Nonzero is a finding (3) or an unreadable store (1).
   python3 "$(_engram_proxy_bin)" --audit 2>&1 || true
+  # THE ALWAYS-LOADED MEMORY INDEXES, same contract: read-only, one line, and
+  # nothing at all when there is nothing to say (docs/brief-and-memory.md § Memory).
+  python3 "$HW_BIN_DIR/memory-audit" 2>&1 || true  # MUTATION-ANCHOR: 660-M05
 }
 
 # ── main ────────────────────────────────────────────────────────────────────
@@ -14269,6 +14564,9 @@ OTHER COMMANDS
         `channel-send --ruling` refuses into; `hw done` is NOT one, and using it
         for a correction costs the executor its whole session context.
         For a receiver already idle or done, channel-send --ruling delivers now.
+        An executor that reported --blocked is KEPT waiting: a ruling to it
+        RESUMES that same task in the same session (sent now) and it reports
+        again with its own done-invoker.
 
     hw next <pane> [--force] [--dry-run] [--sdd <mode>] "<task>" | --brief <path>
         Flags may appear before or after the task text. Without --sdd the
@@ -14303,6 +14601,8 @@ RECOVERY AND CLEANUP
                                     $HW_ARCHIVE_ROOT/<lane>/<task>/ (default: archive/ beside the work dir) and
                                     verified before removal, a provisioned DB is pg_dump'ed there, then dropped.
                                     A brainer's SessionStart runs it in the background for its own lane.
+                                    Closes a --blocked executor left unanswered past
+                                    HW_BLOCKED_WAIT_HOURS (default 24).
     hw sweep [--apply]              close tabs of runs that REPORTED, only hw's own
     hw worktrees [<project>] [--migrate]
                                     worktrees outside their repo's canonical root
@@ -15288,7 +15588,7 @@ VERIFY_CMDS_EOF
   chaining why  $KEEP_PANE_WHY"
     # MUTATION-ANCHOR-END: 37-M02
   else
-    chaining_line="disabled  (default; proved reports close the owned pane)"
+    chaining_line="disabled  (default; a done report closes the owned pane, a --blocked one keeps it waiting)"
     # THE FIELD NAMES THE IRREVERSIBILITY, not just the setting — but only where
     # it is true. A placement that owns a tab or a workspace loses that container
     # on the proved report, and `HW_CHAINING_ENABLED` is baked into the

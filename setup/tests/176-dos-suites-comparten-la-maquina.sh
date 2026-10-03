@@ -52,7 +52,36 @@ stamp_subject() {
 . "\$(dirname "\${BASH_SOURCE[0]}")/_common.sh"
 now() { python3 -c 'import time; print("%.3f" % time.time())'; }
 printf 'start %s %s\n' "$name" "\$(now)" >> "$STAMPS"
-sleep $hold
+EOS
+    if [ -n "$lane" ]; then
+      printf 'sleep %s\n' "$hold"
+    else
+      # A pool subject stays up until POOL_EXPECT pool subjects of either suite
+      # are alive at once, or all eight have started: the peak is then the
+      # runner's cap, however slowly a loaded machine spawns (the fixed sleep
+      # it replaces peaked at 3 of an uncapped 4 on the WSL runner, 2026-10-02).
+      # The ceiling only ends a wave the runner capped below POOL_EXPECT. Only a
+      # race sets POOL_EXPECT; a single suite's drive keeps the fixed hold.
+      printf 'if [ -z "${POOL_EXPECT:-}" ]; then sleep %s; else\n' "$hold"
+      sed "s#@STAMPS@#$STAMPS#" <<'EOS'
+python3 -c '
+import sys, time
+f, want, cap = sys.argv[1], int(sys.argv[2]), time.time() + float(sys.argv[3])
+while time.time() < cap:
+    st, en = set(), set()
+    for l in open(f):
+        k, who, _ = l.split()
+        if ":2" in who:
+            (st if k == "start" else en).add(who)
+    if len(st) >= 8 or len(st - en) >= want:
+        break
+    time.sleep(0.1)
+time.sleep(0.5)
+'  "@STAMPS@" "$POOL_EXPECT" "$((60 * HW_TEST_SLOW))"
+fi
+EOS
+    fi
+    cat <<EOS
 printf 'end %s %s\n' "$name" "\$(now)" >> "$STAMPS"
 pass "stamped $name"
 EOS
@@ -140,12 +169,12 @@ race() {
   a="$TMP/$tag-a"; b="$TMP/$tag-b"
   make_repo "$a" "$runner"; make_repo "$b" "$runner"
   : > "$STAMPS"
-  drive "$a" > "$TMP/$tag-a.out" &
+  drive "$a" POOL_EXPECT="${RACE_EXPECT:-3}" > "$TMP/$tag-a.out" &
   pa=$!
   # B starts once A's declared subject is running, so "together" is a fact,
   # not luck: without the exclusive, B's own would start beside it.
   while ! grep -q "start $tag-a:10-alone" "$STAMPS" && [ "$tries" -lt 150 ]; do sleep 0.2; tries=$((tries + 1)); done
-  drive "$b" > "$TMP/$tag-b.out" &
+  drive "$b" POOL_EXPECT="${RACE_EXPECT:-3}" > "$TMP/$tag-b.out" &
   pb=$!
   wait "$pa" && RACE_RC_A=0 || RACE_RC_A=$?
   wait "$pb" && RACE_RC_B=0 || RACE_RC_B=$?
@@ -188,7 +217,7 @@ saw_mutant "no machine exclusive" "$RACE_V" "ALONE-BROKEN"
 # The cap alone: every slot number is claimable, the exclusive still holds.
 mutant_of "$TMP/mutant-cap"
 mutate_anchor 176-M02 "$TMP/mutant-cap" 'while [ "$k" -lt 99 ]; do'
-race "$TMP/mutant-cap" mcap
+RACE_EXPECT=4 race "$TMP/mutant-cap" mcap
 peak="$(printf '%s\n' "$RACE_V" | sed -n 's/^PEAK //p')"
 [ -n "$peak" ] && [ "$peak" -gt 3 ] && saw_mutant "no machine cap" "$RACE_V" "PEAK $peak" \
   || fail "no machine cap VACUOUS: without the slot claim the peak was still ${peak:-unknown} of 3 — the cap assertion above proves nothing"

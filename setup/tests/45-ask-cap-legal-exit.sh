@@ -50,3 +50,18 @@ case "$out" in *'done-invoker --blocked "<the unresolved question and what would
   esac
   printf 'mapping - C01↔M01 ask-cap legal exit\n'
   printf 'coverage - 1 behavior claim, 1 dedicated ask-cap mutant killed\n'
+
+# Under gentle the phase-1 approval rides an ask, so the cap is 4 there and
+# stays 3 everywhere else. OLD binary (cap 3 always) refuses the 4th under
+# gentle; the new one accepts it. The stub channel-send exits 99, so an
+# accepted ask surfaces as something other than the cap message.
+printf '  framework   gentle  (chosen)\n' > "$WORK/.hw/run/dispatch"
+gout="$(run_cap "$HARNESS/bin/ask-invoker")" && grc=0 || grc=$?
+case "$gout" in *'already asked the brainer'*) fail "G01 gentle run refused its 4th ask: $gout" ;; *) pass "G01 gentle run accepts the 4th ask (rc=$grc)" ;; esac
+printf '4' > "$WORK/.hw/run/ask-count"
+gout="$(run_cap "$HARNESS/bin/ask-invoker")" && grc=0 || grc=$?
+case "$gout" in *'already asked the brainer 4 times on this task (limit 4)'*) pass "G02 gentle run is capped at 4" ;; *) fail "G02 gentle 5th ask not capped: $gout" ;; esac
+printf '  framework   none  (chosen)\n' > "$WORK/.hw/run/dispatch"
+printf '3' > "$WORK/.hw/run/ask-count"
+nout="$(run_cap "$HARNESS/bin/ask-invoker")" && nrc=0 || nrc=$?
+case "$nout" in *'already asked the brainer 3 times on this task (limit 3)'*) pass "G03 non-gentle cap stays 3" ;; *) fail "G03 non-gentle cap moved: $nout" ;; esac

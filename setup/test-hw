@@ -1055,7 +1055,12 @@ fi
 # which the pool's cap already accounts for — dropping to 2 for them would
 # halve the one full run the queue exists to keep fast.
 if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ] \
-   && [ "$QUEUE_RUNNING_MINE" != 1 ]; then
+   && [ "$QUEUE_RUNNING_MINE" = 1 ]; then
+  # The turn's holder takes every slot of the pool. Skipping the block left it
+  # at the cpu default instead, which is cpus/2: 2 on a 4-cpu runner, where P01
+  # of tests/251 peaked at 2 of 4 (windows.yml 37032884829, wsl).
+  JOBS="$MACHINE_JOBS"
+elif [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ]; then
   _pool_busy=""
   for _d in "$POOL_DIR"/slot.* "$POOL_DIR/exclusive"; do
     [ -e "$_d" ] || continue
@@ -1302,7 +1307,11 @@ if [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ]; then
   WITNESS_SOCK="$JOBDIR/herdr-witness.sock"
   WITNESS_LOG="$JOBDIR/herdr-witness.log"
   : > "$WITNESS_LOG"
-  python3 -c '
+  # Started from JOBDIR, not the candidate: on Windows a process's working
+  # directory cannot be deleted, and the snapshot's cleanup then died on
+  # WinError 32 over hw-source-*/brain (windows.yml 37016917284, subject 251).
+  # exec keeps $! the witness's own pid.
+  ( cd "$JOBDIR" && exec python3 -c '
 import os, sys, json
 sys.path.insert(0, os.path.join(sys.argv[3], "tests"))
 try:
@@ -1330,7 +1339,7 @@ while True:
     with open(log, "a") as f:
         f.write(json.dumps(data.decode("utf-8", "replace")[:400]) + "\n")
     c.close()
-' "$WITNESS_SOCK" "$WITNESS_LOG" "$HERE" < /dev/null > /dev/null 2>&1 &
+' "$WITNESS_SOCK" "$WITNESS_LOG" "$HERE" < /dev/null > /dev/null 2>&1 ) &
   WITNESS_PID=$!
   _w=0
   while [ ! -e "$WITNESS_SOCK" ] && [ "$_w" -lt 50 ]; do sleep 0.1; _w=$((_w + 1)); done
@@ -1811,6 +1820,10 @@ _tm_run
 
 # THE WITNESS IS READ LAST, once every job is done: see above.
 if [ -n "$WITNESS_PID" ]; then
+  # A native Windows python is not reliably ended by msys kill: by its winpid too.
+  case "${OSTYPE:-}" in msys*|cygwin*)
+    [ -r "/proc/$WITNESS_PID/winpid" ] && taskkill //F //T //PID "$(cat "/proc/$WITNESS_PID/winpid")" >/dev/null 2>&1 || true ;;
+  esac
   kill "$WITNESS_PID" 2>/dev/null || true
   wait "$WITNESS_PID" 2>/dev/null || true
   WITNESS_PID=""

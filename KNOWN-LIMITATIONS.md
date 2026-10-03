@@ -48,6 +48,12 @@ release candidate.
   `python3` first on Git Bash's PATH (an MSYS2 or Cygwin Python makes the guard
   refuse every call), and `git config --system core.autocrlf false`
   (INSTALL.md, Windows).
+- **0.3.0-rc.2, measured 2026-10-02:** on the maintainer's suite, a full run
+  (not one subject at a time) is green on Linux (container) and on WSL2, and
+  red on native Git Bash: four subjects fail there (a load-only timing subject,
+  two whose Windows arms are skipped because herdr is not on Git Bash's PATH,
+  and the reap's process kill), and the run outlives the CI step's 150 minutes.
+  The stable 0.3.0 waits for Git Bash green.
 - **Evidence:** the maintainer's full setup suite (a superset of the one this
   repository ships; the subject numbers below are its own) on a GitHub-hosted `windows-latest` runner,
   herdr and the agents stubbed as everywhere in the suite, every subject file

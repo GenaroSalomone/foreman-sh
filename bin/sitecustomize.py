@@ -148,6 +148,13 @@ if _active() and _FIRST:
         # msys writes a converted value with forward slashes; Windows' own
         # values use backslashes and are left alone. HOME, PWD and OLDPWD are
         # the exception: msys converts them to backslashes, and they are bash's.
+        # The mount table itself is in Windows' spelling by design: converted,
+        # HW_MSYS_TMP became /tmp, msys-compat.sh's `:=` kept it in every child
+        # bash, and _msys_w handed `/tmp/x` to native jq unchanged (229, 606 on
+        # windows-latest). HW_MSYS_REAL_* are bash's spelling (compared with
+        # `type -P`) and are still converted back.
+        if _k in ("HW_MSYS_ROOT", "HW_MSYS_TMP", "HW_MSYS_TMP_LONG"):
+            continue
         if (re.match(r"^[A-Z]:/", _v) and ";" not in _v) or (_k in ("HOME", "PWD", "OLDPWD") and _DRIVE.match(_v)):
             os.environ[_k] = to_msys(_v, tmp="argv")
 
@@ -392,6 +399,49 @@ if _active() and _FIRST:
 
     _iu.spec_from_file_location = _spec_from_file_location
 
+    # ── sqlite: the database path is handed to Windows as given ─────────────
+    # sqlite3.connect opened `/tmp/x.db` against the current drive (424 on
+    # windows-latest). A plain path gets _fs; a `file:` URI (uri=True, as
+    # engram-label-proxy's `file:<db>?mode=ro`) with a rooted bash path becomes
+    # `file:///<native>`, its query string kept. The path is not re-encoded:
+    # it was already in the caller's URI form.
+    try:
+        import sqlite3 as _sq
+        import sqlite3.dbapi2 as _sq2
+    except ImportError:
+        _sq = None
+    if _sq is not None:
+        _sq_connect = _sq.connect
+
+        def _sq_uri(db):
+            rest = db[5:]
+            path, sep, tail = rest, "", ""
+            for i, c in enumerate(rest):
+                if c in "?#":
+                    path, sep, tail = rest[:i], c, rest[i + 1:]
+                    break
+            if path.startswith("///"):
+                path = path[2:]
+            elif path.startswith("//"):
+                return db  # an authority (file://host/...) is not ours to read
+            if not _rooted(path):
+                return db
+            return "file:///" + to_native(path).lstrip("/") + sep + tail
+
+        def _sq_connect_fs(database, *a, **k):
+            uri = k["uri"] if "uri" in k else (a[6] if len(a) > 6 else False)
+            if isinstance(database, os.PathLike):
+                database = os.fspath(database)
+            if isinstance(database, str) and database != ":memory:":
+                if uri and database.startswith("file:"):
+                    database = _sq_uri(database)
+                elif not uri:
+                    database = _fs(database)
+            return _sq_connect(database, *a, **k)
+
+        _sq_connect_fs.__wrapped__ = _sq_connect
+        _sq.connect = _sq2.connect = _sq_connect_fs
+
     # ── child processes ─────────────────────────────────────────────────────
     _PATHEXT = tuple(e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e)
 
@@ -421,7 +471,12 @@ if _active() and _FIRST:
                 if "/" in prog or "\\" in prog:
                     found = to_native(prog)
                 else:
-                    found = shutil.which(prog)
+                    # Since 3.12.1 (gh-109590) which() on Windows answers only a
+                    # file with a PATHEXT extension, so an extensionless `#!`
+                    # stub (herdr, 223 on windows-latest) was never found and
+                    # never reached the bash branch below. F_OK finds it; it
+                    # runs only when no executable of that name exists at all.
+                    found = shutil.which(prog) or shutil.which(prog, mode=os.F_OK)
             if found:
                 is_exe = _norm_win(found).lower().endswith(_PATHEXT)
                 script = False

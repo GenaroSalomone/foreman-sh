@@ -657,16 +657,45 @@ for \`hw next\` and expiry closes it automatically.
 A failed close leaves the pane open and exits 4 — which means this report is
 delivered and safe and only the close failed, NOT that the report was lost."
   SOUND=done
-else
-  HEAD="[executor BLOCKED and stopped — $PROJECT:$TASK, pane $HERDR_PANE_ID]"
+elif [ "$CHAINING_LEASE" = 1 ] || [ "$LEGACY_KEEP" = 1 ]; then
+  # A CHAINED RUN IS NOT MARKED WAITING. Its branch below exits before
+  # `blocked-waiting` is written, so `hw ruling` refuses it and `hw reap` never
+  # expires it as a blocked one; promising either was the lie Judgment Day
+  # found on the tren-14 train (2026-10-02). What keeps the pane is the lease.
+  if [ "$CHAINING_LEASE" = 1 ]; then
+    _kept="its bounded chaining lease, which closes it when it expires"
+  else
+    _kept="the legacy keep-pane contract, and nothing expires it"
+  fi
+  HEAD="[executor BLOCKED — $PROJECT:$TASK, pane $HERDR_PANE_ID]"
   TAIL="Partial output: $FILES file(s) in $ARTIFACTS_ROOT
 
 It stopped rather than working around the blocker, which is correct. Decide
-whether this is yours to unblock or ${HW_OPERATOR:-the operator}'s."
+whether this is yours to unblock or ${HW_OPERATOR:-the operator}'s.
+The pane is kept by $_kept. It is NOT marked waiting for a ruling, so
+\`hw ruling\` will not resume it: re-task it with \`hw next\`, or close it with
+\`hw done $PROJECT $TASK --blocked\`."
+  SOUND=request
+else
+  HEAD="[executor BLOCKED and waiting — $PROJECT:$TASK, pane $HERDR_PANE_ID]"
+  TAIL="Partial output: $FILES file(s) in $ARTIFACTS_ROOT
+
+It stopped rather than working around the blocker, which is correct. Decide
+whether this is yours to unblock or ${HW_OPERATOR:-the operator}'s.
+The pane and its session are KEPT, waiting: \`hw ruling $HERDR_PANE_ID \"<the unblock>\"\`
+resumes THIS task in the same session, and it reports again with its own
+done-invoker. \`hw done $PROJECT $TASK --blocked\` closes it now; unanswered, \`hw reap\`
+closes it after ${HW_BLOCKED_WAIT_HOURS:-24}h (HW_BLOCKED_WAIT_HOURS)."
   SOUND=request
 fi
 
+# A TASK RESUMED AFTER A BLOCKED REPORT REPORTS AGAIN, under its own envelope.
+# `hw ruling` appends one line to `blocked-resumed` per resume, so the second
+# report of one task is told apart from a redelivery of the first.
 ENVELOPE_ID="$(invoker_envelope_prefix):done"
+_resumes=0
+[ ! -r "$STATE_DIR/blocked-resumed" ] || _resumes="$(wc -l < "$STATE_DIR/blocked-resumed" | tr -d ' ')"
+case "$_resumes" in ''|0|*[!0-9]*) ;; *) ENVELOPE_ID="$ENVELOPE_ID:r$_resumes" ;; esac
 MSG="$HEAD
 Envelope: $ENVELOPE_ID. Process this envelope even if your inbox coalesced it
 with other messages.
@@ -873,6 +902,27 @@ if [ "$LEGACY_KEEP" = 1 ]; then
   exit 0
 fi
 
+# A BLOCKED REPORT DOES NOT CLOSE THE EXECUTOR. MEASURED 2026-10-01: a
+# setup executor reported --blocked, this line ran `hw done --blocked`, the pane
+# and its session went, and the ruling that would have unblocked it found
+# "herdr knows no pane" — the task was relaunched from nothing. A blocker is a
+# question, and the session that asked it is the one that can use the answer.
+#
+# So the run is marked `blocked-waiting` beside its `done` marker and the pane
+# stays. `hw ruling <pane>` resumes the same task; `hw done` closes it on
+# purpose; `hw reap` closes one nobody answered after HW_BLOCKED_WAIT_HOURS
+# (default 24). `done` stays written: every reader that asks "did this task
+# tell its brainer how it ended?" is still answered yes, which it was.
+if [ "$STATUS" = blocked ]; then
+  { printf 'since=%s\n' "$(date +%s)"
+    printf 'pane=%s\nproject=%s\ntask=%s\nenvelope=%s\n' "$HERDR_PANE_ID" "$PROJECT" "$TASK" "$ENVELOPE_ID"
+  } > "$STATE_DIR/blocked-waiting" \
+    || die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — $RECEIPT_NOTE — but $STATE_DIR/blocked-waiting could not be written, so \`hw ruling\` cannot resume this task and nothing will expire it. The pane is still open at $HERDR_PANE_ID. Do NOT re-run done-invoker."
+  printf 'brainer notified via %s (blocked, %s file(s)); %s; pane KEPT, waiting: `hw ruling %s "<the unblock>"` resumes this task, `hw reap` closes it after %sh unanswered.\n' \
+    "$DELIVERY_ROUTE" "$FILES" "$RECEIPT_NOTE" "$HERDR_PANE_ID" "${HW_BLOCKED_WAIT_HOURS:-24}"
+  exit 0
+fi
+
 # A FAILED CLOSE IS NOT A FAILED REPORT, AND IT IS NOT SILENT EITHER.
 #
 # Both halves matter. Swallowing the close failure would recreate the masking
@@ -881,10 +931,8 @@ fi
 # 1 is "not delivered, retry", and retrying here sends the brainer a second
 # report for one task. Exit 4 says the true thing, and says it in an order a
 # reader cannot misread: delivered and safe FIRST, then what failed.
-_DONE_ARGS=()
-[ "$STATUS" = blocked ] && _DONE_ARGS=(--blocked)
 _say_verifying
-if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK" ${_DONE_ARGS[@]+"${_DONE_ARGS[@]}"}; then
+if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK"; then
   die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — $RECEIPT_NOTE, and this run is marked done. What failed is the CLOSE: \`hw done $PROJECT $TASK\` could not close the owned task tab/workspace, so the pane is still open at $HERDR_PANE_ID (workdir $WORKDIR). Do NOT re-run done-invoker — the report landed, and a second one is a second report for one task. Close it by hand with \`hw done $PROJECT $TASK\` once the cause above is fixed. (Exit $EXIT_DELIVERED_NOT_CLOSED means delivered-but-not-closed; exit 1 would have meant nothing was reported.)"
 fi
 

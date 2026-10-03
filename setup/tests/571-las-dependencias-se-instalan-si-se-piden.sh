@@ -33,12 +33,15 @@ export ENGRAM_PORT=9 ENGRAM_DATA_DIR="$TMP/engram"   # never 7437
 SYS="$TMP/sys"; mkdir -p "$SYS"
 for t in bash sh env sed awk cat dirname basename mkdir rm chmod tr head tail wc \
          mktemp readlink grep sort cut ls printf id touch cp mv ln date rsync md5 md5sum; do
-  p="$(command -v "$t" 2>/dev/null || true)"; case "$p" in /*) ln -sf "$p" "$SYS/$t" ;; esac
+  p="$(type -P "$t" 2>/dev/null || true)"; case "$p" in /*) link_tool "$p" "$SYS" "$t" ;; esac
 done
 # The claims are the macOS list (Claude Code as the cask); on a Linux runner too.
 printf '#!/bin/sh\n{ [ "$1" = -s ] || [ -z "$1" ]; } && echo Darwin || exec %s "$@"\n' "$(command -v uname)" > "$SYS/uname"; chmod +x "$SYS/uname"
-link() { local p; p="$(command -v "$1")" || fail "this test needs $1 on PATH"; ln -sf "$p" "$2/$1"; }
+link() { local p; p="$(type -P "$1")" || fail "this test needs $1 on PATH"; link_tool "$p" "$2" "$1"; }
 link git "$SYS"; link python3 "$SYS"   # what Homebrew does not install here; present, so "ok"
+# On native Windows every entry point sources bin/msys-compat.sh, which calls
+# cygpath unconditionally (dirname, its other external, is linked above).
+case "${OSTYPE:-}" in msys*|cygwin*) link cygpath "$SYS" ;; esac
 
 # brew: logs every call and "installs" a command into $GOT, which is on PATH.
 # BREW_FAIL names a package whose install fails.

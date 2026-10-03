@@ -61,7 +61,9 @@ def inventory(root):
             info = path.lstat()
             mode = stat.S_IMODE(info.st_mode)
             if path.is_symlink():
-                value = ['link', mode, os.readlink(path)]
+                # A link is its target: its own mode is never consulted, and a
+                # copy under Git Bash reports another one (511 vs 438).
+                value = ['link', os.readlink(path)]
             elif stat.S_ISDIR(info.st_mode):
                 value = ['dir', mode]
             elif stat.S_ISREG(info.st_mode):

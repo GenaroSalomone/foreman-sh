@@ -17,9 +17,11 @@ work/<lane>, the lane's checkout and worktree root). The child is started with
 (`process_override`, measured in the design, probe U).
 
 THE RULES, on every `tools/call` of a `mem_*` tool:
-  - a `project` argument other than the label (case-insensitive) is refused.
-    Keyed on the argument, not on a tool list, so a tool engram adds tomorrow
-    is covered the day it appears (amendment 2);
+  - a `project` or `expected_project` argument other than the label
+    (case-insensitive) is refused. Keyed on the argument, not on a tool list,
+    so a tool engram adds tomorrow is covered the day it appears (amendment 2);
+  - `mem_update` without `expected_project` gets the label as one: engram
+    3.0.0 refuses an observation mutation that does not assert its owner;
   - `mem_search` gets `all_projects: true` under the org root, always
     (amendment 3): the lanes' history is split across labels, and a default
     search misses most of it (design §0.3);
@@ -47,6 +49,9 @@ BRAIN = os.path.realpath(os.environ.get("HW_BRAIN_ROOT")
 READS = {"mem_search", "mem_context", "mem_get_observation", "mem_timeline",
          "mem_stats", "mem_current_project"}
 REFUSED = {"mem_merge_projects", "mem_delete"}
+# engram 3.0.0 refuses an observation mutation without `expected_project`
+# (HTTP 400 since engram 3.0.0); the label is that assertion, filled in when absent.
+MUTATIONS = {"mem_update"}
 
 
 def _expand(p, brain, work, checkout=None, lane=None):
@@ -129,12 +134,15 @@ def verdict(msg, label, governed):
     if tool in REFUSED:
         return ("engram-label-proxy: %s is refused for every brainer and executor; it rewrites "
                 "or removes other agents' memory. It is the operator's to run." % tool)
-    proj = args.get("project")
-    if isinstance(proj, str) and proj.strip() and label and proj.strip().lower() != label.lower():
-        return ("engram-label-proxy: your engram label is `%s`; `project: %s` is refused. "
-                "Omit `project` — the label is already set for this session." % (label, proj))
-    if proj is not None and not isinstance(proj, str):
-        return "engram-label-proxy: `project` must be a string naming `%s`, or omitted." % label
+    for key in ("project", "expected_project"):
+        proj = args.get(key)
+        if isinstance(proj, str) and proj.strip() and label and proj.strip().lower() != label.lower():
+            return ("engram-label-proxy: your engram label is `%s`; `%s: %s` is refused. "
+                    "Omit `%s` — the label is already set for this session." % (label, key, proj, key))
+        if proj is not None and not isinstance(proj, str):
+            return "engram-label-proxy: `%s` must be a string naming `%s`, or omitted." % (key, label)
+    if tool in MUTATIONS and label and not (args.get("expected_project") or "").strip():
+        args["expected_project"] = label
     if tool == "mem_search":
         args["all_projects"] = True
     return None

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # done-invoker: a delivered report closes its owned task container
+# A delivered SUCCESS report. Since 2026-10-01 a --blocked one keeps its pane
+# waiting for a ruling instead of closing (590); every case here is a success.
 
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 

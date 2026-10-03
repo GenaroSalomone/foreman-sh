@@ -57,7 +57,9 @@ deps() {
 # A present jq older than 1.7 counts as missing: its `jq -e` treats empty input as
 # success (install.sh refuses it for the same reason).
 present() {  # <command>
-  command -v "$1" >/dev/null 2>&1 || return 1
+  # type -P: under Git Bash msys-compat exports functions named jq, fd, git, ps
+  # and pgrep, which `command -v` reports as installed (571, windows.yml 37045495692).
+  type -P "$1" >/dev/null 2>&1 || return 1
   if [ "$1" = jq ]; then
     local v
     v="$(jq --version 2>/dev/null | sed -E 's/^jq-([0-9]+)\.([0-9]+).*/\1 \2/')"
@@ -67,7 +69,7 @@ present() {  # <command>
 
 printf 'dependencies (%s)\n' "$([ "$PLAN" = 1 ] && echo "--check: the commands are printed, none is run" || echo "each command is printed, then run")"
 BREW=""
-command -v brew >/dev/null 2>&1 && BREW=brew
+type -P brew >/dev/null 2>&1 && BREW=brew
 installed="" failed="" yours="" todo=0
 # The rows come in on fd 3: brew keeps the terminal's stdin (a cask may prompt),
 # and nothing it reads can eat the rows still to come.

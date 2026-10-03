@@ -150,6 +150,9 @@ OTHER COMMANDS
         `channel-send --ruling` refuses into; `hw done` is NOT one, and using it
         for a correction costs the executor its whole session context.
         For a receiver already idle or done, channel-send --ruling delivers now.
+        An executor that reported --blocked is KEPT waiting: a ruling to it
+        RESUMES that same task in the same session (sent now) and it reports
+        again with its own done-invoker.
 
     hw next <pane> [--force] [--dry-run] [--sdd <mode>] "<task>" | --brief <path>
         Flags may appear before or after the task text. Without --sdd the
@@ -179,6 +182,8 @@ RECOVERY AND CLEANUP
                                     $HW_ARCHIVE_ROOT/<lane>/<task>/ (default: archive/ beside the work dir) and
                                     verified before removal, a provisioned DB is pg_dump'ed there, then dropped.
                                     A brainer's SessionStart runs it in the background for its own lane.
+                                    Closes a --blocked executor left unanswered past
+                                    HW_BLOCKED_WAIT_HOURS (default 24).
     hw sweep [--apply]              close tabs of runs that REPORTED, only hw's own
     hw worktrees [<project>] [--migrate]
                                     worktrees outside their repo's canonical root

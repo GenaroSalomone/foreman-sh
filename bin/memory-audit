@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""THE ALWAYS-LOADED MEMORY INDEXES, AUDITED. READ-ONLY, ONE LINE, OR NOTHING.
+
+    memory-audit [--root DIR] [--config-dir DIR]... [--budget-bytes N]
+
+Claude Code loads the whole MEMORY.md of a git root's auto-memory into every
+session started under it, one copy per account config dir. Nothing else in the
+harness keeps that index honest, so `hw status` runs this and prints its line.
+It checks the harness roots (this brain and every lane `checkout` in
+projects.json) under each account config dir, and says, in ONE line:
+
+  - an index over the byte budget (HW_MEMORY_INDEX_BUDGET, default 15000:
+    under the 16961 B the brain index measured before its 2026-10-02 cleanup);
+  - a retired entry still listed: a retirement marker on the index line
+    (OBSOLETA, REVERTIDA, SUPERSEDED, ...), a target file that opens with a
+    superseded banner, or a target file that does not exist;
+  - a `[[slug]]` cited in a live <lane>/decisions.md that resolves to no memory
+    file in any audited store and no file in this repository.
+
+Clean prints NOTHING and exits 0. A finding exits 3. It writes nothing, ever.
+The owner of each kind of fact: docs/brief-and-memory.md § Memory.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+MARKER = re.compile(r"\b(OBSOLETA|OBSOLETO|OBSOLETE|REVERTIDA|REVERTIDO|REVERTED|"
+                    r"SUPERSEDED|REEMPLAZADA|REEMPLAZADO|RETIRADA|RETIRADO)\b")
+BANNER = re.compile(r"^\s*(\*\*)?(\[)?(Reemplazad[ao]|Superseded|SUPERSEDED|OBSOLET[AOE]|Revertid[ao]|REVERTID[AO])\b")
+LINK = re.compile(r"\]\(([^)]+\.md)\)")
+SLUG = re.compile(r"\[\[([a-z0-9][a-z0-9._-]*)\]\]")
+CAP = 3
+
+
+def store_key(path):
+    # Claude Code names a project's store after its absolute path with every
+    # character outside [A-Za-z0-9] turned into a hyphen.
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(path))
+
+
+def main_checkout(path):
+    # A worktree's sessions load the store of the repository it belongs to
+    # (measured 2026-10-02 from work/setup/<task>), so key on the common dir.
+    try:
+        out = subprocess.run(["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True).stdout.strip()
+    except OSError:
+        out = ""
+    return os.path.dirname(out) if out.endswith("/.git") else path
+
+
+def harness_roots(root):
+    roots = [main_checkout(root)]
+    try:
+        lanes = json.load(open(os.path.join(root, "projects.json"))).get("lanes", {})
+    except (OSError, ValueError):
+        lanes = {}
+    for lane in (lanes.values() if isinstance(lanes, dict) else []):
+        co = (lane.get("checkout") or "").strip() if isinstance(lane, dict) else ""
+        if co:
+            co = main_checkout(os.path.expanduser(co)) if os.path.isdir(os.path.expanduser(co)) else ""
+            if co and co not in roots:
+                roots.append(co)
+    return roots
+
+
+def first_body_line(path):
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    m = re.match(r"---\n.*?\n---\n", text, re.S)
+    body = text[m.end():] if m else text
+    for line in body.splitlines():
+        if line.strip():
+            return line
+    return ""
+
+
+def short(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
+
+
+def main(argv):
+    root = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    try:
+        budget = int(os.environ.get("HW_MEMORY_INDEX_BUDGET") or 15000)
+    except ValueError:
+        budget = 15000
+    cfgs = []
+    while argv:
+        flag, argv = argv[0], argv[1:]
+        if flag in ("--root", "--config-dir", "--budget-bytes") and argv:
+            val, argv = argv[0], argv[1:]
+            if flag == "--root":
+                root = os.path.realpath(val)
+            elif flag == "--config-dir":
+                cfgs.append(os.path.expanduser(val))
+            else:
+                budget = int(val)
+        else:
+            sys.stderr.write("usage: memory-audit [--root DIR] [--config-dir DIR]... [--budget-bytes N]\n")
+            return 2
+    if not cfgs:
+        home = os.path.expanduser("~")
+        # Every account, whichever one this process runs under: a brainer on
+        # the personal account still owns the default account's stores.
+        cfgs = [os.path.join(home, ".claude"), os.path.join(home, ".claude-personal")]
+        if os.environ.get("CLAUDE_CONFIG_DIR"):
+            cfgs.append(os.path.expanduser(os.environ["CLAUDE_CONFIG_DIR"]))
+    cfgs = list(dict.fromkeys(os.path.realpath(c) for c in cfgs if os.path.isdir(c)))
+
+    over, retired, stores = [], [], []
+    for cfg in cfgs:
+        for r in harness_roots(root):
+            mem = os.path.join(cfg, "projects", store_key(r), "memory")
+            idx = os.path.join(mem, "MEMORY.md")
+            if not os.path.isfile(idx) or os.path.realpath(mem) in [s for s, _ in stores]:
+                continue
+            stores.append((os.path.realpath(mem), idx))
+            size = os.path.getsize(idx)
+            if size > budget:  # MUTATION-ANCHOR: 660-M01
+                over.append("%s %d B" % (short(idx), size))
+            for line in open(idx, encoding="utf-8", errors="replace").read().splitlines():
+                m = LINK.search(line)
+                name = m.group(1) if m else ""
+                why = None
+                if MARKER.search(line):  # MUTATION-ANCHOR: 660-M02
+                    why = "marked"
+                elif name and not os.path.isabs(name):
+                    first = first_body_line(os.path.join(mem, name))
+                    if first is None:
+                        why = "file missing"
+                    elif BANNER.match(first):  # MUTATION-ANCHOR: 660-M03
+                        why = "file says superseded"
+                if why:
+                    retired.append("%s:%s (%s)" % (short(idx), name[:-3] if name else line[:40], why))
+
+    known = set()
+    for mem, _ in stores:
+        known.update(f[:-3] for f in os.listdir(mem) if f.endswith(".md"))
+    try:
+        tracked = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True, text=True).stdout
+    except OSError:
+        tracked = ""
+    for f in tracked.splitlines():
+        base = os.path.basename(f)
+        known.update((base, os.path.splitext(base)[0]))
+    dangling = []
+    for lane in sorted(os.listdir(root)):
+        dec = os.path.join(root, lane, "decisions.md")
+        if not os.path.isfile(dec):
+            continue
+        for n, line in enumerate(open(dec, encoding="utf-8", errors="replace"), 1):
+            for slug in SLUG.findall(line):
+                if slug not in known:  # MUTATION-ANCHOR: 660-M04
+                    dangling.append("%s/decisions.md:%d [[%s]]" % (lane, n, slug))
+
+    parts = []
+    if over:
+        parts.append("%d index(es) over %d B: %s" % (len(over), budget, ", ".join(over[:CAP])))
+    if retired:
+        more = " …+%d" % (len(retired) - CAP) if len(retired) > CAP else ""
+        parts.append("%d retired entr%s still indexed: %s%s"
+                     % (len(retired), "y" if len(retired) == 1 else "ies", ", ".join(retired[:CAP]), more))
+    if dangling:
+        more = " …+%d" % (len(dangling) - CAP) if len(dangling) > CAP else ""
+        parts.append("%d [[slug]] in decisions.md resolve nowhere: %s%s"
+                     % (len(dangling), ", ".join(dangling[:CAP]), more))
+    if not parts:
+        return 0
+    print("memory indexes  " + "; ".join(parts) + " — docs/brief-and-memory.md § Memory")
+    return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

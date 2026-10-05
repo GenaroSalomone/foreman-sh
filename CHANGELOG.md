@@ -4,6 +4,15 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.0] — 2026-10-05
+
+### Added
+- A brainer can now ask about an order that reads two ways: a turn ending in
+  `Ambiguous: «<the operator's words>» — <reading A> / <reading B>` (or
+  `Ambiguo:`) is no longer refused as a handback by `bin/hw-stop-hook.sh`.
+  The line must quote words the operator actually wrote and name two
+  readings, so a decision handed back as a question is still refused.
+
 ## [0.3.0-rc.2] — 2026-10-02
 
 ### Added

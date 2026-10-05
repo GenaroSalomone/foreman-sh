@@ -22,6 +22,17 @@ rm -rf "$BASE"
 mkdir -p "$BASE"
 trap '[ "$OWN_ART" -eq 0 ] || rm -rf "$ART"' EXIT
 
+# lanes_of_guard <js expression of the module>: what the guard's own table says,
+# printed by node. The module goes through the environment and pathToFileURL,
+# never spliced into `import('…')`: on Git Bash a `/c/…` path there resolves to
+# `C:\c\…` and the import fails (windows.yml 37090376222, ERR_MODULE_NOT_FOUND),
+# while msys hands an environment value to node in its Windows spelling.
+lanes_of_guard() {
+  GUARD_JS="$ROOT/setup/guards/deny-repo-writes.js" EXPR="$1" node --input-type=module -e '
+import { pathToFileURL } from "node:url";
+const m = await import(pathToFileURL(process.env.GUARD_JS).href);
+console.log((0, eval)(process.env.EXPR)(m));'
+}
 copy_tree() {
   local dst="$1" lane
   mkdir -p "$dst/brain/setup/guards"
@@ -43,7 +54,7 @@ copy_tree() {
   # 2026-09-09, chasing a mandatory pre-push gate that could never turn green.
   # `brain` (the root) is excluded because it is handled as the fifth lane
   # below, at a different path shape.
-  for lane in $(node -e "import('$ROOT/setup/guards/deny-repo-writes.js').then(m => console.log(Object.keys(m.LANES).filter(l => l !== 'brain').join(' ')))"); do
+  for lane in $(lanes_of_guard "m => Object.keys(m.LANES).filter(l => l !== 'brain').join(' ')"); do
     mkdir -p "$dst/brain/$lane/.claude/hooks" "$dst/brain/$lane/.opencode/plugin"
     cp "$ROOT/$lane/.claude/hooks/deny-repo-writes.py" "$dst/brain/$lane/.claude/hooks/"
     cp "$ROOT/$lane/.opencode/plugin/deny-repo-writes.js" "$dst/brain/$lane/.opencode/plugin/"
@@ -158,7 +169,7 @@ mutate codex-malformed-payload "setup/guards/deny-repo-writes-codex.py" \
 # demanded two lanes besides both, so the export's suite aborted here before
 # any mutant ran. `setup` is no longer excluded — the shim-import arm below
 # mutates its JS shim in a separate copy, so the two arms do not collide.
-read -r SHIM_LANE SHIM_OTHER <<<"$(node -e "import('$ROOT/setup/guards/deny-repo-writes.js').then(m => { const own = Object.keys(m.LANES).filter(l => l !== 'brain'); console.log(own[0] ?? '', own[1] ?? (own[0] ? 'brain' : '')); })")"
+read -r SHIM_LANE SHIM_OTHER <<<"$(lanes_of_guard "m => { const own = Object.keys(m.LANES).filter(l => l !== 'brain'); return [own[0] ?? '', own[1] ?? (own[0] ? 'brain' : '')].join(' '); }")"
 [ -n "$SHIM_OTHER" ] || { echo "shim-lane-name: the lane table has no lane besides brain" >&2; exit 1; }
 mutate shim-lane-name "$SHIM_LANE/.claude/hooks/deny-repo-writes.py" \
   "LANE = \"$SHIM_LANE\"" "LANE = \"$SHIM_OTHER\""

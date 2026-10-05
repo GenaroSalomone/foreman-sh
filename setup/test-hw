@@ -1806,6 +1806,9 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   # VACUOUS — so exit 3 is unconditional again. Do not reintroduce the list to
   # get past a red run: the whole point of exit 3 is that the arm proves nothing,
   # and a warning nobody has to act on is how it stayed unproven for a day.
+  # A pass may name arms it exempted (native Windows only, mutation-coverage):
+  # printed in the run, never silent.
+  [ "$cov_rc" -ne 0 ] || [ ! -s "$JOBDIR/$_i.cov" ] || cat "$JOBDIR/$_i.cov"
   if [ "$cov_rc" -ne 0 ]; then
     printf '\nnot ok - suite: setup/tests/%s failed mutation coverage (exit %s) — a mutant nothing runs, or one nothing can see fail, is not coverage: %s\n' \
       "$(basename "$f")" "$cov_rc" "$(cat "$JOBDIR/$_i.cov" 2>/dev/null || printf 'mutation-coverage printed no reason')" >&2

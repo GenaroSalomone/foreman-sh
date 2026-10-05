@@ -263,7 +263,7 @@
     },
     "77-held-reply-ingestion.sh": {
       "exit": 0,
-      "seconds": 0.97
+      "seconds": 1.92
     },
     "80-codex-brief-delivery.sh": {
       "exit": 0,
@@ -318,6 +318,6 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-10-02T14:50:43Z",
+  "measured_at": "2026-10-03T00:44:14Z",
   "touched_budget_seconds": 180
 }

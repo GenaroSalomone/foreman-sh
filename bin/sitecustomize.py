@@ -49,6 +49,23 @@ def _norm_win(p):
     return p.replace("\\", "/")
 
 
+def which_in_order(prog, dirs, exts, isfile=os.path.isfile):
+    """The first `prog` along `dirs`, in PATH's own order: in each directory a
+    name with one of `exts` (PATHEXT), then the bare name, a `#!` stub. Two
+    passes over the whole PATH, extension first, let a later `herdr.exe` beat
+    an earlier `herdr` stub: 223's recording stub, first on PATH, lost to the
+    real herdr the moment windows.yml put one further down (37090376222). On
+    POSIX an earlier directory wins whatever the file is, and so it does here."""
+    for d in dirs:
+        if not d:
+            continue
+        for name in [prog + e for e in exts] + [prog]:
+            cand = os.path.join(d, name)
+            if isfile(cand):
+                return cand
+    return None
+
+
 def load_table(env):
     """msys's mount table, as msys-compat.sh exported it (`cygpath -m`)."""
     global _ROOT, _TMPS, _TMP_SHORT
@@ -100,6 +117,17 @@ def to_msys(p, tmp=True):
         if low == rl or low.startswith(rl + "/"):
             return q[len(_ROOT):] or "/"
     return "/" + q[0].lower() + (q[2:] if len(q) > 3 else "")
+
+
+def physical(p):
+    """What `pwd -P` prints for a resolved Windows path. msys keeps a mount in
+    it: the /tmp mount is the temp directory as msys spells it (HW_MSYS_TMP,
+    `cygpath -m /tmp`), so a resolved path under that spelling is /tmp. Where
+    the 8.3 and long names differ (the runner's RUNNER~1) the resolved long
+    path is physical, /c/Users/<u>/...; where they are one name (a user
+    `foreman` on win11-foreman) `pwd -P` prints /tmp/... and so must this:
+    223's transcript was looked up under the other spelling."""
+    return to_msys(p, tmp="argv")
 
 
 # msys writes an upper-case drive; a lower-case one was never its conversion.
@@ -256,7 +284,7 @@ if _active() and _FIRST:
         p = os.fspath(p)
         if not isinstance(p, str):
             return _nt.realpath(p, *a, **k)
-        return to_msys(_fwd(_nt.realpath(to_native(abspath(p)), *a, **k)), tmp=False)
+        return physical(_fwd(_nt.realpath(to_native(abspath(p)), *a, **k)))
 
     def relpath(path, start=None):
         path = abspath(path)
@@ -474,9 +502,9 @@ if _active() and _FIRST:
                     # Since 3.12.1 (gh-109590) which() on Windows answers only a
                     # file with a PATHEXT extension, so an extensionless `#!`
                     # stub (herdr, 223 on windows-latest) was never found and
-                    # never reached the bash branch below. F_OK finds it; it
-                    # runs only when no executable of that name exists at all.
-                    found = shutil.which(prog) or shutil.which(prog, mode=os.F_OK)
+                    # never reached the bash branch below; a which() then F_OK
+                    # pass found it only while no herdr.exe was on PATH at all.
+                    found = which_in_order(prog, os.environ.get("PATH", "").split(os.pathsep), _PATHEXT)
             if found:
                 is_exe = _norm_win(found).lower().endswith(_PATHEXT)
                 script = False

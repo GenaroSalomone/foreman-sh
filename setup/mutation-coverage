@@ -194,6 +194,48 @@ if grep -Eq "$MARKER" "$OUTPUT"; then
 fi
 # MUTATION-ANCHOR-END: 46-M02
 
+# THE ONE EXEMPTION, AND IT IS NARROW (2026-10-02). Some arms cannot mean
+# anything on native Windows: 186's run the pre-fix guards, which have no
+# Windows path model, so their allow there is noise, not the old behaviour
+# (windows.yml 37084055355). On native Windows ONLY (uname, not $OSTYPE, which
+# the environment can set), a subject that exercised none of its arms passes
+# when EVERY arm its source declares is listed BY NAME, with a reason, in
+# mutation-exempt-native-windows.tsv beside this file. Names are compared
+# exactly: there is no wildcard. Each exempt arm is printed, so the run says
+# what it did not exercise. Anywhere else the list is never read.
+SUBJECT_NAME="$(basename "$SUBJECT")"
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) # MUTATION-ANCHOR: 46-M12
+    EXEMPT_LIST="$(dirname "$0")/mutation-exempt-native-windows.tsv"
+    # Every id on every declaring line; a declaring line with none is an arm
+    # the list cannot name, so it can never be exempt (Judgment Day, both
+    # judges: `pass "mutant killed: <prose>"`, a name on the next line).
+    DECLARING="$(grep -Ev "$COMMENT" "$SUBJECT" | grep -E "$DECLARE_MARKER")"
+    ARMS="$(printf '%s\n' "$DECLARING" \
+      | awk '{ while (match($0, /M[0-9]+[A-Za-z0-9]*/)) { print substr($0, RSTART, RLENGTH); $0 = substr($0, RSTART + RLENGTH) } }' | sort -u)"
+    UNNAMED="$(printf '%s\n' "$DECLARING" | grep -cvE 'M[0-9]+' || true)"
+    if [ -n "$ARMS" ] && [ -r "$EXEMPT_LIST" ]; then
+      exempt="" missing=""
+      [ "${UNNAMED:-0}" -eq 0 ] || missing=" (${UNNAMED} declared with no arm name)" # MUTATION-ANCHOR: 46-M14
+      for arm in $ARMS; do
+        reason="$(awk -F '\t' -v s="$SUBJECT_NAME" -v a="$arm" \
+          '$1 !~ /^#/ && $1 == s && $2 == a && $3 ~ /[^[:space:]]/ { print $3; exit }' "$EXEMPT_LIST")"
+        if [ -n "$reason" ]; then
+          exempt="$exempt$(printf 'exempt - %s %s on native Windows: %s' "$SUBJECT_NAME" "$arm" "$reason")
+"
+        else
+          missing="$missing $arm" # MUTATION-ANCHOR: 46-M13
+        fi
+      done
+      if [ -z "$missing" ]; then
+        printf '%s' "$exempt"
+        exit 0
+      fi
+      printf 'mutation-coverage: %s: on native Windows the arms%s are not in %s, so their absence is not exempt\n' \
+        "$SUBJECT_NAME" "$missing" "$(basename "$EXEMPT_LIST")" >&2
+    fi ;;
+esac
+
 printf 'mutation-coverage: %s declares mutation arms and this run exercised none\n' \
-  "$(basename "$SUBJECT")" >&2
+  "$SUBJECT_NAME" >&2
 exit 1

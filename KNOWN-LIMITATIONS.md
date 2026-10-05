@@ -85,7 +85,13 @@ release candidate.
   under Git Bash is noacl, so `chmod 000`/`a-w` locks nothing: 18, 91, 92),
   the historic-guard comparisons (186), the committed per-lane settings that
   were rendered for another home (88, 184), and the zsh pane-shell restore
-  (199: no zsh there, and herdr's pane shell is PowerShell). `unverified`: Claude Code's
+  (199: no zsh there, and herdr's pane shell is PowerShell). Mutation coverage
+  exempts on Git Bash only arms listed by name, each with its reason and printed
+  in the run: 186's four, whose pre-fix guards have no Windows path model.
+  The live herdr subject (650: hw against a real herdr) stops on Git Bash once
+  it has found herdr: in the pane hw builds the agent never starts and the pane
+  opens outside the workdir, so its mutant is listed there too.
+  `unverified`: Claude Code's
   `Edit`/`Write` deny rules on Windows paths; `brain --reset` detaching
   against a live herdr; and use on a real Windows machine — herdr's panes,
   Claude Code, a brainer and an executor reporting back.

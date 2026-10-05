@@ -33,7 +33,12 @@ function check(name, condition, detail = "") {
 
 let number = 0;
 async function scenario() {
-  const socket = join(base, `socket-${number++}`);
+  // On Windows the plugin dials `\\.\pipe\<HERDR_SOCKET_PATH>` (its requestOnce),
+  // so the variable is a pipe NAME there; a listen on a file path is refused
+  // with EACCES (windows.yml 37090376222). Elsewhere it is the socket's path.
+  const name = process.platform === "win32" ? `herdr-opencode-background-${process.pid}-${number}` : join(base, `socket-${number}`);
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\${name}` : name;
+  number += 1;
   const states = [];
   const server = net.createServer((client) => {
     let data = "";
@@ -48,7 +53,7 @@ async function scenario() {
   });
   await new Promise((resolve) => server.listen(socket, resolve));
   process.env.HERDR_ENV = "1";
-  process.env.HERDR_SOCKET_PATH = socket;
+  process.env.HERDR_SOCKET_PATH = name;
   process.env.HERDR_PANE_ID = "wX:p1";
   const mod = await import(`${pathToFileURL(source).href}?case=${Math.random()}`);
   const plugin = await mod.HerdrAgentStatePlugin();

@@ -189,6 +189,62 @@ if re.search(r"(?im)^human boundary:\s+\S", final):
 if re.search(r"(?im)^(?:not requested|no pedido):\s+\S", final):
     raise SystemExit(0)
 
+# The third legal exit: an ORDER of the operator's that reads two ways. Guessing
+# which one was meant is not deciding; 2026-10-04 «no lo lances de nuevo xq tiene
+# 400k» was read backwards and a resumed 400k executor spent the account. A bare
+# label would excuse any handback, and "¿lo mando o lo cierro?" also names two
+# options — so the line must QUOTE the operator's words and give two readings of
+# them: `Ambiguous: «<their words>» — <reading A> / <reading B>`. When the
+# transcript is readable the quote must be in one of the operator's recent
+# messages: the brainer's own fork has no words of theirs to quote. Unreadable,
+# the shape alone is checked — this hook must never break a session.
+def operator_texts(path, keep=10, tail=4 << 20):
+    # Only the tail: a brainer transcript runs to tens of MB, and only this
+    # turn's order matters. A line cut by the seek fails to parse and is skipped.
+    texts = []
+    try:
+        with open(path, "rb") as transcript:
+            transcript.seek(0, os.SEEK_END)
+            transcript.seek(max(0, transcript.tell() - tail))
+            for line in transcript.read().decode("utf-8", "replace").splitlines():
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(entry, dict) or entry.get("isMeta"):
+                    continue
+                if entry.get("type") == "user":            # Claude Code
+                    content = (entry.get("message") or {}).get("content")
+                elif (entry.get("payload") or {}).get("role") == "user":  # Codex
+                    content = entry["payload"].get("content")
+                else:
+                    continue
+                if isinstance(content, list):
+                    content = " ".join(part.get("text", "") for part in content
+                                       if isinstance(part, dict) and "text" in part)
+                if isinstance(content, str) and content.strip() \
+                        and not content.startswith("Stop hook feedback"):
+                    texts = (texts + [content])[-keep:]
+    except Exception:
+        return None
+    return texts or None
+
+def norm(text):
+    return " ".join(text.casefold().split())
+
+def names_two_readings(rest):
+    readings = re.split(r"\s+(?:/|\||o|or|vs\.?)\s+", rest.strip(), maxsplit=1)
+    return len(readings) == 2 and all(re.search(r"\w{2}", side) for side in readings)
+
+def operator_said(words):
+    said = operator_texts(event.get("transcript_path") or "")
+    return said is None or any(norm(words) in norm(text) for text in said)
+
+ambiguous = re.search(
+    r"(?im)^(?:ambiguous|ambiguo):\s*[«\"“]([^»\"”\n]{3,})[»\"”]\s*[-—–:,]*\s*(.+)$", final)
+if ambiguous and names_two_readings(ambiguous.group(2)) and operator_said(ambiguous.group(1)):
+    raise SystemExit(0)
+
 # Ignore examples and quoted material. Detection is about what the brainer is
 # handing back, not text it is reviewing.
 candidate = re.sub(r"```.*?```", " ", final, flags=re.S)
@@ -221,7 +277,10 @@ reason = (
     "or outward action, or conflicting priorities), do not act; end with "
     f"'Human boundary: <specific boundary and why only {operator} can decide>.' "
     f"If the work is something {operator} did not ask for, do not launch it either: "
-    "propose it and end with 'Not requested: <what you propose, and that it was not asked for>.'"
+    "propose it and end with 'Not requested: <what you propose, and that it was not asked for>.' "
+    f"If an order of {operator}'s reads two ways that lead to different actions, hold only "
+    "what depends on it, ask one closed question, and end with "
+    f"'Ambiguous: «<{operator}'s exact words>» — <reading A> / <reading B>.'"
 )
 json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")

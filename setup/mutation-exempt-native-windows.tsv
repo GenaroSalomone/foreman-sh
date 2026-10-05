@@ -1,0 +1,9 @@
+# Native Windows (Git Bash) only: setup/mutation-coverage reads this file there and
+# nowhere else. One row per arm, by its exact name, tab-separated:
+#   <subject file>	<arm>	<one-line reason>
+# No wildcards. A subject is exempt only when every arm it declares is listed.
+186-una-ruta-con-espacios-sigue-protegida.sh	M01	runs the pre-fix guards, which have no Windows path model: their allow there is noise (windows.yml 37084055355)
+186-una-ruta-con-espacios-sigue-protegida.sh	M02	runs the pre-fix guards, which have no Windows path model: their allow there is noise (windows.yml 37084055355)
+186-una-ruta-con-espacios-sigue-protegida.sh	M03	runs the pre-fix guards, which have no Windows path model: their allow there is noise (windows.yml 37084055355)
+186-una-ruta-con-espacios-sigue-protegida.sh	M04	runs the first draft (246f8b3), which has no Windows path model: its allow there is noise (windows.yml 37084055355)
+650-la-suite-toca-herdr-real.sh	M01	drives hw against a live herdr, which does not run on native Windows: hw's executor pane never starts the agent (windows.yml 37088978624)

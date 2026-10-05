@@ -33,9 +33,31 @@
 rm -f "$TMP/bin/herdr" "$TMP/bin/herdr-rpc"
 hash -r
 
+# On native Windows a missing tool is a failure, not a skip: there the gate
+# exempts 650's arm by name (setup/mutation-exempt-native-windows.tsv) for the
+# stop below, and a skip here would ride that into a pass.
 for _p in herdr jq python3; do
-  command -v "$_p" >/dev/null 2>&1 || { printf 'skip - 650: %s is not installed; the live herdr path cannot run here\n' "$_p"; exit 0; }
+  command -v "$_p" >/dev/null 2>&1 && continue
+  case "${OSTYPE:-}" in
+    msys*|cygwin*) fail "650: $_p is not installed; on native Windows that is not a skip" ;;
+  esac
+  printf 'skip - 650: %s is not installed; the live herdr path cannot run here\n' "$_p"; exit 0
 done
+
+# ── native Windows stops here, by name ─────────────────────────────────────
+# hw's own dispatch does not run against a live herdr there: in the executor
+# pane hw built, the agent was never typed (_agent_start failed) and the pane
+# opened in the runner's home, not the workdir (windows.yml 37088978624);
+# KNOWN-LIMITATIONS L1b lists it as unverified. The brainer side that used to
+# run before this stop needed three Windows-only workarounds and then timed out
+# starting its fake in the full run (37090376222) while it started in the
+# survey: it proved nothing about hw, so it no longer runs there. What the
+# layers were: this file at 339ce50.
+case "${OSTYPE:-}" in
+  msys*|cygwin*)
+    printf 'skip - 650: hw against a live herdr does not run on native Windows: in the pane hw builds the agent is never started and the pane opens outside the workdir (KNOWN-LIMITATIONS L1b)\n'
+    exit 0 ;;
+esac
 
 # A unix socket path is capped at 104 bytes on macOS; $TMP under TMPDIR is
 # already most of that. herdr puts its sessions under XDG_CONFIG_HOME.
@@ -180,8 +202,13 @@ for _ in $(seq 1 15); do
   out="$(h agent start brain650 --kind claude --pane "$BRAINER" --timeout 20000 2>&1 || true)"
   case "$out" in *agent_pane_busy*) sleep 1 ;; *) break ;; esac
 done
+# A start that never gets ready says why only on the pane's screen: on Git Bash
+# it timed out with nothing else to read (windows.yml 37084055355).
 printf '%s' "$out" | jq -e '.result.agent.interactive_ready == true' >/dev/null 2>&1 \
-  || fail "650 the fake brainer did not start: $out"
+  || fail "650 the fake brainer did not start: $out
+  pane process: $(h pane process-info --pane "$BRAINER" 2>&1 | head -c 800)
+  pane screen: $(h pane read "$BRAINER" --source recent --lines 40 2>&1 | tail -n 40)
+  fake started: $(cat "$TMP/ev/started" 2>/dev/null || echo never)"
 waitfile "$TMP/ev/started" 10 && grep -q "^brainer $BRAINER" "$TMP/ev/started" \
   || fail "650 the brainer pane did not run the fake claude — refusing to go on (a real one would spend)"
 
@@ -190,8 +217,11 @@ export HERDR_ENV=1 HERDR_SOCKET_PATH="$SOCK" HERDR_PANE_ID="$BRAINER"
 # No session id is published (see the fake), so hw's wait for one is cut short;
 # the receipt then records `none — …` and the Stop hook does not narrow.
 export HW_SESSION_WAIT_MS=2000
-dispatch="$("$BRAIN/bin/hw" "$LANE" "$TASK" --sdd none --fresh 2>&1)" \
-  || fail "650 hw $LANE $TASK failed: $dispatch"
+dispatch="$("$BRAIN/bin/hw" "$LANE" "$TASK" --sdd none --fresh 2>&1)" || {
+  ap="$(printf '%s' "$dispatch" | sed -n 's/.*agent=\([^ ]*\).*/\1/p' | head -1)"
+  fail "650 hw $LANE $TASK failed: $dispatch
+  agent pane ${ap:-?} screen: $([ -z "$ap" ] || h pane read "$ap" --source recent --lines 30 2>&1 | tail -n 30)"
+}
 EXEC="$(grep -m1 "^executor " "$TMP/ev/started" 2>/dev/null | awk '{print $2}' || true)"
 [ -n "$EXEC" ] || fail "650 hw dispatched but no fake executor started: $dispatch"
 pass "650 hw $LANE $TASK built a real tab and started the agent in $EXEC"

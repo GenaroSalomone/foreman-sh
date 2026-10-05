@@ -132,8 +132,11 @@ brew install GenaroSalomone/tap/foreman-sh
 foreman-sh --brain ~/brain --lane myapp --repo ~/code/myapp
 ```
 
-The brain keeps its own copy of the mechanism. After `brew upgrade foreman-sh`,
-run your `foreman-sh --brain …` command again to refresh it. Claude Code is a
+The brain keeps its own copy of the mechanism. To refresh it, run
+`foreman-sh upgrade --brain ~/brain`: it takes the newest release (`brew upgrade
+foreman-sh`), reinstalls with the flags recorded in `~/brain/.foreman/install.json`,
+runs `--check` and prints the release's "In short". `--to VERSION` installs that
+one (the way back) and `--dry-run` changes nothing. Claude Code is a
 cask, so the formula cannot depend on it: `foreman-sh --with-recommended`
 installs it (above).
 

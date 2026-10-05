@@ -133,6 +133,19 @@ git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
 command to run. Run it again until nothing is left. Add the `PATH` line to your
 shell profile so it survives a new terminal.
 
+### Upgrading
+
+```sh
+foreman-sh upgrade --brain ~/brain              # the newest release, with the flags you installed with
+foreman-sh upgrade --brain ~/brain --dry-run    # says what it would do and changes nothing; --to 0.3.0 goes back
+```
+
+The install records its own flags in `~/brain/.foreman/install.json`; `upgrade` replays
+them (what a lane declares is read from `projects.json`, so your hand edits there win), runs `--check` and prints the new release's "In short". `hw status` tells you
+when a newer release exists (once a day, silent offline). A brain installed before
+`upgrade` existed has no record: run your install command once more, and `upgrade`
+works from then on. Without Homebrew, pipe it: `curl -fsSL … | bash -s -- upgrade --brain ~/brain`.
+
 The installer never writes inside your repositories and never reads a
 credential.
 
@@ -235,7 +248,7 @@ name and `{task}` the task name.
 | `brain_guard` | boolean | `false` stops `hw` from loading the brain-write guard into the lane's executors, the one that keeps a product executor from writing in the brain. | `true` |
 | `opencode_config_dir` | path | An OpenCode config layer for the lane's executors; it must contain `plugin/deny-repo-writes.js` or `hw` refuses to launch. | none |
 | `sweep` | boolean | `false` leaves the lane's worktree root out of `hw sweep`. | `true` |
-| `reap` | object | `copies`: patterns of files that are copies of the main checkout's, so `hw reap` does not count them as unsaved work. `copies_from`: the worktree script whose own copy list extends them. | none |
+| `reap` | object | `copies`: patterns of files that are copies of the main checkout's, so `hw reap` does not count them as unsaved work. `copies_from`: the worktree script whose own copy list extends them. `max_worktrees` / `max_disk_pct` / `max_build_gb`: past any, `hw status` prints one line naming `hw reap <lane> --apply` (defaults 40, 85 and 30 GB of `.next`/`.turbo` as the last `hw reap` summed them; `HW_HYGIENE_MAX_WORKTREES` / `_DISK_PCT` / `_BUILD_GB` override). | none |
 | `deps` | object | `line`: the sentence the dry run prints about dependencies. `contention`: `true` when a task's install can break other tasks. | none |
 | `db` | object | `provisioned` (one database per worktree), `line`, `no_worktree` and `no_db_inert`: what the dry run says about the database. | none |
 | `devserver` | object | `start`: `always` starts a dev server on every task, `opt-in` only with `--dev-server`. `line` and `off` are the text the dry run prints. | no dev server |

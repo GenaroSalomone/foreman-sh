@@ -4,6 +4,75 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.1] — 2026-10-05
+
+### Added
+- `hw status` prints one line per lane past its worktree count, its disk use or
+  the `.next`/`.turbo` the last `hw reap` summed (`reap.max_worktrees`,
+  `reap.max_disk_pct`, `reap.max_build_gb`; defaults 40, 85%, 30 GB), naming
+  `hw reap <lane> --apply`, and one line for tasks that finished, never
+  reported, and whose brainer pane is gone.
+- A worktree `hw done` or `hw reap --apply` keeps for a git reason (dirty,
+  unmerged, irreplaceable) sheds its git-ignored `.next` and `.turbo`, unless a
+  live pane, process or lock is in it or it is outside the lane's worktree root.
+- hw locks a worktree while its executor lives (`git worktree lock`) and
+  `hw done` unlocks it; `hw reap` keeps a locked worktree.
+- `hw reap` records the per-worktree databases hw provisioned, and `--apply`
+  dumps and drops a recorded one whose worktree is gone.
+- An executor may run `hw reap <lane>` (the survey, never `--apply`).
+- A brief can carry `authorizes: <destination> :: <operation> :: <handle|none>`
+  (one line per entry). `hw` validates the shape, refuses it without
+  `requested_by:`, checks a named Keychain handle, shows it in the manifest and
+  delivers it to the executor as a quoted block that authorizes only those
+  destinations and operations.
+- `hw done` now leaves a `closed-by-hand` mark in the task's state directory
+  (when, which flag, whether a report existed). `hw status` shows such a task
+  as `closed-unreported` instead of `finished, unreported`, so a task closed on
+  purpose no longer looks like a dead one. Runs closed before the mark existed
+  are reclassified when read, from the `verify_run` line only `hw done`
+  writes; nothing is backfilled.
+- A re-tasked chain row names the last task that did report (for example
+  "task 3 reported, task 4 closed before reporting").
+- `foreman-sh upgrade --brain DIR` (also `install.sh --upgrade`) installs the
+  newest release with the flags the brain was installed with, runs `--check`
+  and prints the release's "In short". `--to VERSION` installs that one, the way
+  back; `--dry-run` says what it would do and changes nothing. The flags are
+  recorded by every install in `DIR/.foreman/install.json` (never a secret): the
+  install's own flags (bin dir, permissions, lane, repo, base). What a lane
+  declares (vendor, model, operator, floor, request rule) is read from
+  `projects.json` when `upgrade` runs, so a hand edit there is kept, never
+  replayed back; a brain with no record is refused, naming the flags to pass once.
+  `--to` a release older than `upgrade` is not supported: that release has no
+  `upgrade` to be handed the brain.
+- `hw status` says in one line when a newer release exists. It asks at most
+  once a day, caches the answer in `DIR/.foreman/latest-release.json`, and says
+  nothing offline or in a brain with no record.
+- `hw status` shows each live executor's context size, with a prompt to prefer a
+  fresh executor over `hw next` or a ruling once it passes 150k tokens, and
+  the number of queued rulings with the age of the oldest. `hw receipt` shows
+  the same context line for an open run.
+
+### Changed
+- A Claude executor launched without `--model` now runs sonnet, and a brief
+  declaring `kind: design` runs opus; `--model` still wins. The manifest says
+  where the model came from.
+- The README's "Upgrading" section, INSTALL.md, the Homebrew caveats and each
+  release's "Upgrading from" notes say `foreman-sh upgrade` instead of "run
+  install.sh again with the same flags".
+- Release notes open with a person-written "In short" summary
+  (`setup/releases/highlights/VERSION.md`), which is what `upgrade` prints.
+- The context read behind `hw next` and `hw status` is bounded in time, so a
+  stuck pane cannot hang either command.
+
+### Fixed
+- A branch squash-merged through a GitHub PR, whose paths the base changed
+  again since, read `unmerged` for good. A PR merged into the lane's base whose
+  head contains the branch tip is now merge evidence; an open PR, a PR merged
+  elsewhere, a failing or missing `gh`, or a non-GitHub origin is none. Such a
+  branch is deleted with its worktree.
+- The receipt of a re-tasked executor no longer copies the previous task's
+  `report_*` tokens as if they were the current task's.
+
 ## [0.3.0] — 2026-10-05
 
 ### Added

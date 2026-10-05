@@ -25,9 +25,15 @@ import tempfile
 # its own Stop hook at every turn end) and `.artifacts/` ($HW_ARTIFACTS, where
 # a release cut writes its evidence while its gates run). Neither is source,
 # and a write there during the capture aborted a cut's test-hw gate. So is
-# `.hw-reap-count` (gitignored), the survey count `hw reap` writes at the brain
+# `.hw-reap-<lane>` (gitignored), the survey cache `hw reap` writes at the brain
 # root: since 2026-10-01 `hw done` reaps too, and a subject's `hw done` wrote it.
-RUN_STATE = {'.hw', '.artifacts', '.hw-reap-count'}
+RUN_STATE = {'.hw', '.artifacts'}
+# and hw's survey caches and db ledger (`.hw-reap-<lane>`, `.hw-db-ledger-<lane>`)
+RUN_STATE_PREFIXES = ('.hw-reap-', '.hw-db-ledger-')
+
+
+def _run_state(n):
+    return n in RUN_STATE or n.startswith(RUN_STATE_PREFIXES)
 
 
 def copy_ignore(root):
@@ -36,7 +42,7 @@ def copy_ignore(root):
     def ignore(parent, names):
         skip = {'.git'}
         if os.path.realpath(parent) == root:
-            skip |= RUN_STATE
+            skip |= {n for n in names if _run_state(n)}
         return [n for n in names if n in skip]
     return ignore
 
@@ -52,9 +58,9 @@ def inventory(root):
     root_real = os.path.realpath(root)
     for parent, dirs, files in os.walk(root, followlinks=False):
         at_root = os.path.realpath(parent) == root_real
-        dirs[:] = sorted(d for d in dirs if d != '.git' and not (at_root and d in RUN_STATE))
+        dirs[:] = sorted(d for d in dirs if d != '.git' and not (at_root and _run_state(d)))
         if at_root:
-            files = [f for f in files if f not in RUN_STATE]
+            files = [f for f in files if not _run_state(f)]
         for name in sorted(dirs + [f for f in files if f != '.git']):
             path = Path(parent) / name
             rel = str(path.relative_to(root))

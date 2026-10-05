@@ -58,9 +58,17 @@ if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
   _tags="$(printf '%s\n' "$_refs" | sed -n 's|.*refs/tags/||p')"
   _tag="$(printf '%s\n' "$_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)" || true
   [ -n "$_tag" ] || _tag="$(printf '%s\n' "$_tags" | grep -E '^v[0-9]' | sort -V | tail -1)" || true
+  # upgrade --to VERSION: that tag instead of the newest (the way back to an older release)
+  _want="" _prev=""
+  for _a in "$@"; do [ "$_prev" != --to ] || _want="v${_a#v}"; _prev="$_a"; done
+  if [ -n "$_want" ]; then
+    printf '%s\n' "$_tags" | grep -Fxq "$_want" || { printf 'install: %s has no tag %s\n' "$_repo" "$_want" >&2; exit 1; }
+    _tag="$_want"
+  fi
   [ -n "$_tag" ] || { printf 'install: %s has no published v* tag\n' "$_repo" >&2; exit 1; }
   _tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman-sh.XXXXXX")" || { printf 'install: cannot create a temporary directory\n' >&2; exit 1; }
   trap 'rm -rf "$_tmp"' EXIT
+  case " $* " in *" --dry-run "*) printf 'install: dry run — fetching foreman-sh %s into a temporary directory to read its plan; nothing is written to the brain\n' "$_tag" >&2 ;; esac
   printf 'install: fetching foreman-sh %s\n' "$_tag" >&2
   git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$_tag" "$_repo" "$_tmp/foreman-sh" >&2 || { printf 'install: cannot clone %s at %s\n' "$_repo" "$_tag" >&2; exit 1; }
   _rc=0
@@ -78,6 +86,7 @@ case "${OSTYPE:-}" in msys*|cygwin*) . "$(dirname "$(readlink -f "${BASH_SOURCE[
 
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_REC=0 PERMISSIONS_OPT=""
+UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0
 ORIG_ARGS=("$@")
 OPERATOR="" MIN_MODEL="" REQ_BY=""   # "" = not given; --min-model / --requested-by "none" = given, none
 BIN_DIR_OUT="${HOME}/.local/bin"
@@ -103,7 +112,8 @@ install_version() {
 
 usage() {
   cat <<'EOF'
-usage: install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor claude|opencode [--model P/M]]]
+usage: install.sh upgrade --brain DIR [--to VERSION] [--dry-run]
+       install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor claude|opencode [--model P/M]]]
                   [--operator NAME] [--min-model haiku|sonnet|opus|none] [--requested-by required|warn|none]
                   [--bin-dir DIR] [--with-judgment-day] [--with-recommended] [--permissions ask|skip] [--check]
 
@@ -131,6 +141,11 @@ usage: install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor
                   only that. With --check it prints the commands and runs none
   --check         verify everything in one pass, list the fixes in the order they must be
                   done and end with one "Next step"; write nothing
+  upgrade         (or --upgrade) reinstall with the flags this brain's install recorded
+                  (<brain>/.foreman/install.json), from the newest release, then --check and print
+                  that release's "In short". --to VERSION installs that one instead (the way
+                  back); --dry-run prints what it would do and changes nothing. A brain with no
+                  record is refused, naming the flags to pass once
   -V, --version   print the version (the tag this checkout sits on, else its short sha)
   -h, --help      this text
 
@@ -159,7 +174,10 @@ while [ $# -gt 0 ]; do
     --operator) [ $# -ge 2 ] || die "--operator needs a name"; OPERATOR="$2"; shift 2 ;;
     --min-model) [ $# -ge 2 ] || die "--min-model needs haiku, sonnet, opus or none"; MIN_MODEL="$2"; shift 2 ;;
     --requested-by) [ $# -ge 2 ] || die "--requested-by needs required, warn or none"; REQ_BY="$2"; shift 2 ;;
-    --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a directory"; BIN_DIR_OUT="$2"; shift 2 ;;
+    --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a directory"; BIN_DIR_OUT="$2"; BIN_DIR_GIVEN=1; shift 2 ;;
+    upgrade|--upgrade) UPGRADE=1; shift ;;
+    --to)      [ $# -ge 2 ] || die "--to needs a version"; TO="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
     --permissions) [ $# -ge 2 ] || die "--permissions needs ask or skip"; PERMISSIONS_OPT="$2"; shift 2 ;;
     --check)   CHECK=1; shift ;;
     --with-judgment-day) WITH_JD=1; shift ;;
@@ -170,6 +188,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$BRAIN_DIR" ] || [ "$WITH_REC" = 1 ] || { usage >&2; die "--brain is required"; }
+[ "$UPGRADE" = 1 ] || [ -z "$TO" ] || die "--to only means something with upgrade"
+[ "$UPGRADE" = 1 ] || [ "$DRY_RUN" = 0 ] || die "--dry-run only means something with upgrade"
+if [ "$UPGRADE" = 1 ]; then
+  [ -n "$BRAIN_DIR" ] || die "upgrade needs --brain DIR"
+  [ -z "$LANE$REPO$BASE$VENDOR$MODEL$OPERATOR$MIN_MODEL$REQ_BY$PERMISSIONS_OPT" ] && [ "$CHECK$WITH_JD$WITH_REC$BIN_DIR_GIVEN" = 0000 ] \
+    || die "upgrade takes only --brain, --to and --dry-run: it reinstalls with the flags the install recorded"
+fi
 case "$PERMISSIONS_OPT" in ""|ask|skip) ;; *) die "--permissions must be ask or skip (got: $PERMISSIONS_OPT)" ;; esac
 if [ -n "$LANE" ] || [ -n "$REPO" ]; then
   [ -n "$LANE" ] && [ -n "$REPO" ] || die "--lane and --repo go together"
@@ -202,6 +227,169 @@ abspath() {  # absolute, symlinks resolved for the parts that exist
   case "${OSTYPE:-}" in msys*|cygwin*) p="$(cygpath -u "${p%$'\r'}")" ;; esac
   printf '%s\n' "$p"
 }
+
+# ── upgrade: the same install again, from the newest (or a chosen) release ──────
+# The install records its flags in <brain>/.foreman/install.json (no secret is
+# ever among them: paths, names and switches). `upgrade` replays them from the
+# target release's own install.sh, runs --check and prints that release's
+# "In short". Three ways to get the target, by how this copy got here:
+#   - a Homebrew keg:        `brew upgrade foreman-sh`, then the new keg applies it;
+#   - `curl | bash`, or a copy already fetched for this: it IS the target, applies it;
+#   - a checkout or tarball: the release tarball is downloaded, and its install.sh applies it.
+# FOREMAN_SH_LATEST_URL (JSON with tag_name) and FOREMAN_SH_TARBALL_BASE
+# (<base>/vX.Y.Z.tar.gz) point the lookups elsewhere; the tests serve file:// ones.
+RECORD_REL=".foreman/install.json"
+DEFAULT_LATEST_URL="https://api.github.com/repos/GenaroSalomone/foreman-sh/releases/latest"   # recorded for bin/release-check, which names no repository itself
+TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+latest_tag() {
+  local t
+  t="$(curl -fsSL --max-time 15 "${FOREMAN_SH_LATEST_URL:-$DEFAULT_LATEST_URL}" 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)" || return 1
+  [[ "$t" =~ $TAG_RE ]] || return 1
+  printf '%s\n' "$t"
+}
+replay_lines() {  # <brain> — one shell-quoted install command line per recorded run
+  python3 - "$1" "$1/$RECORD_REL" <<'PY'
+import json, os, shlex, sys
+brain, path = sys.argv[1:3]
+r = json.load(open(path))
+if not isinstance(r, dict):
+    raise SystemExit("not an object")
+# The record keeps the install's own flags. What a lane declares (vendor, model,
+# operator, floor, request rule) is read from projects.json by the install itself,
+# so it is never replayed from here: a hand edit there would be refused as a conflict.
+OWN = ("base",)
+try:
+    pj = json.load(open(os.path.join(brain, "projects.json")))
+except Exception:
+    pj = {}
+def declared(l, k):
+    row = (pj.get("lanes") or {}).get(l["lane"])
+    if not isinstance(row, dict): return None
+    if k == "operator": return pj.get("operator") if isinstance(pj.get("operator"), str) else None
+    if k == "min_model":
+        f = row.get("model_floor"); return f.get("tier") if isinstance(f, dict) else None
+    if k == "vendor": return row.get("vendor", "claude")
+    return row.get(k)
+g = ["--brain", brain]
+if r.get("bin_dir"): g += ["--bin-dir", r["bin_dir"]]
+if r.get("with_judgment_day"): g += ["--with-judgment-day"]
+if r.get("permissions"): g += ["--permissions", r["permissions"]]
+for l in (r.get("lanes") or [None]):
+    a = list(g)
+    if l:
+        a += ["--lane", l["lane"], "--repo", l["repo"]]
+        for k, f in (("base", "--base"), ("vendor", "--vendor"), ("model", "--model"),
+                     ("operator", "--operator"), ("min_model", "--min-model"), ("requested_by", "--requested-by")):
+            if k in OWN and l.get(k): a += [f, l[k]]
+        # a record from before this was so: its old values lose to projects.json, said once
+        diff = ["%s %s -> %s" % (k, l[k], declared(l, k) or "none") for k in ("vendor", "model", "operator", "min_model", "requested_by")
+                if k not in OWN and l.get(k) and declared(l, k) is not None and declared(l, k) != l[k]]
+        # only the copy that applies says so: the one that fetches it would say it twice
+        if diff and (os.environ.get("FOREMAN_SH_INSTALLED_FROM") or os.environ.get("FOREMAN_SH_UPGRADE_TARGET") == "1"):
+            print("upgrade: lane %s: projects.json wins over the install record (%s)" % (l["lane"], "; ".join(diff)), file=sys.stderr)
+    print(" ".join(shlex.quote(x) for x in a))
+PY
+}
+in_short() {  # <release notes file> — the "## In short" section, else nothing
+  python3 - "$1" <<'PY'
+import re, sys
+try: t = open(sys.argv[1], encoding="utf-8").read()
+except OSError: raise SystemExit(1)
+m = re.search(r"^## In short[ \t]*\n(.*?)(?=^## |\Z)", t, re.M | re.S)
+if not m or not m.group(1).strip(): raise SystemExit(1)
+print(m.group(1).strip())
+PY
+}
+do_upgrade() {
+  local BR rec cur tag how url tmp lines line rc=0 ver_note
+  BR="$(abspath "$BRAIN_DIR")"; rec="$BR/$RECORD_REL"
+  if [ ! -f "$rec" ]; then
+    {
+      printf 'upgrade: %s has no install record (%s): it was installed before `upgrade` existed, or by hand.\n' "$BR" "$RECORD_REL"
+      printf 'Install once more with the flags you used. That run writes the record, and upgrades are one command from then on:\n'
+      if [ -f "$BR/projects.json" ] && [ -n "$(jq -r '.lanes // {} | to_entries[] | select(.value.checkout) | .key' "$BR/projects.json" 2>/dev/null)" ]; then
+        jq -r --arg c "$INSTALL_CMD" --arg b "$BR" '.lanes | to_entries[] | select(.value.checkout)
+          | "  \($c) --brain \($b) --lane \(.key) --repo \(.value.checkout)"' "$BR/projects.json"
+        printf '(a lane that exists keeps its vendor, model and rules; add --with-judgment-day or --bin-dir DIR if you used them)\n'
+      else
+        printf '  %s --brain %s --lane <name> --repo <path>   (plus --with-judgment-day or --bin-dir DIR if you used them)\n' "$INSTALL_CMD" "$BR"
+      fi
+    } >&2
+    exit 1
+  fi
+  lines="$(replay_lines "$BR")" || die "upgrade: $rec is not a readable install record — nothing was changed"
+  cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version") or "unknown")' "$rec")"
+
+  if [ -n "${FOREMAN_SH_INSTALLED_FROM:-}" ] || [ "${FOREMAN_SH_UPGRADE_TARGET:-}" = 1 ]; then
+    how=apply; tag="$(install_version)"
+  else
+    if [ -n "$TO" ]; then
+      tag="v${TO#v}"; [[ "$tag" =~ $TAG_RE ]] || die "--to wants a version like 0.3.0 (got: $TO)"
+    else
+      tag="$(latest_tag)" || tag=""
+      [ -n "$tag" ] || [ "$DRY_RUN" = 1 ] || die "upgrade: cannot find the newest release (offline?) — nothing was changed; --to VERSION names one"
+      [ -n "$tag" ] || tag="(newest release: not reachable now)"
+    fi
+    if [ -z "$TO" ] && [ "${FOREMAN_SH_INSTALL_CMD:-}" = foreman-sh ] && type -P brew >/dev/null 2>&1; then
+      how=brew
+    else
+      how=tarball; url="${FOREMAN_SH_TARBALL_BASE:-https://github.com/GenaroSalomone/foreman-sh/archive/refs/tags}/$tag.tar.gz"
+    fi
+  fi
+
+  printf 'upgrade%s\n' "$([ "$DRY_RUN" = 0 ] || printf ' (dry run: nothing is fetched, written or run)')"
+  printf '  brain      %s\n  recorded   %s\n  target     %s\n' "$BR" "$cur" "$tag"
+  case "$how" in
+    brew)    printf '  get it     brew upgrade foreman-sh, then the new keg reinstalls\n' ;;
+    tarball) printf '  get it     download %s\n' "$url" ;;
+    apply)   printf '  get it     this copy is the target\n' ;;
+  esac
+  printf '  reinstall  with the recorded flags, once per recorded install:\n'
+  while IFS= read -r line; do printf '               install.sh %s\n' "$line"; done <<EOF
+$lines
+EOF
+  printf '  then       install.sh --brain %s --check, and the "In short" of %s\n' "$BR" "$tag"
+  [ "$DRY_RUN" = 0 ] || exit 0
+
+  case "$how" in
+    brew)
+      brew upgrade foreman-sh || die "upgrade: brew upgrade foreman-sh failed — nothing of the brain was changed"
+      type -P foreman-sh >/dev/null 2>&1 || die "upgrade: foreman-sh is not on PATH after the brew upgrade"
+      FOREMAN_SH_UPGRADE_TARGET=1 foreman-sh upgrade --brain "$BR" || rc=$?
+      exit "$rc" ;;
+    tarball)
+      type -P tar >/dev/null 2>&1 || die "upgrade: tar is required and was not found on PATH"
+      tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman-sh.XXXXXX")" || die "upgrade: cannot create a temporary directory"
+      trap 'rm -rf "$tmp"' EXIT
+      curl -fsSL --max-time 120 "$url" -o "$tmp/release.tar.gz" || die "upgrade: cannot download $url — nothing was changed"
+      { mkdir "$tmp/src" && tar -xzf "$tmp/release.tar.gz" -C "$tmp/src" --strip-components=1 2>/dev/null \
+        && [ -f "$tmp/src/install.sh" ] && [ -f "$tmp/src/bin/hw" ]; } || die "upgrade: $url is not a foreman-sh release — nothing was changed"
+      FOREMAN_SH_UPGRADE_TARGET=1 FOREMAN_SH_VERSION="$tag" FOREMAN_SH_INSTALLED_FROM="${FOREMAN_SH_TARBALL_BASE:-https://github.com/GenaroSalomone/foreman-sh}" \
+        bash "$tmp/src/install.sh" upgrade --brain "$BR" || rc=$?
+      exit "$rc" ;;
+  esac
+
+  # apply: this copy is the release being installed
+  while IFS= read -r line; do
+    eval "set -- $line"
+    env -u FOREMAN_SH_UPGRADE_TARGET bash "$SRC/install.sh" "$@" \
+      || die "upgrade: the reinstall failed (above). $BR may be half updated: run upgrade again, or go back with --to $cur"
+  done <<EOF
+$lines
+EOF
+  printf '\ncheck\n'
+  env -u FOREMAN_SH_UPGRADE_TARGET bash "$SRC/install.sh" --brain "$BR" --check || rc=$?
+  printf '\nupgraded %s -> %s\n' "$cur" "$tag"
+  if ver_note="$(in_short "$SRC/RELEASE-NOTES.md")"; then
+    printf '\nIn short (%s)\n%s\n' "$tag" "$ver_note"
+  else
+    printf '\n%s has no "In short" section in its RELEASE-NOTES.md; the full notes are in that file and CHANGELOG.md\n' "$tag"
+  fi
+  [ "$rc" = 0 ] || printf '\nupgrade: installed, but --check found something to fix (above)\n' >&2
+  exit "$rc"
+}
+if [ "$UPGRADE" = 1 ]; then do_upgrade; fi
 
 # A LANE THAT EXISTS KEEPS WHAT ITS ROW SAYS unless the run names otherwise.
 # Re-running the plain command over a lane someone edited by hand (its model,
@@ -956,6 +1144,51 @@ src_sha="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
 marker_new="$(printf '{\n  "installed_from": "%s",\n  "commit": "%s",\n  "version": "%s"\n}\n' "${FOREMAN_SH_INSTALLED_FROM:-$SRC}" "$src_sha" "$(install_version)")"
 if [ "$(cat "$BRAIN/$MARKER" 2>/dev/null)" = "$marker_new" ]; then ok "$MARKER"
 else printf '%s\n' "$marker_new" > "$BRAIN/$MARKER"; chg "$MARKER (commit $src_sha)"; fi
+
+# The flags this install was run with, so `upgrade` can run it again exactly:
+# merged into what earlier runs recorded (a lane is replaced by name, the
+# switches only turn on), and left alone, date included, when nothing changed.
+RECORD_STATE="$(R_VERSION="$(install_version)" R_BIN_DIR="$([ "$BIN_DIR_GIVEN" = 0 ] || printf '%s' "$BIN_OUT")" R_JD="$WITH_JD" R_PERM="$PERMISSIONS_OPT" \
+  R_LATEST_URL="$DEFAULT_LATEST_URL" R_LANE="$LANE" R_REPO="$REPO" R_BASE="$BASE" R_VENDOR="$VENDOR" R_MODEL="$MODEL" R_OPERATOR="$OPERATOR" R_MIN_MODEL="$MIN_MODEL" R_REQ_BY="$REQ_BY" \
+  python3 - "$BRAIN/$RECORD_REL" <<'PY'
+import datetime, json, os, sys
+path = sys.argv[1]
+e = os.environ
+try:
+    old = json.load(open(path))
+    old = old if isinstance(old, dict) else {}
+except Exception:
+    old = {}
+# Only the install's own flags: what the lane's row declares is read from projects.json
+# when `upgrade` runs (replay_lines), so a hand edit there is never replayed back.
+OWN = ("base",)
+keys = ("latest_url", "bin_dir", "with_judgment_day", "permissions", "lanes")
+flags = {
+    "latest_url": e["R_LATEST_URL"],
+    "bin_dir": e["R_BIN_DIR"] or old.get("bin_dir") or None,
+    "with_judgment_day": bool(old.get("with_judgment_day")) or e["R_JD"] == "1",
+    "permissions": e["R_PERM"] or old.get("permissions") or None,
+    "lanes": list(old.get("lanes") or []),
+}
+if e["R_LANE"]:
+    lane = {"lane": e["R_LANE"], "repo": e["R_REPO"]}
+    for k, v in (("base", "R_BASE"), ("vendor", "R_VENDOR"), ("model", "R_MODEL"),
+                 ("operator", "R_OPERATOR"), ("min_model", "R_MIN_MODEL"), ("requested_by", "R_REQ_BY")):
+        if k in OWN and e[v]: lane[k] = e[v]
+    flags["lanes"] = [l for l in flags["lanes"] if l.get("lane") != e["R_LANE"]] + [lane]
+flags = {k: v for k, v in flags.items() if v not in (None, False, [])}
+if old.get("version") == e["R_VERSION"] and {k: old[k] for k in keys if k in old} == flags:
+    print("same"); sys.exit(0)
+doc = {"version": e["R_VERSION"], "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+doc.update(flags)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path + ".tmp", "w") as f:
+    json.dump(doc, f, indent=2); f.write("\n")
+os.replace(path + ".tmp", path)
+print("written")
+PY
+)" || die "could not write $BRAIN/$RECORD_REL"
+if [ "$RECORD_STATE" = same ]; then ok "$RECORD_REL"; else chg "$RECORD_REL (what upgrade replays)"; fi
 
 write_once() {  # <dst> — body on stdin; never overwrites what the user may have edited
   if [ -e "$1" ]; then cat >/dev/null; ok "${1#"$BRAIN"/} (kept)"

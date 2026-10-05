@@ -182,8 +182,13 @@ esac
 # special".
 REAP="$TMP/reap.sh"
 awk '/^cmd_reap\(\) \{$/,/^\}$/' "$ROOT/bin/hw" > "$REAP"
-grep -q 'worktree remove' "$REAP" \
-  || fail "verdict-third-value: could not extract a cmd_reap carrying the removal from bin/hw"
+# Since 2026-10-01 the removal is `_reap_worktree`, which cmd_reap calls; a hint
+# string in cmd_reap's own text used to satisfy this check by accident and went
+# when the hand recipe did (setup-higiene-worktrees). So: cmd_reap must reach the
+# removal, and the removal must be there to be driven.
+grep -q '_reap_worktree "\$proj"' "$REAP" \
+  && awk '/^_reap_worktree\(\) \{/,/^\}$/' "$ROOT/bin/hw" | grep -q 'worktree remove' \
+  || fail "verdict-third-value: could not extract a cmd_reap that reaches a removal carrying \`worktree remove\` from bin/hw"
 
 mkdir -p "$TMP/reapgate"
 cat > "$TMP/reapgate/git" <<'STUB'

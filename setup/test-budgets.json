@@ -241,6 +241,10 @@
       "exit": 0,
       "seconds": 7.42
     },
+    "680-actualizar-es-un-comando.sh": {
+      "exit": 0,
+      "seconds": 56.18
+    },
     "70-opencode-subagent-effort.sh": {
       "exit": 0,
       "seconds": 0.08
@@ -303,7 +307,7 @@
     },
     "95-a-discarded-stderr-does-not-decide.sh": {
       "exit": 0,
-      "seconds": 1.97
+      "seconds": 2.4
     },
     "98-wait-agent-requires-a-matching-event.sh": {
       "exit": 0,
@@ -318,6 +322,6 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-10-03T00:44:14Z",
+  "measured_at": "2026-10-05T15:57:32Z",
   "touched_budget_seconds": 180
 }

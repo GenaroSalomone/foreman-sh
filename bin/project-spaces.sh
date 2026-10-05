@@ -73,7 +73,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
         "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","sdd_modes",
         "model_floor","model_pins","requested_by","opencode_config_dir","suite_lock"]) as $fields
     | ({model_floor: ["tier","accepts"], deps: ["line","contention"], db: ["line","provisioned","no_worktree","no_db_inert"],
-        devserver: ["start","line","off"], reap: ["copies","copies_from"]}) as $sub
+        devserver: ["start","line","off"], reap: ["copies","copies_from","max_worktrees","max_disk_pct","max_build_gb"]}) as $sub
     | ([$lanes | to_entries[] | .key as $l | .value | to_entries[] | select($sub[.key] != null) | .key as $f
         | if (.value | type) == "object" then (.value | keys[] | select(. as $k | $sub[$f] | index([$k]) | not) | "\($l).\($f).\(.)")
           else "\($l).\($f) (not an object)" end]) as $badsub
@@ -156,6 +156,9 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
           emit($l; "devserver_off"; $v.devserver.off // ""),
           emit($l; "reap_copies"; ($v.reap.copies // []) | join("\n")),
           emit($l; "reap_copies_from"; $v.reap.copies_from // ""),
+          emit($l; "reap_max_worktrees"; $v.reap.max_worktrees // ""),
+          emit($l; "reap_max_disk_pct"; $v.reap.max_disk_pct // ""),
+          emit($l; "reap_max_build_gb"; $v.reap.max_build_gb // ""),
           (($v.ports // {}) | to_entries[]
             | if (.key | test("^[a-z]+$")) and (.value | type == "number") then . else error("a port of \($l) is not name: number") end
             | emit($l; "port_\(.key)"; .value)))

@@ -8,4 +8,4 @@ bin/decisions first=index
 # The executor's own `hw` verbs. The brainer's (next, ruling, unstick, reap
 # --apply, a dispatch, done on another task …) are not here, and bin/hw
 # refuses them itself when HW_TASK/HW_RUN are set.
-bin/hw first=done,executor-turn-end,handle,help,-h,--help,--version,human-boundary,output,receipt,review-delta,review-range,status,suite
+bin/hw first=done,executor-turn-end,handle,help,-h,--help,--version,human-boundary,output,reap,receipt,review-delta,review-range,status,suite

@@ -678,6 +678,12 @@ def _judge(cfg, seg, cwd, local=None, env=None):
             if own and len(pos) >= 2 and pos[1] != own:
                 return _refuse("run", "`hw done` closes only your own task (%s), not %s"
                                % (own, pos[1].replace(MARK, "…")))
+        # `hw reap` reads (a survey); `--apply` removes. Only the survey, and an
+        # argument the guard cannot know before the shell runs is not one.
+        if rel == "bin/hw" and via is None and rest[:1] == ["reap"] and any(
+                a == "--apply" or MARK in a for a in rest[1:]):
+            return _refuse("run", "`hw reap --apply` removes worktrees, which is the "
+                           "brainer's; an executor runs the survey, `hw reap <lane>`")
         if rel == "bin/hw" and via is None and any(
                 w.startswith("HW_DONE_ALLOW_BRAIN_LEAK=") for w, _ in prefix):
             return _refuse("run", "HW_DONE_ALLOW_BRAIN_LEAK is the operator's exit from "

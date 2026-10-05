@@ -2857,7 +2857,7 @@ known = {"agent", "model", "sdd", "placement", "worktree", "database", "invoker"
          "requires", "requires-agents", "kind", "base", "decision", "delivery",  # MUTATION-ANCHOR: 159-M04
          "boundary", "deployed_check", "sandbox"}
 # What was asked for, read by _check_requested rather than compared.
-known |= {"requested_by", "asked"}
+known |= {"requested_by", "asked", "authorizes"}
 for raw in lines[1:end]:
     line = raw.strip()
     if not line or line.startswith("#"):
@@ -3731,8 +3731,8 @@ _check_agent_name_free() {
 _check_task_kind() {  # $1 = kind, $2 = declared|inferred
   local kind="$1" how="$2"
   case "$kind" in
-    build|explore|audit|review) ;;
-    *) warn "brief declares kind=$kind, which hw does not know. Known: build explore audit review"; return 0 ;;
+    build|explore|audit|review|design) ;;
+    *) warn "brief declares kind=$kind, which hw does not know. Known: build explore audit review design"; return 0 ;;
   esac
   # PUBLISHED FOR THE MANIFEST. The model-suggestion line below names the kind
   # in its reason, and this is the only place that has resolved one. Set for
@@ -3807,6 +3807,9 @@ _model_suggestion_note() {
   local suggested chosen_tier suggested_tier kind_part
   suggested="$(_model_suggested)"
   [ -n "$MODEL" ] || return 0
+  # A model hw itself resolved from the kind (_apply_model_default) is already
+  # the answer; a suggestion beside it would argue with hw.
+  case "$MODEL_SRC" in default\;*) return 0 ;; esac
   chosen_tier="$(model_tier "$MODEL")"
   [ -n "$chosen_tier" ] || return 0
   suggested_tier="$(model_tier "$suggested")"
@@ -3881,7 +3884,7 @@ _check_brief_contract() {
     [ -n "$key" ] || continue
     case "$key" in
       __malformed__) die "the brief's frontmatter is malformed ($val). Fix it or remove the fence entirely — a half-parsed contract is worse than none." ;;
-      __unknown__)   warn "brief declares '$val', which hw does not check. Known keys: agent model sdd placement worktree database invoker requires requires-agents kind base decision delivery boundary deployed_check sandbox requested_by asked" ; continue ;;
+      __unknown__)   warn "brief declares '$val', which hw does not check. Known keys: agent model sdd placement worktree database invoker requires requires-agents kind base decision delivery boundary deployed_check sandbox requested_by asked authorizes" ; continue ;;
     esac
     if [ "$key" = requires ]; then _check_capabilities "$val"; continue; fi
     if [ "$key" = requires-agents ]; then
@@ -3905,7 +3908,7 @@ _check_brief_contract() {
     # NOT DISPATCH FIELDS: they say what the operator asked for, and
     # _check_requested reads them after this loop. Comparing them against a
     # resolved value would refuse every brief that cites its request.
-    case "$key" in requested_by|asked) continue ;; esac
+    case "$key" in requested_by|asked|authorizes) continue ;; esac
     # `delivery:` is read by the gentle gate, which refuses a bad value before
     # anything is built; under any other mode it fixes nothing and is ignored.
     if [ "$key" = delivery ]; then
@@ -4040,6 +4043,72 @@ EOF
   return 0
 }
 
+# ── a brief can carry an authorization, and hw delivers it ─────────────────
+#
+# MEASURED: the operator's remote
+# authorization was pasted into the brief as prose. The executor cannot tell it
+# from any other text, does not trust it, blocks without working, and the
+# operator confirms inside its pane. `requested_by:` reached only the manifest
+# and the receipt.
+#
+# So a brief declares it, one line per entry, key repeated:
+#
+#     authorizes: <destination> :: <operation> :: <handle|none>
+#
+# hw validates the shape, REFUSES the dispatch when `requested_by:` is absent
+# (an authorization with no cited request is nobody's), checks a named handle
+# with the same presence-only probe as `hw handle`, shows it in the manifest and
+# injects it into the executor's prompt (_brief_authorization). hw cannot judge
+# whether the citation really grants it, and does not try: it delivers what the
+# brief cites, scoped to what the entries name.
+#
+# NOT COVERED: `hw next --brief` re-tasks without it, like _check_requested.
+AUTHORIZES=""
+_auth_trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+_check_authorizes() {
+  local decls key val dest op handle rest n=0 missing="" _h
+  AUTHORIZES=""
+  _load_brief_decls; decls="$BRIEF_DECLS"
+  while IFS="$(printf '\t')" read -r key val; do
+    [ "$key" = authorizes ] || continue
+    n=$((n + 1))
+    case "$val" in *" :: "*" :: "*) ;; *)
+      die "the brief's authorizes: entry $n is malformed ($val). Shape: authorizes: <destination> :: <operation> :: <handle|none>. NOTHING was built." ;; esac
+    dest="$(_auth_trim "${val%% :: *}")"; rest="${val#* :: }"
+    op="$(_auth_trim "${rest%% :: *}")"; handle="$(_auth_trim "${rest#* :: }")"
+    case "$handle" in *" :: "*) die "the brief's authorizes: entry $n has more than three fields ($val). NOTHING was built." ;; esac
+    { [ -n "$dest" ] && [ -n "$op" ] && [ -n "$handle" ]; } \
+      || die "the brief's authorizes: entry $n has an empty field ($val). Name the destination, the operation, and a handle or none. NOTHING was built."
+    case "$handle" in none) ;; *[!A-Za-z0-9._-]*) die "the brief's authorizes: entry $n names the handle '$handle', which is not a Keychain service name (letters, digits, . _ -) nor none. NOTHING was built." ;; esac
+    AUTHORIZES="${AUTHORIZES}${AUTHORIZES:+
+}$dest :: $op :: $handle"
+  done <<EOF
+$decls
+EOF
+  [ "$n" -gt 0 ] || return 0
+  [ -n "$REQUESTED_BY" ] || die "the brief carries authorizes: but cites no request (requested_by:). An authorization nobody asked for is not delivered. NOTHING was built. Add \`requested_by: <who, when, and the request in their words>\` (or pass --requested-by)."
+  if [ "$CHECK_HANDLES" = 1 ] && _keychain_available; then
+    while IFS= read -r _h; do
+      [ -n "$_h" ] && [ "$_h" != none ] || continue
+      _handle_exists "$_h" || missing="$missing $_h"
+    done <<EOF
+$(printf '%s\n' "$AUTHORIZES" | awk -F ' :: ' '{print $3}' | sort -u)
+EOF
+    [ -z "$missing" ] || die "the authorization names Keychain handles that do not resolve:$missing. NOTHING was built. Store each with security add-generic-password -s <handle> -a ${USER:-$(id -un)} -w '<value>' (check: hw handle <handle>), or pass --no-handle-check."
+  elif [ "$CHECK_HANDLES" = 1 ]; then
+    warn "the authorization's handles were NOT checked: no keychain backend here"
+  fi
+  [ "$BRIEF_DECLARED" != none ] || BRIEF_DECLARED=""
+  BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }authorizes"
+  return 0
+}
+
+# The manifest's `authorizes` field.
+_authorizes_line() {
+  if [ -z "$AUTHORIZES" ]; then printf 'none'; return 0; fi
+  printf '%s' "$AUTHORIZES" | awk 'BEGIN{ORS=""} {printf "%s[%s]", (NR>1?"; ":""), $0}'
+}
+
 # The manifest's `requested` field: the citation, or why there is none.
 _requested_line() {
   if [ -n "$REQUESTED_BY" ]; then
@@ -4077,6 +4146,29 @@ _requested_line() {
 #
 # --below-floor-why and not --why: `--why` is the --keep-pane lease reason, and
 # sharing it would record one reason as the answer to two questions.
+# SONNET IS THE DEFAULT OF A CLAUDE EXECUTOR, OPUS COMES FROM THE KIND.
+# 2026-10-04: an executor launched without --model inherited opus and
+# brainers launched with opus out of inertia. The table: no --model -> sonnet,
+# `kind: design` -> opus, --model X -> X always. Only where hw would otherwise
+# leave the model to the account's default: a fresh claude launch, no lane model
+# (opencode lanes pin theirs), no lane floor (_check_model_floor pins those).
+# NOT UNDER SPECKIT: the flow's orchestrator may not be sonnet
+# (_validate_sdd_model_pair), so there the inherited default stays and the
+# collision is reported, not resolved here (setup/decisions.md).
+_apply_model_default() {
+  [ -z "$MODEL" ] && [ "$AGENT" = claude ] && [ -z "${_REUSE_PANE:-}" ] || return 0
+  [ -z "$(project_model_floor "$PROJ")" ] || return 0
+  # A lane that declares a model keeps its own say even when --agent
+  # claude cleared it: its dispatches on claude inherit the account default.
+  [ -z "$(project_default_model "$PROJ")" ] || return 0  # MUTATION-ANCHOR: 231-M03
+  [ "${SDD_EFFECTIVE_MODE:-}" != speckit ] || return 0
+  local kind; kind="$(_brief_kind_for_close)"
+  case "$kind" in
+    design) MODEL=opus;   MODEL_SRC="default; kind design" ;;  # MUTATION-ANCHOR: 231-M01
+    *)      MODEL=sonnet; MODEL_SRC="default; kind ${kind:-none}" ;;  # MUTATION-ANCHOR: 231-M02
+  esac
+}
+
 MODEL_FLOOR_LINE=""; BELOW_FLOOR_WHY=""
 _check_model_floor() {
   local floor accepts tier floor_tier m
@@ -5860,6 +5952,17 @@ _brief_epistemic() {
   printf '%s' "$epistemic_safeguard"
 }
 
+# The authorization the brief cites, as a quoted and scoped block for the
+# prompt. Empty when the brief carries none. It lives beside _brief_epistemic so
+# the fixture that extracts the prompt assembly sees it.
+_brief_authorization() {
+  [ -n "${AUTHORIZES:-}" ] || return 0
+  printf 'AUTHORIZATION — delivered by hw from the brief frontmatter (authorizes:), quoted:\n\n'
+  printf '> requested_by: %s\n' "${REQUESTED_BY:-<none>}"
+  printf '%s\n' "$AUTHORIZES" | awk -F ' :: ' '{printf "> authorized: destination: %s | operation: %s | credential handle: %s\n", $1, $2, $3}'
+  printf '\nOnly these destinations and operations are authorized, and nothing beyond them:\nanother destination, another operation, or a credential or session not named\nhere stays unauthorized. Within them, act without asking; for anything else\nask-invoker, or report blocked. A handle is a resolver, never a value.'
+}
+
 # ── the executor's own engram session, registered before it says a word ──
 #
 # MEASURED 2026-09-22: an executor's `mem_save` with no session of its own is
@@ -5933,7 +6036,7 @@ _send_brief() {
   _engram_register_session
   [ -n "$BRIEF" ] || return 0
 
-  local preamble epistemic_safeguard
+  local preamble epistemic_safeguard authorization
   preamble="$(_brief_preamble)"
   BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$preamble" "$BRIEF_TEXT")"
 
@@ -5986,6 +6089,8 @@ _send_brief() {
   # original brief in every mode and, under Spec Kit, before the FIRST ACTION
   # boundary. A later framework prefix must not let a pre-answered brief
   # cross the flow's entry point before the reader receives this instruction.
+  authorization="$(_brief_authorization)"
+  [ -z "$authorization" ] || BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$authorization" "$BRIEF_TEXT")"
   BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$epistemic_safeguard" "$BRIEF_TEXT")"
 
   # THE SESSION ID IS RECORDED ON BOTH PATHS, and the delivery status is passed
@@ -6581,6 +6686,12 @@ _receipt_worktree() {
   _receipt worktree "$top" "git -C $wt rev-parse --show-toplevel"
   br="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [ -n "$br" ] && _receipt branch "$br" "git -C $wt rev-parse --abbrev-ref HEAD"
+  # LOCKED WHILE THE EXECUTOR LIVES; `hw done` unlocks it. MEASURED 2026-10-04
+  #: a live executor had no process with its cwd in the
+  # worktree, so `lsof` cannot see one, and herdr only sees it while its pane
+  # stands. A lock is git's own "somebody owns this", read by hw reap
+  # (`locked`) and refused by `git worktree remove` without -f -f.
+  git -C "$top" worktree lock --reason "hw ${PROJ:-?}:${TASK:-?} run ${HW_RUN:-?}, executor live" "$top" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -6642,6 +6753,21 @@ _receipt() {
   local key="$1" val="$2" src="${3:-}"
   [ -n "${WT:-}" ] && [ -n "${HW_RUN:-}" ] || return 0
   _receipt_into "$WT/.hw/$HW_RUN" "$key" "$val" "$src"
+  [ "$key" != database ] || _db_ledger_add "${PROJ:-}" "$val" "$WT"
+}
+
+# ── the per-worktree databases hw provisioned, recorded OUTSIDE the worktree ─
+#
+# MEASURED 2026-10-04: 177 databases for 153 worktrees in the
+# product lane — worktrees removed by hand take their receipt (which lives in
+# `.hw/` inside them) and leave the database. The Postgres server is shared with
+# other applications, so a name alone is not ownership: only a database hw
+# recorded here is ever dumped and dropped by `hw reap --apply`.
+_db_ledger() { printf '%s' "$BRAIN/.hw-db-ledger-$1"; }
+_db_ledger_add() {  # <proj> <db> <wt>
+  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 0
+  local f; f="$(_db_ledger "$1")"
+  grep -qxF "$2"$'\t'"$3" "$f" 2>/dev/null || printf '%s\t%s\n' "$2" "$3" >> "$f" 2>/dev/null || true
 }
 
 # Read one measured value back out of the current run's receipt.
@@ -7014,7 +7140,9 @@ _launch_rollback() {
     return 0
   }
   warn "rolling back what this launch created"
-  if git -C "$main" worktree remove --force "$LAUNCH_WT" >/dev/null 2>&1; then
+  # -f -f: the launch has already locked it (_receipt_worktree), and one -f
+  # does not remove a locked worktree.
+  if git -C "$main" worktree remove -f -f "$LAUNCH_WT" >/dev/null 2>&1; then
     ok "removed worktree $LAUNCH_WT"; removed=1
   else
     warn "could not remove $LAUNCH_WT — remove it by hand:"
@@ -7134,6 +7262,28 @@ _latest_run_record() {
 # each fact. The dispatch manifest (`.hw/<run>/dispatch`) says what was asked
 # for; this says what was found. When they disagree, the disagreement is the
 # answer.
+# The newest run's context size, read from its pane NOW (a receipt is history,
+# and this is the one live fact a re-task or a ruling decision needs).
+# Silent when the run reported or its pane is not recorded; "not measured" is
+# said, never read as a fresh session.
+HW_CTX_PREFER_FRESH_TOKENS="${HW_CTX_PREFER_FRESH_TOKENS:-150000}"
+_ctx_line_for() {  # $1 = pane — one line, no colour
+  local ctx state tok pct
+  ctx="$(_pane_context "$1")"
+  state="${ctx%%$(printf '\t')*}"; ctx="${ctx#*$(printf '\t')}"
+  tok="${ctx%%$(printf '\t')*}";   pct="${ctx#*$(printf '\t')}"
+  if [ "$state" != measured ]; then printf 'context: not measured (%s)' "$state"; return 0; fi
+  printf 'context: %s tokens used' "$tok"
+  [ -z "$pct" ] || printf ' (%s%% of the window)' "$pct"
+  [ "${tok:-0}" -le "$HW_CTX_PREFER_FRESH_TOKENS" ] || printf ' → prefer a fresh executor over hw next or a ruling'
+}
+_receipt_context_line() {  # $1 = receipt.jsonl
+  local pane
+  pane="$(jq -r 'select(.key=="pane") | .value' "$1" 2>/dev/null | tail -1 || true)"
+  [ -n "$pane" ] || return 0
+  printf '    %s%s  (pane %s, read now)%s\n\n' "$C_DIM" "$(_ctx_line_for "$pane")" "$pane" "$C_0"
+}
+
 cmd_receipt() {
   local proj="$1" task="$2" wt runs r n=0
   lane_known "$proj" || die "unknown project: $proj (expected: $(lane_names_bar))"
@@ -7158,6 +7308,9 @@ cmd_receipt() {
     jq -r '"    \(.key)\u0009\(.value)\n      \u001b[2mmeasured by: \(.source)\u001b[0m"' \
       "$wt/.hw/$r/receipt.jsonl" 2>/dev/null || true
     printf '\n'
+    if [ "$n" = 1 ] && [ ! -f "$wt/.hw/$r/done" ]; then
+      _receipt_context_line "$wt/.hw/$r/receipt.jsonl"
+    fi
     if [ -r "$wt/.hw/$r/dispatch" ]; then
       printf '    %sintended (from the dispatch manifest)%s\n' "$C_DIM" "$C_0"
       sed 's/^/      /' "$wt/.hw/$r/dispatch" | sed "s/^/$(printf '%s' "$C_DIM")/;s/$/$(printf '%s' "$C_0")/"
@@ -8190,6 +8343,26 @@ _snapshot_done_report() { # run directory
     warn "report tokens on $pane belong to run ${token_run:-<unknown>}, not $(basename "$rundir"); receipt unchanged"
     return 0
   fi
+  if [ -r "$rundir/task" ]; then
+    seq="$(tr -cd '0-9' < "$rundir/task" 2>/dev/null || true)"; : "${seq:=1}"
+    [ "$seq" = 1 ] || marker="$rundir/t$seq/done"
+  fi
+  # THE PANE'S TOKENS CAN BE THE PREVIOUS TASK'S. `hw next` re-tasks a live pane
+  # and nothing clears what task N-1's done-invoker published; copying them
+  # made task N's receipt read as a delivered report (measured on 8 chained runs).
+  # `done_at` is the evidence: a report older than the moment this task was
+  # dispatched (the `task` file `hw next` wrote) cannot be this task's.
+  if [ "$seq" != 1 ] && [ ! -f "$marker" ]; then
+    local dat tat
+    dat="$(printf '%s' "$tokens" | jq -r '.done_at // empty | fromdateiso8601? // empty' 2>/dev/null || true)"
+    tat="$(stat -f %m "$rundir/task" 2>/dev/null || stat -c %Y "$rundir/task" 2>/dev/null || true)"
+    if [ -n "$dat" ] && [ -n "$tat" ] && [ "$dat" -lt "$tat" ]; then  # MUTATION-ANCHOR: 700-M03
+      _receipt_into "$rundir" completion_marker \
+        "absent — task $seq has not reported; the pane's report tokens (done_at $(printf '%s' "$tokens" | jq -r '.done_at')) predate its dispatch, so they are an earlier task's and were not copied" \
+        "test ! -f $marker; done_at token < mtime of $rundir/task"
+      return 0
+    fi
+  fi
   summary="$(printf '%s' "$tokens" | jq -r '[.sum,.sum2,.sum3,.sum4,.sum5,.sum6,.sum7] | map(select(. != null)) | join("")')"
   _receipt_into "$rundir" report_project "$(printf '%s' "$tokens" | jq -r '.hw_project // "unknown"')" "herdr agent get $pane token hw_project"
   _receipt_into "$rundir" report_task "$(printf '%s' "$tokens" | jq -r '.hw_task // "unknown"')" "herdr agent get $pane token hw_task"
@@ -8199,10 +8372,6 @@ _snapshot_done_report() { # run directory
   _receipt_into "$rundir" report_state "$(printf '%s' "$tokens" | jq -r '.done_state // "unknown"')" "herdr agent get $pane token done_state"
   _receipt_into "$rundir" report_artifacts "$(printf '%s' "$tokens" | jq -r '.artifacts // "unknown"')" "herdr agent get $pane token artifacts"
   _receipt_into "$rundir" report_engram "$(printf '%s' "$tokens" | jq -r '.engram // "unknown"')" "herdr agent get $pane token engram"
-  if [ -r "$rundir/task" ]; then
-    seq="$(tr -cd '0-9' < "$rundir/task" 2>/dev/null || true)"; : "${seq:=1}"
-    [ "$seq" = 1 ] || marker="$rundir/t$seq/done"
-  fi
   if [ -f "$marker" ]; then
     _receipt_into "$rundir" completion_marker \
       "present — zero-byte flag means the receiver admitted the report (admission, not proof it was read); report content is in report_summary/status/artifacts/engram above" \
@@ -8527,6 +8696,21 @@ _done_took() {
     info "hw done took ${total}s: verification ${_DONE_VERIFY_SECONDS}s, everything else $(( total - _DONE_VERIFY_SECONDS ))s"
   fi
 }
+# `closed-by-hand` beside the task's done marker: when, by which flag, and
+# whether a report existed. Written once — a repeated `hw done` (sweeps do) must
+# not move the first close, and a marker on a task that DID report must say so.
+_done_mark_closed_by_hand() {  # $1 = run directory
+  local rundir="${1%/}" mark by=none reported=no
+  [ -n "$rundir" ] && [ -d "$rundir" ] || return 0
+  mark="$(dirname "$(_run_done_marker "$rundir")")/closed-by-hand"
+  [ ! -e "$mark" ] || return 0
+  [ "${DONE_BLOCKED:-0}" = 1 ] && by=--blocked
+  [ "${DONE_FORCE:-0}" = 1 ] && by=--force
+  [ -f "$(_run_done_marker "$rundir")" ] && reported=yes
+  mkdir -p "$(dirname "$mark")" 2>/dev/null || return 0
+  printf 'at=%s\nby=%s\nreported=%s\n' "$(date +%s)" "$by" "$reported" > "$mark" 2>/dev/null || true  # MUTATION-ANCHOR: 700-M01
+}
+
 cmd_done() {
   local proj="$1" task="$2" main wt branch close_failed=0
   _DONE_T0="$(date +%s)"; _DONE_VERIFY_SECONDS=0
@@ -8583,6 +8767,11 @@ cmd_done() {
     info "it had reported BLOCKED and was waiting for a ruling; closing it ends the wait"
   fi
 
+  # A HAND CLOSE LEAVES ITS OWN MARK. Without it `hw status` read a task closed
+  # here and a task whose executor died as the same `finished, unreported`
+  # (an audit found 19 of 24 such rows were hand closes). Written after
+  # every refusal above, so a close that did not happen leaves nothing.
+  _done_mark_closed_by_hand "$done_rundir"
   # TAB FIRST, AND A TAB RECORD CAN NEVER CLOSE A WORKSPACE. hw has closed other
   # people's agents before — a cleanup that worked by exclusion once
   # killed a live brainer's own executors — and the answer then was
@@ -8703,9 +8892,10 @@ cmd_done() {
 
   BASE_BRANCH="$(_lane_base "$proj")"; : "${BASE_BRANCH:=main}"
 
-  # Printed, never run: deleting a worktree or a branch is the user's call.
+  # THE MERGE IS PRINTED, never run: merging is the brainer's call. Removing a
+  # `safe` worktree is not printed — it is done, below (the operator, 2026-10-04).
   #
-  # BUT NOT PRINTED BLINDLY ANY MORE. This block used to end with
+  # AND THE MERGE IS NOT PRINTED BLINDLY. This block used to end with
   # `git worktree remove $wt` on every done, whatever the worktree held. For
   # a product lane's coords-reconcile that line destroys `_coords-export/` —
   # 588K of raw.json and four CSVs, the 754 rows that went to Mike — because the
@@ -8851,6 +9041,13 @@ EOF
   if git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
     wt_branch="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || echo detached)"
   fi
+  # Its executor is gone (the tab closed above): the lock hw took at launch
+  # goes with it. Only hw's own — a lock somebody else took stays, and reads
+  # `locked` below.
+  local _lr
+  if _lr="$(_wt_lock_reason "$main" "$wt")" && [ "${_lr#hw }" != "$_lr" ]; then
+    git -C "$main" worktree unlock "$wt" >/dev/null 2>&1 && info "unlocked $(basename "$wt") — its executor is closed"
+  fi
   _wt_disposition "$main" "$wt" "$wt_branch" "${BASE_BRANCH:-main}"
   if [ "$WT_VERDICT" = safe ] || [ "$WT_VERDICT" = archivable ]; then
     # `hw done` REAPS ITS OWN TASK. It used to print the two commands below and
@@ -8878,6 +9075,10 @@ EOF
   else
     printf '  %s%s DO NOT REMOVE THIS WORKTREE YET%s\n' "$C_WARN" "!" "$C_0"
     printf '      %s%s%s\n' "$C_DIM" "$WT_WHY" "$C_0"
+    local shed
+    if _wt_sheddable && shed="$(_wt_shed "$proj" "$wt")"; then
+      printf '      %sKept, and shed what its install rebuilds: %s%s\n' "$C_DIM" "$shed" "$C_0"
+    fi
     case "$WT_VERDICT" in
       irreplaceable)
         printf '      %sgit status reports this worktree clean and it is not — those paths are%s\n' "$C_DIM" "$C_0"
@@ -8896,6 +9097,8 @@ EOF
         printf '      %sThis is NOT a verdict that the worktree is needed — it is the absence of one.%s\n' "$C_DIM" "$C_0"
         printf '      %sFix what could not be read, then re-run. Do not remove it on the strength of%s\n' "$C_DIM" "$C_0"
         printf '      %sa check that did not run: that is how 588K went once.%s\n' "$C_DIM" "$C_0" ;;
+      locked)
+        printf '      %sSomebody holds it; unlock it once nobody does, then `hw reap %s`.%s\n' "$C_DIM" "$proj" "$C_0" ;;
       leased)
         printf '      %sSomebody is still going to look at this preview. `hw preview` shows who and until when;%s\n' "$C_DIM" "$C_0"
         printf '      %s`hw preview release %s <task>` ends it early.%s\n' "$C_DIM" "$proj" "$C_0" ;;
@@ -9064,13 +9267,62 @@ _reap_worktree() {  # <proj> <main> <wt> <branch> <base>
     return 1
   fi
   ok "removed $(basename "$wt")"
-  if git -C "$main" branch -d "$branch" >/dev/null 2>&1; then
+  if _reap_delete_branch "$main" "$branch" "$base"; then
     info "deleted $branch"
   else
     warn "kept $branch — git refused a safe delete, so something is not merged after all"
   fi
   _reap_db "$proj" "$main" "$wt" "$dest"
   return 0
+}
+
+# `-d` first. A squash- or PR-merged branch is one git can never see as merged,
+# so `-d` refused it and every such branch outlived its worktree; `-D` only when
+# the merge evidence, asked again right here, is one of those two.
+_reap_delete_branch() {  # <main> <branch> <base>
+  git -C "$1" branch -d "$2" >/dev/null 2>&1 && return 0
+  WT_MERGE_EVIDENCE=""
+  _wt_branch_merged "$1" "$2" "$3" && [ -n "$WT_MERGE_EVIDENCE" ] || return 1
+  git -C "$1" branch -D "$2" >/dev/null 2>&1
+}
+
+# ── shed: the weight of a worktree that stays ─────────────────────────────
+#
+# A KEPT worktree loses only what its install or build rebuilds: git-ignored
+# directories named in WT_SHED. A fixed list, not a lane field: the names are
+# the framework's build output, not the lane's, and git saying "ignored" is the
+# per-repo half. NOT node_modules: MEASURED 2026-10-04, pnpm on
+# APFS clones it — 140 GiB by `du` freed ~0 by `df` — while `.next` (0.4–5.6 GB
+# a worktree) freed exactly what `du` said. Removing node_modules buys nothing
+# and costs the next reuse a `pnpm install`.
+#
+# Never under a live process: a dev server's cwd is the worktree, and `.next`
+# is what it serves. `lsof` failing is a no. And only hw's own worktrees, under
+# the lane's canonical root: `git worktree list` also holds the main checkout
+# and worktrees other tools made (a Codex app's, measured in a product lane).
+WT_SHED=".next .turbo ${HW_WT_SHED:-}"
+# Which KEEP verdicts may shed: the ones about git. Not held, leased or
+# undetermined (somebody may be using it, or we could not tell), not detached
+# or not-a-worktree (not this tool's to decide about).
+_wt_sheddable() { case "$WT_VERDICT" in dirty|unmerged|irreplaceable) return 0 ;; esac; return 1; }
+_wt_shed() {  # <proj> <wt> — prints what it removed; returns 1 when it removed nothing
+  local wt="$2" real root cwds ignored rel kb=0 k gone=""
+  real="$(cd "$wt" 2>/dev/null && pwd -P)" || return 1
+  root="$(_wt_canonical_root "$1")" && root="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
+  case "$real" in "$root"/*) ;; *) return 1 ;; esac
+  cwds="$(lsof -a -d cwd -Fn 2>/dev/null)" || [ -n "$cwds" ] || return 1
+  printf '%s\n' "$cwds" | awk -v d="n$real" '$0 == d || index($0, d "/") == 1 { f = 1 } END { exit !f }' && return 1
+  ignored="$(git -C "$wt" status --porcelain --ignored 2>/dev/null)" || return 1
+  while IFS= read -r rel; do
+    rel="${rel%/}"
+    case " $WT_SHED " in *" ${rel##*/} "*) ;; *) continue ;; esac
+    [ -d "$wt/$rel" ] && [ ! -L "$wt/$rel" ] || continue
+    k="$(du -sk "$wt/$rel" 2>/dev/null | awk '{print $1}')"
+    rm -rf "${wt:?}/$rel" 2>/dev/null || continue
+    kb=$((kb + ${k:-0})); gone="$gone $rel"
+  done < <(printf '%s\n' "$ignored" | sed -n 's/^!! //p')
+  [ -n "$gone" ] || return 1
+  printf '%s (%s MB)' "${gone# }" "$((kb / 1024))"
 }
 
 # The lane's task branches no worktree holds any more, merged into the base.
@@ -9101,7 +9353,7 @@ cmd_reap() {
     esac
   done
 
-  local proj main base total_safe=0 total_kept=0 total_removed=0
+  local proj main base total_safe=0 total_kept=0 total_removed=0 lane_safe0 lane_removed0
   while IFS= read -r proj; do
     [ -z "$proj_filter" ] || [ "$proj_filter" = "$proj" ] || continue
     main="$(_wt_main "$proj")" || continue
@@ -9109,6 +9361,7 @@ cmd_reap() {
     base="$(_lane_base "$proj")"
     : "${base:=main}"
     printf '\n  %s%s%s  (base %s)\n' "$C_B" "$proj" "$C_0" "$base"
+    lane_safe0="$total_safe"; lane_removed0="$total_removed"
     local seed_from
     seed_from="$(lane_get "$proj" reap_copies_from)" || seed_from=""
     if [ -n "$seed_from" ]; then
@@ -9116,11 +9369,23 @@ cmd_reap() {
       info "$WT_SEED_NOTE"
     fi
 
-    local wt branch
+    local wt branch shed
     while IFS= read -r wt; do
       [ -n "$wt" ] || continue
+      # THE MAIN CHECKOUT IS GIT'S FIRST ENTRY, dropped above by position. A
+      # string compare with the lane's spelling of it missed whenever the two
+      # spellings differ (a /var -> /private/var temp dir, a doubled slash): the
+      # lane golden then listed the main checkout as `safe`, recipe and all,
+      # with `branch -d` of the base. Kept as a second check.
       [ "$wt" = "$main" ] && continue
       branch="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+      # a database this worktree's own runs recorded, before anything removes it
+      if [ -n "$(lane_get "$proj" db_provisioned)" ]; then
+        local rdb
+        for rdb in $(cat "$wt"/.hw/2*/receipt.jsonl 2>/dev/null | jq -r 'select(.key=="database") | .value' 2>/dev/null | sort -u); do
+          _db_ledger_add "$proj" "$rdb" "$wt"
+        done
+      fi
       _wt_disposition "$main" "$wt" "$branch" "$base"
       if [ "$WT_VERDICT" = safe ] || [ "$WT_VERDICT" = archivable ]; then
         total_safe=$((total_safe + 1))
@@ -9129,18 +9394,21 @@ cmd_reap() {
             total_removed=$((total_removed + 1))
           fi
         else
+          # NO HAND RECIPE: `--apply` is the one path, and the `branch -d` this
+          # printed is refused by git for a squash- or PR-merged branch.
           ok "$(basename "$wt")  ${C_DIM}$WT_WHY${C_0}"
           [ "$WT_VERDICT" != archivable ] \
             || printf '      %sarchive to %s/%s/%s, then remove%s\n' "$C_DIM" "$(_archive_root)" "$proj" "$(basename "$wt")" "$C_0"
-          printf '      %sgit -C %s worktree remove %s && git -C %s branch -d %s%s\n' \
-            "$C_DIM" "$main" "$wt" "$main" "$branch" "$C_0"
         fi
       else
         total_kept=$((total_kept + 1))
         printf '  %s!%s %-42s %s%s: %s%s\n' "$C_WARN" "$C_0" "$(basename "$wt")" \
           "$C_DIM" "$WT_VERDICT" "$WT_WHY" "$C_0"
+        if [ "$apply" = 1 ] && _wt_sheddable; then
+          shed="$(_wt_shed "$proj" "$wt")" && printf '      %skept, and shed %s%s\n' "$C_DIM" "$shed" "$C_0"
+        fi
       fi
-    done < <(git -C "$main" worktree list --porcelain 2>/dev/null | rg '^worktree ' | sd '^worktree ' '')
+    done < <(git -C "$main" worktree list --porcelain 2>/dev/null | rg '^worktree ' | sd '^worktree ' '' | tail -n +2)
 
     # ── the merged task branches no worktree holds ────────────────────────
     local ob
@@ -9148,7 +9416,7 @@ cmd_reap() {
       [ -n "$ob" ] || continue
       total_safe=$((total_safe + 1))
       if [ "$apply" = 1 ]; then
-        if git -C "$main" branch -d "$ob" >/dev/null 2>&1; then
+        if _reap_delete_branch "$main" "$ob" "$base"; then
           total_removed=$((total_removed + 1))
           ok "deleted $ob  ${C_DIM}(merged, no worktree)${C_0}"
         else
@@ -9156,7 +9424,6 @@ cmd_reap() {
         fi
       else
         ok "$ob  ${C_DIM}branch merged into $base, no worktree holds it${C_0}"
-        printf '      %sgit -C %s branch -d %s%s\n' "$C_DIM" "$main" "$ob" "$C_0"
       fi
     done < <(_reap_orphan_branches "$proj" "$main" "$base")
 
@@ -9190,7 +9457,6 @@ cmd_reap() {
             fi
           else
             ok "$(basename "$wd")  ${C_DIM}loose work dir: $WD_WHY${C_0}"
-            printf '      %srm -rf %s%s\n' "$C_DIM" "$wd" "$C_0"
           fi
         else
           total_kept=$((total_kept + 1))
@@ -9200,6 +9466,50 @@ cmd_reap() {
       done < <(fd -H -t d -d 1 . "$wd_root" 2>/dev/null | sd '/$' '' | sort)
     fi
     [ "$loose_seen" != 0 ] || info "no loose work dirs under $wd_root"
+
+    # ── the databases hw recorded whose worktree is gone ──────────────────
+    local lf ldb lwt keep_rows=""
+    lf="$(_db_ledger "$proj")"
+    if [ -n "$(lane_get "$proj" db_provisioned)" ] && [ -r "$lf" ]; then
+      while IFS=$'\t' read -r ldb lwt; do
+        [ -n "$ldb" ] && [ -n "$lwt" ] || continue
+        if [ -d "$lwt" ]; then keep_rows="$keep_rows$ldb"$'\t'"$lwt"$'\n'; continue; fi
+        if ! psql -U "$(id -un)" -d postgres -Atc "select 1 from pg_database where datname = '$ldb'" 2>/dev/null | grep -q 1; then
+          continue   # already gone: the row goes too
+        fi
+        if [ "$ldb" != "$(basename "$lwt" | tr '\-/' '__')" ]; then
+          warn "kept database $ldb — recorded for $lwt, whose name does not derive it; drop it by hand if it is disposable"
+          keep_rows="$keep_rows$ldb"$'\t'"$lwt"$'\n'; continue
+        fi
+        total_safe=$((total_safe + 1))
+        if [ "$apply" = 1 ]; then
+          _reap_db "$proj" "$main" "$lwt" ""
+          if psql -U "$(id -un)" -d postgres -Atc "select 1 from pg_database where datname = '$ldb'" 2>/dev/null | grep -q 1; then
+            keep_rows="$keep_rows$ldb"$'\t'"$lwt"$'\n'
+          else
+            total_removed=$((total_removed + 1))
+          fi
+        else
+          ok "database $ldb  ${C_DIM}its worktree $(basename "$lwt") is gone; pg_dump into the archive, then drop${C_0}"
+          keep_rows="$keep_rows$ldb"$'\t'"$lwt"$'\n'
+        fi
+      done < "$lf"
+      [ "$apply" != 1 ] || printf '%s' "$keep_rows" > "$lf" 2>/dev/null || true
+    fi
+
+    # ── build output: the weight `df` actually gets back ──────────────────
+    # `.next`/`.turbo` only: node_modules on APFS is clones,
+    # so `du` over the tree overstates the cost ~2x. Cached for `hw status`.
+    local broot bkb=0   # =0: a bare `local` again does not reset the last lane's value
+    if broot="$(_wt_canonical_root "$proj")" && [ -d "$broot" ]; then
+      bkb="$(fd -H -I -t d -d 4 -E node_modules '^\.(next|turbo)$' "$broot" 2>/dev/null \
+        | while IFS= read -r d; do du -sk "$d" 2>/dev/null; done | awk '{ s += $1 } END { print s + 0 }')"
+      info "build output (.next/.turbo) under $broot: $(( ${bkb:-0} / 1048576 )) GB"
+    fi
+    # What `hw status` reads instead of repeating this survey: <build KB>
+    # <epoch> <disposable>. The lane's own disposable count, so only the lane
+    # that has something to reap says so.
+    printf '%s %s %s\n' "${bkb:-0}" "$(date +%s)" "$(( total_safe - lane_safe0 - (total_removed - lane_removed0) ))" > "$BRAIN/.hw-reap-$proj" 2>/dev/null || true
   done < <(_repo_lanes)
 
   # ── third pass: executors that reported BLOCKED and are still waiting ──
@@ -9236,10 +9546,6 @@ cmd_reap() {
     fi
   done < <(_hw_run_dirs --every-lane)
 
-  # Leave the count where `hw status` can show it without repeating the survey.
-  # See _reap_quiet: this whole scan is ~4s of git, which is fine for a command
-  # you run on purpose and wrong for a glance you run at every session start.
-  printf '%s %s\n' "$total_safe" "$(date +%s)" > "$BRAIN/.hw-reap-count" 2>/dev/null || true
 
   printf '\n'
   if [ "$apply" = 1 ]; then
@@ -9704,18 +10010,75 @@ _wt_branch_merged() {
     WT_MERGE_EVIDENCE="squash-merged: every path it contributed is already identical in $base"
     return 0
   fi
+  _wt_pr_merged "$main" "$branch" "$base" && return 0
+  return 1
+}
+
+# THE THIRD OPINION: THE MERGED PR. The content check above misses a squash
+# once the base has changed the same paths again. MEASURED 2026-10-04 on a
+# product lane: 110 worktrees read `unmerged`, 95 of them had a MERGED PR, and
+# in 87 the branch tip IS, or is an ancestor of, that PR's head — work GitHub
+# merged weeks before, kept for good.
+#
+# Evidence only when the merged PR's head CONTAINS the tip: a commit pushed
+# after the merge is not in it. And merged INTO THE LANE'S BASE: a stacked PR
+# merged into another branch, or develop's release PR into main, never reached
+# it (Judgment Day, both judges). Every way to not know is a no: no `gh`, a
+# non-GitHub origin, `gh` failing or timing out, an OPEN PR for the branch (it
+# is in use again), no merged PR. `gh` is asked once per process and repository
+# (`--limit 1000`; a PR beyond it is simply no evidence). HW_GH names the binary.
+_WT_PRS_MAIN=""; _WT_PRS_OK=0; _WT_PRS=""
+_wt_pr_list() {  # <main> — fills _WT_PRS (branch TAB state TAB head oid TAB base)
+  local main="$1" url out gh="${HW_GH:-gh}" to=""
+  if [ "$_WT_PRS_MAIN" = "$main" ]; then [ "$_WT_PRS_OK" = 1 ]; return; fi
+  _WT_PRS_MAIN="$main"; _WT_PRS_OK=0; _WT_PRS=""
+  command -v "$gh" >/dev/null 2>&1 || return 1
+  url="$(git -C "$main" remote get-url origin 2>/dev/null)" || return 1
+  # `github.com-personal:` is an ssh host alias, and the product lane's origin.
+  case "$url" in *github.com*) ;; *) return 1 ;; esac
+  if command -v timeout >/dev/null 2>&1; then to="timeout 60"
+  elif command -v gtimeout >/dev/null 2>&1; then to="gtimeout 60"; fi
+  out="$(cd "$main" && $to "$gh" pr list --state all --limit 1000 \
+    --json headRefName,state,headRefOid,baseRefName \
+    --jq '.[] | [.headRefName, .state, .headRefOid, .baseRefName] | @tsv' 2>/dev/null)" || return 1
+  _WT_PRS="$out"; _WT_PRS_OK=1
+}
+
+_wt_pr_merged() {  # <main> <branch> <base>
+  local main="$1" branch="$2" base="$3" tip rows _b state oid prbase
+  _wt_pr_list "$main" || return 1
+  tip="$(git -C "$main" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" || return 1
+  rows="$(printf '%s\n' "$_WT_PRS" | awk -F'\t' -v b="$branch" '$1 == b')"
+  [ -n "$rows" ] || return 1
+  printf '%s\n' "$rows" | awk -F'\t' '$2 == "OPEN" { found = 1 } END { exit !found }' && return 1
+  while IFS=$'\t' read -r _b state oid prbase; do
+    [ "$state" = MERGED ] && [ -n "$oid" ] && [ "$prbase" = "$base" ] || continue
+    if [ "$oid" = "$tip" ] || git -C "$main" merge-base --is-ancestor "$tip" "$oid" 2>/dev/null; then
+      WT_MERGE_EVIDENCE="PR-merged: its tip is in the head of a PR merged into $base"
+      return 0
+    fi
+  done <<< "$rows"
   return 1
 }
 
 # Sets WT_VERDICT and WT_WHY. Every verdict that is not `safe` is a reason to
 # KEEP, and the caller prints WT_WHY.
 #
-#   safe | held | leased | detached | dirty | unmerged | irreplaceable
+#   safe | held | leased | locked | detached | dirty | unmerged | irreplaceable
 #   undetermined  — A GATE COULD NOT BE MEASURED. Not a synonym for any of the
 #                   others and never folded into `safe`: "nothing is working in
 #                   it" and "we could not find out whether anything is working
 #                   in it" are different facts, and only the first is a reason
 #                   to run `git worktree remove`.
+# Is <wt> locked in <main>'s worktree list? Prints the reason (maybe empty).
+_wt_lock_reason() {  # <main> <wt>
+  local real; real="$(cd "$2" 2>/dev/null && pwd -P)" || real="$2"
+  git -C "$1" worktree list --porcelain 2>/dev/null | awk -v a="$2" -v b="$real" '
+    /^worktree / { w = substr($0, 10); here = (w == a || w == b) }
+    here && /^locked/ { found = 1; r = substr($0, 8); if (r ~ /^".*"$/) r = substr(r, 2, length(r) - 2) }
+    END { if (found) { print r; exit 0 } exit 1 }'
+}
+
 _wt_disposition() {
   local main="$1" wt="$2" branch="$3" base="${4:-main}" occ keep n
   local status_out status_rc
@@ -9742,6 +10105,12 @@ _wt_disposition() {
   if lr="$(_leased_rundir_for "$wt" 2>/dev/null)"; then
     WT_VERDICT=leased
     WT_WHY="preview leased until $(_lease_field "$lr" until_h) — $(_lease_field "$lr" why)"
+    return 0
+  fi
+  local lockr
+  if lockr="$(_wt_lock_reason "$main" "$wt")"; then
+    WT_VERDICT=locked
+    WT_WHY="locked${lockr:+ ($lockr)} — hw locks a worktree while its executor lives, and an idle one is invisible to lsof; \`hw done\` unlocks its own, \`git worktree unlock\` any other"
     return 0
   fi
   if [ -z "$branch" ] || [ "$branch" = detached ]; then
@@ -9834,7 +10203,7 @@ _wt_disposition() {
     done <<< "$keep"
     if [ "$other" = 0 ] && [ -n "$WT_ARCHIVE" ]; then
       WT_VERDICT=archivable
-      WT_WHY="merged into $base and clean; its only ignored content is task output, archived before removal: $(printf '%s' "$WT_ARCHIVE" | tr '\n' ' ')"
+      WT_WHY="${WT_MERGE_EVIDENCE:-merged into $base} and clean; its only ignored content is task output, archived before removal: $(printf '%s' "$WT_ARCHIVE" | tr '\n' ' ')"
       return 0
     fi
     WT_ARCHIVE=""
@@ -10915,7 +11284,12 @@ _next_settled_message() {
 # rule's unit); k/M suffixes are expanded.
 _pane_context() {  # $1 = pane
   local pane="$1" out line
-  out="$(herdr agent read "$pane" --source visible 2>/dev/null)" || {
+  # BOUNDED: `hw status` and `hw receipt` call this per pane, and a wedged herdr
+  # read must cost seconds, not the command. perl's alarm is the portable
+  # timeout (macOS ships no `timeout`); a missing perl falls back to the plain read.
+  out="$(if command -v perl >/dev/null 2>&1; then
+           perl -e 'alarm shift; exec @ARGV' "${HW_CTX_READ_TIMEOUT:-3}" herdr agent read "$pane" --source visible 2>/dev/null
+         else herdr agent read "$pane" --source visible 2>/dev/null; fi)" || {
     printf 'unreadable\t\t'; return 0
   }
   [ -n "$out" ] || { printf 'unreadable\t\t'; return 0; }
@@ -10928,7 +11302,7 @@ _pane_context() {  # $1 = pane
   # than a token count assembled from fragments. Widening it to stitch two lines
   # together would trade the contract for a figure whose provenance nobody can
   # check.
-  line="$(printf '%s' "$out" | sed 's/\xc2\xa0/ /g' | grep -E 'Ctx Used:' | tail -1 || true)"  # MUTATION-ANCHOR: 138-M01
+  line="$(printf '%s' "$out" | sed 's/\xc2\xa0/ /g' | grep -E 'Ctx: *[0-9]+(\.[0-9]+)?[kKmM]? *\|' | tail -1 || true)"  # MUTATION-ANCHOR: 138-M01
   [ -n "$line" ] || { printf 'no-statusline\t\t'; return 0; }
   printf '%s' "$line" | awk '
     {
@@ -10964,13 +11338,13 @@ _report_pane_context() {  # $1 = pane
   case "$state" in
     measured)
       if [ "${tok:-0}" -ge "$HW_NEXT_CTX_WARN_TOKENS" ]; then
-        warn "this session has already burned ${tok} tokens of context (${pct}% of its window). ${HW_OPERATOR:-the operator}'s rule is not to re-task past ${HW_NEXT_CTX_WARN_TOKENS}: the next task would start compacted, which costs more than a fresh executor. Re-tasking anyway is a deliberate choice, not a default."
+        warn "this session has already burned ${tok} tokens of context${pct:+ (${pct}% of its window)}. ${HW_OPERATOR:-the operator}'s rule is not to re-task past ${HW_NEXT_CTX_WARN_TOKENS}: the next task would start compacted, which costs more than a fresh executor. Re-tasking anyway is a deliberate choice, not a default."
       else
-        info "context: ${tok} tokens used (${pct}% of the window), under the ${HW_NEXT_CTX_WARN_TOKENS} re-task threshold"
+        info "context: ${tok} tokens used${pct:+ (${pct}% of the window)}, under the ${HW_NEXT_CTX_WARN_TOKENS} re-task threshold"
       fi
       ;;
     no-statusline)
-      warn "context: NOT MEASURED — the pane responded but rendered no \`Ctx Used:\` line (no statusline configured, or it is scrolled out of the viewport). This is not 'a fresh session'; it is no reading at all, and the +${HW_NEXT_CTX_WARN_TOKENS} rule cannot be applied to this pane from here."
+      warn "context: NOT MEASURED — the pane responded but rendered no \`Ctx:\` statusline row (no statusline configured, or it is scrolled out of the viewport). This is not 'a fresh session'; it is no reading at all, and the +${HW_NEXT_CTX_WARN_TOKENS} rule cannot be applied to this pane from here."
       ;;
     *)
       warn "context: NOT MEASURED — \`herdr agent read $1 --source visible\` returned nothing readable. This is not 'a fresh session'; it is no reading at all."
@@ -12476,28 +12850,57 @@ $wss
 EOF
 }
 
-# Cleanup as a ROUTINE, not a thing you remember — but NOT by re-running the
-# survey. `cmd_reap` is ~4s of git across 25 worktrees, and wiring it into
-# `hw status` made a glance cost five seconds. A status that is slow is a status
-# people stop running, which would cost more than it saves.
-#
-# So status reports the LAST survey's count and says how old it is. Honest about
-# being stale, cheap, and it still nags. The number is seeded by any `hw reap`.
-_reap_quiet() {
-  local f n at age
-  f="$BRAIN/.hw-reap-count"
+# FINISHED, NEVER REPORTED, AND NOBODY LEFT TO TELL — one line. The table above
+# already lists each such run at length; this is the count that cannot scroll
+# away. MEASURED 2026-10-04: 7 in one lane, keeping worktrees
+# with 15-42 changes, every one because its brainer's pane was gone.
+_orphans_quiet() {  # <the orphans json status wrote>
+  local f="$1" keys
   [ -r "$f" ] || return 0
-  n="$(awk '{print $1}' "$f" 2>/dev/null || true)"
-  at="$(awk '{print $2}' "$f" 2>/dev/null || true)"
-  [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null || return 0
-  age="unknown age"
-  if [ -n "$at" ]; then
-    local mins=$(( ( $(date +%s) - at ) / 60 ))
-    if [ "$mins" -lt 60 ]; then age="${mins}m ago"; else age="$(( mins / 60 ))h ago"; fi
-  fi
-  printf '\n'
-  warn "$n worktree(s), branch(es) or work dir(s) were disposable as of the last survey ($age) — hw reap --apply"
-  info "re-survey with \`hw reap\`; nothing kept is ever removed"
+  keys="$(jq -r '[.[] | select((.why // "") | test("brainer.s pane .* is gone")) | .key] | join(" ")' "$f" 2>/dev/null)" || return 0
+  [ -n "$keys" ] || return 0
+  warn "$(printf '%s\n' $keys | wc -l | tr -d ' ') task(s) finished and never reported, their brainer's pane gone: $keys — hw reports <lane> reads each, hw done <lane> <task> closes it"
+}
+
+# A LANE PAST ITS SIZE, ONE LINE, LIVE. The disk reached 98% on 2026-10-04 with
+# 257 worktrees in one lane and nothing said so. Count (`git worktree list`) and
+# the volume's use (`df`), both milliseconds. NOT gigabytes per lane: `du` over
+# that lane's 210 worktrees took 375 s, measured, and a slow status is a status
+# nobody runs — and overstated the cost ~2x (APFS-cloned node_modules). The
+# real weight, `.next`/`.turbo`, is summed by `hw reap` and read back here.
+# Thresholds: HW_HYGIENE_MAX_{WORKTREES,DISK_PCT,BUILD_GB} override the lane's
+# `reap.max_worktrees` / `max_disk_pct` / `max_build_gb`, defaults 40 / 85 / 30.
+# A clean lane prints nothing.
+_ago() {  # <epoch> — "12m ago" under an hour, "5h ago" after
+  local m=$(( ($(date +%s) - $1) / 60 ))
+  if [ "$m" -lt 60 ]; then printf '%sm ago' "$m"; else printf '%sh ago' "$(( m / 60 ))"; fi
+}
+
+_hygiene_quiet() {
+  local proj main n maxn maxd maxg gb at safe pct why
+  while IFS= read -r proj; do
+    main="$(_wt_main "$proj")" || continue
+    [ -d "$main" ] || continue
+    maxn="${HW_HYGIENE_MAX_WORKTREES:-$(lane_get "$proj" reap_max_worktrees)}"
+    : "${maxn:=40}"
+    maxd="${HW_HYGIENE_MAX_DISK_PCT:-$(lane_get "$proj" reap_max_disk_pct)}"
+    : "${maxd:=85}"
+    n="$(git -C "$main" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)"
+    n=$(( ${n:-1} - 1 ))
+    pct="$(df -kP "$main" 2>/dev/null | awk 'NR == 2 { sub("%", "", $5); print $5 }')"
+    why=""
+    [ "$n" -le "$maxn" ] 2>/dev/null || why="$n worktrees (threshold $maxn)"
+    [ -z "$pct" ] || [ "$pct" -le "$maxd" ] 2>/dev/null || why="${why:+$why, }disk ${pct}% used (threshold ${maxd}%)"
+    maxg="${HW_HYGIENE_MAX_BUILD_GB:-$(lane_get "$proj" reap_max_build_gb)}"; : "${maxg:=30}"
+    gb=""; at=""; safe=""
+    [ ! -r "$BRAIN/.hw-reap-$proj" ] || read -r gb at safe < "$BRAIN/.hw-reap-$proj" || true
+    case "$gb$at$safe" in *[!0-9]*) gb=""; at=""; safe="" ;; esac
+    [ -z "$gb" ] || gb=$(( gb / 1048576 ))
+    [ -z "$gb" ] || [ "$gb" -le "$maxg" ] 2>/dev/null || why="${why:+$why, }${gb} GB of .next/.turbo at the last reap (threshold ${maxg})"
+    [ -z "$safe" ] || [ "$safe" = 0 ] \
+      || why="${why:+$why, }$safe disposable at the last reap ($(_ago "$at"))"
+    [ -z "$why" ] || warn "$proj: $why — hw reap $proj --apply"
+  done < <(_repo_lanes)
 }
 
 # A paragraph copied into three or more project CLAUDE.md files gets corrected
@@ -12507,7 +12910,7 @@ _reap_quiet() {
 # two is left alone, since two lanes legitimately share a brainer voice.
 #
 # Restored 2026-08-24: commit 2603bad ("status stops re-running the reap
-# survey") rewrote _reap_quiet's body ON TOP of this function's, deleting it
+# survey") rewrote the then _reap_quiet's body ON TOP of this function's, deleting it
 # while leaving BOTH call sites. Every `hw status` since then ended with
 # `_rules_quiet: command not found`. The root argument was also `""`, so the
 # scan only worked when cwd happened to be $BRAIN; it is passed explicitly now.
@@ -12534,6 +12937,14 @@ PYEOF
   printf '\n'
   warn "$n paragraph(s) are copied into 3+ project CLAUDE.md files — they belong in CLAUDE.shared.md"
   info "a rule in four files gets corrected in two of them; that is how a stale rule survives"
+}
+
+# A NEWER RELEASE IS ONE LINE, AND ASKED ABOUT ONCE A DAY (bin/release-check):
+# silent offline, silent in a brain with no install record, never a failed status.
+_release_quiet() {
+  local l
+  l="$(python3 "$HW_BIN_DIR/release-check" "$BRAIN" 2>/dev/null)" || return 0
+  [ -z "$l" ] || { printf '\n'; warn "$l"; }
 }
 
 _decisions_quiet() {
@@ -12729,7 +13140,7 @@ _herdr_server_started() {
 
 _status_inputs_source() {
   cat <<'HW_STATUS_PY'
-import glob, json, os, re, time
+import calendar, glob, json, os, re, time
 
 # The shell decided whether colour is wanted (C_0 is empty when it is not): the
 # same NO_COLOR / not-a-terminal rule as every other line hw prints.
@@ -13023,6 +13434,55 @@ def task_done(rundir):
     return os.path.isfile(os.path.join(d, "done")) and not os.path.isfile(os.path.join(d, "reopened"))
 
 
+def closed_by_hand(rundir):
+    """Was the CURRENT task closed with `hw done` before it reported? A dict
+    {at, by, reported, legacy} or None.
+
+    `hw done` writes `closed-by-hand` in the task's state dir. Runs closed
+    before it existed have no such file; the one measured trace they carry is a
+    `verify_run` line in receipt.jsonl, which only `hw done` writes, dated after
+    this task was dispatched (the `task` file `hw next` wrote; task 1 has no
+    lower bound). A hand close that left no verify_run (no pinned command)
+    stays unclassified: absence of the trace proves nothing."""
+    p = os.path.join(task_state_dir(rundir), "closed-by-hand")
+    try:
+        with open(p) as fh:
+            kv = dict(l.strip().split("=", 1) for l in fh if "=" in l)
+        return {"at": int(kv.get("at") or 0) or None, "by": kv.get("by") or "none",
+                "reported": kv.get("reported") == "yes", "legacy": False}
+    except (OSError, ValueError):
+        pass
+    try:
+        floor = os.path.getmtime(os.path.join(rundir, "task")) if task_seq(rundir) > 1 else 0
+        at = None
+        with open(os.path.join(rundir, "receipt.jsonl")) as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                    if r.get("key") != "verify_run":
+                        continue
+                    t = calendar.timegm(time.strptime(r.get("at") or "", "%Y-%m-%dT%H:%M:%SZ"))
+                except Exception:
+                    continue
+                if t >= floor:  # MUTATION-ANCHOR: 700-M05
+                    at = t
+        if at is not None:
+            return {"at": at, "by": "unknown", "reported": False, "legacy": True}
+    except OSError:
+        pass
+    return None
+
+
+def prior_reported(rundir):
+    """The last task BEFORE the current one whose done marker exists, or None.
+    Only meaningful for a chain (`hw next` made the current task N > 1)."""
+    for k in range(task_seq(rundir) - 1, 0, -1):
+        d = rundir if k == 1 else os.path.join(rundir, "t%d" % k)
+        if os.path.isfile(os.path.join(d, "done")):
+            return k
+    return None
+
+
 def blocked_since(rundir):
     """When the CURRENT task's --blocked report landed, if its executor is still
     kept waiting for a ruling (`blocked-waiting`, written by done-invoker);
@@ -13221,6 +13681,7 @@ def runs_of(workdir):
                 started = None
         out.append({"name": name, "dir": d, "done": task_done(d), "task": task_seq(d),
                     "reopened": task_reopened(d),
+                    "closed": closed_by_hand(d), "prior_reported": prior_reported(d),
                     "blocked_since": blocked_since(d), "resumed": task_resumed(d),
                     "started": started, "here": run_is_here(d),
                     "mode": run_mode_of(d),
@@ -13233,6 +13694,75 @@ def runs_of(workdir):
                     "own_tab": run_owns(d, "tab"),
                     "own_ws": run_owns(d, "workspace")})
     return out
+
+
+def pending_rulings_of(rundir):
+    """(count, oldest mtime) of the rulings queued on a run and not yet
+    delivered: `pending-ruling` plus `pending-ruling.<n>`, the same files
+    ruling_queue_pending (state-witness.sh) reads. (0, None) when none."""
+    if not rundir:
+        return 0, None
+    files = []
+    for f in glob.glob(os.path.join(rundir, "pending-ruling*")):
+        n = os.path.basename(f)[len("pending-ruling"):]
+        if (n == "" or re.fullmatch(r"\.\d+", n)) and os.path.isfile(f):
+            files.append(f)
+    ages = []
+    for f in files:
+        try:
+            ages.append(os.path.getmtime(f))
+        except OSError:
+            pass
+    return len(ages), (min(ages) if ages else None)
+
+
+def pane_ctx_parse(text):
+    """(tokens, percent|None) from the last statusline row of a pane capture
+    (`Model: … | Ctx: <n> | …`), or None when there is none. The row is found by
+    `Ctx:`, NOT by `Ctx Used:`: a narrow pane cuts the footer to
+    `Ctx: 237.5k | Ctx Use...`, so the percent is optional (measured on live
+    executors). Non-breaking spaces normalised; ONE physical line; no row is
+    None, never zero."""
+    rows = [l for l in (text or "").replace("\u00a0", " ").splitlines() if re.search(r"Ctx: *[0-9]+(\.[0-9]+)?[kKmM]? *\|", l)]  # MUTATION-ANCHOR: 690-M03
+    if not rows:
+        return None
+    m = re.search(r"Ctx: *([0-9.]+)([kKmM]?)", rows[-1])
+    u = re.search(r"Ctx Used: *([0-9.]+)", rows[-1])
+    if not m:
+        return None
+    mult = {"k": 1000, "m": 1000000}.get(m.group(2).lower(), 1)
+    try:
+        return int(float(m.group(1)) * mult), (u.group(1) if u else None)
+    except ValueError:   # `Ctx: 1.2.3`: not a measurement, never a crash
+        return None
+
+
+def pane_ctx_read(pane, timeout):
+    """One bounded `herdr agent read`: the parsed context, or None for
+    unreadable / no statusline / timed out."""
+    import subprocess
+    try:
+        r = subprocess.run(["herdr", "agent", "read", pane, "--source", "visible"],
+                           capture_output=True, text=True, errors="replace", timeout=timeout)  # MUTATION-ANCHOR: 690-M04
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return pane_ctx_parse(r.stdout) if r.returncode == 0 else None
+
+
+def pane_ctx_many(panes, timeout=None):
+    """{pane: (tokens, pct) | None}, all panes read in parallel so the whole
+    status costs one timeout at worst, not one per executor."""
+    panes = sorted({p for p in panes if p})
+    if not panes:
+        return {}
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("HW_STATUS_CTX_TIMEOUT") or 2)
+        except ValueError:
+            timeout = 2.0
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(panes))) as ex:
+        return dict(zip(panes, ex.map(lambda p: pane_ctx_read(p, timeout), panes)))
 HW_STATUS_PY
 }
 
@@ -13286,6 +13816,34 @@ def orphan_of(newest, has_agent):
             "at": newest.get("turns_at"), "invoker": newest.get("invoker"),
             "no_report": newest.get("no_report"),
             "has_env": newest.get("has_env"), "exec_pane": newest.get("exec_pane")}
+
+
+def unreported_row(newest):
+    """The state and notes for a task with no report and no agent, when it is
+    one `hw done` closed by hand (A) or a chained task whose earlier tasks DID
+    report (B). (state, notes) or None when neither fact is on disk.
+
+    Closed by hand is a different fact from a death, and `finished, unreported`
+    said the same thing for both."""
+    if not newest:
+        return None
+    cl, prior, n = newest.get("closed"), newest.get("prior_reported"), newest.get("task", 1)
+    notes = []
+    if prior and n > 1:  # MUTATION-ANCHOR: 700-M04
+        notes.append("task %d reported, task %d %s before reporting"
+                     % (prior, n, "closed" if cl else "ended"))
+    if not cl:
+        return None if not notes else ("finished, unreported", notes)
+    when = time.strftime("%d %b %H:%M", time.localtime(cl["at"])) if cl.get("at") else "an unrecorded time"
+    if cl.get("legacy"):
+        notes.append("closed by hand: an `hw done` verification (receipt) at %s, and no report — "
+                     "read from the receipt, this run predates the closed-by-hand mark" % when)
+    else:
+        notes.append("closed by hand with `hw done` (%s) at %s, %s"
+                     % (cl["by"] if cl["by"] != "none" else "no flag", when,
+                        "after a report existed" if cl["reported"] else "no report existed"))
+    notes.append("not a death: the task was closed on purpose without done-invoker — its work and engram findings may still be there")
+    return ("closed-unreported", notes)  # MUTATION-ANCHOR: 700-M02
 
 
 def orphan_why(orph, live_pane_ids):
@@ -13521,6 +14079,26 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
     _suppressed = 0
     orphans = []
     cleanup_backlog = []
+    # CONTEXT SIZE of each live executor (a 400k pane was once resumed unseen),
+    # read in parallel and bounded, once, before the rows print.
+    _ctx_panes = []
+    for _k in tasks:
+        if STATUS_PROJECT and not _k.startswith(STATUS_PROJECT + ":"):
+            continue
+        # The same agent the row will name: agents_by_task first, then the
+        # agent of a live pane in the task's directory.
+        _ags = list(agents_by_task.get(_k) or [])
+        for _p in panes_by_task.get(_k) or []:
+            _a = agent_by_pane.get(_p.get("pane_id"))
+            if _a and _a.get("pane_id") not in {x.get("pane_id") for x in _ags}:
+                _ags.append(_a)
+        if _ags and _ags[0].get("pane_id"):
+            _ctx_panes.append(_ags[0]["pane_id"])
+    ctx_by_pane = pane_ctx_many(_ctx_panes) if herdr_ok else {}
+    try:
+        CTX_FRESH = int(os.environ.get("HW_CTX_PREFER_FRESH_TOKENS") or 150000)
+    except ValueError:
+        CTX_FRESH = 150000
     for key in sorted(tasks):
         if STATUS_PROJECT and not key.startswith(STATUS_PROJECT + ":"):
             continue
@@ -13646,6 +14224,21 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
                 notes.append(f"another pane in {ws} exited: {', '.join(dead)}")
             if tok.get("ask_seq"):
                 notes.append(f"ask {tok['ask_seq']} {tok.get('ask_state') or ''}".strip())
+            if a and a.get("pane_id") in ctx_by_pane:
+                _c = ctx_by_pane[a["pane_id"]]
+                if _c is None:
+                    notes.append("context: not measured (unreadable, no statusline, or timed out) — not a fresh session")
+                else:
+                    _n = f"context {_c[0]} tokens used" + (f" ({_c[1]}% of the window)" if _c[1] else "")
+                    if _c[0] > CTX_FRESH:  # MUTATION-ANCHOR: 690-M01
+                        _n += " → prefer a fresh executor over hw next or a ruling"
+                    notes.append(_n)
+            _nr, _oldest = pending_rulings_of((newest or {}).get("dir"))
+            if _nr:  # MUTATION-ANCHOR: 690-M02
+                _age = max(0, int(time.time() - _oldest)) if _oldest else 0
+                _human = f"{_age}s" if _age < 120 else (f"{_age // 60} min" if _age < 7200 else f"{_age // 3600} h")
+                notes.append(f"{_nr} ruling{'s' if _nr != 1 else ''} queued, not delivered — oldest {_human} old; "
+                             "it lands at the executor's next turn end")
             # THE NAMED BROKEN STATE. `done_state=undelivered` says the report
             # exists and did not land; `turn_state=ended_unreported` says the turn
             # that would have retried the delivery is over. Either alone is
@@ -13752,6 +14345,10 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
                 mark, state, tint = "!", "finished, unreported", WARN
                 notes.append("its agent is gone and the pane is a bare shell — see `finished, never reported` below")
                 limits.add("orphan")
+                _ur = unreported_row(newest)
+                if _ur:
+                    state = _ur[0]
+                    notes.extend(_ur[1])
             if state == "working" and newest and t["workdir"]:
                 quiet = stale_of(newest, t["workdir"], status_now(), stale_minutes())
                 if quiet:
@@ -13791,6 +14388,10 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
             notes.append("its %s and no turn since — see `finished, never reported` below"
                          % _placement_gone(here_run, own_tab, own_ws))
             limits.add("orphan")
+            _ur = unreported_row(newest)
+            if _ur:
+                state = _ur[0]
+                notes.extend(_ur[1])
         elif (newest and not newest.get("done") and newest.get("turns", 0) < 1
               and session_start is not None and newest.get("started") is not None
               and newest["started"] >= session_start):
@@ -14292,10 +14893,17 @@ if [ "$1" = status ]; then
     esac
   done
   export HW_STATUS_PROJECT HW_STATUS_ALL
+  _orph_tmp=""
+  if [ -z "${HW_STATUS_ORPHANS_JSON:-}" ]; then
+    _orph_tmp="$(mktemp "${TMPDIR:-/tmp}/hw-orphans.XXXXXX")" && export HW_STATUS_ORPHANS_JSON="$_orph_tmp"
+  fi
   cmd_status
+  _orphans_quiet "${HW_STATUS_ORPHANS_JSON:-}"
+  [ -z "$_orph_tmp" ] || rm -f "$_orph_tmp"
+  _release_quiet
   _outbox_quiet "$HW_STATUS_PROJECT"
   if [ -z "$HW_STATUS_PROJECT" ]; then
-    cmd_worktrees --quiet; _tabs_quiet; _reap_quiet; _rules_quiet; _decisions_quiet
+    cmd_worktrees --quiet; _tabs_quiet; _hygiene_quiet; _rules_quiet; _decisions_quiet
   else
     cmd_worktrees --quiet
     info "scoped to $HW_STATUS_PROJECT — \`hw status\` with no project adds the cross-lane checks"
@@ -15119,6 +15727,8 @@ if [ "$AGENT_EXPLICIT" = 1 ] && [ "$MODEL_SRC" != chosen ] \
   MODEL=""; MODEL_SRC=default
 fi
 
+# BEFORE the floor and _build_agent_args: both read MODEL.
+_apply_model_default
 # Before _build_agent_args, which carries a model it pins into the agent's flags.
 _check_model_floor
 # Before _build_agent_args: OpenCode argument construction allocates a port.
@@ -15134,6 +15744,7 @@ _artifacts_args
 _check_brief_contract
 _check_sandbox
 _check_requested
+_check_authorizes
 _check_task "$TASK"
 _check_agent_name_free "$TASK"
 lane_known "$PROJ" || die "unknown project: $PROJ (expected: $(lane_names_bar))"
@@ -15839,7 +16450,8 @@ dispatch $PROJ:$TASK  run=$run_label
   base        $base_line
   brief       ${BRIEF:-<none>}
   contract    ${BRIEF_DECLARED:-none}  (which dispatch fields the brief declared, and hw verified)
-  requested   $(_requested_line)${DESIGN_LINE:+
+  requested   $(_requested_line)
+  authorizes  $(_authorizes_line)${DESIGN_LINE:+
   design      $DESIGN_LINE}
   verify      $verify_line
   entry       $entry_line
@@ -15981,14 +16593,13 @@ EOF
       ;;
   esac
   fi
-  # AN INHERITED MODEL IS THE MOST EXPENSIVE DEFAULT IN THIS TOOL. Omitting
-  # --model on a claude launch inherits opus, and on 2026-08-24 that is exactly
-  # how a throwaway plumbing probe of mine burned opus twice. The manifest already
-  # said `(inherited)`; it did not say what was inherited, and the whole point of
-  # that column is that a default nobody named is a decision nobody made.
-  if [ -z "$MODEL" ] && [ "$AGENT" = claude ]; then
-    warn "no --model: this inherits claude's default (opus). For a probe or a"
-    warn "mechanical task say so — --model haiku, or --model sonnet."
+  # AN INHERITED MODEL IS A DEFAULT NOBODY NAMED. A fresh claude launch now gets
+  # sonnet/opus from _apply_model_default; what still inherits the account's
+  # default is a launch under speckit (its orchestrator may not be sonnet), so
+  # that is the only case this says anything about.
+  if [ -z "$MODEL" ] && [ "$AGENT" = claude ] && [ -z "${_REUSE_PANE:-}" ]; then
+    warn "no --model under --sdd ${SDD_EFFECTIVE_MODE:-?}: this inherits claude's account default,"
+    warn "not sonnet — an orchestrator may not be sonnet. --model opus --effort medium names it."
   fi
   # CHAINING IS A DOOR THAT CLOSES AT THIS INSTANT, AND IT SAID SO AS A FIELD.
   #

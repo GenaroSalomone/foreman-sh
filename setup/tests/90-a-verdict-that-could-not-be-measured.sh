@@ -293,7 +293,7 @@ open(sys.argv[2], "w", encoding="utf-8").write(
     "set -uo pipefail\n"
     '_revive_die(){ printf "REFUSED: %s\\n" "$*"; exit 9; }\n'
     "revive_gate() {\n"
-    '  local cwd=/wt\n'
+    '  local cwd=/wt sid=""\n'
     + src[start:end]
     + '\n}\nrevive_gate\nprintf "PROCEEDED\\n"\n')
 PY

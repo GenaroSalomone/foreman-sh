@@ -169,7 +169,7 @@ OTHER COMMANDS
                                     and creates no tab.
 
 RECOVERY AND CLEANUP
-    hw revive <project> <task> [--dry-run]
+    hw revive <project> <task> [--run <id>] [--dry-run]
                                     repeat a closed run's recorded cwd, env and
                                     session resume in a new tab; refuses anything
                                     not recorded (cwd gone, no session, no env)

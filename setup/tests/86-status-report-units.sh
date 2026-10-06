@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Each extracted renderer runs alone; no other report may be invoked.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
-python3 - "$ROOT/bin/hw" <<'PY'
+python3 - "$ROOT/lib/hw/status.sh" <<'PY'
 import ast, contextlib, glob, io, json, os, re, sys, time
 source = open(sys.argv[1]).read()
 providers = re.findall(r"^_status_\w+_source\(\) \{\n  cat <<'HW_STATUS_PY'\n(.*?)\nHW_STATUS_PY\n}", source, re.M | re.S)

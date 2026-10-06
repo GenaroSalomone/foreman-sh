@@ -265,7 +265,7 @@ noise="$(WITNESS_SLICE_MS=200 WITNESS_INTERVAL_S=0 WITNESS_SAMPLES=2 \
 # meant a mutant that changed `and` to `or` was killed by the grep failing —
 # so the truth table below never ran against the mutation it was written for,
 # and would not have caught it. It now extracts whatever the line says.
-STRAND_EXPR="$(grep -E '^[[:space:]]*stranded = ' "$ROOT/bin/hw" | sed 's/^[[:space:]]*//' || true)"
+STRAND_EXPR="$(grep -E '^[[:space:]]*stranded = ' "$ROOT/lib/hw/status.sh" | sed 's/^[[:space:]]*//' || true)"
 [ -n "$STRAND_EXPR" ] \
   && pass "hw status: the stranded classifier is present in bin/hw" \
   || fail "hw status: no 'stranded = ...' line in bin/hw — the pair is unnamed again"

@@ -33,6 +33,13 @@
 #   requires-agents: [primary:|subagent:]<name>, …
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
+#   deployed_check: (--sdd gentle only) what hw holds the report to, exactly one of
+#              (absent or empty)  same as required
+#              required           done needs $HW_ARTIFACTS/deployed-check.md with a
+#                                 deployed https target, evidence and RESULT: PASSED
+#              out-of-scope — <why>   non-empty reason; the separator may be —, –, - or :
+#                                 e.g.  deployed_check: out-of-scope — docs-only, nothing is deployed
+#              Anything else is refused before anything is built.
 #   boundary:  <what must never cross> — the task is not done without an
 #              approved design judgment (INSTALL.md, Judgment Day)
 #

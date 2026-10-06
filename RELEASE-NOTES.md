@@ -1,60 +1,52 @@
-# foreman-sh 0.3.4
+# foreman-sh 0.3.5
 
-Closing an unchanged task takes seconds, gentle-ai 4.0.0 runs with per-task review, and `bin/hw` starts splitting into modules.
+Receipt-driven review now runs gentle-ai's own native path, gentle tasks can be revived and re-tasked, and `hw status` moves into its own module.
 
 ## In short
 
-- **`hw done` reuses a verdict it already has.** If HEAD is still the dispatch base and the tree is clean, or the exact tree (or one that differs only in lane documentation) already holds a green verdict of the pinned kind, the close skips the re-run and the receipt names the verdict. A fast verdict never satisfies a full pin; a dirty tree is never a hit.
-- **pre-push survives an older worktree.** A worktree whose library predates the lane-doc cover pushes with the cover off and one line saying why, instead of dying.
-- **gentle-ai 4.0.0 for `--sdd gentle`,** signature- and checksum-verified, available to more lanes. `review: rdd` turns receipt-driven review on in a private home per task, so concurrent tasks never switch it off under each other; the shared home stays untouched. The home's guards run from copies inside it.
-- **`hw reap` lives in `lib/hw/reap.sh`.** `bin/hw` sources its modules from `lib/` beside it; install and export ship `lib/`. Output is byte-identical.
+- **Native RDD.** Each `review capture-result` runs exactly as gentle-ai returns it, and gentle-ai starts its own tool-free reviewer. No subagent relay and no pasted context: a 143 KB review context completes, and gentle-ai's own budget refuses what is too large. Only for a capture, the reviewer gets the executor's account through a link to the login keychain file. The link is reference-counted across concurrent reviewers and removed when the last one ends. Every capture is logged to `$HW_ARTIFACTS/rdd-log.jsonl` from gentle-ai's answer.
+- **gentle tasks keep their mode.** `hw revive` rebuilds the framework args from the current gentle home. `hw revive --run <id>` revives a chosen run and refuses one that is still live. `--keep-pane` works under `--sdd gentle`, and `hw next` re-injects the mode.
+- **Truthful dispatch text.** The operator lines say "RDD on (native)" when it is on. The `deployed_check` refusal names the accepted forms. A brief that asks for a browser or a deployed check overrides the lane's "QA is staging-only" note. Claude dispatches no longer warn about an opencode-only flag.
+- **The gentle home refreshes its guard copies** when their source changes.
+- **`hw status` lives in `lib/hw/status.sh`.** Output is byte-identical; `bin/hw` is about 1,600 lines shorter.
 
 ## What changed
 
-9 changes since 0.3.3.
+14 changes since 0.3.4.
 
 ### Added
-- `--sdd gentle` is available in a second lane (`sdd_modes` in `projects.json`),
-  on the same terms as in the first: Claude only, its own worktree, no `--keep-pane`.
-- `review: rdd` in a `--sdd gentle` brief opts into native RDD, run against a local
-  clone because gentle-ai keeps its review store inside the repository's `.git`.
-  The reviewer roles ride as a plugin with their models pinned (judgment roles on
-  opus, readability on sonnet), and a local SubagentStop hook appends one line per
-  role run to `$HW_ARTIFACTS/rdd-log.jsonl`; telemetry stays off.
+- `hw revive <project> <task> --run <id>` revives that run instead of the latest; an unknown id names the runs that exist, a run whose session is live in a pane is refused naming the pane, and the dry run says which run was chosen or defaulted.
 
 ### Changed
-- `hw done`'s cached close also covers `bash setup/verify-for-push` (a full
-  verdict for the exact tree is a hit; a fast verdict never satisfies a full
-  pin) and a tree that differs from a full-verdict tree only in lane
-  documentation, recorded as `cached — green full verdict for tree <t> (<commit>);
-  differs only in lane docs: <paths>`. The lane-doc rule is now one function,
-  `docs_only_diff_covers` in `setup/hooks/suite-trigger-pattern.sh`, called by
-  both `pre-push` and `hw`. Dirty, red and unreadable still run the command.
-- `hw done` no longer re-runs a pinned verification it can already answer from
-  disk: a clean task whose HEAD is the base recorded at dispatch records
-  `skipped — no change since dispatch (<sha>)`, and a clean tree with a green
-  `HW_TEST_GATE=fast bash setup/test-hw` (or full) verdict records
-  `cached — green verdict for tree <sha> from <when>`. A dirty tree, a red or
-  unreadable verdict or any other pinned command still runs as before;
-  `HW_VERIFY_FRESH=1` forces the run.
-- `--sdd gentle` runs gentle-ai 4.0.0 (was 3.7.0), pinned to the four checksums of
-  the release's own `checksums.txt`, whose minisign signature was verified. Only the
-  ODD protocol of the home's `CLAUDE.md` reaches the executor (`odd-block.md`): 4.0.0
-  also installs a 45 KB orchestrator block and five hooks, and `hw gentle-home` now
-  keeps the block out and removes the hooks from gentle-ai's own home.
-- `hw gentle-home` proves telemetry off from the home's own state, not from the
-  wrapper's environment, and gives gentle-ai a private engram port and data dir.
-- `hw reap` and the removal `hw done` shares with it moved out of `bin/hw` into
-  `lib/hw/reap.sh`, the first module of a split of `bin/hw` by command. Behaviour
-  is unchanged. The installer now mirrors `lib/` beside `bin/`, and `lib` is a
-  reserved lane name.
+- `--keep-pane` is accepted under `--sdd gentle`. `hw next` re-tasks a gentle
+  pane with ODD's per-task block built from the new brief (delivery, the RDD
+  bullet, the deployed check) and records `deployed_check_t<N>` for it;
+  `review: rdd` needs the first brief to have said so.
+- The `deployed_check:` refusal names exactly the accepted forms (absent or
+  empty, `required`, `out-of-scope — <why>`) with an example, and
+  `BRIEF-TEMPLATE.md` says the same.
+- `requires: subagents` under `--agent claude` no longer prints the
+  opencode-only `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` warning.
+- A brief that declares `requires: browser`, `deployed_check: required` (or is a
+  `--sdd gentle` task without an out-of-scope deployed check) no longer leaves
+  the executor with the lane note "QA is staging-only" as the last word: the
+  prompt adds that the brief overrides it. Every lane, launch and `hw next`.
+- `review: rdd` is native. gentle-ai 4.0.0 runs its own tool-free reviewer in process on every `review capture-result --agent`, so the executor runs each returned operation unchanged: no lens subagent, no `--input`, no candidate bytes through a file. The relay plugin, `rdd-settings.json` and the SubagentStop log are gone.
+- `gentle-ai-task` gives that reviewer the login it needs under a private HOME (claude on PATH, `CLAUDE_CONFIG_DIR`, `USER`, a link to the login keychain) and writes `rdd-log.jsonl` from each capture's own answer. A home provisioned before this change fails `hw gentle-home --check`: re-provision it.
+- `hw status` moved out of `bin/hw` into `lib/hw/status.sh`, the second module of
+  the split of `bin/hw` by command. Behaviour is unchanged.
+- The native reviewer's login reaches it through one link: the login keychain file alone, inside a real Keychains directory, removed as soon as each `review capture-result` ends (success, failure or signal). The whole Keychains directory is no longer linked.
 
 ### Fixed
-- `setup/hooks/pre-push` no longer dies (exit 127) in a worktree whose
-  `suite-trigger-pattern.sh` predates `docs_only_init`: the lane-doc cover is
-  then off (fail closed, the push needs its own verdict) and one stderr line
-  says why. `hw`'s `_verify_docs_cover` treats such a lib as a miss.
-- `hw gentle-home` copies its two guards into `<home>/guards/` and the settings run them from there. Provisioned from a task worktree, the settings named that worktree's `setup/guards/`, so the hooks dangled once it was removed.
+- `hw revive` of a `--sdd gentle` run keeps ODD: the system prompt, both
+  plugins and both settings files are rebuilt from the current gentle-home
+  (with the RDD half for `review: rdd`), and an incomplete home refuses,
+  pointing at `hw gentle-home --check`.
+- A `--sdd gentle` brief with `review: rdd` is no longer described as
+  "RDD off" by the manifest or the launch info line: both say "RDD on (native)".
+- A 118 KB lens-context no longer has to be relayed by hand into a subagent prompt, which an API safeguard cut twice without leaving a receipt.
+- The keychain link of a task's private home survives concurrent captures: a reviewer group (four at once) shares one home, so the link is reference-counted by live capture pid under a `mkdir` lock, created on 0 to 1 and removed on 1 to 0, and a capture killed with `-9` is pruned by the next one instead of stranding the link.
+- `hw gentle-home` refreshes the guard copy inside an already-complete home when `setup/guards/deny-gentle-real-home.py` changed, instead of reporting "nothing changed".
 
 ## Known limits
 
@@ -63,7 +55,7 @@ Closing an unchanged task takes seconds, gentle-ai 4.0.0 runs with per-task revi
   ARM64 only. WSL2 was not re-measured for this release, and mutation
   testing was not run on Windows.
 
-## Upgrading from 0.3.3
+## Upgrading from 0.3.4
 
 Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,

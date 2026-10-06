@@ -4,6 +4,42 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.5] — 2026-10-06
+
+### Added
+- `hw revive <project> <task> --run <id>` revives that run instead of the latest; an unknown id names the runs that exist, a run whose session is live in a pane is refused naming the pane, and the dry run says which run was chosen or defaulted.
+
+### Changed
+- `--keep-pane` is accepted under `--sdd gentle`. `hw next` re-tasks a gentle
+  pane with ODD's per-task block built from the new brief (delivery, the RDD
+  bullet, the deployed check) and records `deployed_check_t<N>` for it;
+  `review: rdd` needs the first brief to have said so.
+- The `deployed_check:` refusal names exactly the accepted forms (absent or
+  empty, `required`, `out-of-scope — <why>`) with an example, and
+  `BRIEF-TEMPLATE.md` says the same.
+- `requires: subagents` under `--agent claude` no longer prints the
+  opencode-only `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` warning.
+- A brief that declares `requires: browser`, `deployed_check: required` (or is a
+  `--sdd gentle` task without an out-of-scope deployed check) no longer leaves
+  the executor with the lane note "QA is staging-only" as the last word: the
+  prompt adds that the brief overrides it. Every lane, launch and `hw next`.
+- `review: rdd` is native. gentle-ai 4.0.0 runs its own tool-free reviewer in process on every `review capture-result --agent`, so the executor runs each returned operation unchanged: no lens subagent, no `--input`, no candidate bytes through a file. The relay plugin, `rdd-settings.json` and the SubagentStop log are gone.
+- `gentle-ai-task` gives that reviewer the login it needs under a private HOME (claude on PATH, `CLAUDE_CONFIG_DIR`, `USER`, a link to the login keychain) and writes `rdd-log.jsonl` from each capture's own answer. A home provisioned before this change fails `hw gentle-home --check`: re-provision it.
+- `hw status` moved out of `bin/hw` into `lib/hw/status.sh`, the second module of
+  the split of `bin/hw` by command. Behaviour is unchanged.
+- The native reviewer's login reaches it through one link: the login keychain file alone, inside a real Keychains directory, removed as soon as each `review capture-result` ends (success, failure or signal). The whole Keychains directory is no longer linked.
+
+### Fixed
+- `hw revive` of a `--sdd gentle` run keeps ODD: the system prompt, both
+  plugins and both settings files are rebuilt from the current gentle-home
+  (with the RDD half for `review: rdd`), and an incomplete home refuses,
+  pointing at `hw gentle-home --check`.
+- A `--sdd gentle` brief with `review: rdd` is no longer described as
+  "RDD off" by the manifest or the launch info line: both say "RDD on (native)".
+- A 118 KB lens-context no longer has to be relayed by hand into a subagent prompt, which an API safeguard cut twice without leaving a receipt.
+- The keychain link of a task's private home survives concurrent captures: a reviewer group (four at once) shares one home, so the link is reference-counted by live capture pid under a `mkdir` lock, created on 0 to 1 and removed on 1 to 0, and a capture killed with `-9` is pruned by the next one instead of stranding the link.
+- `hw gentle-home` refreshes the guard copy inside an already-complete home when `setup/guards/deny-gentle-real-home.py` changed, instead of reporting "nothing changed".
+
 ## [0.3.4] — 2026-10-06
 
 ### Added

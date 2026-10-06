@@ -70,7 +70,7 @@ GUARD = re.compile(
     r"^setup/guards/|^([^/]+/)?\.claude/hooks/deny-repo-writes\.py$"
     r"|^([^/]+/)?\.opencode/plugin/deny-repo-writes\.js$")
 # Where the code a subject can run lives: the closure is taken over these.
-CODE_DIRS = ("bin", "setup", "lanes", "shell", ".claude", ".opencode")
+CODE_DIRS = ("bin", "lib", "setup", "lanes", "shell", ".claude", ".opencode")
 CODE_SKIP = re.compile(
     r"^setup/(tests|decisions|briefs|evidence|baselines|plans|export/overlay)/"
     r"|\.(md|timeline|png|svg|jpg|gif|pdf)$|^setup/decisions\.md$")

@@ -13,7 +13,7 @@
 # or with all three given as options, nothing is asked.
 #
 # WHAT IT WRITES, AND NOTHING ELSE:
-#   <brain>/                 the mechanism (bin/, layouts/, lanes/git-worktree.sh,
+#   <brain>/                 the mechanism (bin/, lib/, layouts/, lanes/git-worktree.sh,
 #                            setup/guards/ runtime files), copied from this checkout,
 #                            plus projects.json, guards.json, CLAUDE.md, and per lane
 #                            <brain>/<lane>/{CLAUDE.md,decisions.md,briefs/,.claude/}
@@ -199,7 +199,7 @@ case "$PERMISSIONS_OPT" in ""|ask|skip) ;; *) die "--permissions must be ask or 
 if [ -n "$LANE" ] || [ -n "$REPO" ]; then
   [ -n "$LANE" ] && [ -n "$REPO" ] || die "--lane and --repo go together"
   [[ "$LANE" =~ ^[a-z][a-z-]*$ ]] || die "lane name '$LANE' is not a lowercase word (a-z and '-')"
-  case "$LANE" in brain|setup|work|bin|layouts|lanes) die "lane name '$LANE' is reserved by the brain's own layout" ;; esac
+  case "$LANE" in brain|setup|work|bin|lib|layouts|lanes) die "lane name '$LANE' is reserved by the brain's own layout" ;; esac
 fi
 [ -z "$BASE" ] || [ -n "$LANE" ] || die "--base only means something with --lane"
 [ -z "$VENDOR" ] || [ -n "$LANE" ] || die "--vendor only means something with --lane"
@@ -1107,6 +1107,7 @@ put() {  # <src file> <dst file>
   else cp -p "$1" "$2"; chg "${2#"$BRAIN"/}"; fi
 }
 sync_dir "$SRC/bin" "$BRAIN/bin"
+sync_dir "$SRC/lib" "$BRAIN/lib"
 sync_dir "$SRC/layouts" "$BRAIN/layouts"
 put "$SRC/lanes/git-worktree.sh" "$BRAIN/lanes/git-worktree.sh"
 for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py specialist_roster.py lane_housekeeping.py; do

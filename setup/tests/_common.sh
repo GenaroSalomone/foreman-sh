@@ -250,6 +250,10 @@ ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Use $ROOT to read bytes (that is what the snapshot exists to freeze) and
 # $LIVE_ROOT only to ask git about the repository. Standalone the two are equal.
 LIVE_ROOT="${TEST_HW_LIVE_ROOT:-$ROOT}"
+# bin/hw sources its modules from lib/ beside its own bin/. A fixture that copies
+# bin/hw (or just the one file, as every mutant does) has no lib/ beside it, so
+# the suite names this checkout's: the fallback hw reads only when none is there.
+export HW_LIB_DIR="$ROOT/lib"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hw-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 

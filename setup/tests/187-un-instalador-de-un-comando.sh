@@ -176,7 +176,7 @@ pass "the lane's repository — files, status, refs and worktrees — is byte-id
 # The copy is a source tree of its own, because install.sh finds what it
 # installs beside itself; nothing is written into $ROOT.
 MS="$TMP/mutant-src"; mkdir -p "$MS/lanes" "$MS/setup"
-cp -R "$ROOT/bin" "$ROOT/layouts" "$MS/"; cp "$ROOT/lanes/git-worktree.sh" "$MS/lanes/"; cp -R "$ROOT/setup/guards" "$MS/setup/"; cp "$ROOT/setup/brain-guard-programs.txt" "$MS/setup/"
+cp -R "$ROOT/bin" "$ROOT/layouts" "$ROOT/lib" "$MS/"; cp "$ROOT/lanes/git-worktree.sh" "$MS/lanes/"; cp -R "$ROOT/setup/guards" "$MS/setup/"; cp "$ROOT/setup/brain-guard-programs.txt" "$MS/setup/"
 cp "$INSTALL" "$MS/install.sh"; chmod +x "$MS/install.sh"
 mutate_anchor 187-M01 "$MS/install.sh" 'theirs = []'
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash /x/bin/hw-stop-hook.sh stop"}]}]}}\n' > "$C2/settings.json"

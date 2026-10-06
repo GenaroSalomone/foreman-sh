@@ -181,14 +181,14 @@ esac
 # new one, because the property is "safe is an allowlist", not "undetermined is
 # special".
 REAP="$TMP/reap.sh"
-awk '/^cmd_reap\(\) \{$/,/^\}$/' "$ROOT/bin/hw" > "$REAP"
+awk '/^cmd_reap\(\) \{$/,/^\}$/' "$ROOT/lib/hw/reap.sh" > "$REAP"
 # Since 2026-10-01 the removal is `_reap_worktree`, which cmd_reap calls; a hint
 # string in cmd_reap's own text used to satisfy this check by accident and went
 # when the hand recipe did (setup-higiene-worktrees). So: cmd_reap must reach the
 # removal, and the removal must be there to be driven.
 grep -q '_reap_worktree "\$proj"' "$REAP" \
-  && awk '/^_reap_worktree\(\) \{/,/^\}$/' "$ROOT/bin/hw" | grep -q 'worktree remove' \
-  || fail "verdict-third-value: could not extract a cmd_reap that reaches a removal carrying \`worktree remove\` from bin/hw"
+  && awk '/^_reap_worktree\(\) \{/,/^\}$/' "$ROOT/lib/hw/reap.sh" | grep -q 'worktree remove' \
+  || fail "verdict-third-value: could not extract a cmd_reap that reaches a removal carrying \`worktree remove\` from lib/hw/reap.sh"
 
 mkdir -p "$TMP/reapgate"
 cat > "$TMP/reapgate/git" <<'STUB'
@@ -207,7 +207,7 @@ chmod +x "$TMP/reapgate/git"
 # The smallest harness that reaches the gate: the real `if` from cmd_reap, with
 # WT_VERDICT forced and everything around it stubbed to a no-op.
 GATE="$TMP/gate.sh"
-python3 - "$ROOT/bin/hw" "$GATE" <<'PY' || fail "verdict-third-value: could not isolate cmd_reap's removal gate"
+python3 - "$ROOT/lib/hw/reap.sh" "$GATE" <<'PY' || fail "verdict-third-value: could not isolate cmd_reap's removal gate"
 import re, sys
 src = open(sys.argv[1], encoding="utf-8").read()
 start = src.find("      _wt_disposition \"$main\" \"$wt\" \"$branch\" \"$base\"")

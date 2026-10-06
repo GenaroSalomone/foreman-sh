@@ -351,26 +351,20 @@ EOF
 # ANY git FAILURE MEANS "THIS CANDIDATE DOES NOT COVER" — same direction as the
 # two functions above. A candidate this function could not read is skipped, and
 # if none remain the caller refuses.
-docs_only_lanes="$(jq -r '.lanes | keys_unsorted[]' "$(git rev-parse --show-toplevel)/projects.json" 2>/dev/null || true)"
-if [ -z "$docs_only_lanes" ] || printf '%s\n' "$docs_only_lanes" | grep -vqE '^[a-z][a-z0-9-]*$'; then
-  DOCS_ONLY_PATTERN='^/'   # no lane: no pushed path starts with /
+# This hook is shared by every worktree but sources the PUSHING worktree's lib: a
+# worktree cut before the lane-doc cover landed has a lib without these two
+# functions. Calling them there dies 127 and blocks every push, so the cover is
+# OFF (fail closed: the push needs its own verdict, as before the cover).
+docs_only_cover=1
+if declare -F docs_only_init >/dev/null && declare -F docs_only_diff_covers >/dev/null; then  # MUTATION-ANCHOR: 771-M01
+  docs_only_init "$(git rev-parse --show-toplevel)"   # the rule itself: setup/hooks/suite-trigger-pattern.sh
 else
-  DOCS_ONLY_PATTERN="^($(printf '%s\n' "$docs_only_lanes" | paste -sd'|' -))/(briefs/.+|decisions\.md|decisions/.+)\$"
+  docs_only_cover=0
+  echo "pre-push: lib in this worktree predates the lane-doc cover; a lane-doc-only change needs its own verdict" >&2
 fi
-docs_only_path() { # <path> → 0 when the path is lane documentation the suite does not read
-  case "$1" in
-    setup/decisions.md|setup/decisions/*) return 1 ;;
-  esac
-  printf '%s\n' "$1" | grep -qE "$SUITE_TRIGGER_PATTERN" && return 1
-  printf '%s\n' "$1" | grep -qE "$DOCS_ONLY_PATTERN"
-}
-decisions_header() { # <tree> <path> → the header, or fails if the blob is unreadable
-  local blob
-  blob="$(git cat-file blob "$1:$2" 2>/dev/null)" || return 1
-  printf '%s\n' "$blob" | awk 'NR > 1 && $0 == "---" { exit } { print }'
-}
 docs_only_verdict_covers() {
-  local tree="$1" f vtree diff p status h_old h_new ok
+  local tree="$1" f vtree
+  [ "$docs_only_cover" = 1 ] || return 1
   [ -d "$cache_dir" ] || return 1
   for f in "$cache_dir"/*; do
     vtree="$(basename "$f")"
@@ -380,28 +374,10 @@ docs_only_verdict_covers() {
     [ "${#vtree}" -eq 40 ] || continue
     full_verdict "$f" "$vtree" || continue
     git cat-file -e "$vtree^{tree}" 2>/dev/null || continue
-    diff="$(git diff-tree -r --no-renames --name-status "$vtree" "$tree" 2>/dev/null)" || continue
-    [ -n "$diff" ] || continue   # identical trees are the exact-tree check's, not this one's
-    ok=1
-    while IFS="$(printf '\t')" read -r status p; do
-      [ -n "$p" ] || { ok=0; break; }
-      docs_only_path "$p" || { ok=0; break; }
-      case "$p" in
-        */decisions.md)
-          [ "$status" = M ] || { ok=0; break; }   # created or deleted: the header changed
-          h_old="$(decisions_header "$vtree" "$p")" || { ok=0; break; }
-          h_new="$(decisions_header "$tree" "$p")" || { ok=0; break; }
-          [ "$h_old" = "$h_new" ] || { ok=0; break; }
-          ;;
-      esac
-    done <<EOF
-$diff
-EOF
-    if [ "$ok" -eq 1 ]; then
-      printf 'tree %s (commit %s)' "$vtree" \
-        "$(sed -n 's/^commit=//p' "$f" 2>/dev/null | head -1)"
-      return 0
-    fi
+    docs_only_diff_covers "$vtree" "$tree" >/dev/null || continue
+    printf 'tree %s (commit %s)' "$vtree" \
+      "$(sed -n 's/^commit=//p' "$f" 2>/dev/null | head -1)"
+    return 0
   done
   return 1
 }

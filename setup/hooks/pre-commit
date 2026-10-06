@@ -34,7 +34,7 @@ if printf '%s\n' "$staged" | grep -qE '/decisions\.md$'; then
   python3 "$(git rev-parse --show-toplevel)/setup/hooks/decisions-check.py" --staged
 fi
 
-tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|shell/|layouts/|setup/plans/|setup/hooks/|CLAUDE\.shared\.md|CLAUDE\.md$|README\.md|BRIEF-TEMPLATE\.md)' || true)"
+tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|lib/|shell/|layouts/|setup/plans/|setup/hooks/|CLAUDE\.shared\.md|CLAUDE\.md$|README\.md|BRIEF-TEMPLATE\.md)' || true)"
 # THE LANES ARE A LIST IN setup/hooks/sweep-lanes, one per line, not a literal
 # here: which lanes a brain has is configuration, and this hook is mechanism.
 # `setup/` is NOT a lane for this purpose: setup/decisions.md is this repo's own

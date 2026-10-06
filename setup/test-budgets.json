@@ -269,6 +269,10 @@
       "exit": 0,
       "seconds": 1.92
     },
+    "790-reap-vive-en-lib-hw.sh": {
+      "exit": 0,
+      "seconds": 1.2
+    },
     "80-codex-brief-delivery.sh": {
       "exit": 0,
       "seconds": 9.16
@@ -322,6 +326,6 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-10-06T12:26:17Z",
+  "measured_at": "2026-10-06T15:57:49Z",
   "touched_budget_seconds": 180
 }

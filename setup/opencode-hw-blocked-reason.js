@@ -68,6 +68,15 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
+// How long one herdr-rpc call may take before the adapter gives up on it (and
+// never lets that break a turn). Two seconds on an idle machine; a suite that
+// runs this under load names a longer wait, because a bash start that takes
+// 2s on a machine with 30 busy processes dropped a publish and failed a check
+// that nothing was wrong with (2026-10-05, twice).
+// execFile throws on a non-integer or infinite timeout and collapses one past
+// 2^31-1 to 1ms, so the override is floored and capped before it is passed on.
+const RPC_TIMEOUT_REQ = Math.floor(Number(process.env.HW_RPC_TIMEOUT_MS));
+const RPC_TIMEOUT_MS = RPC_TIMEOUT_REQ > 0 ? Math.min(RPC_TIMEOUT_REQ, 2_147_483_647) : 2_000; // # MUTATION-ANCHOR: 713-M01
 // Windows cannot execute a `#!` script (hw, herdr-rpc are bash): Git Bash's own
 // bash runs it, found from the mount root bin/msys-compat.sh exports, not from
 // PATH, where `bash` is WSL's launcher. A cold start there is ~10x slower.
@@ -127,7 +136,7 @@ async function publish(tokens) {
     };
     const rpc = join(brainBin(), "herdr-rpc");
     await execFileAsync(rpc, ["call", "pane.report_metadata", JSON.stringify(params)], {
-      timeout: 2_000,
+      timeout: RPC_TIMEOUT_MS,
     });
   } catch {
     // Reporting must never break an OpenCode turn.
@@ -186,7 +195,7 @@ async function agentStatus() {
     const { stdout } = await execFileAsync(
       rpc,
       ["call", "agent.get", JSON.stringify({ target: process.env.HERDR_PANE_ID })],
-      { timeout: 2_000 },
+      { timeout: RPC_TIMEOUT_MS },
     );
     return JSON.parse(stdout)?.agent?.agent_status;
   } catch {

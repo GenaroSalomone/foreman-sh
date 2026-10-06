@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# suite-gate — the machine-wide turnstile for HEAVY runs: suites take turns.
+#
+#   . bin/suite-gate            # library: sg_take / sg_release / sg_status_line
+#   bin/suite-gate status       # one line: slots in use, who waits
+#
+# WHY. The setup runner's worker pool (setup/test-hw) caps JOBS, not RUNS: three
+# fast gates, a `hw done` verification and a cut each bring their own subjects,
+# and nothing counted the runs. MEASURED 2026-10-05: the 0.3.1 release took ~5h
+# for ~50 min of work because load average reached 220 and two timing checks
+# failed that pass alone. A RUN now takes a slot before it starts anything.
+#
+# THE RULES, each held by setup/tests/730-las-suites-hacen-turno.sh:
+#   · SLOTS: HW_SUITE_SLOTS, else max(1, ncpus/4) (HW_SUITE_NCPU overrides the
+#     cpu count). One directory per slot under $WORK/.locks/suite-gate/.
+#   · A WAITER SAYS SO ONCE: `waiting for a suite slot (N running: <who>)`.
+#   · IT NEVER FAILS BECAUSE OF THE WAIT. The ceiling is HW_SUITE_GATE_WAIT_MS
+#     (default 7200000, two hours); past it the run goes ahead WITHOUT a slot and
+#     says so — a gate that kills `hw done` is a worse defect than the load.
+#   · A DEAD HOLDER KEEPS NOTHING. Liveness is pid AND process start time (pids
+#     are reused), the rule bin/hw's suite lock and setup/test-hw's pool use.
+#   · ORDER: a queue ticket per waiter, sorted by priority then arrival. Only the
+#     head may take a free slot. The release cut (HW_SUITE_PRIORITY=cut) sorts
+#     first: it takes the next slot that frees, and nobody is killed for it.
+#   · NESTED RUNS RIDE THEIR ANCESTOR. A holder exports HW_SUITE_GATE_HELD; a
+#     run started inside it (hw done -> setup/test-hw, the cut -> its suites)
+#     checks the marker against the slot on disk and takes nothing, or one slot
+#     of one would deadlock against its own child.
+#
+# NEVER KILLS. Nothing here sends a signal.
+#
+# The per-lane suite lock (bin/hw `_suite_lock_take`) is a different question —
+# one SHARED TREE, one index — and is taken BEFORE this gate, always in that
+# order, so the two cannot deadlock. The full-suite FIFO in setup/test-hw is the
+# same: it nests inside a slot.
+
+_sg_ncpu() {
+  local n="${HW_SUITE_NCPU:-}"
+  if [ -z "$n" ] && command -v sysctl >/dev/null 2>&1; then n="$(sysctl -n hw.ncpu 2>/dev/null || true)"; fi
+  if [ -z "$n" ] && command -v getconf >/dev/null 2>&1; then n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"; fi
+  case "${n:-}" in ''|*[!0-9]*|0) n=4 ;; esac
+  printf '%s' "$n"
+}
+
+# sg_slots → how many heavy runs may be live at once.
+sg_slots() {
+  local s="${HW_SUITE_SLOTS:-}"
+  case "$s" in
+    '') s=$(( $(_sg_ncpu) / 4 )); [ "$s" -ge 1 ] || s=1 ;;
+    *[!0-9]*|0) printf 'suite-gate: HW_SUITE_SLOTS must be a positive integer (got: %s) — using the default\n' "$s" >&2
+                s=$(( $(_sg_ncpu) / 4 )); [ "$s" -ge 1 ] || s=1 ;;
+  esac
+  printf '%s' "$s"
+}
+
+# sg_load_ncpu → "<load1 x100> <cpus>", nothing when this platform cannot say.
+# HW_TEST_LOAD1 / HW_TEST_NCPU are the injectables fast-gate-budget.sh uses.
+sg_load_ncpu() {
+  local l c
+  if [ -n "${HW_TEST_LOAD1:-}" ] && [ -n "${HW_TEST_NCPU:-}" ]; then
+    l="$(awk -v x="$HW_TEST_LOAD1" 'BEGIN { printf "%d", x * 100 }')"
+    printf '%s %s' "$l" "$HW_TEST_NCPU"; return 0
+  fi
+  c="$(_sg_ncpu)"
+  l="$(sysctl -n vm.loadavg 2>/dev/null | awk '{ gsub(/[{}]/, ""); printf "%d", $1 * 100 }')"
+  [ -n "$l" ] || l="$(awk '{ printf "%d", $1 * 100 }' /proc/loadavg 2>/dev/null || true)"
+  [ -n "$l" ] || return 0
+  printf '%s %s' "$l" "$c"
+}
+
+# sg_resolve_work <repo root> — SG_WORK from $WORK, else the lane table's `work`
+# (a leading ~ is $HOME), the way setup/test-hw and bin/hw resolve it.
+sg_resolve_work() {
+  SG_WORK="${WORK:-}"
+  if [ -z "$SG_WORK" ]; then
+    SG_WORK="$(jq -r '.work // empty' "$1/projects.json" 2>/dev/null || true)"
+    case "$SG_WORK" in
+      "~") SG_WORK="$HOME" ;;
+      "~/"*) SG_WORK="$HOME/${SG_WORK#"~/"}" ;;
+    esac
+  fi
+}
+
+_sg_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' || true; }
+
+# sg_dir → the gate's directory, or nothing when there is no WORK to put it in.
+sg_dir() {
+  local w="${SG_WORK:-${WORK:-}}"
+  [ -n "$w" ] || return 0
+  printf '%s/.locks/suite-gate' "$w"
+}
+
+# 0 = <dir>'s recorded owner is alive and is the SAME process. An absent owner
+# is a claim in progress until the directory is a minute old.
+_sg_alive() {
+  local d="$1" pid start age
+  pid="$(head -n1 "$d/owner.pid" 2>/dev/null || true)"
+  start="$(head -n1 "$d/owner.start" 2>/dev/null || true)"
+  if [ -z "$pid" ] || [ -z "$start" ]; then
+    age=$(( $(date +%s) - $(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0) ))
+    [ "$age" -lt 60 ]; return
+  fi
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$(_sg_start "$pid")" = "$start" ]
+}
+_sg_ticket_alive() { # <file>: pid on line 1, start on line 2
+  local f="$1" pid start age
+  pid="$(sed -n 1p "$f" 2>/dev/null || true)"; start="$(sed -n 2p "$f" 2>/dev/null || true)"
+  if [ -z "$pid" ] || [ -z "$start" ]; then
+    age=$(( $(date +%s) - $(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0) ))
+    [ "$age" -lt 60 ]; return
+  fi
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$(_sg_start "$pid")" = "$start" ]
+}
+_sg_who() { # <slot dir> → pid, task and what it runs
+  local d="$1" t
+  t="$(head -n1 "$d/owner.task" 2>/dev/null || true)"
+  printf 'pid %s%s: %s' "$(head -n1 "$d/owner.pid" 2>/dev/null || echo '?')" \
+    "${t:+, task $t}" "$(head -n1 "$d/owner.cmd" 2>/dev/null || echo '?')"
+}
+
+SG_HELD=0      # this process owns a slot
+SG_SLOT=""     # its directory
+SG_TICKET=""   # this process's queue ticket, while it waits
+
+# sg_release — frees this process's slot and ticket. Idempotent.
+# First line of a file, empty when it cannot be read: no stderr is discarded to decide anything.
+_sg_first_line() { local l=""; if [ -r "$1" ]; then IFS= read -r l < "$1" || true; fi; printf '%s' "$l"; }
+
+sg_release() {
+  if [ "$SG_HELD" = 1 ] && [ -n "$SG_SLOT" ]; then
+    if [ "$(_sg_first_line "$SG_SLOT/owner.pid")" = "$$" ]; then rm -rf "$SG_SLOT" 2>/dev/null || true; fi
+    SG_HELD=0; SG_SLOT=""
+    unset HW_SUITE_GATE_HELD
+  fi
+  if [ -n "$SG_TICKET" ]; then rm -f "$SG_TICKET" 2>/dev/null || true; SG_TICKET=""; fi
+}
+
+# sg_held_by_ancestor → 0 when HW_SUITE_GATE_HELD names a slot that is still on
+# disk, still alive, and still carries that token.
+sg_held_by_ancestor() {
+  local m="${HW_SUITE_GATE_HELD:-}" slot tok d
+  [ -n "$m" ] || return 1
+  slot="${m%%:*}"; tok="${m#*:}"
+  d="$(sg_dir)"; [ -n "$d" ] || return 1
+  [ "$(_sg_first_line "$d/$slot/owner.token")" = "$tok" ] || return 1
+  _sg_alive "$d/$slot"
+}
+
+# sg_take <what is being run> [priority] — priority is `cut` or `normal`
+# (default: HW_SUITE_PRIORITY, else normal).
+#   0 = a slot is held BY THIS PROCESS (call sg_release; the shell's EXIT trap
+#       should) or an ancestor's slot covers this run (SG_HELD stays 0).
+#   1 = the ceiling passed; nothing is held and the caller runs without a slot.
+#   2 = no gate possible (no WORK, or the directory cannot be made); said once.
+# The call must be made in the MAIN shell, not a command substitution: the
+# recorded pid is $$ and a subshell would record a process that dies at once.
+sg_take() {
+  local what="$1" prio="${2:-${HW_SUITE_PRIORITY:-normal}}" d n deadline announced=0 sig="" k
+  local pcode=1 t head live running who mine ticket_name
+  [ "$prio" = cut ] && pcode=0  # MUTATION-ANCHOR: 730-M05
+  d="$(sg_dir)"
+  if [ -z "$d" ]; then
+    printf 'suite-gate: no WORK — this run takes no suite slot and is not coordinated with other suites\n' >&2
+    return 2
+  fi
+  if ! mkdir -p "$d" 2>/dev/null; then
+    printf 'suite-gate: could not create %s — this run takes no suite slot\n' "$d" >&2
+    return 2
+  fi
+  if sg_held_by_ancestor; then return 0; fi
+  n="$(sg_slots)"
+  deadline=$(( $(date +%s) + ${HW_SUITE_GATE_WAIT_MS:-7200000} / 1000 ))
+  ticket_name="q.$pcode.$(date +%s).$(printf '%07d' "$$")"
+  SG_TICKET="$d/$ticket_name"
+  { printf '%s\n' "$$"; _sg_start "$$"; printf '%s\n' "${HW_TASK:-}"; printf '%s\n' "$what"; } > "$SG_TICKET.part" 2>/dev/null \
+    && mv -f "$SG_TICKET.part" "$SG_TICKET" 2>/dev/null
+  while :; do
+    # The head of the queue: first LIVE ticket in (priority, arrival) order.
+    head=""
+    for t in "$d"/q.*; do
+      [ -e "$t" ] || continue
+      case "$t" in *.part) continue ;; esac
+      if _sg_ticket_alive "$t"; then head="$t"; break; fi
+      rm -f "$t" 2>/dev/null || true
+    done
+    # Count the live holders. ONLY THE HEAD RECLAIMS a dead one (said aloud): the
+    # head is the only process that may claim a slot next, so no other waiter's
+    # delayed `rm` can delete a slot the head has just taken afresh.
+    running=0; who=""
+    for k in "$d"/slot.*; do
+      [ -e "$k" ] || continue
+      if _sg_alive "$k"; then  # MUTATION-ANCHOR: 730-M02
+        running=$((running + 1)); who="${who:+$who; }$(_sg_who "$k")"
+      elif [ "$head" = "$SG_TICKET" ]; then
+        printf 'suite-gate: reclaiming the slot of a dead holder — %s is not running any more\n' "$(_sg_who "$k")" >&2
+        rm -rf "$k" 2>/dev/null || true
+      fi
+    done
+    if [ "$head" = "$SG_TICKET" ] && [ "$running" -lt "$n" ]; then
+      k=0
+      while [ "$k" -lt "$n" ]; do
+        if mkdir "$d/slot.$k" 2>/dev/null; then
+          SG_SLOT="$d/slot.$k"
+          printf '%s\n' "$$"                     > "$SG_SLOT/owner.pid"
+          _sg_start "$$"                         > "$SG_SLOT/owner.start"
+          printf '%s\n' "${HW_TASK:-}"           > "$SG_SLOT/owner.task"
+          printf '%s\n' "$what"                  > "$SG_SLOT/owner.cmd"
+          date +%s                               > "$SG_SLOT/owner.at"
+          mine="$$-$(date +%s)-${RANDOM:-0}-${RANDOM:-0}"
+          printf '%s' "$mine"                    > "$SG_SLOT/owner.token"
+          SG_HELD=1
+          rm -f "$SG_TICKET" 2>/dev/null || true; SG_TICKET=""
+          export HW_SUITE_GATE_HELD="slot.$k:$mine"
+          return 0
+        fi
+        k=$((k + 1))
+      done
+    fi
+    if [ "$announced" = 0 ]; then
+      if [ "$running" -gt 0 ]; then
+        printf 'waiting for a suite slot (%s running: %s)\n' "$running" "$who" >&2
+      else
+        printf 'waiting for a suite slot (0 running: a run ahead of this one in the queue is taking the next slot)\n' >&2
+      fi
+      announced=1
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      rm -f "$SG_TICKET" 2>/dev/null || true; SG_TICKET=""
+      printf 'suite-gate: waited past the %ss ceiling (HW_SUITE_GATE_WAIT_MS) — running WITHOUT a slot rather than failing\n' "$(( ${HW_SUITE_GATE_WAIT_MS:-7200000} / 1000 ))" >&2
+      return 1
+    fi
+    sleep "${HW_SUITE_POLL_S:-2}"
+  done
+}
+
+# sg_status_line → `suite slots: R/N in use (who) — W waiting (who)`.
+sg_status_line() {
+  local d n r=0 w=0 who="" wwho="" k t tag
+  d="$(sg_dir)"; n="$(sg_slots)"
+  if [ -z "$d" ] || [ ! -d "$d" ]; then printf 'suite slots: 0/%s in use — none waiting' "$n"; return 0; fi
+  for k in "$d"/slot.*; do
+    [ -e "$k" ] || continue
+    _sg_alive "$k" || continue
+    r=$((r + 1)); who="${who:+$who; }$(_sg_who "$k")"
+  done
+  for t in "$d"/q.*; do
+    [ -e "$t" ] || continue
+    case "$t" in *.part) continue ;; esac
+    _sg_ticket_alive "$t" || continue
+    w=$((w + 1))
+    tag=""
+    case "${t##*/}" in q.0.*) tag=" [cut]" ;; esac
+    wwho="${wwho:+$wwho; }pid $(sed -n 1p "$t")$tag: $(sed -n 4p "$t")"
+  done
+  printf 'suite slots: %s/%s in use%s — %s waiting%s' "$r" "$n" "${who:+ ($who)}" "$w" "${wwho:+ ($wwho)}"
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-status}" in
+    status) sg_status_line; printf '\n' ;;
+    *) printf 'usage: suite-gate status\n' >&2; exit 2 ;;
+  esac
+fi

@@ -20,6 +20,9 @@ touched_budget_seconds:
     touched <name> <path>                  run it beside the fast gate
     touched-skipped <name> <secs> <path>   over the budget: left to the full run
 
+    reference <name> <path>  a SLOW subject that declares `# gate-reference:` and
+                           names a changed path: it runs beside the selection
+
 A subject that declares `# gate-reference:` compares against a reference output
 (a golden, the previous installer) that goes stale whenever what it names
 changes. Those are the reds a branch is likeliest to push and the full suite
@@ -201,12 +204,11 @@ def header_declares(path, key):
     return False
 
 
-def touched(root, changed, trigger):
-    """The slow subjects that name a changed path, ranked and cut by budget."""
+def slow_hits(root, changed, trigger):
+    """-> ({slow subject: (rank, first changed path naming it)}, {slow: seconds}, {those declaring gate-reference})."""
     tests = os.path.join(root, "setup", "tests")
     budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
     threshold = budgets["fast_gate_threshold_seconds"]
-    cap = budgets.get("touched_budget_seconds", 180)
     slow = {n: v["seconds"] for n, v in budgets["files"].items()
             if v["seconds"] > threshold and os.path.isfile(os.path.join(tests, n))}
     top, helpers = common_parts(os.path.join(tests, "_common.sh"))
@@ -239,6 +241,14 @@ def touched(root, changed, trigger):
             if any(r in t or names(t, os.path.basename(r)) for r in reach):
                 found[n] = (1, path)
     pinned = {n for n in found if header_declares(os.path.join(tests, n), "gate-reference")}
+    return found, slow, pinned
+
+
+def touched(root, changed, trigger):
+    """The slow subjects that name a changed path, ranked and cut by budget."""
+    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    cap = budgets.get("touched_budget_seconds", 180)
+    found, slow, pinned = slow_hits(root, changed, trigger)
     spent = 0.0
     for n in sorted(found, key=lambda n: (n not in pinned, found[n][0], slow[n], n)):
         if n in pinned or spent + slow[n] <= cap:
@@ -318,6 +328,14 @@ def main(argv):
             print("subject %s %s" % (n, chosen[n]))
     for g in guards:
         print("guards %s" % g)
+    # A GOLDEN GOES STALE WHEN WHAT IT NAMES CHANGES, and a selected run is the
+    # last gate before the commit: 174 and 491 drifted three times in two days
+    # and only the full run, after the merge, saw it. A slow subject that declares
+    # `# gate-reference:` and names a changed path runs with the selection, never
+    # cut by a budget (the same subjects `touched` pins for the executor's verify).
+    _found, _slow, pinned = slow_hits(root, changed, trigger)
+    for n in sorted(pinned):
+        print("reference %s %s" % (n, _found[n][1]))  # MUTATION-ANCHOR: 714-M01
     return 0
 
 

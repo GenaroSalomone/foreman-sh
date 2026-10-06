@@ -107,6 +107,7 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -118,6 +119,41 @@ if os.name == "nt":
     import sitecustomize  # noqa: E402,F401
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _tree_in():
+    """-> the worktree of THIS repository the command is run in, else ROOT.
+
+    ~/bin/decisions is a symlink to the live brain's bin/decisions, so ROOT, taken
+    from this file's realpath, is always the live checkout: `decisions archive
+    setup --apply` run from a task's worktree rewrote the LIVE setup/decisions.md
+    and the archive beside it (2026-10-02, caught by hand and reverted). The tree
+    a command runs in is the one it must write. Only a worktree of the SAME
+    repository counts (same git common dir), and only one that carries this tool:
+    a fixture that copies bin/decisions beside its own files, in no repository or
+    in another one, keeps the tree the copy sits in.
+    """
+    def git(*args, cwd):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        r = subprocess.run(("git",) + args, cwd=cwd, env=env, capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    try:
+        top = git("rev-parse", "--show-toplevel", cwd=os.getcwd())
+        if not top or os.path.realpath(top) == ROOT:
+            return ROOT
+        here, there = (git("rev-parse", "--git-common-dir", cwd=c) for c in (ROOT, top))
+        if not here or not there:
+            return ROOT
+        same = os.path.realpath(os.path.join(ROOT, here)) == os.path.realpath(os.path.join(top, there))
+        if same and os.path.isfile(os.path.join(top, "bin", "decisions")):  # MUTATION-ANCHOR: 711-M01
+            print("decisions: using the tree you are in, %s, not %s" % (os.path.realpath(top), ROOT), file=sys.stderr)
+            return os.path.realpath(top)
+    except (OSError, ValueError):
+        pass
+    return ROOT
+
+
+ROOT = _tree_in()
 
 
 def _lanes():
@@ -822,7 +858,7 @@ def stage(path, text):
 
 
 def cmd_check(argv):
-    over, broken, strays, pending, nameless = [], [], [], [], []
+    over, broken, strays, pending, nameless, unread = [], [], [], [], [], []
     for project in PROJECTS:
         path = live_path(project)
         if not os.path.exists(path):
@@ -835,7 +871,9 @@ def cmd_check(argv):
                      for t, h in unresolved]
         if pairs:
             pending.append((project, pairs))
-        bad = unreadable_reverses(ordered) + bad
+        skipped = unreadable_reverses(ordered)
+        if skipped:
+            unread.append((project, skipped))
         if bad:
             # SAID HERE BECAUSE `supersede` REFUSES ON IT. A reader who runs
             # check first should learn that the project cannot be superseded
@@ -912,6 +950,13 @@ def cmd_check(argv):
             print("%s cannot be superseded until these resolve:" % project)
             for line in bad:
                 print("  %s" % line.strip())
+    if unread:
+        print()
+        print("a `Reverses` that is neither `none` nor an engram id — `supersede` skips the")
+        print("entry with a warning and moves the rest; fix the line:")
+        for project, lines in unread:
+            for line in lines:
+                print("    %-18s %s" % (project, line.strip()))
     if nameless:
         print()
         print("live entries with no engram id in **Evidence:** — standing and readable,")
@@ -1702,11 +1747,17 @@ def cmd_supersede(argv):
             problems += ["  %s: Reverses #%s, and no entry of this project — live "
                          "or archived — carries that id" % (h[3:][:44], t)
                          for t, h in nowhere]
-    # A `Reverses` this tool cannot read is refused rather than ignored. Ignoring
+    # A `Reverses` this tool cannot read is never ignored in silence. Ignoring
     # it would leave a file whose author believes a reversal happened and whose
     # live entries say it did not, and that disagreement is invisible: the
-    # command would print "nothing to supersede" and exit 0.
-    problems = unreadable_reverses(ordered) + problems
+    # command would print "nothing to supersede" and exit 0. It is skipped WITH
+    # A WARNING that names the entry (below).
+    # ...but it is refused ENTRY BY ENTRY, not lane by lane: one malformed line
+    # (`none (see the archive)`) refused every ruling of the lane for weeks, and
+    # nothing else in it was ambiguous. The entry is skipped, said on stderr and
+    # NAMED, and `check` still lists it; the unambiguous reversals go ahead.
+    for line in unreadable_reverses(ordered):  # MUTATION-ANCHOR: 109-M01
+        print("decisions: warning: skipped, its Reverses cannot be read — %s" % line.strip(), file=sys.stderr)  # MUTATION-ANCHOR-END: 109-M01
     if problems:
         die("refusing: `Reverses` does not resolve to exactly one live ruling by "
             "engram id.\n%s\nnothing was written." % "\n".join(problems))

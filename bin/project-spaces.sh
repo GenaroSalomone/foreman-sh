@@ -100,8 +100,12 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ($badpins | length) == 0 then . else error("model_pins maps an alias (haiku, sonnet, opus, fable) to a full claude-* id: \($badpins | join(", "))") end
     | if ($badfloor | length) == 0 then . else error("model_floor.tier is haiku, sonnet or opus, and accepts is a list of model ids: \($badfloor | join(", "))") end
     | if ($badmodes | length) == 0 then . else error("sdd_modes lists the modes a lane adds to speckit and none, and the only one is gentle: \($badmodes | join(", "))") end
-    | ((keys - ["comment","work","operator","metrics_direct","survey_order","lanes"])) as $top
+    | ((keys - ["comment","work","operator","metrics_direct","survey_order","retention","lanes"])) as $top
     | if ($top | length) == 0 then . else error("unknown top-level key(s): \($top | join(", "))") end
+    | ((.retention // {}) as $r
+       | if ($r | type == "object") and ((($r | keys_unsorted) - ["artifact_retention_days","backup_retention_days"]) | length) == 0
+            and ([$r.artifact_retention_days // 30, $r.backup_retention_days // 60] | all(type == "number" and . >= 0 and . == floor))
+         then . else error("retention is {artifact_retention_days, backup_retention_days}, each a whole number of days >= 0 (0 disables that window)") end) as $_ret
     | ((.survey_order // []) as $so
        | if ($so | all(. as $n | $names | index([$n]))) then . else error("survey_order names a lane that `lanes` does not have") end
        | ($so + ($names - $so))) as $survey
@@ -113,6 +117,8 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | "HW_LANES=\($names | join(" ") | @sh)",
       "HW_LANES_SURVEY=\($survey | join("\n") | @sh)",
       "_LC_WORK_DEFAULT=\(.work // error("no top-level `work`") | exp | @sh)",
+      "_LC_RETENTION_ARTIFACT_DAYS=\(.retention.artifact_retention_days // 30 | tostring | @sh)",
+      "_LC_RETENTION_BACKUP_DAYS=\(.retention.backup_retention_days // 60 | tostring | @sh)",
       "_LC_OPERATOR_DEFAULT=\(.operator // "the operator" | tostring | @sh)",
       ($aliases[] | "_LA_\(.kind)__\(.alias | key)=\(.lane | @sh)"),
       ($lanes | to_entries[] | .key as $l | .value as $v
@@ -169,6 +175,11 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
   # executor is told to leave a decision to them, a brainer to ask them.
   # `operator` in projects.json; "the operator" when the table names no one.
   : "${HW_OPERATOR:=$_LC_OPERATOR_DEFAULT}"
+  # How long `hw reap` keeps the artifacts of a task that reported, and its
+  # backups (`retention` in projects.json); 0 disables that window. An env
+  # override set before sourcing wins, like WORK.
+  : "${HW_ARTIFACT_RETENTION_DAYS:=$_LC_RETENTION_ARTIFACT_DAYS}"
+  : "${HW_BACKUP_RETENTION_DAYS:=$_LC_RETENTION_BACKUP_DAYS}"
   # The checkout variables a lane names keep their old spelling (each lane's
   # checkout_var, <LANE>_MAIN) because callers and tests set them to redirect a lane, and
   # `:=`-style: an override set before sourcing wins.

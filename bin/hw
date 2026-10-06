@@ -644,6 +644,11 @@ HW_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 # name the same space differently. See bin/project-spaces.sh.
 # shellcheck source=project-spaces.sh
 . "$HW_BIN_DIR/project-spaces.sh"
+# THE MACHINE-WIDE TURNSTILE FOR HEAVY RUNS (bin/suite-gate): `hw suite`, the
+# close verification and `hw status` use it. Absent in a stripped tree, and then
+# nothing gates — said where it would have.
+# shellcheck source=suite-gate
+[ ! -r "$HW_BIN_DIR/suite-gate" ] || . "$HW_BIN_DIR/suite-gate"
 # THE SPELLING IS KEPT, not canonicalised: the old root was the literal
 # home-relative path, so a root reached through a symlinked parent (or a
 # $HOME with a `//` in it) must print exactly as it was reached. $_src is the
@@ -2868,6 +2873,7 @@ for raw in lines[1:end]:
     key, _, value = line.partition(":")
     key = key.strip().lower()
     value = value.strip().strip("\"'")
+    if key == "kind": value = value.lower()  # MUTATION-ANCHOR: 701-M05
     if not value:
         continue
     if key not in known:
@@ -4062,7 +4068,8 @@ EOF
 # whether the citation really grants it, and does not try: it delivers what the
 # brief cites, scoped to what the entries name.
 #
-# NOT COVERED: `hw next --brief` re-tasks without it, like _check_requested.
+# A RE-TASK carries it too: `hw next --brief` runs the same validation and
+# delivers the same block (_next_authorization). `_check_requested` still does not.
 AUTHORIZES=""
 _auth_trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
 _check_authorizes() {
@@ -4997,7 +5004,8 @@ _brief_deployed_check() {  # $1 = brief path (default: $BRIEF)
   [ -f "$f" ] || return 0
   awk 'NR==1 { if ($0 != "---") exit; next }
        $0 == "---" { exit }
-       /^[[:space:]]*deployed_check[[:space:]]*:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
+       tolower($0) ~ /^[[:space:]]*deployed_check[[:space:]]*:/ {  # MUTATION-ANCHOR: 701-M03
+         sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
          if ($0 ~ /^".*"$/ || $0 ~ /^'"'"'.*'"'"'$/) $0 = substr($0, 2, length($0) - 2);
          print; exit }' "$f" 2>/dev/null || true
 }
@@ -5601,12 +5609,16 @@ _specialist_agents() {
 _brief_kind_for_close() {
   if [ -n "${TASK_KIND:-}" ]; then printf '%s' "$TASK_KIND"; return 0; fi
   [ -f "${BRIEF:-}" ] || return 0
-  # The frontmatter's own `kind:`, and nothing else: self-contained on purpose,
+  # The frontmatter's own `kind:` (key matched case-insensitively, like
+  # _brief_declares, and the value lowercased: `Kind: Design` is design), and nothing else: self-contained on purpose,
   # so the extracted preamble fragment the tests drive needs no parser from
   # elsewhere in this file. An unterminated fence yields nothing, i.e. build.
   awk 'NR==1 { if ($0 != "---") exit; next }
        $0 == "---" { exit }
-       /^[[:space:]]*kind[[:space:]]*:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); gsub(/["'"'"'[:space:]]/, ""); print; exit }' \
+       tolower($0) ~ /^[[:space:]]*kind[[:space:]]*:/ {  # MUTATION-ANCHOR: 701-M01
+         sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); gsub(/["'"'"'[:space:]]/, "")
+         print tolower($0); exit  # MUTATION-ANCHOR: 701-M04
+       }' \
     "$BRIEF" 2>/dev/null || true
 }
 
@@ -5672,7 +5684,8 @@ _brief_boundary() {  # $1 = brief path (default: $BRIEF)
   [ -f "$f" ] || return 0
   awk 'NR==1 { if ($0 != "---") exit; next }
        $0 == "---" { exit }
-       /^[[:space:]]*boundary[[:space:]]*:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
+       tolower($0) ~ /^[[:space:]]*boundary[[:space:]]*:/ {  # MUTATION-ANCHOR: 701-M02
+         sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
          if ($0 ~ /^".*"$/ || $0 ~ /^'"'"'.*'"'"'$/) $0 = substr($0, 2, length($0) - 2);
          print; exit }' "$f" 2>/dev/null || true
 }
@@ -5838,6 +5851,12 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
   fi
   if [ -n "$specialists" ]; then
     preamble="$(printf '%s\n\nSpecialist subagents available here: %s. If one of them is the job, delegate\nrather than doing it inline — they carry the access and the conventions for it,\nand reconstructing those in your own session is how a mechanism gets improvised.' "$preamble" "$specialists")"
+  else
+    # SAY SO WHEN THERE ARE NONE. An empty list used to omit the line, and an
+    # executor that expected ops-investigator or qa-tester (a brief naming them)
+    # blocked after reasoning about a tool it was never told was missing.
+    # A named absence costs one line.
+    preamble="$(printf '%s\n\nno specialists in this lane; ops-investigator / qa-tester are not available here' "$preamble")"  # MUTATION-ANCHOR: 702-M01
   fi
   # CODEX LOADS NO CLAUDE.md, so the executor rules of CLAUDE.shared.md that it
   # cannot see are stated here, one line each; the project on every mem_save and
@@ -5961,6 +5980,28 @@ _brief_authorization() {
   printf '> requested_by: %s\n' "${REQUESTED_BY:-<none>}"
   printf '%s\n' "$AUTHORIZES" | awk -F ' :: ' '{printf "> authorized: destination: %s | operation: %s | credential handle: %s\n", $1, $2, $3}'
   printf '\nOnly these destinations and operations are authorized, and nothing beyond them:\nanother destination, another operation, or a credential or session not named\nhere stays unauthorized. Within them, act without asking; for anything else\nask-invoker, or report blocked. A handle is a resolver, never a value.'
+}
+
+# THE SAME BLOCK FOR A RE-TASK. `hw next` delivers a NEW brief and used to carry
+# the epistemic safeguard and the preamble but never the authorization, so a task
+# whose brief says `authorizes:` got it on the first dispatch only. Run in a
+# subshell, the way the launch path does it: the same validation, the same
+# requested_by requirement and the same handle check (_check_authorizes), then
+# the same block (_brief_authorization). A refusal leaves nothing delivered.
+_next_authorization() {  # $1 = the new brief's path; prints the block, or nothing
+  [ -f "${1:-}" ] || return 0
+  (
+    # CHECK_HANDLES is set by the launch path's flag parsing, which `hw next`
+    # never reaches: unset here it was an unbound variable under set -u.
+    BRIEF="$1"; BRIEF_DECLS_READ=0; BRIEF_DECLS=""; BRIEF_DECLARED=none; AUTHORIZES=""
+    CHECK_HANDLES="${CHECK_HANDLES:-1}"
+    _load_brief_decls
+    # A citation already in hand (--requested-by on the launch that reached
+    # here by the reuse route) outranks the brief's own, as it does at launch.
+    [ -z "${REQUESTED_BY:-}" ] && REQUESTED_BY="$(printf '%s\n' "$BRIEF_DECLS" | awk -F '\t' '$1 == "requested_by" { print $2; exit }')"  # MUTATION-ANCHOR: 703-M03
+    _check_authorizes
+    _brief_authorization
+  )
 }
 
 # ── the executor's own engram session, registered before it says a word ──
@@ -8221,9 +8262,9 @@ _verify_at_close() {  # $1 = run directory, $2 = directory to run in, $3/$4 = pr
   # `hw done` slow, and nothing has closed while it runs. A caller whose tool gives
   # up at 120s should know what it is waiting for, that the pane is still open,
   # and both bounds.
-  info "hw done is now running this task's verification — the slow step; NOTHING is closed until it ends. Ceiling ${secs}s per command, plus up to $(( vwait / 1000 ))s first if another run holds the lane's suite lock."
+  info "hw done is now running this task's verification — the slow step; NOTHING is closed until it ends. Ceiling ${secs}s per command, plus up to $(( vwait / 1000 ))s first if another run holds the lane's suite lock, plus up to ${HW_SUITE_GATE_WAIT_MS:-7200000}ms for a machine suite slot (bin/suite-gate; never a failure, it runs without one past that)."
   if _suite_lane_pooled "$vproj"; then
-    info "the $vproj lane has no suite lock: its suite shares the machine's worker pool with every other suite and runs its timing subjects alone — see _suite_lane_pooled. This verification does not wait behind another suite."
+    info "the $vproj lane has no suite lock: its suite shares the machine's worker pool with every other suite and runs its timing subjects alone — see _suite_lane_pooled. This verification takes a machine suite slot and may wait for one."
   elif [ -z "${WORK:-}" ]; then
     warn "the $vproj suite lock could not be located — WORK is unset, so this verification runs UNSERIALISED"
     warn "if somebody else is running that lane's suite right now, these two are on the same tree"
@@ -8250,7 +8291,7 @@ _verify_at_close() {  # $1 = run directory, $2 = directory to run in, $3/$4 = pr
     # what the person pressing it asked for. Raised by both blind reviewers on
     # this candidate. 130/143 are the conventional 128+signal codes.
     # shellcheck disable=SC2064
-    trap "rm -rf '$vlock' 2>/dev/null || true" EXIT
+    trap "rm -rf '$vlock' 2>/dev/null || true; sg_release 2>/dev/null || true" EXIT
     # shellcheck disable=SC2064
     trap "rm -rf '$vlock' 2>/dev/null || true; exit 130" INT
     # shellcheck disable=SC2064
@@ -8269,6 +8310,10 @@ _verify_at_close() {  # $1 = run directory, $2 = directory to run in, $3/$4 = pr
     info "measured: hw receipt $vproj $vtask"
     return 0
   fi
+  # ONE SLOT OF THE MACHINE-WIDE GATE FOR THE WHOLE VERIFICATION, taken AFTER
+  # the lane lock (always that order) and never failing the close: a wait past
+  # HW_SUITE_GATE_WAIT_MS runs the commands without a slot and says so.
+  if declare -F sg_take >/dev/null 2>&1; then SG_WORK="${WORK:-}" sg_take "hw done verification of ${vtask:-<unnamed task>}" || true; fi  # MUTATION-ANCHOR: 730-M01
   while IFS= read -r cmd; do
     [ -n "$cmd" ] || continue
     n=$((n + 1))
@@ -8300,6 +8345,7 @@ _verify_at_close() {  # $1 = run directory, $2 = directory to run in, $3/$4 = pr
       warn "the output is in $log"
     fi
   done < "$pin"
+  if declare -F sg_release >/dev/null 2>&1; then sg_release; fi
   if [ "$vheld" = 1 ]; then
     rm -rf "$vlock" 2>/dev/null || true
     trap - EXIT INT TERM
@@ -9347,7 +9393,7 @@ cmd_reap() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --apply) apply=1; shift ;;
-      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees, its merged task branches no worktree holds, AND the loose work dirs beside them ($WORK/<lane>). --apply removes what is safe; a merged worktree whose only ignored content is .artifacts/qa-report/test-results/playwright-report has it copied to $(_archive_root)/<lane>/<task>/ and verified first, and a db.provisioned lane's database is pg_dump'ed there before it is dropped. Dirty, unmerged and occupied stay. It also closes an executor kept after a --blocked report and left unanswered past HW_BLOCKED_WAIT_HOURS (default 24)." >&2; return 0 ;;
+      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees, its merged task branches no worktree holds, AND the loose work dirs beside them ($WORK/<lane>). --apply removes what is safe; a merged worktree whose only ignored content is .artifacts/qa-report/test-results/playwright-report has it copied to $(_archive_root)/<lane>/<task>/ and verified first, and a db.provisioned lane's database is pg_dump'ed there before it is dropped. Dirty, unmerged and occupied stay. Retention: a loose work dir whose task REPORTED (done, or blocked and closed) and not occupied is safe once every artifact is older than artifact_retention_days (30), a backup (*.tgz, *.tar.gz, *.tar, or a name containing backup) older than backup_retention_days (60) — both in projects.json under retention, 0 disables a window, HW_ARTIFACT_RETENTION_DAYS/HW_BACKUP_RETENTION_DAYS override; the dry run says «retention: Nd > 30d», and every removal by retention appends a line (time, lane, path, task, age, size, reason) to $(_reap_log_file) (HW_REAP_LOG). A task that never reported or has a live pane is kept at any age. It also closes an executor kept after a --blocked report and left unanswered past HW_BLOCKED_WAIT_HOURS (default 24)." >&2; return 0 ;;
       -*) die "unknown option: $1" ;;
       *) proj_filter="$(_canon_project "$1")"; shift ;;
     esac
@@ -9449,9 +9495,19 @@ cmd_reap() {
         if [ "$WD_VERDICT" = safe ]; then
           total_safe=$((total_safe + 1))
           if [ "$apply" = 1 ]; then
+            local ret_kb=""
+            if [ -n "$WD_RET_AGE" ]; then
+              if ! _reap_log_ready; then
+                warn "kept $(basename "$wd") — it is past retention but $(_reap_log_file) cannot be written, and a removal by retention is never unlogged"
+                continue
+              fi
+              ret_kb="$(du -sk "$wd" 2>/dev/null | awk '{ print $1 + 0 }')"
+            fi
             if _reap_rm_workdir "$wd"; then
               total_removed=$((total_removed + 1))
-              ok "removed $(basename "$wd")  ${C_DIM}(loose work dir)${C_0}"
+              [ -z "$WD_RET_AGE" ] || _reap_log_retention "$proj" "$wd" "${ret_kb:-0}" \
+                || warn "removed $wd by retention but could not append to $(_reap_log_file) — record it by hand: ${WD_RET_AGE}d, ${ret_kb:-0}KB, $WD_WHY"
+              ok "removed $(basename "$wd")  ${C_DIM}(loose work dir${WD_RET_AGE:+, $WD_WHY})${C_0}"
             else
               warn "could not remove $wd — it read as safe and the delete failed, which is the one outcome worse than keeping it. Run it by hand and read what rm says."
             fi
@@ -10267,11 +10323,90 @@ _wt_disposition() {
 #
 #   safe | worktree | inside-worktree | held | leased | artifacts | recent
 #   undetermined  — A GATE COULD NOT BE MEASURED, exactly as in _wt_disposition.
+# ── retention: the artifacts of a task that reported do not live forever ────
+#
+# MEASURED 2026-10-05: 73 `.artifacts` dirs holding 255 MB, 6 archives holding
+# 38 MB, `$WORK` at 3.4 GB — every one kept, because a loose dir with artifacts
+# was `artifacts` whatever its age. The windows are `retention` in projects.json
+# (HW_ARTIFACT_RETENTION_DAYS / HW_BACKUP_RETENTION_DAYS override; 0 disables
+# that window). THE BIAS IS STILL RETAIN: a window that cannot be read, a file
+# whose age cannot be read, a task that did not report and a disabled window all
+# keep the directory, because `safe` is an `rm -rf` of the only copy.
+#
+# A task has REPORTED when the newest run of the directory carries its current
+# task's `done` marker, was not reopened by `hw revive`, and is not a BLOCKED
+# report still waiting for a ruling (that pane is kept on purpose).
+_run_reported() {  # <dir>
+  local dir="$1" r newest="" m
+  for r in "$dir"/.hw/2[0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*; do
+    [ -d "$r" ] || continue
+    if [ -z "$newest" ] || [ "$r" \> "$newest" ]; then newest="$r"; fi
+  done
+  [ -n "$newest" ] || return 1
+  m="$(_run_done_marker "$newest")"
+  [ -f "$m" ] || return 1
+  [ ! -f "$(_run_reopened_marker "$newest")" ] || return 1
+  [ ! -f "$(_run_blocked_marker "$newest")" ] || return 1
+  return 0
+}
+
+# A backup by its name: `*.tgz`, `*.tar.gz`, `*.tar`, or a name containing
+# `backup`, in any case.
+_artifact_is_backup() {  # <path>
+  local b; b="$(basename "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$b" in *.tgz|*.tar.gz|*.tar|*backup*) return 0 ;; esac
+  return 1
+}
+
+_retention_days() {  # <default> <value> — a whole number read as base 10 (08 is 8, 00 is 0), else the default
+  case "$2" in ''|*[!0-9]*) printf '%s' "$1" ;; *) printf '%s' "$(( 10#${2:0:9} ))" ;; esac  # MUTATION-ANCHOR: 720-M04
+}
+
+# Is EVERY artifact past its own window? An artifact is held for the artifact
+# window, a backup for the backup window; the directory is expired only when the
+# last file standing is. Sets RET_AGE/RET_WIN/RET_KIND to the file that holds
+# the directory longest (the one closest to its window), which is the evidence
+# the reason names. Returns 1 — keep — on anything it could not measure.
+RET_AGE=""; RET_WIN=""; RET_KIND=""
+_retention_expired() {  # <artifact paths, one per line>
+  local files="$1" art bak now f m age win kind best="" slack
+  art="$(_retention_days 30 "${HW_ARTIFACT_RETENTION_DAYS:-30}")"
+  bak="$(_retention_days 60 "${HW_BACKUP_RETENTION_DAYS:-60}")"
+  RET_AGE=""; RET_WIN=""; RET_KIND=""
+  now="$(date +%s)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if _artifact_is_backup "$f"; then win="$bak"; kind=backup; else win="$art"; kind=artifact; fi  # MUTATION-ANCHOR: 720-M03
+    [ "$win" != 0 ] || return 1
+    if [ "$(uname -s)" = Darwin ]; then m="$(stat -f %m "$f" 2>/dev/null)" || return 1
+    else m="$(stat -c %Y "$f" 2>/dev/null)" || return 1; fi
+    case "$m" in ''|*[!0-9]*) return 1 ;; esac
+    age=$(( (now - m) / 86400 ))
+    [ "$age" -gt "$win" ] || return 1  # MUTATION-ANCHOR: 720-M01
+    slack=$(( age - win ))
+    if [ -z "$best" ] || [ "$slack" -lt "$best" ]; then best="$slack"; RET_AGE="$age"; RET_WIN="$win"; RET_KIND="$kind"; fi
+  done <<< "$files"
+  [ -n "$best" ]
+}
+
+# One line per removal by retention, in a log under the brain that git ignores
+# (`.hw-reap-*`): ISO time, lane, path, task, age, size in KB, reason. Tab
+# separated. HW_REAP_LOG moves it. `_reap_log_ready` is asked BEFORE the delete:
+# an unlogged removal is the one this log exists to forbid.
+_reap_log_file() { printf '%s' "${HW_REAP_LOG:-$BRAIN/.hw-reap-retention.log}"; }
+_reap_log_ready() { : >> "$(_reap_log_file)" 2>/dev/null; }
+_reap_log_retention() {  # <lane> <path> <size KB>   (age and reason from WD_*)
+  printf '%s\t%s\t%s\t%s\t%sd\t%sKB\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$1" "$2" "$(basename "$2")" \
+    "$WD_RET_AGE" "$3" "$WD_WHY" >> "$(_reap_log_file)"
+}
+
 WD_VERDICT=""
 WD_WHY=""
+WD_RET_AGE=""
 _workdir_disposition() {  # <project> <dir>
   local proj="$1" dir="$2" top phys rc=0 occ adir files frc=0 n ref rrc=0 recent
-  WD_VERDICT=""; WD_WHY=""
+  WD_VERDICT=""; WD_WHY=""; WD_RET_AGE=""
+  local expired=0
 
   if [ ! -d "$dir" ]; then
     WD_VERDICT=undetermined
@@ -10345,9 +10480,15 @@ _workdir_disposition() {  # <project> <dir>
     n="$(printf '%s\n' "$files" | sd '^\s*$' '' | rg -c '\S' || true)"
     : "${n:=0}"
     if [ "$n" != 0 ]; then
-      WD_VERDICT=artifacts
-      WD_WHY="$n file(s) under its artifact store $adir — artifacts are the one thing a work dir exists to hold, and nothing here can rebuild them"
-      return 0
+      # RETENTION: reported AND every artifact past its window. Anything else
+      # is the old verdict; an expired dir still goes through the age gates.
+      if _run_reported "$dir" && _retention_expired "$files"; then  # MUTATION-ANCHOR: 720-M02
+        expired=1
+      else
+        WD_VERDICT=artifacts
+        WD_WHY="$n file(s) under its artifact store $adir — artifacts are the one thing a work dir exists to hold, and nothing here can rebuild them"
+        return 0
+      fi
     fi
   fi
 
@@ -10389,6 +10530,11 @@ _workdir_disposition() {  # <project> <dir>
   fi
 
   WD_VERDICT=safe
+  if [ "$expired" = 1 ]; then
+    WD_RET_AGE="$RET_AGE"
+    WD_WHY="retention: ${RET_AGE}d > ${RET_WIN}d ($RET_KIND window); its task reported, nobody in it, not a git worktree"
+    return 0
+  fi
   WD_WHY="no artifacts, not a git worktree, nothing under it touched in 24h, nobody in it"
   return 0
 }
@@ -11575,6 +11721,16 @@ _suite_lock_take() {  # <lockdir> <lane> <wait_ms> <what is being run>
   done
 }
 
+# Runs <cmd...> inside one slot of the machine-wide gate (bin/suite-gate); what
+# it returns is the command's own status. The wait never fails the run.
+_suite_gated_run() {  # <label> <cmd...>
+  local label="$1" grc=0; shift
+  if declare -F sg_take >/dev/null 2>&1; then SG_WORK="${WORK:-}" sg_take "$label" || true; fi
+  set +e; "$@"; grc=$?; set -e
+  if declare -F sg_release >/dev/null 2>&1; then sg_release; fi
+  return "$grc"
+}
+
 cmd_suite() {
   local proj="" wait_ms="" dry=0 status=0
   proj="${1:-}"; shift || true
@@ -11604,7 +11760,7 @@ cmd_suite() {
     [ $# -gt 0 ] || die "hw suite: nothing to run. Put the command after \`--\`, e.g. hw suite $proj -- bash setup/test-hw"
     info "the $proj lane has no suite lock: setup/test-hw shares the machine's worker pool ($pool) with every other suite and runs its timing subjects alone. Running now."
     local prc=0
-    set +e; "$@"; prc=$?; set -e
+    _suite_gated_run "hw suite $proj: $*" "$@" || prc=$?
     return "$prc"
   fi
 
@@ -11647,7 +11803,7 @@ cmd_suite() {
   if _suite_lock_held_by_ancestor "$lock" "$proj"; then
     info "the $proj suite lock is already held further up this process tree — running inside that hold rather than waiting behind it"
     local arc=0
-    set +e; "$@"; arc=$?; set -e
+    _suite_gated_run "hw suite $proj: $*" "$@" || arc=$?
     return "$arc"
   fi
 
@@ -11668,7 +11824,7 @@ cmd_suite() {
   # where both blind reviewers of this candidate raised it; leaving the sibling
   # with the old shape would have been fixing a rule in one of its two homes.
   # shellcheck disable=SC2064
-  trap "rm -rf '$lock' 2>/dev/null || true" EXIT
+  trap "rm -rf '$lock' 2>/dev/null || true; sg_release 2>/dev/null || true" EXIT
   # shellcheck disable=SC2064
   trap "rm -rf '$lock' 2>/dev/null || true; exit 130" INT
   # shellcheck disable=SC2064
@@ -11680,7 +11836,7 @@ cmd_suite() {
   local marker_prev="${HW_SUITE_LOCK_HELD:-}"
   export HW_SUITE_LOCK_HELD="$proj:$SUITE_LOCK_TOKEN"
   local rc=0
-  set +e; "$@"; rc=$?; set -e
+  _suite_gated_run "hw suite $proj: $*" "$@" || rc=$?
   if [ -n "$marker_prev" ]; then export HW_SUITE_LOCK_HELD="$marker_prev"
   else unset HW_SUITE_LOCK_HELD; fi
   rm -rf "$lock" 2>/dev/null || true
@@ -11708,6 +11864,7 @@ cmd_suite() {
 # was written once by `_write_run_env` at launch.
 _next_message() {
   local nextseq="$1" entry_line="$2" text="$3" rundir="$4" brief_path="$5" wtdir="$6"
+  local authorization="${7:-}"
   local preamble epistemic
   preamble="$(
     BRIEF="$brief_path"
@@ -11743,6 +11900,8 @@ _next_message() {
     _brief_preamble
   )"
   epistemic="$(_brief_epistemic)"
+  # Before the brief text, after the preamble: the order the launch gives it.
+  [ -z "$authorization" ] || text="$(printf '%s\n\n---\n\n%s' "$authorization" "$text")"  # MUTATION-ANCHOR: 703-M01
   # ONE printf, because `$( )` strips trailing newlines: a separator built at the
   # end of its own substitution vanishes and two blocks run together. Same
   # reason _send_brief keeps its separators inside the format string.
@@ -11797,6 +11956,10 @@ cmd_next() {
     text="$(cat "$brief")"
   fi
   [ -n "$text" ] || die "the next task is empty — there is nothing to send"
+  # ONCE, before anything is sent or even gated: the dry run prints the size of
+  # the message this block is part of, and a refused authorization refuses both.
+  local next_auth=""
+  next_auth="$(_next_authorization "$brief")" || die "the re-task brief's authorization was refused above. NOTHING was sent."  # MUTATION-ANCHOR: 703-M02
   case "$next_sdd" in
     ""|speckit|none) ;;
     gentle) die "hw next --sdd gentle REFUSED: ODD enters Claude's system prompt at launch, and a re-task cannot add it to a live session. Nothing was sent. Launch it fresh: hw <project> <task> --sdd gentle --agent claude" ;;
@@ -11936,7 +12099,7 @@ cmd_next() {
     local nextseq_dry="$((seq + 1))"
     ok "dry run: $pane is reachable, on task $seq of $(basename "$rundir") — NOTHING was sent and the pane was not touched"
     info "route $route -> $target${endpoint:+ (endpoint $endpoint)}"
-    info "would create $rundir/t$nextseq_dry and deliver $(printf '%s' "$(_next_message "$nextseq_dry" "" "$text" "$rundir" "$brief" "$next_wtdir")" | wc -c | tr -d ' ') bytes as task $nextseq_dry ($(printf '%s' "$text" | wc -c | tr -d ' ') of them the task text; the rest is the preamble hw prepends, minus any framework entry line)"
+    info "would create $rundir/t$nextseq_dry and deliver $(printf '%s' "$(_next_message "$nextseq_dry" "" "$text" "$rundir" "$brief" "$next_wtdir" "$next_auth")" | wc -c | tr -d ' ') bytes as task $nextseq_dry ($(printf '%s' "$text" | wc -c | tr -d ' ') of them the task text; the rest is the preamble hw prepends, minus any framework entry line)"
     if [ -n "$chaining_seconds_dry" ]; then
       info "this one use would be consumed only after successful delivery; dry-run lease state is volatile and was not touched"
     fi
@@ -12087,7 +12250,7 @@ cmd_next() {
   # The executor is told its own bookkeeping changed, because its budgets did —
   # and, since 2026-09-21, it is told the rest of what a launch tells one.
   local msg
-  msg="$(_next_message "$nextseq" "$entry_line" "$text" "$rundir" "$brief" "$next_wtdir")"
+  msg="$(_next_message "$nextseq" "$entry_line" "$text" "$rundir" "$brief" "$next_wtdir" "$next_auth")"
 
   # New bounded-chaining runs have a lease only after proved report delivery.
   # Hold the SAME per-run lock as done-invoker and the detached expiry action
@@ -12986,6 +13149,9 @@ _decisions_quiet() {
 # AND OUTSIDE $WORK IT GLOBS, it does not ask fd: a worktree's `.hw/` is in the
 # repo's exclude file (`_ensure_artifacts_dir`), which fd honours, so fd lists
 # no run there at all. A run directory is always `<root>/<task>/.hw/<run>`.
+# That holds for `hw sweep` as much as for reap: until 2026-10-05 sweep handed
+# those roots to fd and so never saw a run under a lane's `{checkout}/.worktrees`
+# (every lane whose worktrees sit in its checkout): their reported tabs were never closed.
 _hw_run_dirs() {
   # $WORK, then each lane's worktree root outside it, in survey order — except
   # a lane whose `sweep` is false in projects.json (see below).
@@ -13000,11 +13166,7 @@ _hw_run_dirs() {
   done <<EOF
 $HW_LANES_SURVEY
 EOF
-  if [ "$_every" = 0 ]; then
-    fd -H -t d '^2[0-9]{7}-[0-9]{6}-[0-9]+$' "${_sweep_roots[@]}" 2>/dev/null || true
-    return 0
-  fi
-  fd -H -t d '^2[0-9]{7}-[0-9]{6}-[0-9]+$' "$WORK" 2>/dev/null || true
+  fd -H -t d '^2[0-9]{7}-[0-9]{6}-[0-9]+$' "$WORK" 2>/dev/null || true  # MUTATION-ANCHOR: 712-M01
   for _sr in "${_sweep_roots[@]:1}"; do
     for _rd in "$_sr"/*/.hw/2*; do
       [ -d "$_rd" ] || continue
@@ -14400,14 +14562,24 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
             # is an executor gone before it finished its first turn, and it used
             # to fall through to `no information`, which `hw status` collapses to
             # a count. It needs the same visibility as a death the space reports.
-            mark, state, tint = "✗", "DIED-BEFORE-FIRST-TURN", ERR
-            notes.append("its %s, and no turn end was ever recorded — it died or was closed before finishing one "
-                         "(`hw done` closes a task without a report too, and leaves no mark of it)"
-                         % _placement_gone(here_run, own_tab, own_ws))
-            notes.append("look at: `hw log %s`, its engram findings, .hw/%s/ in its work directory; "
-                         "if it was closed on purpose, `hw done` leaves this row in place for the rest of this herdr session; otherwise dispatch it again"
-                         % (key.replace(":", " ", 1), newest.get("name")))
-            limits.add("first-turn")
+            _ur = unreported_row(newest) if newest.get("closed") else None  # MUTATION-ANCHOR: 260-M01
+            if _ur:
+                # `hw done` closed it on purpose before a first turn ended; the
+                # mark says so, and a closed task is not a death.
+                mark, state, tint = "!", _ur[0], WARN
+                notes.append("its %s, and no turn end was ever recorded"
+                             % _placement_gone(here_run, own_tab, own_ws))
+                notes.extend(_ur[1])
+                limits.add("first-turn")
+            else:
+                mark, state, tint = "✗", "DIED-BEFORE-FIRST-TURN", ERR
+                notes.append("its %s, and no turn end was ever recorded — it died or was closed before finishing one "
+                             "(`hw done` closes a task without a report too, and leaves no mark of it)"
+                             % _placement_gone(here_run, own_tab, own_ws))
+                notes.append("look at: `hw log %s`, its engram findings, .hw/%s/ in its work directory; "
+                             "if it was closed on purpose, `hw done` leaves this row in place for the rest of this herdr session; otherwise dispatch it again"
+                             % (key.replace(":", " ", 1), newest.get("name")))
+                limits.add("first-turn")
         else:
             mark, state, tint = "?", "no information", DIM
             started = newest["started"] if newest else None
@@ -14781,6 +14953,13 @@ $(cat "$key.msg")"
   return 0
 }
 
+# ONE LINE: the heavy-run slots in use and who waits (bin/suite-gate).
+_gate_quiet() {
+  declare -F sg_status_line >/dev/null 2>&1 || return 0
+  SG_WORK="${WORK:-}"
+  info "$(sg_status_line)"
+}
+
 cmd_status() {
   local ws_json panes_json agents_json exited_ndjson server_started herdr_ok=1
 
@@ -14901,6 +15080,7 @@ if [ "$1" = status ]; then
   _orphans_quiet "${HW_STATUS_ORPHANS_JSON:-}"
   [ -z "$_orph_tmp" ] || rm -f "$_orph_tmp"
   _release_quiet
+  _gate_quiet
   _outbox_quiet "$HW_STATUS_PROJECT"
   if [ -z "$HW_STATUS_PROJECT" ]; then
     cmd_worktrees --quiet; _tabs_quiet; _hygiene_quiet; _rules_quiet; _decisions_quiet

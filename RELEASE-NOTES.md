@@ -1,86 +1,82 @@
-# foreman-sh 0.3.1
+# foreman-sh 0.3.2
 
-One-command upgrades, worktrees that clean up after themselves, and a clearer `hw status`.
+Suites take turns, old artifacts clean themselves up, and fewer surprises when tasks are re-dispatched.
 
 ## In short
 
-- **Upgrade in one command.** `foreman-sh upgrade` remembers how you installed, updates, checks and shows what is new; `hw status` tells you when a release is out.
-- **Disk stays under control.** `hw done` removes a merged, clean worktree with its branch and database, and `hw status` warns before a lane piles up.
-- **Live work is protected.** A worktree is locked while its executor runs, so no cleanup can touch it.
-- **Know before you resume.** `hw status` shows how much context each executor has used and any ruling still waiting to be delivered.
-- **Fewer false alarms.** A task closed by hand is shown as closed, not as a session that died.
-- **Authorizations travel with the brief.** An `authorizes:` line hands the executor exactly what it may do remotely, so it no longer stops to ask; and sonnet is now the default model.
+- **Suites take turns.** Heavy test runs wait for a free slot instead of saturating the machine, a release cut goes first, and `hw status` shows who holds a slot.
+- **Old artifacts clean themselves up.** `hw reap` removes the artifacts of reported tasks after 30 days and backups after 60, configurable per lane, and logs every removal.
+- **Re-dispatch keeps what matters.** `hw next` carries the brief's authorization, and an executor in a lane with no specialists is told so.
+- **Release notes can be rebuilt.** `notes --refold` rewrites a version already in the changelog, and the commit gate runs the goldens a change makes stale.
+- **Decisions write where they run.** `decisions archive` and `supersede` touch the tree they run in, and a malformed entry is named instead of blocking the lane.
+- **Fewer false reds.** Brief keys and values are read case-insensitively, and the opencode adapter waits as long as it is told.
 
 ## What changed
 
-17 changes since 0.3.0.
+17 changes since 0.3.1.
 
 ### Added
-- `hw status` prints one line per lane past its worktree count, its disk use or
-  the `.next`/`.turbo` the last `hw reap` summed (`reap.max_worktrees`,
-  `reap.max_disk_pct`, `reap.max_build_gb`; defaults 40, 85%, 30 GB), naming
-  `hw reap <lane> --apply`, and one line for tasks that finished, never
-  reported, and whose brainer pane is gone.
-- A worktree `hw done` or `hw reap --apply` keeps for a git reason (dirty,
-  unmerged, irreplaceable) sheds its git-ignored `.next` and `.turbo`, unless a
-  live pane, process or lock is in it or it is outside the lane's worktree root.
-- hw locks a worktree while its executor lives (`git worktree lock`) and
-  `hw done` unlocks it; `hw reap` keeps a locked worktree.
-- `hw reap` records the per-worktree databases hw provisioned, and `--apply`
-  dumps and drops a recorded one whose worktree is gone.
-- An executor may run `hw reap <lane>` (the survey, never `--apply`).
-- A brief can carry `authorizes: <destination> :: <operation> :: <handle|none>`
-  (one line per entry). `hw` validates the shape, refuses it without
-  `requested_by:`, checks a named Keychain handle, shows it in the manifest and
-  delivers it to the executor as a quoted block that authorizes only those
-  destinations and operations.
-- `hw done` now leaves a `closed-by-hand` mark in the task's state directory
-  (when, which flag, whether a report existed). `hw status` shows such a task
-  as `closed-unreported` instead of `finished, unreported`, so a task closed on
-  purpose no longer looks like a dead one. Runs closed before the mark existed
-  are reclassified when read, from the `verify_run` line only `hw done`
-  writes; nothing is backfilled.
-- A re-tasked chain row names the last task that did report (for example
-  "task 3 reported, task 4 closed before reporting").
-- `foreman-sh upgrade --brain DIR` (also `install.sh --upgrade`) installs the
-  newest release with the flags the brain was installed with, runs `--check`
-  and prints the release's "In short". `--to VERSION` installs that one, the way
-  back; `--dry-run` says what it would do and changes nothing. The flags are
-  recorded by every install in `DIR/.foreman/install.json` (never a secret): the
-  install's own flags (bin dir, permissions, lane, repo, base). What a lane
-  declares (vendor, model, operator, floor, request rule) is read from
-  `projects.json` when `upgrade` runs, so a hand edit there is kept, never
-  replayed back; a brain with no record is refused, naming the flags to pass once.
-  `--to` a release older than `upgrade` is not supported: that release has no
-  `upgrade` to be handed the brain.
-- `hw status` says in one line when a newer release exists. It asks at most
-  once a day, caches the answer in `DIR/.foreman/latest-release.json`, and says
-  nothing offline or in a brain with no record.
-- `hw status` shows each live executor's context size, with a prompt to prefer a
-  fresh executor over `hw next` or a ruling once it passes 150k tokens, and
-  the number of queued rulings with the age of the oldest. `hw receipt` shows
-  the same context line for an open run.
+- The OpenCode blocked-reason adapter reads `HW_RPC_TIMEOUT_MS` (default 2000) as how
+  long it waits for one `herdr-rpc` call, so a loaded machine can be given more time
+  without the adapter ever blocking a turn.
+- Heavy runs take turns. The setup suite, the verification inside `hw done`,
+  `hw suite` and the release cut each take one slot of a machine-wide gate
+  (`bin/suite-gate`) before they start: `max(1, cpus/4)` at once, set with
+  `HW_SUITE_SLOTS`. A run that waits says so once and never fails for the wait
+  (`HW_SUITE_GATE_WAIT_MS`, default two hours, then it goes ahead without a slot).
+  A slot held by a dead process is reclaimed, and the cut goes first without
+  killing anyone. `hw status` shows the slots in use and who waits.
+- `hw reap` retires the artifacts of a finished task: a work dir whose task
+  reported (done, or blocked and closed), with nobody in it, becomes safe once
+  every artifact is older than 30 days, and a backup (`*.tgz`, `*.tar.gz`,
+  `*.tar`, or a name containing `backup`) once it is older than 60. A task that
+  never reported, or has a live pane, is kept at any age. The dry run says
+  «retention: 40d > 30d».
+- The windows are `retention.artifact_retention_days` and
+  `retention.backup_retention_days` in `projects.json` (0 disables a window).
+  Every removal by retention appends a line to `.hw-reap-retention.log` under
+  the brain: time, lane, path, task, age, size, reason.
 
 ### Changed
-- A Claude executor launched without `--model` now runs sonnet, and a brief
-  declaring `kind: design` runs opus; `--model` still wins. The manifest says
-  where the model came from.
-- The README's "Upgrading" section, INSTALL.md, the Homebrew caveats and each
-  release's "Upgrading from" notes say `foreman-sh upgrade` instead of "run
-  install.sh again with the same flags".
-- Release notes open with a person-written "In short" summary
-  (`setup/releases/highlights/VERSION.md`), which is what `upgrade` prints.
-- The context read behind `hw next` and `hw status` is bounded in time, so a
-  stuck pane cannot hang either command.
+- An executor whose lane has no specialists is told so: "no specialists in this lane;
+  ops-investigator / qa-tester are not available here". The line used to be omitted.
+- The pre-commit test run now also runs a slow test that declares itself a golden
+  (`# gate-reference:`) when a staged file is one it names. Until now such a
+  golden (the dispatch output, the installer comparison) stayed stale until the
+  full run after the merge; the executor's own verify already ran them.
+- `setup/test-hw` lowers its parallel jobs, and says so, when the 1-minute load
+  average starts above twice the cpu count (never below one; an explicit
+  `HW_TEST_JOBS` is left alone).
 
 ### Fixed
-- A branch squash-merged through a GitHub PR, whose paths the base changed
-  again since, read `unmerged` for good. A PR merged into the lane's base whose
-  head contains the branch tip is now merge evidence; an open PR, a PR merged
-  elsewhere, a failing or missing `gh`, or a non-GitHub origin is none. Such a
-  branch is deleted with its worktree.
-- The receipt of a re-tasked executor no longer copies the previous task's
-  `report_*` tokens as if they were the current task's.
+- `hw status` reads a task closed by hand with `hw done` as `closed-unreported` even when it
+  never ended a turn; it used to read `DIED-BEFORE-FIRST-TURN`, a death.
+- A brief key written with capitals (`Kind: design`, `Boundary:`, `Deployed_Check:`) is
+  now read by every reader of the frontmatter, not only the contract check. `Kind: design`
+  used to give the task the sonnet default instead of opus.
+- `hw next --brief` now delivers the brief's `authorizes:` block (and refuses an uncited or
+  malformed one, like a first dispatch). A re-tasked executor used to work without the
+  authorization its brief declared.
+- `decisions` writes the worktree it is run in. Run through a PATH link to another
+  checkout of the same repository, `archive` and `supersede --apply` used to
+  rewrite that other checkout's files; they now use the current worktree and say
+  which tree they used.
+- `decisions supersede` no longer refuses a whole lane over one `Reverses` line it
+  cannot read: it skips that entry with a warning that names it and moves the
+  reversals that are unambiguous. `decisions check` lists the unreadable lines.
+- `hw sweep` finds the runs under a lane's `.worktrees` directory. It asked `fd`,
+  which skips the git-excluded `.hw/`, so a reported executor's tab there was
+  never closed by `hw sweep --apply`.
+- `HW_ARTIFACT_RETENTION_DAYS` and `HW_BACKUP_RETENTION_DAYS` are read as
+  decimal days: `08` and `09` are eight and nine days (they used to fail as bad
+  octal), and `00` disables the window like `0` (it used to be a 0-day window
+  that made every finished task's artifacts safe to remove).
+- A brief's `kind:` value is matched without regard to case: `Kind: Design`
+  now runs opus like `kind: design`.
+- `HW_RPC_TIMEOUT_MS` in the OpenCode adapter is floored and capped to what the
+  runtime accepts; a fractional or huge value used to drop the publish silently.
+- `setup/release/notes --refold` no longer dies with a traceback on a
+  CHANGELOG whose last line is the version's heading with no final newline.
 
 ## Known limits
 
@@ -89,7 +85,7 @@ One-command upgrades, worktrees that clean up after themselves, and a clearer `h
   ARM64 only. WSL2 was not re-measured for this release, and mutation
   testing was not run on Windows.
 
-## Upgrading from 0.3.0
+## Upgrading from 0.3.1
 
 Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,

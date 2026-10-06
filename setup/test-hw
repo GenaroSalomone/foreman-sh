@@ -289,9 +289,14 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
       fi
     done
     FILES=(${_narrowed[@]+"${_narrowed[@]}"})  # MUTATION-ANCHOR: 361-M01
+    # A GOLDEN THE STAGED PATHS STALE RUNS TOO: a slow subject declaring
+    # `# gate-reference:` that names a staged path (setup/gate-select, `reference`).
+    while read -r _gs_kind _gs_name _gs_rest; do
+      [ "$_gs_kind" = reference ] && [ -f "$TESTS/$_gs_name" ] && FILES+=("$TESTS/$_gs_name")
+    done <<< "$_gs_out"
     printf 'runner: SELECTED %s of %s fast subjects from the changed paths%s:\n' "${#FILES[@]}" "$FAST_TOTAL" \
       "$([ "$GATE_GUARDS" = 1 ] && printf ', plus the guard drivers')" >&2
-    printf '%s\n' "$_gs_out" | sed -n 's/^core \(.*\)/    core     \1/p; s/^subject \([^ ]*\) \(.*\)/    \1  <- \2/p; s/^guards \(.*\)/    guards   <- \1/p; s/^deferred \(.*\)/    deferred \1 (slow: the full run at push, as always)/p' >&2
+    printf '%s\n' "$_gs_out" | sed -n 's/^core \(.*\)/    core     \1/p; s/^subject \([^ ]*\) \(.*\)/    \1  <- \2/p; s/^guards \(.*\)/    guards   <- \1/p; s/^reference \([^ ]*\) \(.*\)/    reference \1  <- \2 (a golden: it goes stale with what it names)/p; s/^deferred \(.*\)/    deferred \1 (slow: the full run at push, as always)/p' >&2
     if [ "${#FILES[@]}" -eq 0 ] && [ "$GATE_GUARDS" != 1 ]; then
       printf 'not ok - runner: the selection is EMPTY — no core subject declares `# gate-core:`, so nothing would run\n' >&2
       exit 1
@@ -822,7 +827,28 @@ _pool_release_all() {
 JOB_SLOT=(); JOB_SLOT_SEEN=()
 
 TALLY="$(mktemp "${TMPDIR:-/tmp}/hw-test-tally.XXXXXX")"
-trap 'rm -f "$TALLY" "$TALLY.subject"; _pool_release_all; _queue_release' EXIT
+trap 'rm -f "$TALLY" "$TALLY.subject"; _pool_release_all; _queue_release; _gate_release' EXIT
+
+# ── SUITES TAKE TURNS: ONE MACHINE-WIDE SLOT PER RUN (2026-10-05) ───────────
+#
+# The pool above caps JOBS, not RUNS: three fast gates, a `hw done`
+# verification and a cut each add their own subjects on top of each other. 0.3.1
+# measured it — load average 220, and two timing checks that pass alone went
+# red. bin/suite-gate holds the rule (slots = HW_SUITE_SLOTS, else
+# max(1, ncpus/4); a waiter says so once; never fails for the wait; a dead
+# holder is reclaimed; the cut goes first). Taken BEFORE the full-suite queue
+# and the pool, released LAST: the queue and the pool nest inside a slot.
+# NOT TAKEN by a nested runner (its parent holds one), nor by a runner started
+# inside `hw done`'s or the cut's own hold (HW_SUITE_GATE_HELD, checked there),
+# nor where bin/suite-gate is absent (a fixture runner). The gate is
+# unreachable from `bash setup/tests/NN-*.sh` run by hand, as the pool is.
+_gate_release() { if declare -F sg_release >/dev/null 2>&1; then sg_release; fi; }
+if [ -z "${TEST_HW_NESTED:-}" ] && [ -r "$HERE/../bin/suite-gate" ]; then
+  # shellcheck source=../bin/suite-gate
+  . "$HERE/../bin/suite-gate"
+  SG_WORK="$SUITE_WORK"
+  sg_take "setup/test-hw (${HW_TEST_GATE:-full})" || true  # MUTATION-ANCHOR: 730-M06 — 1 = ceiling passed (said), 2 = no gate (said): both run on
+fi
 
 # ── ONE FULL SUITE PER MACHINE AT A TIME, IN ARRIVAL ORDER (2026-09-30) ─────
 #
@@ -1081,6 +1107,24 @@ elif [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$HW_TEST_G
     JOBS="$MACHINE_JOBS"
   fi
 fi
+# THE JOBS FOLLOW THE LOAD, decided once, at start (2026-10-05). Above
+# 2x the cpu count on the 1-minute load average the machine is already past what
+# the timing subjects were measured on (the six-job default above), so this run
+# takes fewer jobs, in proportion, never below one, and says so. An explicit
+# HW_TEST_JOBS is the operator's own number and is left alone. The reading is
+# HW_TEST_LOAD1 / HW_TEST_NCPU when both are set (the injectables
+# fast-gate-budget.sh already uses). setup/tests/730 holds it.
+if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$JOBS" -gt 1 ] && declare -F sg_load_ncpu >/dev/null 2>&1; then
+  read -r _ld_x100 _ld_ncpu <<< "$(sg_load_ncpu)" || true
+  if [ -n "${_ld_x100:-}" ] && [ "${_ld_ncpu:-0}" -gt 0 ] && [ "$_ld_x100" -gt $(( _ld_ncpu * 200 )) ]; then  # MUTATION-ANCHOR: 730-M04
+    _ld_jobs=$(( JOBS * _ld_ncpu * 200 / _ld_x100 ))
+    [ "$_ld_jobs" -lt "$JOBS" ] || _ld_jobs=$(( JOBS - 1 ))
+    [ "$_ld_jobs" -ge 1 ] || _ld_jobs=1
+    printf 'runner: load average %s.%02d on %s cpus is above 2x — this run takes %s job(s) at once, not %s (HW_TEST_JOBS overrides)\n' \
+      "$(( _ld_x100 / 100 ))" "$(( _ld_x100 % 100 ))" "$_ld_ncpu" "$_ld_jobs" "$JOBS" >&2
+    JOBS="$_ld_jobs"
+  fi
+fi
 export TEST_HW_NESTED=1
 
 # ── THE JOB TABLE: every subject, then every guard, in the order they PRINT ──
@@ -1277,7 +1321,7 @@ _tm_run() {
     "$TIMINGS" "$wall" "$JOBS" "$TM_POOL_WAIT" "$TM_EXCL_WAIT" "$TM_BUSY" >&2
 }
 WITNESS_PID=""
-trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _queue_release' EXIT
+trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _queue_release; _gate_release' EXIT
 
 # ── THE PANE A FULL RUN IS STARTED FROM IS A WITNESS, NOT A TARGET ──────────
 #

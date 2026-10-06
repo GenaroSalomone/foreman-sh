@@ -260,7 +260,9 @@ name and `{task}` the task name.
 At the top level of the file: `work` (required), `lanes` (required),
 `operator` (the person messages tell an agent to leave a decision to),
 `survey_order` (the order `hw reap` and `hw worktrees` walk the lanes),
-`metrics_direct` and `comment`.
+`retention` (how long `hw reap` keeps the artifacts of a task that reported and
+its backups: `artifact_retention_days`, 30, and `backup_retention_days`, 60;
+0 disables a window), `metrics_direct` and `comment`.
 
 ### `brief_note`: one rule for every executor of a lane
 

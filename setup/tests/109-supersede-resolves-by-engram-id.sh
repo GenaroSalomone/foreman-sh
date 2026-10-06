@@ -82,10 +82,13 @@ case "$OUT" in
   *) fail "no re-read verdict was printed: $OUT" ;;
 esac
 
-# ── 2. A TITLE IN `Reverses:` IS REFUSED, NOT GUESSED AT ───────────────────
-# The old format's own syntax must not keep half-working. A file written to the
-# previous convention has to be told, because the alternative is that it looks
-# accepted and reverses nothing for as long as nobody checks.
+# ── 2. A TITLE IN `Reverses:` IS SKIPPED, NAMED, AND NEVER GUESSED AT ───────
+# The old format's own syntax must not keep half-working: it is TOLD, because
+# the alternative is that it looks accepted and reverses nothing. It used to
+# refuse the WHOLE lane (and so every other, unambiguous reversal in it, for as
+# long as nobody fixed one line: `none (see the archive)` did exactly that to
+# setup for weeks, 2026-10-05). Now the entry is skipped with a warning that
+# names it, and the lane's other reversals go ahead.
 T2="$(tree bytitle)"
 cat > "$T2/setup/decisions.md" <<'MD'
 # setup — decisions
@@ -106,15 +109,57 @@ cat > "$T2/setup/decisions.md" <<'MD'
 MD
 OUT="$(dec "$T2" supersede setup --apply || true)"
 case "$OUT" in
-  *"not an engram id"*)
-    pass "a \`Reverses\` naming a title is REFUSED and told it needs an id" ;;
+  *"warning: skipped"*"the new ruling"*"not an engram id"*)
+    pass "a \`Reverses\` naming a title is skipped with a warning that names the entry and says it needs an id" ;;
   *"nothing to supersede"*)
     fail "a title-shaped Reverses was silently ignored, which is the no-op-with-exit-0 failure: $OUT" ;;
-  *) fail "the title-shaped Reverses neither refused nor explained itself: $OUT" ;;
+  *) fail "the title-shaped Reverses neither warned nor explained itself: $OUT" ;;
 esac
 [ "$(ids "$T2")" = "100 300 " ] \
-  && pass "and the refusal wrote nothing: both entries are still live, in order" \
-  || fail "the refusal damaged the file: [$(ids "$T2")]"
+  && pass "and nothing moved on its word: both entries are still live, in order" \
+  || fail "the skipped entry changed the file: [$(ids "$T2")]"
+
+# ── 2b. ONE UNREADABLE LINE DOES NOT REFUSE THE LANE ────────────────────────
+# The measured case: a `Reverses: none (precisa ...)` on one entry refused every
+# supersession in the project. Old: exit 1, "nothing was written", the good
+# reversal (#100 by #300) stayed live. New: that one is warned about by name and
+# the good one moves.
+T2B="$(tree onebad)"
+cat > "$T2B/setup/decisions.md" <<'MD'
+# setup — decisions
+
+---
+
+## 2026-01-01 — the old ruling
+**Ruling:** the old answer.
+**Rules out:** nothing yet.
+**Reverses:** none
+**Evidence:** engram #100
+
+## 2026-02-01 — a ruling with a note where the id goes
+**Ruling:** it narrows another, it does not reverse it.
+**Rules out:** nothing yet.
+**Reverses:** none (precisa el alcance de otro)
+**Evidence:** engram #200
+
+## 2026-03-01 — the ruling that overturns the first
+**Ruling:** the new answer.
+**Rules out:** the old answer.
+**Reverses:** #100
+**Evidence:** engram #300
+MD
+cp "$T2B/setup/decisions.md" "$TMP/onebad.md"
+OUT="$(dec "$T2B" supersede setup --apply)" || fail "one unreadable Reverses refused the lane: $OUT"
+case "$OUT" in *"warning: skipped"*"a ruling with a note where"*) ;; *) fail "the unreadable entry was not named in a warning: $OUT" ;; esac
+[ "$(ids "$T2B")" = "200 300 " ] && [ "$(arch_ids "$T2B")" = "100 " ] \
+  && pass "an unreadable Reverses is named and skipped, and the unambiguous reversal still moves" \
+  || fail "the good reversal did not move beside the skipped one: live [$(ids "$T2B")] archive [$(arch_ids "$T2B")]"
+M1="$TMP/mut109"; rm -rf "$M1"; mkdir -p "$M1/bin" "$M1/setup"
+cp "$ROOT/bin/decisions" "$M1/bin/decisions"; cp "$TMP/onebad.md" "$M1/setup/decisions.md"
+# M01: the unreadable Reverses refuses the lane again.
+mutate_anchor 109-M01 "$M1/bin/decisions" 'problems = unreadable_reverses(ordered) + problems'
+OUT="$(dec "$M1" supersede setup --apply || true)"
+saw_mutant "109 M01 an unreadable Reverses refuses the whole lane" "$OUT" "nothing was written"
 
 # ── 3. AN ID THAT NAMES NOTHING ANYWHERE IS A TYPO, AND IT REFUSES ────────
 # THIS ARM ASSERTED THE OPPOSITE UNTIL 2026-09-08 and was wrong in the most

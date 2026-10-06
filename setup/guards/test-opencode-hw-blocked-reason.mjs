@@ -17,6 +17,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const source = process.env.ADAPTER_SRC ??
   join(dirname(fileURLToPath(import.meta.url)), "..", "opencode-hw-blocked-reason.js");
+// The adapter gives each herdr-rpc call 2s by default. This suite starts a bash
+// stub per call and runs beside a whole suite's worth of processes: on a loaded
+// machine that start alone passed 2s and a publish was dropped (flaked twice on
+// 2026-10-05, green alone). The wait is raised here, not any assertion.
+process.env.HW_RPC_TIMEOUT_MS ??= "30000";
 const base = mkdtempSync(join(tmpdir(), "hw-blocked-reason-"));
 const originalHome = process.env.HOME;
 let pass = 0;

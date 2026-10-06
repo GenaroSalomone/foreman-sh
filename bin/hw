@@ -5889,6 +5889,14 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
     preamble="$(printf '%s\n\n%s' "$preamble" "$brief_note")"
   fi
   # MUTATION-ANCHOR-END: 171-M03
+  # THE QA TARGET OF A LANE WITH `qa_target` IS ITS OWN SERVER: `pnpm qa`
+  # defaults to staging, --target local is hardcoded :3001 and qa-tester takes
+  # its URL only from the prompt, so QA could go green about another tree.
+  # Gated on the fact (HW_PORT_WEB set = hw started a server), never a fake URL.
+  # `hw next` reads HW_PORT_WEB back from the run env (see _next_message).
+  if [ -n "${PROJ:-}" ] && [ -n "$(lane_get "$PROJ" qa_target)" ] && [ -n "${HW_PORT_WEB:-}" ]; then  # MUTATION-ANCHOR: 750-M01
+    preamble="$(printf '%s\n\nQA target: http://localhost:%s — pass it as `pnpm qa <flow> --target <url>`, to qa-tester in its prompt, and to `harness open <url>`. Never staging, never :3001, unless the brief says so.' "$preamble" "$HW_PORT_WEB")"  # MUTATION-ANCHOR: 750-M02
+  fi
   # THE BASE A JUDGMENT DAY TARGET IS BUILT AGAINST, ON EVERY DISPATCH THAT HAS ONE.
   #
   # GATED ON THE FACT: a base was computed, or it was not. A lane with no
@@ -9258,8 +9266,43 @@ _reap_archive_entries() {  # <wt> <dest>; the entries on stdin, one per line
   return 0
 }
 
+# MEASURED 2026-10-06: the three databases reap still could not drop failed at
+# the DUMP, not at the drop — pg_dump 14 first on PATH against a 16.10 server dies
+# with "server version mismatch", and the `2>/dev/null` below hid it behind
+# "could not be verified". A tool is taken from the major the server runs.
+# HW_PG_BIN_DIRS (colon list of bin dirs) replaces the candidates searched.
+_pg_major() {  # <tool path> — the major its --version names, empty when unreadable
+  "$1" --version 2>/dev/null | sed -n 's/.* \([0-9][0-9]*\)[. ].*/\1/p;s/.* \([0-9][0-9]*\)$/\1/p' | head -1
+}
+_pg_tool() {  # <tool> <server major, or empty> — a path; PATH's own when nothing matches
+  local tool="$1" want="$2" d c dirs
+  if [ -n "$want" ]; then
+    dirs="${HW_PG_BIN_DIRS:-/opt/homebrew/opt/postgresql@$want/bin:/usr/local/opt/postgresql@$want/bin:/usr/lib/postgresql/$want/bin}"
+    c="$(command -v "$tool" 2>/dev/null)" || c=""
+    if [ -n "$c" ] && [ "$(_pg_major "$c")" = "$want" ]; then printf '%s' "$c"; return 0; fi
+    while [ -n "$dirs" ]; do
+      d="${dirs%%:*}"; case "$dirs" in *:*) dirs="${dirs#*:}" ;; *) dirs="" ;; esac
+      [ -x "$d/$tool" ] && [ "$(_pg_major "$d/$tool")" = "$want" ] && { printf '%s' "$d/$tool"; return 0; }  # MUTATION-ANCHOR: 760-M01
+    done
+  fi
+  printf '%s' "$tool"
+}
+
+# DROP DATABASE, once. Prints nothing and returns 0 when it is gone (an
+# already-absent database counts as dropped); returns 1 with the reason on
+# stdout otherwise, naming who holds it open. Never retried here.
+_reap_drop_db() {  # <user> <db>
+  local u="$1" db="$2" err who
+  if err="$(psql -U "$u" -d postgres -q -c "DROP DATABASE \"$db\"" 2>&1)"; then return 0; fi
+  case "$err" in *"does not exist"*) return 0 ;; esac  # MUTATION-ANCHOR: 760-M02
+  who="$(psql -U "$u" -d postgres -Atc "select coalesce(nullif(usename,''),'?') || '/' || coalesce(nullif(application_name,''),'-') || ' x' || count(*) from pg_stat_activity where datname = '$db' group by usename, application_name" 2>/dev/null | tr '\n' ' ')"
+  if [ -n "$who" ]; then printf 'open connections: %s— close them and reap again' "$who"
+  else printf '%s' "$(printf '%s' "$err" | head -1)"; fi
+  return 1
+}
+
 _reap_db() {  # <proj> <main> <wt> <archive dir, or empty>
-  local proj="$1" main="$2" wt="$3" dest="$4" db main_db u
+  local proj="$1" main="$2" wt="$3" dest="$4" db main_db u pgd pgr pgv derr why
   [ -n "$(lane_get "$proj" db_provisioned)" ] || return 0
   db="$(basename "$wt" | tr '\-/' '__')"
   main_db="$(basename "$main" | tr '\-/' '__')"
@@ -9268,16 +9311,19 @@ _reap_db() {  # <proj> <main> <wt> <archive dir, or empty>
   psql -U "$u" -d postgres -Atc "select 1 from pg_database where datname = '$db'" 2>/dev/null | grep -q 1 || return 0
   [ -n "$dest" ] || dest="$(_reap_archive_dest "$proj" "$wt")"
   mkdir -p "$dest" || { warn "kept database $db — could not create $dest"; return 0; }
-  if pg_dump -U "$u" -Fc -f "$dest/$db.dump" "$db" 2>/dev/null \
-     && [ -s "$dest/$db.dump" ] && pg_restore -l "$dest/$db.dump" >/dev/null 2>&1; then
+  pgv="$(psql -U "$u" -d postgres -Atc "show server_version_num" 2>/dev/null | awk '/^[0-9]+$/ { print int($1 / 10000) }')"
+  pgd="$(_pg_tool pg_dump "$pgv")"; pgr="$(_pg_tool pg_restore "$pgv")"
+  if derr="$("$pgd" -U "$u" -Fc -f "$dest/$db.dump" "$db" 2>&1 >/dev/null)" \
+     && [ -s "$dest/$db.dump" ] && "$pgr" -l "$dest/$db.dump" >/dev/null 2>&1; then
     REAP_ARCHIVE_DIR="$dest"
-    if psql -U "$u" -d postgres -q -c "DROP DATABASE \"$db\"" 2>/dev/null; then
+    if why="$(_reap_drop_db "$u" "$db")"; then
       ok "database $db dumped to $dest/$db.dump and dropped"
     else
-      warn "database $db dumped to $dest/$db.dump but NOT dropped — open connections? drop it by hand"
+      warn "database $db dumped to $dest/$db.dump but NOT dropped — $why"
     fi
   else
-    warn "kept database $db — its pg_dump into $dest could not be verified, so it was not dropped"
+    rm -f "$dest/$db.dump"
+    warn "kept database $db — its pg_dump into $dest could not be verified, so it was not dropped${derr:+: $(printf '%s' "$derr" | tail -1)}"
   fi
   return 0
 }
@@ -9371,6 +9417,56 @@ _wt_shed() {  # <proj> <wt> — prints what it removed; returns 1 when it remove
   printf '%s (%s MB)' "${gone# }" "$((kb / 1024))"
 }
 
+# ── build output of an idle kept worktree ───────────────────────────────────
+#
+# MEASURED 2026-10-06: 31 GB of `.next`/`.turbo` (47 GB the day before) under
+# worktrees that stay for a git reason. `_wt_shed` only runs on --apply, with no
+# age, and says nothing in the dry run. This class has a window
+# (`retention.build_output_days`, HW_BUILD_OUTPUT_DAYS, 7; 0 disables) and lists
+# what it would free. ONLY the two build directories, git-ignored, never a
+# source. THE BIAS IS KEEP: a window that cannot be read, a worktree outside
+# the lane's root, a pane or process in it, an unread occupant list, a log that
+# cannot be written, any file inside the window — all keep it.
+WT_BUILD_DIRS=""; WT_BUILD_KB=0; WT_BUILD_AGE=""
+_wt_build_idle() {  # <proj> <wt> — 0 when its build output is idle past the window; sets WT_BUILD_*
+  local proj="$1" wt="$2" win real root cwds d dirs="" kb=0 m newest=0 now f act
+  WT_BUILD_DIRS=""; WT_BUILD_KB=0; WT_BUILD_AGE=""
+  win="$(_retention_days 7 "${HW_BUILD_OUTPUT_DAYS:-7}")"
+  [ "$win" != 0 ] || return 1
+  # An ALLOWLIST, as _wt_sheddable: a live pane reads `held`, an unread occupant
+  # list `undetermined`, a live executor's lock `locked` (invisible to lsof when
+  # idle), a plain directory `not-a-worktree` — none is this class's to free.
+  case "$WT_VERDICT" in dirty|unmerged|irreplaceable) ;; *) return 1 ;; esac  # MUTATION-ANCHOR: 761-M03
+  real="$(cd "$wt" 2>/dev/null && pwd -P)" || return 1
+  root="$(_wt_canonical_root "$proj")" && root="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
+  case "$real" in "$root"/*) : ;; *) return 1 ;; esac
+  cwds="$(lsof -Fn -a -d cwd 2>/dev/null)" || [ -n "$cwds" ] || return 1  # MUTATION-ANCHOR: 761-M05
+  printf '%s\n' "$cwds" | awk -v d="n$real" '$0 == d || index($0, d "/") == 1 { f = 1 } END { exit !f }' && return 1
+  while IFS= read -r d; do
+    d="${d%/}"
+    [ -n "$d" ] && [ -d "$d" ] && [ ! -L "$d" ] || continue
+    git -C "$wt" check-ignore -q "$d" 2>/dev/null || continue
+    act="$(find "$d" -type f -mtime "-$win" -print -quit 2>/dev/null)" && [ -z "$act" ] || return 1  # MUTATION-ANCHOR: 761-M04
+    dirs="$dirs$d"$'\n'
+    kb=$((kb + $(du -sk "$d" 2>/dev/null | awk '{print $1 + 0}')))
+    m="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null)" || return 1
+    [ "$m" -le "$newest" ] || newest="$m"
+  done < <(fd -H -I -t d -d 4 -E node_modules '^\.(next|turbo)$' "$wt" 2>/dev/null)
+  [ -n "$dirs" ] || return 1
+  # git's own last touch counts too: a commit or checkout is activity. The reflog,
+  # NOT the index: `git status` (this very survey) rewrites the index whenever a
+  # stat changed, so its mtime would read every worktree as active.
+  for f in "$(git -C "$wt" rev-parse --git-path logs/HEAD 2>/dev/null)"; do
+    [ -n "$f" ] && [ -e "$f" ] || continue
+    case "$f" in /*) ;; *) f="$wt/$f" ;; esac
+    act="$(find "$f" -mtime "-$win" -print 2>/dev/null)" && [ -z "$act" ] || return 1
+  done
+  now="$(date +%s)"
+  WT_BUILD_DIRS="$dirs"; WT_BUILD_KB="$kb"; WT_BUILD_AGE="$(( (now - newest) / 86400 ))"
+  [ "$WT_BUILD_AGE" -ge "$win" ] || WT_BUILD_AGE="$win"
+  return 0
+}
+
 # The lane's task branches no worktree holds any more, merged into the base.
 # Measured 2026-10-01: 50 such branches across three
 # repositories — what is left when a worktree was removed by hand. Only the lane's own
@@ -9393,13 +9489,14 @@ cmd_reap() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --apply) apply=1; shift ;;
-      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees, its merged task branches no worktree holds, AND the loose work dirs beside them ($WORK/<lane>). --apply removes what is safe; a merged worktree whose only ignored content is .artifacts/qa-report/test-results/playwright-report has it copied to $(_archive_root)/<lane>/<task>/ and verified first, and a db.provisioned lane's database is pg_dump'ed there before it is dropped. Dirty, unmerged and occupied stay. Retention: a loose work dir whose task REPORTED (done, or blocked and closed) and not occupied is safe once every artifact is older than artifact_retention_days (30), a backup (*.tgz, *.tar.gz, *.tar, or a name containing backup) older than backup_retention_days (60) — both in projects.json under retention, 0 disables a window, HW_ARTIFACT_RETENTION_DAYS/HW_BACKUP_RETENTION_DAYS override; the dry run says «retention: Nd > 30d», and every removal by retention appends a line (time, lane, path, task, age, size, reason) to $(_reap_log_file) (HW_REAP_LOG). A task that never reported or has a live pane is kept at any age. It also closes an executor kept after a --blocked report and left unanswered past HW_BLOCKED_WAIT_HOURS (default 24)." >&2; return 0 ;;
+      -h|--help) echo "usage: hw reap [<project>] [--apply] — surveys the lane's git worktrees, its merged task branches no worktree holds, AND the loose work dirs beside them ($WORK/<lane>). --apply removes what is safe; a merged worktree whose only ignored content is .artifacts/qa-report/test-results/playwright-report has it copied to $(_archive_root)/<lane>/<task>/ and verified first, and a db.provisioned lane's database is pg_dump'ed there before it is dropped. Dirty, unmerged and occupied stay. Retention: a loose work dir whose task REPORTED (done, or blocked and closed) and not occupied is safe once every artifact is older than artifact_retention_days (30), a backup (*.tgz, *.tar.gz, *.tar, or a name containing backup) older than backup_retention_days (60) — both in projects.json under retention, 0 disables a window, HW_ARTIFACT_RETENTION_DAYS/HW_BACKUP_RETENTION_DAYS override; the dry run says «retention: Nd > 30d», and every removal by retention appends a line (time, lane, path, task, age, size, reason) to $(_reap_log_file) (HW_REAP_LOG). A task that never reported or has a live pane is kept at any age. A kept worktree idle past build_output_days (7; 0 disables) has its .next/.turbo freed (dry run lists them with sizes; --apply logs each); never one with a live pane or process in it. It also closes an executor kept after a --blocked report and left unanswered past HW_BLOCKED_WAIT_HOURS (default 24)." >&2; return 0 ;;
       -*) die "unknown option: $1" ;;
       *) proj_filter="$(_canon_project "$1")"; shift ;;
     esac
   done
 
   local proj main base total_safe=0 total_kept=0 total_removed=0 lane_safe0 lane_removed0
+  local build_kb_total=0 bwin bd bkb
   while IFS= read -r proj; do
     [ -z "$proj_filter" ] || [ "$proj_filter" = "$proj" ] || continue
     main="$(_wt_main "$proj")" || continue
@@ -9450,6 +9547,26 @@ cmd_reap() {
         total_kept=$((total_kept + 1))
         printf '  %s!%s %-42s %s%s: %s%s\n' "$C_WARN" "$C_0" "$(basename "$wt")" \
           "$C_DIM" "$WT_VERDICT" "$WT_WHY" "$C_0"
+        if _wt_build_idle "$proj" "$wt"; then
+          bwin="$(_retention_days 7 "${HW_BUILD_OUTPUT_DAYS:-7}")"
+          WD_RET_AGE="$WT_BUILD_AGE"; WD_WHY="build output retention: ${WT_BUILD_AGE}d > ${bwin}d"
+          if [ "$apply" != 1 ]; then
+            build_kb_total=$((build_kb_total + WT_BUILD_KB))
+            printf '      %sbuild output of %s idle %sd > %sd, would free %s MB: %s%s\n' "$C_DIM" "$(basename "$wt")" "$WT_BUILD_AGE" "$bwin" "$((WT_BUILD_KB / 1024))" \
+              "$(printf '%s' "$WT_BUILD_DIRS" | sed "s|^$wt/||" | tr '\n' ' ')" "$C_0"
+          elif _reap_log_ready; then
+            build_kb_total=$((build_kb_total + WT_BUILD_KB))
+            while IFS= read -r bd; do
+              [ -n "$bd" ] || continue
+              bkb="$(du -sk "$bd" 2>/dev/null | awk '{print $1 + 0}')"
+              _reap_log_retention "$proj" "$bd" "$bkb" && rm -rf "${bd:?}" 2>/dev/null || true
+            done <<< "$WT_BUILD_DIRS"
+            printf '      %sbuild output of %s idle %sd > %sd, freed %s MB: %s%s\n' "$C_DIM" "$(basename "$wt")" "$WT_BUILD_AGE" "$bwin" "$((WT_BUILD_KB / 1024))" \
+              "$(printf '%s' "$WT_BUILD_DIRS" | sed "s|^$wt/||" | tr '\n' ' ')" "$C_0"
+          else
+            warn "kept the build output of $(basename "$wt") — $(_reap_log_file) cannot be written, and an unlogged removal is the one this log forbids"
+          fi
+        fi
         if [ "$apply" = 1 ] && _wt_sheddable; then
           shed="$(_wt_shed "$proj" "$wt")" && printf '      %skept, and shed %s%s\n' "$C_DIM" "$shed" "$C_0"
         fi
@@ -9604,6 +9721,7 @@ cmd_reap() {
 
 
   printf '\n'
+  [ "$build_kb_total" = 0 ] || info "build output of idle kept worktrees: $((build_kb_total / 1024)) MB $([ "$apply" = 1 ] && echo freed || echo "would be freed by --apply") (build_output_days)"
   if [ "$apply" = 1 ]; then
     ok "$total_removed removed, $total_kept kept$([ "$total_removed" = "$total_safe" ] || printf ' — %s disposable could not be removed, read the lines above' "$((total_safe - total_removed))")"
   else
@@ -11886,6 +12004,7 @@ _next_message() {
     HW_REVIEW_BASE_REF="$(_run_env_value "$rundir" HW_REVIEW_BASE_REF 2>/dev/null || true)"
     HW_REVIEW_BASE_BRANCH="$(_run_env_value "$rundir" HW_REVIEW_BASE_BRANCH 2>/dev/null || true)"
     HW_EXECUTOR_VENDOR="$(_run_env_value "$rundir" HW_EXECUTOR_VENDOR 2>/dev/null || true)"
+    HW_PORT_WEB="$(_run_env_value "$rundir" HW_PORT_WEB 2>/dev/null || true)"  # MUTATION-ANCHOR: 750-M03
     # THE LANE THIS RUN WAS ACTUALLY LAUNCHED FOR, read back the same way
     # ENGRAM_PROJECT is above — never the brainer's own $PROJ, which on a
     # --report-to re-task belongs to a different lane entirely. This is what

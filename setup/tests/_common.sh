@@ -569,6 +569,17 @@ cat > "$TMP/bin/herdr-rpc" <<'STUB'
 exit "${STUB_RPC_RC:-0}"
 STUB
 chmod +x "$TMP/bin/herdr-rpc"
+# A verifier that says yes. setup resolves the `personal` account (projects.json,
+# 2026-10-06), and `hw` refuses an account `claude-personal --check` cannot
+# prove; under the isolated HOME of a subject it proves nothing, and every
+# `hw setup` dry run died before printing its manifest. Whether the account
+# refusal works is 122's subject, which puts its own stub ahead of this one.
+cat > "$TMP/bin/claude-personal" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = --check ] && printf '%s\n' "$HOME/.claude-personal"
+exit 0
+STUB
+chmod +x "$TMP/bin/claude-personal"
 export PATH="$TMP/bin:$PATH"
 
 # A subject's fake herdr listens through _herdr_endpoint.py (a unix socket, or

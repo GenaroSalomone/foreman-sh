@@ -232,6 +232,7 @@ name and `{task}` the task name.
 | `artifacts` | string | Where executors may publish claude.ai artifacts: `deny`, `default` or `personal`. | the lane's `account` |
 | `requested_by` | string | `required` refuses a dispatch whose brief cites no request; `warn` says so and launches. | off |
 | `brief_note` | string | Text `hw` appends to the preamble of every executor prompt of this lane. See below. | none |
+| `qa_target` | boolean | `true`: when `hw` allocates the executor a web port, its prompt (and `hw next`) names `http://localhost:<port>` as the QA target. | off |
 | `sdd_modes` | array | Frameworks the lane adds to `speckit` and `none`. The only one is `gentle`. | none |
 | `suite_lock` | string | `none` lets `hw suite` and a task's close verification run at once; `lane` serializes them. | `lane` |
 | `checkout` | path | The lane's repository checkout. | none: no checkout |

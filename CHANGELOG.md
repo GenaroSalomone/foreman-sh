@@ -4,6 +4,26 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.3] — 2026-10-06
+
+### Added
+- An executor's prompt on the web lane now names its own QA target
+  (`http://localhost:<HW_PORT_WEB>`), also after `hw next`, so QA no longer
+  falls back to staging or to another worktree's server on :3001.
+- `hw reap` frees `.next`/`.turbo` of kept worktrees idle past
+  `retention.build_output_days`; it logs what it removes before removing it.
+
+### Changed
+- The release cut retries the e2e gate once and names both logs when it
+  stays red.
+
+### Fixed
+- `hw reap` dumps a database with the `pg_dump` of the server's major
+  version, names the open connections that block a drop, and counts a
+  database that is already gone as dropped.
+- A `HW_PORT_WEB` inherited from the caller's environment no longer leaks
+  into a `--here` launch.
+
 ## [0.3.2] — 2026-10-05
 
 ### Added

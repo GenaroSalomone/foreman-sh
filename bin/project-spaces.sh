@@ -70,7 +70,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ($names | all(word)) then . else error("a lane name is not a lowercase word: \($names | map(select(word | not)))") end
     | (["product_repo","hw_aliases","brain_aliases","space","engram","vendor","model","account","artifacts","repoless",
         "checkout","checkout_var","base","base_ref_prefix","branch","worktree_root","worktree","ports",
-        "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","sdd_modes",
+        "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","qa_target","sdd_modes",
         "model_floor","model_pins","requested_by","opencode_config_dir","suite_lock"]) as $fields
     | ({model_floor: ["tier","accepts"], deps: ["line","contention"], db: ["line","provisioned","no_worktree","no_db_inert"],
         devserver: ["start","line","off"], reap: ["copies","copies_from","max_worktrees","max_disk_pct","max_build_gb"]}) as $sub
@@ -103,9 +103,9 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | ((keys - ["comment","work","operator","metrics_direct","survey_order","retention","lanes"])) as $top
     | if ($top | length) == 0 then . else error("unknown top-level key(s): \($top | join(", "))") end
     | ((.retention // {}) as $r
-       | if ($r | type == "object") and ((($r | keys_unsorted) - ["artifact_retention_days","backup_retention_days"]) | length) == 0
-            and ([$r.artifact_retention_days // 30, $r.backup_retention_days // 60] | all(type == "number" and . >= 0 and . == floor))
-         then . else error("retention is {artifact_retention_days, backup_retention_days}, each a whole number of days >= 0 (0 disables that window)") end) as $_ret
+       | if ($r | type == "object") and ((($r | keys_unsorted) - ["artifact_retention_days","backup_retention_days","build_output_days"]) | length) == 0
+            and ([$r.artifact_retention_days // 30, $r.backup_retention_days // 60, $r.build_output_days // 7] | all(type == "number" and . >= 0 and . == floor))
+         then . else error("retention is {artifact_retention_days, backup_retention_days, build_output_days}, each a whole number of days >= 0 (0 disables that window)") end) as $_ret
     | ((.survey_order // []) as $so
        | if ($so | all(. as $n | $names | index([$n]))) then . else error("survey_order names a lane that `lanes` does not have") end
        | ($so + ($names - $so))) as $survey
@@ -119,6 +119,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
       "_LC_WORK_DEFAULT=\(.work // error("no top-level `work`") | exp | @sh)",
       "_LC_RETENTION_ARTIFACT_DAYS=\(.retention.artifact_retention_days // 30 | tostring | @sh)",
       "_LC_RETENTION_BACKUP_DAYS=\(.retention.backup_retention_days // 60 | tostring | @sh)",
+      "_LC_RETENTION_BUILD_DAYS=\(.retention.build_output_days // 7 | tostring | @sh)",
       "_LC_OPERATOR_DEFAULT=\(.operator // "the operator" | tostring | @sh)",
       ($aliases[] | "_LA_\(.kind)__\(.alias | key)=\(.lane | @sh)"),
       ($lanes | to_entries[] | .key as $l | .value as $v
@@ -149,6 +150,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
           emit($l; "brain_guard"; if $v.brain_guard == false then "0" else "1" end),
           emit($l; "agents_from"; $v.agents_from // ""),
           emit($l; "brief_note"; $v.brief_note // ""),
+          emit($l; "qa_target"; if $v.qa_target == true then "1" else "" end),
           emit($l; "sdd_modes"; ($v.sdd_modes // []) | join(" ")),
           emit($l; "opencode_config_dir"; $v.opencode_config_dir // "" | exp),
           emit($l; "deps_line"; $v.deps.line // ""),
@@ -180,6 +182,8 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
   # override set before sourcing wins, like WORK.
   : "${HW_ARTIFACT_RETENTION_DAYS:=$_LC_RETENTION_ARTIFACT_DAYS}"
   : "${HW_BACKUP_RETENTION_DAYS:=$_LC_RETENTION_BACKUP_DAYS}"
+  # `hw reap` frees .next/.turbo of a kept worktree idle this long.
+  : "${HW_BUILD_OUTPUT_DAYS:=$_LC_RETENTION_BUILD_DAYS}"
   # The checkout variables a lane names keep their old spelling (each lane's
   # checkout_var, <LANE>_MAIN) because callers and tests set them to redirect a lane, and
   # `:=`-style: an override set before sourcing wins.

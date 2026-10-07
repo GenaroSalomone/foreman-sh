@@ -192,6 +192,15 @@ invoker_tokens_json() {
   ' "$@"
 }
 
+# invoker_cockpit_kick — tell the brainer's cockpit something changed (see
+# bin/cockpit-state --kick: debounced, returns at once, never fails). Called after every
+# publication an invoker makes, so the panel shows an envelope within a second instead of
+# at the next 5 s heartbeat.
+invoker_cockpit_kick() {
+  [ -n "${HW_INVOKER_PANE:-}" ] || return 0
+  "$INVOKER_BIN_DIR/cockpit-state" --kick --invoker "$HW_INVOKER_PANE" >/dev/null 2>&1 || true  # MUTATION-ANCHOR: 798-M01
+}
+
 # invoker_publish <ttl_ms> <tokens_json> [<state_labels_json>|clear]
 #
 # Writes the tokens onto the EXECUTOR's own pane ($HERDR_PANE_ID) — not the

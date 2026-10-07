@@ -1,52 +1,73 @@
-# foreman-sh 0.3.5
+# foreman-sh 0.3.6
 
-Receipt-driven review now runs gentle-ai's own native path, gentle tasks can be revived and re-tasked, and `hw status` moves into its own module.
+The brainer gets a cockpit inside Claude Code, and a revived run can take a new task officially.
 
 ## In short
 
-- **Native RDD.** Each `review capture-result` runs exactly as gentle-ai returns it, and gentle-ai starts its own tool-free reviewer. No subagent relay and no pasted context: a 143 KB review context completes, and gentle-ai's own budget refuses what is too large. Only for a capture, the reviewer gets the executor's account through a link to the login keychain file. The link is reference-counted across concurrent reviewers and removed when the last one ends. Every capture is logged to `$HW_ARTIFACTS/rdd-log.jsonl` from gentle-ai's answer.
-- **gentle tasks keep their mode.** `hw revive` rebuilds the framework args from the current gentle home. `hw revive --run <id>` revives a chosen run and refuses one that is still live. `--keep-pane` works under `--sdd gentle`, and `hw next` re-injects the mode.
-- **Truthful dispatch text.** The operator lines say "RDD on (native)" when it is on. The `deployed_check` refusal names the accepted forms. A brief that asks for a browser or a deployed check overrides the lane's "QA is staging-only" note. Claude dispatches no longer warn about an opencode-only flag.
-- **The gentle home refreshes its guard copies** when their source changes.
-- **`hw status` lives in `lib/hw/status.sh`.** Output is byte-identical; `bin/hw` is about 1,600 lines shorter.
+- **The cockpit ships inside foreman-sh as a Claude Code mod.** `brain` loads it with `--plugin-dir` from the installed tree, so an upgrade updates it and nothing is written to `~/.claude`. It needs Claude Code 2.1.289 or newer: below that, `brain` prints one line and runs without it. `FOREMAN_COCKPIT=0` or `brain --no-cockpit` turns it off, the state writer included.
+- **It shows a live panel of executors and acts through the verbs you already have.** The panel shows state, context used, queued rulings and time since the last report. Report cards have buttons for `hw done`, `hw ruling`, `hw receipt`, and a reply for a held ask or challenge. A rule band shows `hw preflight` warnings before a dispatch and never denies one.
+- **The mod computes nothing.** It reads a state file that `hw cockpit-state` writes from herdr tokens and run files, refreshed on every event and every 5 s. Stale or missing data is shown as such.
+- **`hw preflight --json -- <hw argv>`** reports a dispatch's rule warnings without side effects: an account override, or a cut in progress.
+- **`hw next <pane> --run <id>`** gives a revived run that already reported its next task, with its own `done-invoker` and no `--retask`.
+- **Pilot numbers:** `hw cockpit-state --pilot` prints the median and p90 time from a report to an action, and the reports left without one.
 
 ## What changed
 
-14 changes since 0.3.4.
+14 changes since 0.3.5.
 
 ### Added
-- `hw revive <project> <task> --run <id>` revives that run instead of the latest; an unknown id names the runs that exist, a run whose session is live in a pane is refused naming the pane, and the dry run says which run was chosen or defaulted.
+- The brainer cockpit's contract is frozen under `cockpit/`: the state file
+  and `hw preflight --json` schemas, the allowlist of verbs a panel button may
+  start, and one example fixture per state class. Nothing loads it yet.
+- `hw cockpit-state` writes the file the brainer's cockpit panel reads: one
+  JSON document per brainer with every executor's attention class (challenge,
+  ask, blocked, report, working, idle), its queued rulings and which buttons are
+  valid. It reads herdr's pane list and the run directories, never a pane
+  capture, so it answers in well under 300 ms where `hw status` takes seconds
+  per pane. A brainer started by `brain` keeps it fresh every 5 seconds and
+  the invokers refresh it within a second of a report, an ask or a ruling.
+- An idle executor holding an ask or a challenge gets a reply action: the
+  state names the hold file (`pending_reply`) and the two reply verbs are part
+  of the cockpit contract.
+- A turn end publishes the executor's context use (`ctx_pct`, `ctx_tokens`)
+  for claude executors, and an ask publishes whether it is an ask or a
+  challenge (`ask_kind`).
+- `hw preflight --json -- <hw argv>` prints what hw's own rules say about a
+  dispatch, without doing it: a warning for an `--account` other than the
+  lane's, and for a dispatch while a release cut holds a suite slot.
+- The brainer cockpit mod (`cockpit/`): a read-only Claude Code mod that draws a
+  band and a pane from the state file `hw` writes — the executors, their
+  attention order, and a stale, dead or unreachable state said as such instead
+  of old data. The installer mirrors it beside `bin/`. It starts no verb yet.
+- The cockpit now has buttons: each starts one `hw` verb (`done` after a
+  confirmation, `ruling` with its text on stdin, `receipt`, and `verify`, which
+  only pre-fills the prompt). Which buttons exist is read from the state `hw`
+  writes; hw's refusal is shown as it came and the card stays. A band shows
+  `hw preflight`'s verdict before a dispatch runs, and never blocks it.
+- `brain` opens a Claude Code brainer with the cockpit loaded (`--plugin-dir`)
+  when claude is 2.1.289 or newer. Below that it prints one line and opens
+  without it. `FOREMAN_COCKPIT=0` or `brain <lane> --no-cockpit` opts out.
+- The cockpit panel's reply box: an idle executor holding an ask or a challenge
+  gets an input that sends the typed answer to it. The text travels on stdin,
+  never in a command line.
+- `hw next <pane> --run <id>` gives a run that `hw revive` reopened its next task: the counter
+  advances and the new task has its own `done-invoker`, with no `--retask`. A reported run that
+  was not revived is refused, naming `hw revive`.
 
 ### Changed
-- `--keep-pane` is accepted under `--sdd gentle`. `hw next` re-tasks a gentle
-  pane with ODD's per-task block built from the new brief (delivery, the RDD
-  bullet, the deployed check) and records `deployed_check_t<N>` for it;
-  `review: rdd` needs the first brief to have said so.
-- The `deployed_check:` refusal names exactly the accepted forms (absent or
-  empty, `required`, `out-of-scope — <why>`) with an example, and
-  `BRIEF-TEMPLATE.md` says the same.
-- `requires: subagents` under `--agent claude` no longer prints the
-  opencode-only `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` warning.
-- A brief that declares `requires: browser`, `deployed_check: required` (or is a
-  `--sdd gentle` task without an out-of-scope deployed check) no longer leaves
-  the executor with the lane note "QA is staging-only" as the last word: the
-  prompt adds that the brief overrides it. Every lane, launch and `hw next`.
-- `review: rdd` is native. gentle-ai 4.0.0 runs its own tool-free reviewer in process on every `review capture-result --agent`, so the executor runs each returned operation unchanged: no lens subagent, no `--input`, no candidate bytes through a file. The relay plugin, `rdd-settings.json` and the SubagentStop log are gone.
-- `gentle-ai-task` gives that reviewer the login it needs under a private HOME (claude on PATH, `CLAUDE_CONFIG_DIR`, `USER`, a link to the login keychain) and writes `rdd-log.jsonl` from each capture's own answer. A home provisioned before this change fails `hw gentle-home --check`: re-provision it.
-- `hw status` moved out of `bin/hw` into `lib/hw/status.sh`, the second module of
-  the split of `bin/hw` by command. Behaviour is unchanged.
-- The native reviewer's login reaches it through one link: the login keychain file alone, inside a real Keychains directory, removed as soon as each `review capture-result` ends (success, failure or signal). The whole Keychains directory is no longer linked.
+- The refusals of `hw done`, `hw ruling` and `hw receipt` live in one module,
+  `bin/hw-actions`, that the verbs and the state writer both call, so a panel
+  button is disabled exactly where the verb would refuse, with the verb's own
+  words. The refusal texts are unchanged.
+- `cockpit/schema.json` states that `herdr.server_started_ms` is always null
+  and that the `gone` attention class is reserved, in this version.
 
 ### Fixed
-- `hw revive` of a `--sdd gentle` run keeps ODD: the system prompt, both
-  plugins and both settings files are rebuilt from the current gentle-home
-  (with the RDD half for `review: rdd`), and an incomplete home refuses,
-  pointing at `hw gentle-home --check`.
-- A `--sdd gentle` brief with `review: rdd` is no longer described as
-  "RDD off" by the manifest or the launch info line: both say "RDD on (native)".
-- A 118 KB lens-context no longer has to be relayed by hand into a subagent prompt, which an API safeguard cut twice without leaving a receipt.
-- The keychain link of a task's private home survives concurrent captures: a reviewer group (four at once) shares one home, so the link is reference-counted by live capture pid under a `mkdir` lock, created on 0 to 1 and removed on 1 to 0, and a capture killed with `-9` is pruned by the next one instead of stranding the link.
-- `hw gentle-home` refreshes the guard copy inside an already-complete home when `setup/guards/deny-gentle-real-home.py` changed, instead of reporting "nothing changed".
+- A cockpit refresh that names a brainer it cannot resolve now writes nothing
+  and leaves a line in `.cockpit/skipped-kicks.log`; before, it wrote a state
+  file for the pane it was running in.
+- `hw next --run <id>` no longer refuses a revived run that re-reported while its chaining lease is
+  live: it refuses only a reported run with no reopened marker and no live lease.
 
 ## Known limits
 
@@ -55,7 +76,7 @@ Receipt-driven review now runs gentle-ai's own native path, gentle tasks can be 
   ARM64 only. WSL2 was not re-measured for this release, and mutation
   testing was not run on Windows.
 
-## Upgrading from 0.3.4
+## Upgrading from 0.3.5
 
 Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,

@@ -1,0 +1,31 @@
+# cockpit/verbs.txt — the verbs a cockpit button may start. Contract v1.
+#
+# One line per verb, four columns separated by ` | `:
+#
+#     <verb> | <argv template> | confirm=<yes|no> | stdin=<no|text>
+#
+# The argv template is the whole argv the mod passes to $.process.run: element
+# 0 is `hw` and element 1 the verb, except the two reply verbs, whose element 0
+# is `channel-send` (the tool that delivers an answer or a ruling to an executor
+# that is idle and holding on an ask or a challenge). `<name>` is replaced by
+# exactly one argv element taken from the row, and `<argv...>` by the argv of the
+# dispatch being checked WITHOUT its leading `hw`. Only the second column is argv; the
+# other two are attributes. No shell string is ever built, and a verb not listed
+# here is not callable from the mod.
+#
+# `stdin=text`: the text typed by the person goes on stdin, never in argv, so
+# backticks, `$` and newlines arrive intact (probe P3: $.process.run accepts init
+# `{ stdin }`). The template ends in a lone `-` that says so (`hw ruling <pane> -`).
+# `channel-send` takes FOUR positional words, `<vendor> <target> <endpoint>
+# <message>`: on the herdr route the endpoint is the placeholder `-` and the message
+# is the lone `-` that reads stdin, so the reply verbs end in `herdr <pane> - -`
+# (MEASURED against a real herdr, setup/tests/798).
+#
+# `confirm=yes` verbs ask the person first ($.ui.ask); a dismissed question runs
+# nothing. Every verb's non-zero exit is shown verbatim and the card stays.
+done | hw done <project> <task> | confirm=yes | stdin=no
+ruling | hw ruling <pane> - | confirm=no | stdin=text
+reply | channel-send --report --reply-hold <pending_reply> herdr <pane> - - | confirm=no | stdin=text
+challenge-reply | channel-send --ruling --reply-hold <pending_reply> herdr <pane> - - | confirm=no | stdin=text
+receipt | hw receipt <project> <task> | confirm=no | stdin=no
+preflight | hw preflight --json -- <argv...> | confirm=no | stdin=no

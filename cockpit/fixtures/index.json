@@ -1,0 +1,91 @@
+{
+ "note": "Each entry: render `file` with the reader's clock at now_ms; the class and the number of executor rows drawn are the expectation. The classes are defined in schema.json under x-state-classes. A null file is a missing file.",
+ "cases": [
+  {
+   "file": "fresh.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 7
+  },
+  {
+   "file": "fresh-empty.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 0
+  },
+  {
+   "file": "fresh-cut-running.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 2
+  },
+  {
+   "file": "vendor-mix.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 4
+  },
+  {
+   "file": "rows-12.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 12
+  },
+  {
+   "file": "rows-40.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 40
+  },
+  {
+   "file": "stale.json",
+   "now_ms": 1790000000000,
+   "class": "stale",
+   "rows_rendered": 7
+  },
+  {
+   "file": "dead-old.json",
+   "now_ms": 1790000000000,
+   "class": "dead",
+   "rows_rendered": 0
+  },
+  {
+   "file": "dead-future-dated.json",
+   "now_ms": 1790000000000,
+   "class": "dead",
+   "rows_rendered": 0
+  },
+  {
+   "file": "dead-wrong-schema.json",
+   "now_ms": 1790000000000,
+   "class": "dead",
+   "rows_rendered": 0
+  },
+  {
+   "file": "herdr-down.json",
+   "now_ms": 1790000000000,
+   "class": "herdr-down",
+   "rows_rendered": 0
+  },
+  {
+   "file": "dead-unparsable.txt",
+   "now_ms": 1790000000000,
+   "class": "dead",
+   "rows_rendered": 0
+  },
+  {
+   "file": null,
+   "now_ms": 1790000000000,
+   "class": "dead",
+   "rows_rendered": 0,
+   "note": "state file missing"
+  },
+  {
+   "file": "fresh.json",
+   "now_ms": 1790000000000,
+   "class": "dead",
+   "rows_rendered": 0,
+   "note": "synthesized: the reader is given the bytes of fresh.json padded with whitespace to 1048577 bytes (> 1 MiB)"
+  }
+ ]
+}

@@ -1,0 +1,1592 @@
+{
+ "schema": 1,
+ "generated_at": 1789999998000,
+ "writer": {
+  "pid": 1234,
+  "hw_rev": "0000000",
+  "seq": 42,
+  "interval_s": 5
+ },
+ "invoker_pane": "w1:p1",
+ "herdr": {
+  "ok": true,
+  "server_started_ms": 1789996400000,
+  "error": null
+ },
+ "totals": {
+  "executors": 40,
+  "omitted": 0,
+  "asks": 0,
+  "working": 28,
+  "idle": 8,
+  "reports": 4,
+  "blocked": 0,
+  "challenges": 0,
+  "rulings_pending": 0
+ },
+ "rules": {
+  "cut": {
+   "running": false,
+   "since_ms": null,
+   "holder": null
+  }
+ },
+ "rows": [
+  {
+   "id": "demo:task-34",
+   "project": "demo",
+   "task": "task-34",
+   "pane": "w1:p44",
+   "run": "run-34",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "idle",
+   "turn_state": "ended_after_report",
+   "turn_ended_at": 1789999906000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "report",
+   "attention_since": 1789999906000,
+   "report": {
+    "envelope_id": "run-34:done",
+    "status": "done",
+    "state": "delivered",
+    "at": 1789999906000,
+    "summary": "Established the contract; nothing left open.",
+    "artifacts": 2,
+    "engram": null
+   },
+   "ask": null,
+   "actions": {
+    "verify": true,
+    "ruling": false,
+    "done": true,
+    "receipt": true,
+    "why_not": {
+     "ruling": "task already reported"
+    }
+   }
+  },
+  {
+   "id": "demo:task-25",
+   "project": "demo",
+   "task": "task-25",
+   "pane": "w1:p35",
+   "run": "run-25",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_after_report",
+   "turn_ended_at": 1789999915000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 37.5,
+    "tokens": 50000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "report",
+   "attention_since": 1789999915000,
+   "report": {
+    "envelope_id": "run-25:done",
+    "status": "done",
+    "state": "delivered",
+    "at": 1789999915000,
+    "summary": "Established the contract; nothing left open.",
+    "artifacts": 2,
+    "engram": null
+   },
+   "ask": null,
+   "actions": {
+    "verify": true,
+    "ruling": false,
+    "done": true,
+    "receipt": true,
+    "why_not": {
+     "ruling": "task already reported"
+    }
+   }
+  },
+  {
+   "id": "demo:task-16",
+   "project": "demo",
+   "task": "task-16",
+   "pane": "w1:p26",
+   "run": "run-16",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_after_report",
+   "turn_ended_at": 1789999924000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 28.5,
+    "tokens": 41000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "report",
+   "attention_since": 1789999924000,
+   "report": {
+    "envelope_id": "run-16:done",
+    "status": "done",
+    "state": "delivered",
+    "at": 1789999924000,
+    "summary": "Established the contract; nothing left open.",
+    "artifacts": 2,
+    "engram": null
+   },
+   "ask": null,
+   "actions": {
+    "verify": true,
+    "ruling": false,
+    "done": true,
+    "receipt": true,
+    "why_not": {
+     "ruling": "task already reported"
+    }
+   }
+  },
+  {
+   "id": "demo:task-07",
+   "project": "demo",
+   "task": "task-07",
+   "pane": "w1:p17",
+   "run": "run-07",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "idle",
+   "turn_state": "ended_after_report",
+   "turn_ended_at": 1789999933000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "report",
+   "attention_since": 1789999933000,
+   "report": {
+    "envelope_id": "run-07:done",
+    "status": "done",
+    "state": "delivered",
+    "at": 1789999933000,
+    "summary": "Established the contract; nothing left open.",
+    "artifacts": 2,
+    "engram": null
+   },
+   "ask": null,
+   "actions": {
+    "verify": true,
+    "ruling": false,
+    "done": true,
+    "receipt": true,
+    "why_not": {
+     "ruling": "task already reported"
+    }
+   }
+  },
+  {
+   "id": "demo:task-40",
+   "project": "demo",
+   "task": "task-40",
+   "pane": "w1:p50",
+   "run": "run-40",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 52.5,
+    "tokens": 65000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999900000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-39",
+   "project": "demo",
+   "task": "task-39",
+   "pane": "w1:p49",
+   "run": "run-39",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999901000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-38",
+   "project": "demo",
+   "task": "task-38",
+   "pane": "w1:p48",
+   "run": "run-38",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999902000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-37",
+   "project": "demo",
+   "task": "task-37",
+   "pane": "w1:p47",
+   "run": "run-37",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 49.5,
+    "tokens": 62000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999903000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-36",
+   "project": "demo",
+   "task": "task-36",
+   "pane": "w1:p46",
+   "run": "run-36",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 48.5,
+    "tokens": 61000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999904000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-35",
+   "project": "demo",
+   "task": "task-35",
+   "pane": "w1:p45",
+   "run": "run-35",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999905000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-31",
+   "project": "demo",
+   "task": "task-31",
+   "pane": "w1:p41",
+   "run": "run-31",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999909000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-30",
+   "project": "demo",
+   "task": "task-30",
+   "pane": "w1:p40",
+   "run": "run-30",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999910000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-29",
+   "project": "demo",
+   "task": "task-29",
+   "pane": "w1:p39",
+   "run": "run-29",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 41.5,
+    "tokens": 54000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999911000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-28",
+   "project": "demo",
+   "task": "task-28",
+   "pane": "w1:p38",
+   "run": "run-28",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 40.5,
+    "tokens": 53000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999912000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-27",
+   "project": "demo",
+   "task": "task-27",
+   "pane": "w1:p37",
+   "run": "run-27",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999913000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-26",
+   "project": "demo",
+   "task": "task-26",
+   "pane": "w1:p36",
+   "run": "run-26",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999914000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-22",
+   "project": "demo",
+   "task": "task-22",
+   "pane": "w1:p32",
+   "run": "run-22",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999918000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-21",
+   "project": "demo",
+   "task": "task-21",
+   "pane": "w1:p31",
+   "run": "run-21",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 33.5,
+    "tokens": 46000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999919000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-20",
+   "project": "demo",
+   "task": "task-20",
+   "pane": "w1:p30",
+   "run": "run-20",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 32.5,
+    "tokens": 45000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999920000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-19",
+   "project": "demo",
+   "task": "task-19",
+   "pane": "w1:p29",
+   "run": "run-19",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999921000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-18",
+   "project": "demo",
+   "task": "task-18",
+   "pane": "w1:p28",
+   "run": "run-18",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999922000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-17",
+   "project": "demo",
+   "task": "task-17",
+   "pane": "w1:p27",
+   "run": "run-17",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 29.5,
+    "tokens": 42000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999923000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-13",
+   "project": "demo",
+   "task": "task-13",
+   "pane": "w1:p23",
+   "run": "run-13",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 25.5,
+    "tokens": 38000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999927000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-12",
+   "project": "demo",
+   "task": "task-12",
+   "pane": "w1:p22",
+   "run": "run-12",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 24.5,
+    "tokens": 37000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999928000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-11",
+   "project": "demo",
+   "task": "task-11",
+   "pane": "w1:p21",
+   "run": "run-11",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999929000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-10",
+   "project": "demo",
+   "task": "task-10",
+   "pane": "w1:p20",
+   "run": "run-10",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999930000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-09",
+   "project": "demo",
+   "task": "task-09",
+   "pane": "w1:p19",
+   "run": "run-09",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 21.5,
+    "tokens": 34000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999931000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-08",
+   "project": "demo",
+   "task": "task-08",
+   "pane": "w1:p18",
+   "run": "run-08",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 20.5,
+    "tokens": 33000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999932000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-04",
+   "project": "demo",
+   "task": "task-04",
+   "pane": "w1:p14",
+   "run": "run-04",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 16.5,
+    "tokens": 29000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999936000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-03",
+   "project": "demo",
+   "task": "task-03",
+   "pane": "w1:p13",
+   "run": "run-03",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999937000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-02",
+   "project": "demo",
+   "task": "task-02",
+   "pane": "w1:p12",
+   "run": "run-02",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999938000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-01",
+   "project": "demo",
+   "task": "task-01",
+   "pane": "w1:p11",
+   "run": "run-01",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 13.5,
+    "tokens": 26000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999939000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-33",
+   "project": "demo",
+   "task": "task-33",
+   "pane": "w1:p43",
+   "run": "run-33",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999907000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 45.5,
+    "tokens": 58000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999907000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-32",
+   "project": "demo",
+   "task": "task-32",
+   "pane": "w1:p42",
+   "run": "run-32",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999908000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 44.5,
+    "tokens": 57000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999908000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-24",
+   "project": "demo",
+   "task": "task-24",
+   "pane": "w1:p34",
+   "run": "run-24",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999916000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 36.5,
+    "tokens": 49000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999916000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-23",
+   "project": "demo",
+   "task": "task-23",
+   "pane": "w1:p33",
+   "run": "run-23",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999917000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999917000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-15",
+   "project": "demo",
+   "task": "task-15",
+   "pane": "w1:p25",
+   "run": "run-15",
+   "task_n": 1,
+   "vendor": "codex",
+   "model": "model-y",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999925000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999925000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-14",
+   "project": "demo",
+   "task": "task-14",
+   "pane": "w1:p24",
+   "run": "run-14",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999926000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999926000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-06",
+   "project": "demo",
+   "task": "task-06",
+   "pane": "w1:p16",
+   "run": "run-06",
+   "task_n": 1,
+   "vendor": "opencode",
+   "model": "provider/model-x",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999934000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": null,
+    "tokens": null,
+    "source": null
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999934000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-05",
+   "project": "demo",
+   "task": "task-05",
+   "pane": "w1:p15",
+   "run": "run-05",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999935000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 17.5,
+    "tokens": 30000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999935000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  }
+ ]
+}

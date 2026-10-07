@@ -257,6 +257,21 @@ sg_status_line() {
   printf 'suite slots: %s/%s in use%s — %s waiting%s' "$r" "$n" "${who:+ ($who)}" "$w" "${wwho:+ ($wwho)}"
 }
 
+# sg_cut_holder → prints who holds a slot for the release cut, returns 0; 1 when
+# no live slot is the cut's. Read-only: it creates and removes nothing.
+sg_cut_holder() {
+  local d k c
+  d="$(sg_dir)"
+  { [ -n "$d" ] && [ -d "$d" ]; } || return 1
+  for k in "$d"/slot.*; do
+    [ -e "$k" ] || continue
+    _sg_alive "$k" || continue
+    c="$(_sg_first_line "$k/owner.cmd")"
+    case "$c" in "release cut "*) _sg_who "$k"; return 0 ;; esac
+  done
+  return 1
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-status}" in
     status) sg_status_line; printf '\n' ;;

@@ -1,0 +1,126 @@
+{
+ "schema": 1,
+ "generated_at": 1789999998000,
+ "writer": {
+  "pid": 1234,
+  "hw_rev": "0000000",
+  "seq": 42,
+  "interval_s": 5
+ },
+ "invoker_pane": "w1:p1",
+ "herdr": {
+  "ok": true,
+  "server_started_ms": 1789996400000,
+  "error": null
+ },
+ "totals": {
+  "executors": 2,
+  "omitted": 0,
+  "asks": 1,
+  "working": 0,
+  "idle": 0,
+  "reports": 0,
+  "blocked": 0,
+  "challenges": 1,
+  "rulings_pending": 0
+ },
+ "rules": {
+  "cut": {
+   "running": true,
+   "since_ms": 1789999880000,
+   "holder": "demo:task-01"
+  }
+ },
+ "rows": [
+  {
+   "id": "demo:task-01",
+   "project": "demo",
+   "task": "task-01",
+   "pane": "w1:p11",
+   "run": "run-01",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_holding",
+   "turn_ended_at": 1789999939000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 13.5,
+    "tokens": 26000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "challenge",
+   "attention_since": 1789999939000,
+   "report": null,
+   "ask": {
+    "kind": "challenge",
+    "seq": "1/3",
+    "state": "delivered",
+    "at": 1789999939000,
+    "pending_reply": "/srv/demo/.hw/run-01/pending-reply-1"
+   },
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-02",
+   "project": "demo",
+   "task": "task-02",
+   "pane": "w1:p12",
+   "run": "run-02",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_holding",
+   "turn_ended_at": 1789999938000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 14.5,
+    "tokens": 27000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "ask",
+   "attention_since": 1789999938000,
+   "report": null,
+   "ask": {
+    "kind": "ask",
+    "seq": "1/3",
+    "state": "delivered",
+    "at": 1789999938000,
+    "pending_reply": "/srv/demo/.hw/run-02/pending-reply-1"
+   },
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "task still working"
+    }
+   }
+  }
+ ]
+}

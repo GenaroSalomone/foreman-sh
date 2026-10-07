@@ -344,9 +344,11 @@ ASK_LABEL="$ASK_SEQ/$MAX_ASKS"
 #
 # THE KEY BUDGET, because it is exactly full. herdr allows 16 tokens per call
 # and truncates each VALUE at 80 characters (see invoker-common.sh), so the
-# question goes in as chunks: 7 fixed keys + 8 chunks = 15, and 8 × 80 = 640
-# covers the whole 600-char MAX_CHARS with nothing clipped. If you add a fixed
-# token here, take a chunk away and lower MAX_CHARS to match.
+# question goes in as chunks: 8 fixed keys (`ask_kind` is the cockpit's, so a
+# challenge and an ask differ on the pane and not only in the envelope) + 8
+# chunks = 16, and 8 × 80 = 640 covers the whole 600-char MAX_CHARS with nothing
+# clipped. If you add a fixed token here, take a chunk away and lower MAX_CHARS
+# to match.
 ASK_CHUNKS=8
 
 publish_ask() {  # $1 = ask_state value
@@ -360,16 +362,20 @@ publish_ask() {  # $1 = ask_state value
     "hw_run=${HW_RUN:-norun}" \
     "hw_invoker=$HW_INVOKER_PANE" \
     "ask_seq=$ASK_LABEL" \
+    "ask_kind=$([ "$CHALLENGE" = 1 ] && echo challenge || echo ask)" \
     "ask_state=$1" \
     "ask_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     "${chunks[@]}")" || die "internal: could not build the ask tokens"
+  local rc=0
   if [ "$1" = delivered ]; then
-    invoker_publish "$ASK_TTL_MS" "$tokens" clear
+    invoker_publish "$ASK_TTL_MS" "$tokens" clear || rc=$?
   else
     invoker_publish "$ASK_TTL_MS" "$tokens" \
       "$(printf '{"working":"asking brainer (%s)","blocked":"asking brainer (%s)","idle":"asked brainer (%s)"}' \
-         "$ASK_LABEL" "$ASK_LABEL" "$ASK_LABEL")"
+         "$ASK_LABEL" "$ASK_LABEL" "$ASK_LABEL")" || rc=$?
   fi
+  invoker_cockpit_kick
+  return "$rc"
 }
 
 # Published as `undelivered` from the start, and flipped to `delivered` only
@@ -524,6 +530,7 @@ if [ "$DELIVERY_RC" -eq 5 ]; then
   # `undelivered` told the executor to wait for a reply that could never be
   # sent (Judgment Day, judge B). The ask is still not spent.
   activate_pending_reply || true
+  invoker_cockpit_kick
   printf 'envelope=%s\nroute=%s\nat=%s\nchannel_send_exit=5\n' "$ENVELOPE_ID" "$DELIVERY_ROUTE" \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$STATE_DIR/delivery-uncertain" 2>/dev/null || true
   printf 'ask-invoker: %s\n' "delivery UNCERTAIN via $DELIVERY_ROUTE (channel-send exit 5): envelope $ENVELOPE_ID was admitted but its landing is unconfirmed, so the question MAY already be with the brainer. Do NOT re-ask — wait in this pane for the reply, or read the brainer's pane $HW_INVOKER_PANE. No ask was spent. $PUBLICATION_NOTE" >&2
@@ -574,6 +581,7 @@ if type transcript_append >/dev/null 2>&1; then
   transcript_append "$STATE_DIR" "$([ "$CHALLENGE" = 1 ] && echo CHALLENGE || echo ASK)" "$ENVELOPE_ID" "$QUESTION"
 fi
 publish_ask delivered || true
+invoker_cockpit_kick   # the hold above is now `delivered`: the reply button is valid
 herdr notification show "executor blocked · $PROJECT:$TASK" \
   --body "asked the brainer (${ASK_LABEL}) via $DELIVERY_ROUTE" \
   --sound request >/dev/null 2>&1 || true

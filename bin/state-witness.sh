@@ -547,6 +547,16 @@ witness_executor_state() {  # <pane>
   printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$verdict" "$status" "$state" "$children" "$rundir" "$seq" "$cwd"
 }
 
+# AN EVENT THE COCKPIT SHOWS. `bin/cockpit-state --kick` rewrites the brainer's state
+# file once, 250 ms from now, however many events arrive until then (design H2). It
+# returns at once, never fails and prints nothing: an event that cannot be announced
+# costs the 5 s heartbeat's lateness, never a delivery. `--rundir` names the brainer from
+# the run's own env; `--invoker` names it directly.
+_WITNESS_BIN_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cockpit_kick() {  # --rundir <dir> | --invoker <pane>
+  "$_WITNESS_BIN_DIR/cockpit-state" --kick "$@" >/dev/null 2>&1 || true  # MUTATION-ANCHOR: 798-M04
+}
+
 # ── THE RULING QUEUE ─────────────────────────────────────────────────────────
 #
 # `hw ruling` used to hold ONE correction and refuse a second while the first
@@ -620,6 +630,7 @@ ruling_queue_add() {  # <run_dir> <tmp>
     rm -f "$d/.pending-ruling.retracted.$n.$$"
     return 3
   fi
+  cockpit_kick --rundir "$d"
   printf '%s\t%s' "$d/pending-ruling.$n" "$((ahead + 1))"
 }
 
@@ -648,6 +659,7 @@ $text
     rm -f "$claim" 2>/dev/null || true  # MUTATION-ANCHOR: 133-M01  # MUTATION-ANCHOR: 210-M02
   done < <(ruling_queue_pending "$d")
   [ "$count" -gt 0 ] || return 1
+  cockpit_kick --rundir "$d"
   printf 'at=%s\nvia=%s\ncount=%s\n' "$at" "$via" "$count" > "$d/ruling-delivered" 2>/dev/null || true
   if [ "$count" = 1 ]; then
     printf '%s' "$first"

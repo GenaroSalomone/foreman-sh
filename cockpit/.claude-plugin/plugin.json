@@ -1,0 +1,6 @@
+{
+  "name": "cockpit",
+  "version": "0.1.0",
+  "author": { "name": "foreman-sh" },
+  "description": "A panel for the brainer: its executors from the state file hw writes, and the hw verbs it may press."
+}

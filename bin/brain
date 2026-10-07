@@ -80,6 +80,8 @@ usage: brain <lane> [--opencode|--claude] [--reset [--self] [--force]]
 
     brain <lane>            open the lane's brainer, or focus it if it is open
     brain <lane> --reset    replace the agent, keeping the space, tab and pane
+    brain <lane> --no-cockpit   open a claude brainer without the cockpit mod
+                            (FOREMAN_COCKPIT=0 does the same)
 
 A lane is a name in projects.json, or one of its aliases. Its executors are
 launched with `hw help`.
@@ -87,6 +89,18 @@ USAGE
     exit 0 ;;
 esac
 lane_config_load "$BRAIN" || { echo "brain: the lane table did not load — fix $BRAIN/projects.json (the reason is above)" >&2; exit 1; }
+
+# <a> <b>: whether dotted version a is at least b (three numeric parts).
+_version_at_least() {
+  local a b i
+  IFS=. read -r -a a <<< "$1"
+  IFS=. read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    [ "${a[i]:-0}" -gt "${b[i]:-0}" ] && return 0
+    [ "${a[i]:-0}" -lt "${b[i]:-0}" ] && return 1
+  done
+  return 0
+}
 
 _free_port() {
   python3 - <<'PY'
@@ -123,6 +137,7 @@ kind="$(project_default_kind "$proj")"
 # an explicit --opencode over such a lane is still refused below.
 [ "$kind" != opencode ] || [ -f "$BRAIN/$proj/opencode.json" ] || kind=claude
 RESET=0
+NO_COCKPIT=0
 FORCE=0
 SELF=0
 AWAIT_PANE=""
@@ -135,6 +150,7 @@ while [ $# -gt 0 ]; do
     # collide in a label lookup.
     --opencode|-o) kind=opencode ;;
     --claude|-c) kind=claude ;;
+    --no-cockpit) NO_COCKPIT=1 ;;
     --reset) RESET=1 ;;
     # --force is only ever read on the reset path, and it overrides exactly one
     # refusal: live executors still pointing at this brainer. It does not soften
@@ -152,7 +168,7 @@ while [ $# -gt 0 ]; do
     # runs, and everything that path reads is re-read after the wait.
     --await-idle) shift; AWAIT_PANE="${1:-}"
                   [ -n "$AWAIT_PANE" ] || { echo "--await-idle needs a pane id" >&2; exit 64; } ;;
-    *) echo "unknown flag: $1  (try: --opencode, --claude, --reset, --self, --force)" >&2; exit 64 ;;
+    *) echo "unknown flag: $1  (try: --opencode, --claude, --no-cockpit, --reset, --self, --force)" >&2; exit 64 ;;
   esac
   shift
 done
@@ -207,6 +223,28 @@ _brain_flush_outbox() {  # $1 = project, $2 = the brainer's pane
     return 0
   }
   [ -z "$out" ] || printf '%s\n' "$out"
+  return 0
+}
+
+# THE COCKPIT'S HEARTBEAT (design H3). A claude brainer's cockpit mod reads a state
+# file that `bin/cockpit-state` writes: on every event (hw's publishers kick it) and every
+# 5 s from this loop, so a dead writer shows as STALE within 15 s instead of as old rows.
+#
+# WHY IT IS BOUND TO THE PANE AND NOT TO THIS SHELL. The brief for this said an EXIT trap,
+# which would kill the writer the moment `brain` returns: `brain` only runs
+# `herdr agent start`, claude is the PANE's process and not our child, and we exit as soon
+# as it is up. So the writer is detached and watches the brainer's pane in `herdr pane
+# list` (`--bind-pane`): it leaves one beat after the pane does, and a second `brain` start
+# for the same pane finds the lock held and leaves. A pane closed by `herdr workspace close`
+# was measured to kill its OWN descendants (probe P4); this writer is not one, hence the
+# explicit watch. Best effort, like the outbox flush: a writer that cannot start must never
+# make `brain <lane>` fail.
+_brain_cockpit_writer() {  # $1 = the brainer's kind, $2 = its pane
+  [ "${1:-}" = claude ] && [ -n "${2:-}" ] && [ -x "$BRAIN_BIN/cockpit-state" ] || return 0
+  # AN OPT-OUT STARTS NO WRITER EITHER: with no mod there is nobody to read the file.
+  [ "$NO_COCKPIT" = 0 ] && [ "${FOREMAN_COCKPIT:-1}" != 0 ] || return 0
+  nohup "$BRAIN_BIN/cockpit-state" --loop 5 --bind-pane --invoker "$2" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
   return 0
 }
 
@@ -778,6 +816,7 @@ if [ -n "$ws" ]; then
         [ "$kind" != claude ] || self_args+=(--claude)
         self_args+=(--reset --await-idle "$pane")
         [ "$FORCE" != 1 ] || self_args+=(--force)
+        [ "$NO_COCKPIT" != 1 ] || self_args+=(--no-cockpit)
         self_pid="$(BRAIN_SELF_LOG="$self_log" BRAIN_SELF_BASH="$BASH" python3 - "$BRAIN_BIN/brain" "${self_args[@]}" <<'PY'
 import os, sys
 log = os.environ["BRAIN_SELF_LOG"]
@@ -1049,6 +1088,7 @@ PY
           exit 3 ;;
       esac
       # MUTATION-ANCHOR-END: 137-M05
+      _brain_cockpit_writer "$kind" "$pane"
       _brain_flush_outbox "$proj" "$pane"
       exit 0
     fi
@@ -1121,6 +1161,11 @@ if [ "$kind" = opencode ]; then
 fi
 [ -z "$BRAIN_ENGRAM_SESSION" ] || workspace_env+=(--env "BRAIN_ENGRAM_SESSION=$BRAIN_ENGRAM_SESSION")
 [ -z "$account_flag" ] || workspace_env+=(--env "$account_flag")
+# THE COCKPIT MOD FINDS ITS STATE FILE FROM THE PANE'S OWN ENVIRONMENT. `$WORK` is a shell variable of
+# hw and brain (project-spaces.sh defaults it from projects.json), never exported, so a brainer's claude
+# does not have it: the mod then said "writer down (no state path)" with the writer healthy (measured live,
+# T5 probe). The pane is created with the work root, and the mod reads HW_COCKPIT_WORK before WORK.
+[ "$kind" != claude ] || [ -z "${WORK:-}" ] || workspace_env+=(--env "HW_COCKPIT_WORK=$WORK")
 [ "$kind" != opencode ] || workspace_env+=(--env "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
 # TWO WAYS IN, ONE PANE OUT. The space may already exist — `hw --tab` creates it
 # on its first dispatch just as readily as this does — so the brainer is a new TAB
@@ -1135,6 +1180,14 @@ fi
 if [ "$RESET" = 1 ] || [ "${REVIVE:-0}" = 1 ]; then
   tab="$RESET_TAB"
   pane="$RESET_PANE"
+  # THE ENV ABOVE IS NOT RE-APPLIED, and HW_COCKPIT_WORK is the one the mod cannot do without: a pane
+  # opened before the cockpit existed (or by anything that did not set it) was reset or revived with
+  # no work root, so the mod said "writer down (no state path)" with the writer healthy. The pane is
+  # at its shell prompt here, so the variable goes into that shell and claude inherits it.
+  if [ "$kind" = claude ] && [ -n "${WORK:-}" ]; then
+    herdr pane run "$pane" "export HW_COCKPIT_WORK=$(printf '%q' "$WORK")" >/dev/null 2>&1 \
+      || echo "brain: could not give $pane HW_COCKPIT_WORK; the cockpit mod may not find its state file there." >&2
+  fi
 elif [ -n "$ws" ]; then
   tab_raw="$(herdr tab create --workspace "$ws" --cwd "$dir" \
              "${workspace_env[@]}" --no-focus 2>&1 || true)"
@@ -1218,6 +1271,22 @@ else
     || { echo "brain: could not write the engram proxy's --mcp-config at $engram_mcp_file" >&2; exit 1; }
   agent_args=(-- --mcp-config "$engram_mcp_file")
   if [ "$PERMISSIONS" = skip ]; then agent_args=(-- --dangerously-skip-permissions --mcp-config "$engram_mcp_file"); fi
+  # THE COCKPIT MOD rides in as a session-only plugin folder, resolved from this
+  # script's own physical path (the installed tree has cockpit/ beside bin/). Only
+  # claude, only at or above the version that has mods, never when opted out; below
+  # the floor it is one line and the brainer opens without it. An opt-out says nothing.
+  if [ "$NO_COCKPIT" = 0 ] && [ "${FOREMAN_COCKPIT:-1}" != 0 ]; then
+    cockpit_dir="$(cd -P "$BRAIN_BIN/.." && pwd)/cockpit"
+    cockpit_floor=2.1.289
+    cockpit_ver="$(claude --version 2>/dev/null | head -1 | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+' || true)"
+    if [ ! -f "$cockpit_dir/.claude-plugin/plugin.json" ]; then
+      echo "brain: no cockpit mod at $cockpit_dir; running without it" >&2
+    elif [ -z "$cockpit_ver" ] || ! _version_at_least "$cockpit_ver" "$cockpit_floor"; then
+      echo "brain: cockpit needs claude >= $cockpit_floor (found ${cockpit_ver:-none}); running without it" >&2
+    else
+      agent_args+=(--plugin-dir "$cockpit_dir")
+    fi
+  fi
 fi
 while [ "$tries" -lt 15 ]; do
   # `${a[@]+"${a[@]}"}`, NOT `"${a[@]}"`. macOS ships bash 3.2 and under `set -u`
@@ -1272,4 +1341,5 @@ elif [ "$RESET" = 1 ]; then
 else
   echo "opened $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — cwd $dir"
 fi
+_brain_cockpit_writer "$kind" "$pane"
 _brain_flush_outbox "$proj" "$pane"

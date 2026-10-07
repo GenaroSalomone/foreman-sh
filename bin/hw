@@ -577,6 +577,53 @@ cmd_handle() {
   return "$rc"
 }
 
+# `hw preflight --json -- <hw argv>` — what hw's own rules say about a dispatch,
+# without doing it. Read-only: it creates, writes and launches nothing, and it
+# never blocks on its own — `block` is only an account hw's resolution refuses.
+# Prints the verdict cockpit/schema.json describes (`preflight`).
+#   account-override  an explicit --account other than the lane default
+#   cut-running       the release cut holds a suite slot (warn for any dispatch)
+cmd_preflight() {
+  local json=0 lane="" acct="" agent="" i a rules='[]' lvl=ok why
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --) shift; break ;;
+      *) die "usage: hw preflight --json -- <hw argv>" ;;
+    esac
+  done
+  [ "$json" = 1 ] || die "usage: hw preflight --json -- <hw argv>"
+  local -a av=("$@")
+  lane="$(_canon_project "${av[0]:-}")"
+  if lane_known "$lane" && [ "${#av[@]}" -ge 2 ] && [[ "${av[1]}" != -* ]]; then
+    PROJ="$lane"; ACCOUNT="$(project_default_account "$PROJ" 2>/dev/null || printf 'default')"
+    AGENT="$(project_default_kind "$PROJ" 2>/dev/null || printf 'claude')"
+    ACCOUNT_SRC="lane default for $PROJ"
+    local def="$ACCOUNT"
+    for ((i = 2; i < ${#av[@]}; i++)); do
+      case "${av[i]}" in
+        --account) [ $((i + 1)) -lt ${#av[@]} ] && { ACCOUNT="${av[i+1]}"; ACCOUNT_SRC=chosen; }; i=$((i + 1)) ;;
+        --agent)   [ $((i + 1)) -lt ${#av[@]} ] && AGENT="${av[i+1]}"; i=$((i + 1)) ;;
+      esac
+    done
+    if [ "$ACCOUNT_SRC" = chosen ] && [ "$ACCOUNT" != "$def" ]; then
+      _resolve_account
+      if [ "$ACCOUNT_VERDICT" = refused ]; then
+        a=block; why="--account $ACCOUNT differs from the lane default ($def) and hw would refuse it: $ACCOUNT_REFUSAL"
+      else
+        a=warn; why="--account $ACCOUNT differs from the lane default ($def)"
+      fi
+      rules="$(jq -c --arg l "$a" --arg m "${why:0:240}" '. + [{id: "account-override", level: $l, msg: $m}]' <<<"$rules")" || true  # MUTATION-ANCHOR: 800-M01
+    fi
+    if why="$(SG_WORK="${WORK:-}" sg_cut_holder)"; then
+      rules="$(jq -c '. + [{id: "cut-running", level: "warn", msg: "a suite cut is running; the dispatch will queue behind it"}]' <<<"$rules")" || true  # MUTATION-ANCHOR: 800-M02
+    fi
+  fi
+  : # nothing is written, created or launched above or below  # MUTATION-ANCHOR: 800-M03
+  lvl="$(jq -r 'map(.level) | if index("block") then "block" elif index("warn") then "warn" else "ok" end' <<<"$rules")" || true
+  jq -nc --arg l "$lvl" --argjson r "$rules" '{schema: 1, level: $l, rules: $r}'
+}
+
 # `hw train add|status|push <project> …` — the merge train, in bin/hw-train.
 # Only a lane whose checkout IS brain has one: a product repo lands through its
 # PRs, and a train branch would be a ref this setup writes into it.
@@ -751,19 +798,51 @@ _executor_live_children() {
       end' 2>/dev/null || true
 }
 
+# THE CONTEXT USE OF THIS TURN, for the cockpit (design H2, probe P5): the last main-thread
+# assistant usage in the claude transcript the Stop hook names, as `{"pct","tokens"}`.
+# Claude only — `HW_EXECUTOR_VENDOR` says so, and an opencode or codex executor publishes
+# no `ctx_*` tokens, so its row reads `ctx n/a` instead of a guess. Never fails.
+_executor_ctx_json() {
+  local tp
+  [ "${HW_EXECUTOR_VENDOR:-claude}" = claude ] && [ -n "${HW_TURN_END_PAYLOAD:-}" ] || return 0
+  tp="$(printf '%s' "$HW_TURN_END_PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
+  [ -n "$tp" ] && [ -x "$HW_BIN_DIR/cockpit-state" ] || return 0
+  "$HW_BIN_DIR/cockpit-state" ctx "$tp" 2>/dev/null || true
+}
+
 _executor_turn_publish() {
-  local state="$1" turns="$2" extra_name="${3:-}" extra_value="${4:-}" params
+  local state="$1" turns="$2" extra_name="${3:-}" extra_value="${4:-}" params ctx
   [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  ctx="$(_executor_ctx_json)"
   params="$(jq -nc \
     --arg pane "$HERDR_PANE_ID" --arg project "${HW_PROJECT:-unknown}" \
     --arg task "${HW_TASK:-unknown}" --arg run "${HW_RUN:-unknown}" \
     --arg state "$state" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    --arg turns "$turns" --arg extra_name "$extra_name" --arg extra_value "$extra_value" '
+    --arg turns "$turns" --arg extra_name "$extra_name" --arg extra_value "$extra_value" \
+    --arg ctx "$ctx" '
       {pane_id:$pane,source:"hw:executor-turn-end",ttl_ms:86400000,
        tokens:{hw_project:$project,hw_task:$task,hw_run:$run,
                turn_state:$state,turn_ended_at:$at,turns:$turns}}
-      | if $extra_name != "" then .tokens[$extra_name]=$extra_value else . end')" || return 0
+      | if $extra_name != "" then .tokens[$extra_name]=$extra_value else . end
+      | if $ctx != "" then (($ctx | fromjson? // null) as $c
+          | if $c then .tokens.ctx_pct=($c.pct|tostring) | .tokens.ctx_tokens=($c.tokens|tostring) else . end)
+        else . end')" || return 0
   "$HERDR_RPC" call pane.report_metadata "$params" >/dev/null 2>&1 || true
+  # The cockpit shows this turn end: one debounced write (bin/cockpit-state --kick).
+  _executor_cockpit_kick  # MUTATION-ANCHOR: 798-M02
+}
+
+# THE BRAINER TO TELL, from the executor's own side. `HW_INVOKER_PANE` is in its environment
+# unless herdr restored the pane (then every HW_* is gone, see invoker-common.sh); the run's env
+# file always has it, and `cockpit-state --rundir` reads it there.
+_executor_cockpit_kick() {
+  [ -x "$HW_BIN_DIR/cockpit-state" ] || return 0
+  if [ -n "${HW_INVOKER_PANE:-}" ]; then
+    "$HW_BIN_DIR/cockpit-state" --kick --invoker "$HW_INVOKER_PANE" >/dev/null 2>&1 || true
+  else
+    local d; d="$(_executor_state_dir 2>/dev/null || true)"
+    [ -z "$d" ] || "$HW_BIN_DIR/cockpit-state" --kick --rundir "$d" >/dev/null 2>&1 || true
+  fi
 }
 
 _executor_turn_reason() {
@@ -835,10 +914,13 @@ cmd_ruling() {
   local line verdict status rundir seq cwd
   line="$(witness_executor_state "$pane")"
   IFS=$'\037' read -r verdict status _ _ rundir seq cwd <<< "$line" || true
-  [ "$verdict" != absent ] || die "herdr knows no pane $pane, so there is nothing to queue a ruling for. Nothing was written."
-  [ -n "$cwd" ] || die "herdr reports no cwd for $pane, so hw cannot find its run directory. Nothing was written."
-  [ -n "$rundir" ] \
-    || die "no hw run directory at or above the cwd herdr reports for $pane — that pane was not launched by hw, so it has no turn-end hook to deliver a ruling from. Nothing was written."
+  # THE REFUSAL PREDICATES LIVE IN bin/hw-actions, shared with the cockpit's
+  # state writer: a button it draws valid is valid by THIS predicate.
+  local _why=""
+  if [ "$verdict" = absent ]; then
+    _why="$("$HW_BIN_DIR/hw-actions" ruling-refusal "$verdict" "$status" "$seq" "$pane")" || die "$_why"
+  fi
+  _why="$("$HW_BIN_DIR/hw-actions" ruling-scope-refusal "$pane" "$cwd" "$rundir")" || die "$_why"
 
   # A TASK THAT REPORTED BLOCKED IS WAITING FOR EXACTLY THIS. done-invoker kept
   # its pane (`blocked-waiting` beside `done`), so the ruling RESUMES the same
@@ -848,25 +930,9 @@ cmd_ruling() {
     return $?
   fi
 
-  case "$verdict" in
-    # A REPORTED TASK HAS NO TURN LEFT TO DELIVER INTO. Queueing here would
-    # write a file nothing ever reads, and the brainer would believe a
-    # correction landed. The CURRENT task's marker — task N after `hw next`.
-    reported)
-      die "$pane has already reported task $seq, so there is no turn end left to deliver into. Nothing was written. A correction for its NEXT task belongs in the brief you hand it with hw next." ;;
-    # REPORTING RIGHT NOW: its done-invoker has already looked for a queued
-    # ruling and is delivering the report. Accepting one here is exactly the
-    # correction that "was queued and never arrived".
-    reporting)
-      die "$pane is reporting task $seq right now — its done-invoker is running and has already checked for rulings. Nothing was written. A correction for its NEXT task belongs in the brief you hand it with hw next." ;;
-    # AN IDLE RECEIVER DOES NOT NEED A QUEUE. channel-send delivers to it now,
-    # and queueing would wait for a turn end that only happens once the
-    # executor starts working again.
-    idle)
-      die "$pane is idle (herdr agent_status=$status, no child running): channel-send --ruling delivers to it NOW and its gate will not refuse. Nothing was queued — queueing would wait for a turn end that has not started." ;;
-    working|awaiting_child) ;;
-    *) die "internal: unknown executor state '$verdict' for $pane. Nothing was written." ;;
-  esac
+  # reported / reporting / idle / unknown: the die() texts (and why each one
+  # refuses) are in hw-actions' ruling_refusal; working and awaiting_child pass.
+  _why="$("$HW_BIN_DIR/hw-actions" ruling-refusal "$verdict" "$status" "$seq" "$pane")" || die "$_why"
 
   if [ "$dry" = 1 ]; then
     local waiting; waiting="$(ruling_queue_pending "$rundir" | wc -l | tr -d ' ')"
@@ -6375,6 +6441,23 @@ _engram_register_session() {
   return 0
 }
 
+# A DISPATCHED EXECUTOR IS ON THE BRAINER'S COCKPIT FROM ITS FIRST SECOND, not from the end of
+# its first turn: a row is the pane whose tokens name a task and a run, and until now the
+# first such token was published by the first turn end, minutes into the work. These are
+# the same three identity tokens every later publication carries (they never disagree with
+# it), and `turn_state` is deliberately NOT set: no turn has ended. Best effort — a dispatch
+# never fails because the panel could not be told (design H2).
+_dispatch_publish() {  # $1 = the executor's pane
+  [ -n "${1:-}" ] || return 0
+  local invoker; invoker="$(_invoker_pane)"   # hw's own resolution: this shell's env does not hold it
+  local -a inv=()
+  [ -z "$invoker" ] || inv=(--token "hw_invoker=$invoker")
+  herdr pane report-metadata "$1" --source hw:dispatch --ttl-ms 86400000 \
+    --token "hw_project=${PROJ:-unknown}" --token "hw_task=${TASK:-unknown}" --token "hw_run=${HW_RUN:-unknown}" \
+    ${inv[@]+"${inv[@]}"} >/dev/null 2>&1 || true
+  [ -z "$invoker" ] || "$HW_BIN_DIR/cockpit-state" --kick --invoker "$invoker" >/dev/null 2>&1 || true  # MUTATION-ANCHOR: 798-M03
+}
+
 _send_brief() {
   local pane="$1" entry=""
   # Before the brief guard: a brief-less run saves to engram too.
@@ -7637,10 +7720,13 @@ cmd_receipt() {
   # A --worktree none task in a repo lane lives in the repo-less work directory,
   # so look there too rather than reporting "no runs" for a task that ran.
   [ -d "$wt/.hw" ] || wt="$WORK/$proj/$task"
-  [ -d "$wt/.hw" ] || die "no hw runs for $proj:$task (looked in $wt/.hw)"
+  local _why="" _hw=0
+  [ -d "$wt/.hw" ] && _hw=1
+  # The refusals' text lives in bin/hw-actions (shared with the cockpit writer).
+  if [ "$_hw" = 0 ]; then _why="$("$HW_BIN_DIR/hw-actions" receipt-refusal "$proj" "$task" "$wt" 0 0 0)" || true; die "$_why"; fi
 
   runs="$(ls -1t "$wt/.hw" 2>/dev/null || true)"
-  [ -n "$runs" ] || die "no runs under $wt/.hw"
+  if [ -z "$runs" ]; then _why="$("$HW_BIN_DIR/hw-actions" receipt-refusal "$proj" "$task" "$wt" 1 0 0)" || true; die "$_why"; fi
   printf '\n'
   for r in $runs; do
     [ -r "$wt/.hw/$r/receipt.jsonl" ] || continue
@@ -7663,7 +7749,8 @@ cmd_receipt() {
     fi
   done
   if [ "$n" = 0 ]; then
-    warn "runs exist under $wt/.hw but none carries a receipt"
+    _why="$("$HW_BIN_DIR/hw-actions" receipt-refusal "$proj" "$task" "$wt" 1 1 0)" || true
+    warn "$_why"
     info "receipts start with the run that introduced them; older runs only have .hw/<run>/dispatch"
   fi
   return 0
@@ -9090,26 +9177,12 @@ _done_in_use_guard() {  # $1=project $2=task $3=rundir
   # the pane is the only copy of the transport failure. Closing it here filed a
   # STRANDED report as reported. The marker still wins: `_report_evidence`
   # returns `marker` first, so a delivered report never lands in this arm.
-  local stranded=0
-  case "$ev" in
-    "token "*" undelivered") stranded=1 ;;
-  esac
-  case "$ev" in
-    none) reasons="${reasons}${reasons:+
-}  · task $seq has NOT reported: no $(_run_done_marker "$rundir"), and $pane publishes no done token either. Closing it now files finished-or-unfinished work as neither." ;;
-  esac
-  if [ "$stranded" = 1 ]; then
-    reasons="${reasons}${reasons:+
-}  · task $seq is STRANDED: $pane published its report (done_state=undelivered) and the brainer never received it — no $(_run_done_marker "$rundir"). Closing the pane discards the only place that report can still be redelivered from." ;
-  fi
-  if [ "$status" = working ] && [ "$self_close" = 0 ]; then  # MUTATION-ANCHOR: 150-M01
-    reasons="${reasons}${reasons:+
-}  · $pane is WORKING right now — a turn is in progress and this close would cut it mid-turn. hw dispatched no turn into it: after a report, hw next is the only re-task route and it advances the task counter first." ;
-  fi
-  if [ -n "$post" ] && [ "$self_close" = 0 ]; then  # MUTATION-ANCHOR: 150-M02
-    reasons="${reasons}${reasons:+
-}  · $post turn(s) ended in $pane AFTER its report, and hw dispatched none of them. Somebody is talking to this pane." ;
-  fi
+  # THE REASONS (and `stranded`) ARE COMPUTED IN bin/hw-actions, shared with the
+  # cockpit's state writer, so its `done` button is valid by this predicate.
+  local stranded=0 _rc=0
+  reasons="$("$HW_BIN_DIR/hw-actions" done-reasons "$ev" "$status" "$self_close" "$post" "$seq" "$pane" "$(_run_done_marker "$rundir")")" || _rc=$?
+  [ "$_rc" != 2 ] || stranded=1
+  [ "$_rc" -le 2 ] || die "hw-actions done-reasons failed (exit $_rc) — nothing was closed"
   [ -n "$reasons" ] || return 0
 
   # REPORTED AND STILL WORKING, WITH NOBODY TALKING TO IT, IS A PANE FINISHING,
@@ -9372,6 +9445,9 @@ cmd_done() {
       _done_outcome "$proj" "$task" ""
     fi
   fi
+
+  # The pane is gone: tell the cockpit now, not at the next heartbeat.
+  [ -z "$done_rundir" ] || "$HW_BIN_DIR/cockpit-state" --kick --rundir "$done_rundir" >/dev/null 2>&1 || true
 
   # A repo-less task has no branch to merge and no ports to free. What it does
   # have is a directory of artifacts, which is the whole output — reported,
@@ -12008,7 +12084,7 @@ _next_gentle_read() {  # $1 = run dir, $2 = brief path
 }
 
 cmd_next() {
-  local pane="" force=0 brief="" text="" dry=0 wait_ms=""
+  local pane="" force=0 brief="" text="" dry=0 wait_ms="" next_run=""
   # THE MODE MUST BE ABLE TO CROSS A RE-TASK. Hit twice on one lane: a
   # framework flow was re-tasked into a session hw had launched `--sdd none`, and it
   # worked only because the orchestrator still happened to hold the flow state.
@@ -12016,7 +12092,7 @@ cmd_next() {
   # set on the next task is not per-task.
   local next_sdd=""
   pane="${1:-}"; shift || true
-  [ -n "$pane" ] || die "usage: hw next <executor-pane> [--sdd <mode>] [--force] [--dry-run] \"<next task>\" | --brief <path>  (flags may appear before or after the task text). Exit 0 means DELIVERED and the counter advanced; every refusal — a gate that would not open, an unknown pane, a task that has not reported — exits 1 and moves nothing."
+  [ -n "$pane" ] || die "usage: hw next <executor-pane> [--run <revived-run-id>] [--sdd <mode>] [--force] [--dry-run] \"<next task>\" | --brief <path>  (flags may appear before or after the task text). Exit 0 means DELIVERED and the counter advanced; every refusal — a gate that would not open, an unknown pane, a task that has not reported — exits 1 and moves nothing."
   while [ $# -gt 0 ]; do
     case "$1" in
       --brief) _need_val "$@"; brief="$2"; shift 2 ;;
@@ -12027,6 +12103,9 @@ cmd_next() {
       --dry-run) dry=1; shift ;;
       --wait-ms) _need_val "$@"; wait_ms="$2"; shift 2 ;;
       --sdd) _need_val "$@"; next_sdd="$2"; shift 2 ;;
+      # A REVIVED RUN, named. The pane's cwd resolves to the NEWEST run under
+      # .hw, and a run `hw revive --run <id>` brought back need not be it.
+      --run) _need_val "$@"; next_run="$2"; shift 2 ;;
       # Same override as the launch path's, reachable here too: `hw next`
       # hands a brief to an ALREADY-EXISTING worktree, which is exactly the
       # case _refuse_if_stale_hooks exists for. Forwarded by the automatic
@@ -12076,6 +12155,31 @@ cmd_next() {
   local rundir
   rundir="$(_next_run_dir "$cwd")" \
     || die "no hw run directory at or above $cwd — that pane was not launched by hw, so it has no task state to advance"
+  # A REVIVED RUN THAT REPORTED CAN BE RE-TASKED, and only a revived one. Its
+  # chaining lease was spent or expired with the first launch, so the lease gate
+  # refused it and the brainer had to send task 2 with `channel-send --ruling`,
+  # leaving the executor `done-invoker --retask` (measured 2026-10-06
+  # on a revived executor in another lane; evidence is in engram). `hw revive` marks the
+  # run `reopened`: that marker IS the authority here, in place of a lease.
+  # `--run` says "this is the revived run", so a reported run without the marker
+  # is refused naming the way back instead of falling into the lease gate.
+  local next_reopened=0
+  if [ -n "$next_run" ]; then
+    case "$next_run" in */*|.*) die "--run takes a run id (a directory name under .hw/), not a path: $next_run" ;; esac
+    [ -d "$(dirname "$rundir")/$next_run" ] \
+      || die "no run '$next_run' beside $(basename "$rundir") under $(dirname "$rundir"). NOTHING was sent."
+    rundir="$(dirname "$rundir")/$next_run"
+    # A revived run that re-reported has no reopened marker (the report cleared it) but
+    # starts a chaining lease: a live lease is authority too, so task 3 is not refused.
+    local next_run_lease=""
+    next_run_lease="$(_chaining_lease_eligibility "$rundir" "$(_chaining_current_task "$rundir")")"  # MUTATION-ANCHOR: 785-M03
+    if [ -f "$(_run_done_marker "$rundir")" ] && [ ! -f "$(_run_reopened_marker "$rundir")" ] && [ "$next_run_lease" != live ]; then  # MUTATION-ANCHOR: 785-M01
+      die "run $next_run of $pane reported and was not revived (no reopened marker), so \`hw next --run\` has no authority to re-task it. NOTHING was sent and the counter did NOT move. Revive it first: hw revive $(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || printf '<project>') $(_run_env_value "$rundir" HW_TASK 2>/dev/null || printf '<task>') --run $next_run — then re-run this. A run still on its chaining lease needs no --run."
+    fi
+  fi
+  # The marker path follows the task counter, so it is read once, before the counter moves.
+  local next_reopened_marker; next_reopened_marker="$(_run_reopened_marker "$rundir")"
+  [ ! -f "$next_reopened_marker" ] || [ ! -f "$(_run_done_marker "$rundir")" ] || next_reopened=1
 
   # Validate the effective framework against the measured alive pane before the
   # counter, task directory, surface, or delivery can move. Launch routing finds
@@ -12207,7 +12311,7 @@ cmd_next() {
   if [ "$dry" = 1 ]; then
     local chaining_seconds_dry="" chaining_state_dry=""
     chaining_seconds_dry="$(_run_env_value "$rundir" HW_CHAINING_LEASE_SECONDS || true)"
-    if [ -n "$chaining_seconds_dry" ]; then
+    if [ -n "$chaining_seconds_dry" ] && [ "$next_reopened" = 0 ]; then  # MUTATION-ANCHOR: 785-M02
       chaining_state_dry="$(_chaining_lease_eligibility "$rundir" "$seq")"
       if [ "$chaining_state_dry" != live ]; then # MUTATION-ANCHOR: 37-M18a
         die "$(_chaining_lease_ineligible_message "$chaining_state_dry" "$seq" "$rundir")"
@@ -12218,7 +12322,8 @@ cmd_next() {
     ok "dry run: $pane is reachable, on task $seq of $(basename "$rundir") — NOTHING was sent and the pane was not touched"
     info "route $route -> $target${endpoint:+ (endpoint $endpoint)}"
     info "would create $rundir/t$nextseq_dry and deliver $(printf '%s' "$(_next_message "$nextseq_dry" "${next_gentle_block:+$next_gentle_block$'\n\n'}" "$text" "$rundir" "$brief" "$next_wtdir" "$next_auth")" | wc -c | tr -d ' ') bytes as task $nextseq_dry ($(printf '%s' "$text" | wc -c | tr -d ' ') of them the task text; the rest is the preamble hw prepends, minus any framework entry line)"
-    if [ -n "$chaining_seconds_dry" ]; then
+    [ "$next_reopened" = 0 ] || info "run was revived (reopened): hw revive is the authority for this re-task, so its spent chaining lease is not consulted; task $nextseq_dry gets its own done-invoker with no --retask"
+    if [ -n "$chaining_seconds_dry" ] && [ "$next_reopened" = 0 ]; then
       info "this one use would be consumed only after successful delivery; dry-run lease state is volatile and was not touched"
     fi
     if _next_finished_stale_stuck "$info"; then
@@ -12381,6 +12486,7 @@ cmd_next() {
   # cannot close between those acts, and a failed send leaves the lease intact.
   local chaining_seconds="" chaining_locked=0
   chaining_seconds="$(_run_env_value "$rundir" HW_CHAINING_LEASE_SECONDS || true)"
+  [ "$next_reopened" = 0 ] || chaining_seconds=""
   if [ -n "$chaining_seconds" ]; then
     _chaining_lock_take "$rundir" || die "could not acquire the run/task lock before consuming its chaining lease"
     chaining_locked=1
@@ -12450,6 +12556,9 @@ cmd_next() {
   printf '%s\n' "$nextseq" > "$rundir/task" \
     || { [ "$chaining_locked" = 0 ] || _chaining_lock_release; die "delivered, but could not write $rundir/task — the executor is on task $nextseq and its invokers still think $seq. Write that file by hand before it reports."; }
   # MUTATION-ANCHOR-END: 37-M19
+  # The reopened marker belongs to the task it reopened; task N+1 owes its own
+  # report and must not inherit the licence (done-invoker clears it the same way).
+  [ "$next_reopened" = 0 ] || rm -f "$next_reopened_marker" 2>/dev/null || true
   [ "$chaining_locked" = 0 ] || _chaining_lock_release
   ok "task $nextseq dispatched to $pane via $route (${vendor:-unknown} executor, $(printf '%s' "$msg" | wc -c | tr -d ' ') bytes)"
   info "state for it: $rundir/t$nextseq — fresh ask budget, no done marker"
@@ -13577,7 +13686,7 @@ if [ "$_HW_CALLER_EXECUTOR" = 1 ]; then
       [ "${HW_DONE_ALLOW_BRAIN_LEAK:-0}" != 1 ] \
         || _executor_refuse "done (HW_DONE_ALLOW_BRAIN_LEAK=1)" "does not use the operator's leak-check exit"
       ;;
-    -*|help|status|receipt|handle|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|wait|wait-one|wait-monitor|gentle-home) ;;
+    -*|help|status|receipt|handle|preflight|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|wait|wait-one|wait-monitor|gentle-home) ;;
     *)        # anything else is `hw <project> <task> …`, a dispatch
               _executor_refuse "$1 …" "does not dispatch executors" ;;
   esac
@@ -13637,7 +13746,11 @@ if [ "${1:-}" = executor-turn-end ]; then
   shift; set +e; cmd_executor_turn_end "$@"; _rc=$?; set -e; exit "$_rc"
 fi
 if [ "${1:-}" = outbox ]; then shift; set +e; cmd_outbox "$@"; _rc=$?; set -e; exit "$_rc"; fi
+# `hw cockpit-state [--once|--loop N]`: the writer of the cockpit's state file. The program is
+# bin/cockpit-state (read its header); this is its verb, so a brainer can run it by hand.
+if [ "${1:-}" = cockpit-state ]; then shift; exec "$HW_BIN_DIR/cockpit-state" "$@"; fi
 if [ "${1:-}" = ruling ]; then shift; cmd_ruling "$@"; exit 0; fi
+if [ "${1:-}" = preflight ]; then shift; cmd_preflight "$@"; exit 0; fi
 if [ "${1:-}" = human-boundary ]; then shift; cmd_human_boundary "$@"; exit 0; fi
 if [ "${1:-}" = sweep ]; then shift; cmd_sweep "$@"; exit 0; fi
 if [ "${1:-}" = review-range ]; then shift; cmd_review_range "$@" || exit 1; exit 0; fi
@@ -13877,6 +13990,9 @@ OTHER COMMANDS
     hw reports [<project>]           one line per task: which reports are on disk
     hw reports <project> <task>      the report text for one task
     hw reports <project> --full      the report text for every task in the lane
+    hw cockpit-state [--once|--loop N]
+                                    write the file the brainer's cockpit panel reads
+                                    (`brain` keeps it fresh; the invokers refresh it on events)
     hw output tree <path>...        executor declaration of repository-tree output
     hw output none | outside <ref>  executor declaration of no-tree / external output
     hw stage                        brainer check: which executor declared each staged path
@@ -13919,7 +14035,11 @@ OTHER COMMANDS
         RESUMES that same task in the same session (sent now) and it reports
         again with its own done-invoker.
 
-    hw next <pane> [--force] [--dry-run] [--sdd <mode>] "<task>" | --brief <path>
+    hw next <pane> [--force] [--dry-run] [--sdd <mode>] [--run <id>] "<task>" | --brief <path>
+        --run <id>: the run `hw revive` brought back, when it is not the newest
+        under the pane's .hw. A revived run that reported takes task N+1 with its
+        own done-invoker (no --retask); a reported run NOT revived is refused,
+        naming `hw revive`. Without --run nothing changes.
         Flags may appear before or after the task text. Without --sdd the
         effective live worktree surface is measured and incompatible vendor/mode
         pairs are refused before task creation or delivery. The launch record is
@@ -15851,6 +15971,7 @@ _run_here() {
   step "agent"
   if _agent_start "$pane" "$TASK" "$AGENT"; then
     info "$AGENT registered in $pane; vendor runtime readiness is unestablished"
+    _dispatch_publish "$pane"
     _send_brief "$pane"
     _verify_opencode_effort
   else
@@ -15969,6 +16090,7 @@ _agent_step() {
     [ -z "$BELOW_FLOOR_WHY" ] || _receipt below_floor_why "$BELOW_FLOOR_WHY" "--below-floor-why"
     _receipt requested_by "$(_requested_line)" "_check_requested: ${REQUESTED_BY_SRC:-no citation}"
     [ -z "${HW_AGENT_ENDPOINT:-}" ] || _receipt endpoint "$HW_AGENT_ENDPOINT" "--port passed to opencode in _build_agent_args"
+    _dispatch_publish "$P_AGENT"
     _send_brief "$P_AGENT"
     _verify_opencode_effort
   else

@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""hw-actions — the ONE place the refusal predicates of `hw ruling`, `hw done`
+and `hw receipt` live.
+
+Both `bin/hw` (the verbs, through the CLI below) and the cockpit state writer
+(`bin/cockpit-state`, through `import`) call these, so a button the cockpit
+draws as valid is valid by the same predicate the verb refuses on, and a
+`why_not` is the verb's own refusal text, not a paraphrase. Pure: no
+subprocess, no herdr call. `facts_from_pane` only reads the run directory.
+
+THE FACTS DICT (every key optional; a missing key reads as its default)
+    pane          str   executor pane id                                    ""
+    project, task str   the hw project and task                             ""
+    verdict       str   witness_executor_state verdict: absent, reporting,
+                        reported, awaiting_child, idle, working             "absent"
+    status        str   herdr agent_status                                   ""
+    seq           str   the task counter of the run ("1" for the first)      "1"
+    blocked_waiting bool a --blocked report is kept waiting (marker)         False
+    cwd           str   cwd herdr reports for the pane                       ""
+    rundir        str   the hw run directory, "" when there is none          ""
+    recorded_pane str   the pane receipt.jsonl recorded for the run          ""
+    ev            str   `marker` | `token <status> <state>` | `none`         "none"
+    post          str   turns after the report, ALREADY adjusted (see
+                        adjust_post); "" when none                           ""
+    marker        str   path of the task's done marker                       ""
+    wt            str   the task's work directory                            ""
+    has_hw, has_runs, has_receipt  bool  what cmd_receipt looks at           False
+`done` as the writer sees it is never a self-close.
+
+CLI (stdout the text; exit codes carry the verdict; every argument is one argv
+word, so text with spaces or newlines cannot be split):
+    hw-actions ruling-refusal <verdict> <status> <seq> <pane> [<blocked_waiting 0|1>]
+        exit 0 allowed (nothing printed), 1 refused (the die() text)
+    hw-actions ruling-scope-refusal <pane> <cwd> <rundir>
+        exit 1 + text when herdr gave no cwd / the cwd has no run directory
+    hw-actions done-reasons <ev> <status> <self_close 0|1> <post> <seq> <pane> <marker>
+        stdout the reasons, exit 0 none, 1 reasons, 2 reasons and STRANDED
+    hw-actions receipt-refusal <project> <task> <wt> <has_hw 0|1> <has_runs 0|1> <has_receipt 0|1>
+        exit 0 allowed, 1 refused (die text), 2 only a warning (hw warns, returns 0)
+"""
+import json
+import os
+import re
+import subprocess  # only to look at ONE pid in witness_reporting_live (ps), as the verb does
+import sys
+
+NO_REPORT = "no report to verify"
+
+
+# ── ruling ──────────────────────────────────────────────────────────────────
+def ruling_scope_refusal(pane, cwd, rundir):
+    if not cwd:
+        return "herdr reports no cwd for %s, so hw cannot find its run directory. Nothing was written." % pane
+    if not rundir:
+        return ("no hw run directory at or above the cwd herdr reports for %s — that pane was not launched by hw, "
+                "so it has no turn-end hook to deliver a ruling from. Nothing was written." % pane)
+    return None
+
+
+def ruling_refusal(verdict, status, seq, pane):
+    """The die() text of cmd_ruling for this verdict, None when it would queue.
+    `reported` here is the plain refusal; the blocked-waiting resume is
+    ruling_allowed's."""
+    if verdict == "absent":
+        return "herdr knows no pane %s, so there is nothing to queue a ruling for. Nothing was written." % pane
+    if verdict == "reported":
+        return ("%s has already reported task %s, so there is no turn end left to deliver into. Nothing was written. "
+                "A correction for its NEXT task belongs in the brief you hand it with hw next." % (pane, seq))
+    if verdict == "reporting":
+        return ("%s is reporting task %s right now — its done-invoker is running and has already checked for rulings. "
+                "Nothing was written. A correction for its NEXT task belongs in the brief you hand it with hw next." % (pane, seq))
+    if verdict == "idle":
+        return ("%s is idle (herdr agent_status=%s, no child running): channel-send --ruling delivers to it NOW and its "
+                "gate will not refuse. Nothing was queued — queueing would wait for a turn end that has not started." % (pane, status))
+    if verdict in ("working", "awaiting_child"):
+        return None
+    return "internal: unknown executor state '%s' for %s. Nothing was written." % (verdict, pane)
+
+
+def ruling_allowed(verdict, status, seq, pane, blocked_waiting):
+    """(allowed, text). A task that reported --blocked is kept waiting for exactly this."""
+    if verdict == "reported" and blocked_waiting:
+        return True, ""
+    t = ruling_refusal(verdict, status, seq, pane)
+    return (t is None), (t or "")
+
+
+# ── done ────────────────────────────────────────────────────────────────────
+def adjust_post(post, status, self_close):
+    """A count of 1 while the pane still says `working` is the report's own turn."""
+    if post == "1" and status == "working" and not self_close:
+        return ""
+    return post
+
+
+def done_reasons(ev, status, self_close, post, seq, pane, marker):
+    """(reasons_text, stranded) — the reasons of _done_in_use_guard, text unchanged."""
+    reasons = []
+    stranded = bool(re.match(r"^token .* undelivered$", ev or ""))
+    if ev == "none":
+        reasons.append("  · task %s has NOT reported: no %s, and %s publishes no done token either. "
+                       "Closing it now files finished-or-unfinished work as neither." % (seq, marker, pane))
+    if stranded:
+        reasons.append("  · task %s is STRANDED: %s published its report (done_state=undelivered) and the brainer never received it — no %s. "
+                       "Closing the pane discards the only place that report can still be redelivered from." % (seq, pane, marker))
+    if status == "working" and not self_close:  # MUTATION-ANCHOR: 150-M01
+        reasons.append("  · %s is WORKING right now — a turn is in progress and this close would cut it mid-turn. "
+                       "hw dispatched no turn into it: after a report, hw next is the only re-task route and it advances the task counter first." % pane)
+    if post and not self_close:  # MUTATION-ANCHOR: 150-M02
+        reasons.append("  · %s turn(s) ended in %s AFTER its report, and hw dispatched none of them. Somebody is talking to this pane." % (post, pane))
+    return "\n".join(reasons), stranded
+
+
+# ── verify / receipt ────────────────────────────────────────────────────────
+def verify_refusal(ev):
+    return NO_REPORT if (ev or "none") == "none" else None
+
+
+def receipt_refusal(project, task, wt, has_hw, has_runs, has_receipt):
+    """(text, fatal) or (None, False). fatal False is cmd_receipt's warn-and-return-0."""
+    if not has_hw:
+        return "no hw runs for %s:%s (looked in %s/.hw)" % (project, task, wt), True
+    if not has_runs:
+        return "no runs under %s/.hw" % wt, True
+    if not has_receipt:
+        return "runs exist under %s/.hw but none carries a receipt" % wt, False
+    return None, False
+
+
+# ── the actions block ───────────────────────────────────────────────────────
+def actions_for_row(facts):
+    f = facts
+    pane = f.get("pane", "")
+    ev = f.get("ev", "none")
+    why = {}
+    verdict = f.get("verdict", "absent")
+
+    v = verify_refusal(ev)
+    verify = v is None
+    if v:
+        why["verify"] = v
+
+    # The verb's order: no pane, then no cwd / no run directory, then the verdict.
+    ok, text = True, ""
+    if verdict == "absent":
+        ok, text = False, ruling_refusal(verdict, "", "", pane)
+    else:
+        scope = ruling_scope_refusal(pane, f.get("cwd", ""), f.get("rundir", ""))
+        if scope:
+            ok, text = False, scope
+        else:
+            ok, text = ruling_allowed(verdict, f.get("status", ""), f.get("seq", "1"), pane, bool(f.get("blocked_waiting")))
+    if not ok:
+        why["ruling"] = text
+
+    # hw done closes without a check when there is no run record or no pane receipt.
+    done = True
+    if f.get("rundir") and f.get("recorded_pane"):
+        reasons, _ = done_reasons(ev, f.get("status", ""), False, f.get("post", ""), f.get("seq", "1"), pane, f.get("marker", ""))
+        if reasons:
+            done = False
+            why["done"] = "\n".join(l.lstrip() for l in reasons.split("\n"))
+
+    r, fatal = receipt_refusal(f.get("project", ""), f.get("task", ""), f.get("wt", ""),
+                               bool(f.get("has_hw")), bool(f.get("has_runs")), bool(f.get("has_receipt")))
+    receipt = r is None
+    if r:
+        why["receipt"] = r
+    return {"verify": verify, "ruling": ok, "done": done, "receipt": receipt, "why_not": why}
+
+
+# ── facts from a `herdr pane list` entry and the run dir ────────────────────
+def _read(path):
+    try:
+        with open(path, "r", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _digits(s):
+    return re.sub(r"[^0-9]", "", s or "")
+
+
+def chaining_current_task(rundir):
+    n = _digits(_read(os.path.join(rundir, "task")))
+    return "1" if n in ("", "0") else n
+
+
+def witness_task_dir(rundir):
+    n = _digits(_read(os.path.join(rundir, "task")))
+    return rundir if n in ("", "0", "1") else "%s/t%s" % (rundir, n)
+
+
+def witness_run_dir(cwd, run=""):
+    d, hops = cwd, 0
+    while hops < 12 and d and d != "/":
+        h = os.path.join(d, ".hw")
+        if os.path.isdir(h):
+            if run and os.path.isdir(os.path.join(h, run)):
+                return os.path.join(h, run)
+            names = sorted((n for n in os.listdir(h) if re.match(r"^2[0-9]{7}-[0-9]{6}-[0-9]+$", n)
+                            and os.path.isdir(os.path.join(h, n))), reverse=True)
+            if names:
+                return os.path.join(h, names[0])
+        d = os.path.dirname(d)
+        hops += 1
+    return ""
+
+
+def reporting_live(marker):
+    txt = _read(marker)
+    if txt is None:
+        return False
+    lines = txt.split("\n")
+    pid, start = lines[0] if lines else "", lines[1] if len(lines) > 1 else ""
+    if not pid.isdigit():
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    try:
+        now = subprocess.run(["ps", "-o", "lstart=", "-p", pid], capture_output=True, text=True).stdout
+    except OSError:
+        return False
+    now = re.sub(r" +", " ", now.replace("\n", " ")).strip()
+    return now == start
+
+
+def witness_verdict(status, state, children, taskdir):
+    if not status:
+        return "absent"
+    if taskdir and reporting_live(os.path.join(taskdir, "reporting")):
+        return "reporting"
+    if taskdir and os.path.isfile(os.path.join(taskdir, "done")) and not os.path.isfile(os.path.join(taskdir, "reopened")):
+        return "reported"
+    if state == "ended_awaiting_child" and children:
+        return "awaiting_child"
+    return "idle" if status in ("idle", "done") else "working"
+
+
+def post_report_turns(rundir, seq, tokens):
+    path = os.path.join(rundir, "turns-post-report")
+    post = ""
+    rec = _read(path)
+    if rec is not None:
+        rec = rec.rstrip("\n")
+        if rec.split(" ")[0] == seq:
+            post = _digits(rec.rsplit(" ", 1)[-1])
+    else:
+        tok = tokens.get("turns_post_report") or ""
+        if tok and tok.split(" ")[0] == seq:
+            post = _digits(tok.rsplit(" ", 1)[-1])
+    return "" if post in ("", "0") else post
+
+
+def report_evidence(tokens, marker):
+    if os.path.isfile(marker):
+        return "marker"
+    tok = tokens.get("done_status") or ""
+    if tok in ("done", "blocked"):
+        return "token %s %s" % (tok, tokens.get("done_state") or "unknown")
+    return "none"
+
+
+def recorded_pane(rundir):
+    last = ""
+    txt = _read(os.path.join(rundir, "receipt.jsonl"))
+    for line in (txt or "").splitlines():
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(o, dict) and o.get("key") == "pane":
+            last = str(o.get("value", ""))
+    return last
+
+
+def facts_from_pane(pane_item, rundir=None):
+    """facts for one entry of `herdr pane list` (result.panes[]). `rundir`
+    overrides the discovery from the cwd (tests)."""
+    tokens = pane_item.get("tokens") or {}
+    pane = pane_item.get("pane_id") or pane_item.get("id") or ""
+    status = pane_item.get("agent_status") or ""
+    cwd = pane_item.get("cwd") or ""
+    if rundir is None:
+        rundir = witness_run_dir(cwd, tokens.get("hw_run") or "") if cwd else ""
+    taskdir = witness_task_dir(rundir) if rundir else ""
+    seq = chaining_current_task(rundir) if rundir else "1"
+    marker = taskdir + "/done" if rundir else ""
+    verdict = witness_verdict(status, tokens.get("turn_state") or "", tokens.get("children_running") or "", taskdir)
+    ev = report_evidence(tokens, marker) if rundir else report_evidence(tokens, "/nonexistent")
+    post = adjust_post(post_report_turns(rundir, seq, tokens) if rundir else "", status, False)
+    project, task = tokens.get("hw_project") or "", tokens.get("hw_task") or ""
+    wt = ""
+    has_hw = has_runs = has_receipt = False
+    if rundir:
+        wt = os.path.dirname(os.path.dirname(rundir))
+        has_hw = os.path.isdir(os.path.join(wt, ".hw"))
+        has_runs = has_hw and bool(os.listdir(os.path.join(wt, ".hw")))
+        has_receipt = os.access(os.path.join(rundir, "receipt.jsonl"), os.R_OK)
+    else:
+        wt = cwd
+        has_hw = bool(wt) and os.path.isdir(os.path.join(wt, ".hw"))
+        has_runs = has_hw and bool(os.listdir(os.path.join(wt, ".hw")))
+    return {
+        "pane": pane, "project": project, "task": task, "verdict": verdict, "status": status, "seq": seq,
+        "blocked_waiting": bool(taskdir) and os.path.isfile(os.path.join(taskdir, "blocked-waiting")),
+        "cwd": cwd, "rundir": rundir, "recorded_pane": recorded_pane(rundir) if rundir else "",
+        "ev": ev, "post": post, "marker": marker, "wt": wt,
+        "has_hw": has_hw, "has_runs": has_runs, "has_receipt": has_receipt,
+    }
+
+
+# ── CLI ─────────────────────────────────────────────────────────────────────
+def _flag(s):
+    return s in ("1", "true", "yes")
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.stderr.write(__doc__)
+        return 64
+    cmd, a = argv[1], argv[2:]
+    out = sys.stdout
+    if cmd == "ruling-refusal" and len(a) in (4, 5):
+        ok, text = ruling_allowed(a[0], a[1], a[2], a[3], _flag(a[4]) if len(a) == 5 else False)
+        if ok:
+            return 0
+        out.write(text)
+        return 1
+    if cmd == "ruling-scope-refusal" and len(a) == 3:
+        t = ruling_scope_refusal(*a)
+        if t is None:
+            return 0
+        out.write(t)
+        return 1
+    if cmd == "done-reasons" and len(a) == 7:
+        text, stranded = done_reasons(a[0], a[1], _flag(a[2]), a[3], a[4], a[5], a[6])
+        out.write(text)
+        return 2 if stranded else (1 if text else 0)
+    if cmd == "receipt-refusal" and len(a) == 6:
+        t, fatal = receipt_refusal(a[0], a[1], a[2], _flag(a[3]), _flag(a[4]), _flag(a[5]))
+        if t is None:
+            return 0
+        out.write(t)
+        return 1 if fatal else 2
+    sys.stderr.write("hw-actions: bad arguments for %r\n" % cmd)
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

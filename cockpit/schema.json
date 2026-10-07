@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cockpit-contract-v1",
+  "title": "Cockpit contract v1",
+  "description": "Two documents share this file: `state` (written by `hw cockpit-state`, read-only for the mod) and `preflight` (printed by `hw preflight --json`). Timestamps are epoch milliseconds. A field that the schema allows to be null is always present. The writer emits exactly the fields this file names. A reader checks `schema` and reads the fields it uses; it ignores a field it does not know, and treats a file in which a field it uses is missing or of the wrong type as dead.",
+  "oneOf": [
+    { "$ref": "#/$defs/state" },
+    { "$ref": "#/$defs/preflight" }
+  ],
+  "$defs": {
+    "ms": { "type": "integer", "minimum": 0 },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "generated_at", "writer", "invoker_pane", "herdr", "totals", "rules", "rows"],
+      "properties": {
+        "schema": { "const": 1 },
+        "generated_at": { "$ref": "#/$defs/ms", "description": "Writer clock. The reader compares it with its own clock to classify freshness." },
+        "writer": {
+          "type": "object", "additionalProperties": false,
+          "required": ["pid", "hw_rev", "seq", "interval_s"],
+          "properties": {
+            "pid": { "type": "integer" },
+            "hw_rev": { "type": "string" },
+            "seq": { "type": "integer", "minimum": 0, "description": "Increases by one on every write." },
+            "interval_s": { "type": "integer", "minimum": 1, "description": "Heartbeat period. 5 under `bin/brain`." }
+          }
+        },
+        "invoker_pane": { "type": "string", "description": "The brainer pane whose executors these rows are." },
+        "herdr": {
+          "type": "object", "additionalProperties": false,
+          "required": ["ok", "server_started_ms", "error"],
+          "properties": {
+            "ok": { "type": "boolean", "description": "false when the herdr RPC failed: rows is then empty and the totals are zero." },
+            "server_started_ms": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }], "description": "Not provided in v1: always null. The one RPC the writer makes (`pane list`) does not carry it and a second call per beat is not worth a field nothing reads (the mod ignores it). A later schema may fill it without a change of shape." },
+            "error": { "type": ["string", "null"] }
+          }
+        },
+        "totals": {
+          "type": "object", "additionalProperties": false,
+          "required": ["executors", "omitted", "working", "idle", "asks", "reports", "blocked", "challenges", "rulings_pending"],
+          "properties": {
+            "executors": { "type": "integer", "minimum": 0, "description": "Equals rows.length." },
+            "omitted": { "type": "integer", "minimum": 0, "description": "Executors the writer left out because rows is capped at 64, always the lowest-ranked ones (so a challenge, ask, blocked or report is the last to go). The other counters count listed rows only." },
+            "working": { "type": "integer", "minimum": 0 },
+            "idle": { "type": "integer", "minimum": 0 },
+            "asks": { "type": "integer", "minimum": 0, "description": "Rows whose attention is `ask`." },
+            "reports": { "type": "integer", "minimum": 0, "description": "Rows whose attention is `report`." },
+            "blocked": { "type": "integer", "minimum": 0, "description": "Rows whose attention is `blocked`." },
+            "challenges": { "type": "integer", "minimum": 0, "description": "Rows whose attention is `challenge`." },
+            "rulings_pending": { "type": "integer", "minimum": 0, "description": "Sum of rows[].rulings_pending.count." }
+          }
+        },
+        "rules": {
+          "type": "object", "additionalProperties": false,
+          "required": ["cut"],
+          "properties": {
+            "cut": {
+              "type": "object", "additionalProperties": false,
+              "required": ["running", "since_ms", "holder"],
+              "properties": {
+                "running": { "type": "boolean" },
+                "since_ms": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }] },
+                "holder": { "type": ["string", "null"], "description": "Task id holding the cut; null when none." }
+              }
+            }
+          }
+        },
+        "rows": {
+          "type": "array", "maxItems": 64,
+          "description": "Already in hw's order: the mod never sorts. Order is attention rank (challenge, ask, blocked, report, working, idle, gone), then attention_since ascending (null sorts first, as 0), then id. Beyond 64 the writer drops from the end and counts them in totals.omitted.",
+          "items": { "$ref": "#/$defs/row" }
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "herdr": { "properties": { "ok": { "const": false } } } } },
+          "then": { "properties": { "rows": { "maxItems": 0 } } } }
+      ]
+    },
+    "row": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "project", "task", "pane", "run", "task_n", "vendor", "model", "agent_status", "turn_state", "turn_ended_at", "turns", "children_running", "ctx", "rulings_pending", "attention", "attention_since", "report", "ask", "actions"],
+      "properties": {
+        "id": { "type": "string", "description": "`<project>:<task>`. Unique in a file." },
+        "project": { "type": "string" },
+        "task": { "type": "string" },
+        "pane": { "type": "string", "description": "Executor pane id; the argument of the `ruling` verb." },
+        "run": { "type": "string" },
+        "task_n": { "type": "integer", "minimum": 1, "description": "1 for the first task of the session, +1 per `hw next`." },
+        "vendor": { "enum": ["claude", "opencode", "codex", "unknown"] },
+        "model": { "type": ["string", "null"] },
+        "agent_status": { "enum": ["idle", "working", "unknown"], "description": "herdr's own status for the pane." },
+        "turn_state": {
+          "enum": ["working", "ended_unreported", "ended_after_report", "ended_with_ruling", "ended_holding", "ended_human_boundary", "ended_awaiting_child", "handback_refused", null],
+          "description": "The `turn_state` token the executor's turn-end adapter published; null before its first turn ends or when the vendor publishes none."
+        },
+        "turn_ended_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }] },
+        "turns": { "type": ["integer", "null"], "minimum": 0 },
+        "children_running": { "type": ["string", "null"], "description": "Free text from the adapter, e.g. `2 shell`; null when none." },
+        "ctx": {
+          "type": "object", "additionalProperties": false,
+          "required": ["pct", "tokens", "source"],
+          "description": "Context use. pct, tokens and source are all null when the vendor publishes nothing (the row then shows `ctx n/a`); never a guess.",
+          "properties": {
+            "pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+            "tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "source": { "enum": ["turn-end", null] }
+          }
+        },
+        "rulings_pending": {
+          "type": "object", "additionalProperties": false,
+          "required": ["count", "oldest_at"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "oldest_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }] }
+          }
+        },
+        "attention": { "enum": ["challenge", "ask", "blocked", "report", "working", "idle", "gone"], "description": "`gone` is reserved and not emitted in v1: a row is built from a live herdr pane, so a pane that vanished leaves the list instead of becoming a row. It keeps its place in the order so a later writer can emit it without reshuffling." },
+        "attention_since": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }] },
+        "report": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["envelope_id", "status", "state", "at", "summary", "artifacts", "engram"],
+              "properties": {
+                "envelope_id": { "type": "string" },
+                "status": { "enum": ["done", "blocked"] },
+                "state": { "enum": ["delivered", "undelivered"] },
+                "at": { "$ref": "#/$defs/ms" },
+                "summary": { "type": "string", "maxLength": 640, "description": "The done-invoker summary, its token chunks rejoined by the writer. A pointer, not the report." },
+                "artifacts": { "type": "integer", "minimum": 0 },
+                "engram": { "type": ["string", "null"], "description": "The engram project label done-invoker publishes in its `engram` token. It is NOT a list of observation ids; the ids are inside the summary text." }
+              }
+            }
+          ]
+        },
+        "ask": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["kind", "seq", "state", "at", "pending_reply"],
+              "properties": {
+                "kind": { "enum": ["ask", "challenge"] },
+                "seq": { "type": "string", "pattern": "^[0-9]+/[0-9]+$", "description": "`n/max`, as ask-invoker labels it." },
+                "state": { "enum": ["delivered", "undelivered"] },
+                "at": { "$ref": "#/$defs/ms" },
+                "pending_reply": { "type": ["string", "null"], "description": "Absolute path of the hold file the executor left for this ask (`pending-reply-<n>` in its task state dir): the argument of the `reply` and `challenge-reply` verbs. A string exactly when the ask is delivered and the hold is valid and addressed to this pane over the herdr route; null otherwise (the mod then draws no reply button). An idle executor holding an ask gets a reply button, not a ruling one." }
+              }
+            }
+          ]
+        },
+        "actions": {
+          "type": "object", "additionalProperties": false,
+          "required": ["verify", "ruling", "done", "receipt", "why_not"],
+          "description": "Which buttons are valid. Computed by hw with the predicates the verbs themselves refuse on; the mod renders, it never decides.",
+          "properties": {
+            "verify": { "type": "boolean", "description": "The mod may pre-fill the verification prompt for the person to send (prompt.fill). It starts no verb, so it is not in verbs.txt." },
+            "ruling": { "type": "boolean", "description": "True only where `hw ruling` would queue the correction: the executor is working or awaiting a child, or it reported --blocked and is kept waiting. An idle executor (including one holding on an ask or challenge) is false: hw refuses it and points at `channel-send --ruling`, which is not an allowlisted verb." },
+            "done": { "type": "boolean" },
+            "receipt": { "type": "boolean" },
+            "why_not": {
+              "type": "object", "additionalProperties": false,
+              "description": "One entry per action that is false, hw's own refusal text. An action that is true has no entry.",
+              "properties": {
+                "verify": { "type": "string" },
+                "ruling": { "type": "string" },
+                "done": { "type": "string" },
+                "receipt": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "preflight": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "level", "rules"],
+      "description": "`hw preflight --json -- <dispatch argv>` takes the argv of the dispatch WITHOUT its leading `hw` (so `hw demo task-a --brief b.md` is checked as `-- demo task-a --brief b.md`) and prints exactly one of these and exits 0 whatever the level; a non-zero exit or unparsable output means preflight is unavailable (the mod fails open). It has no side effects. `level` is the highest `rules[].level`, `ok` when rules is empty. `block` says hw itself would refuse the dispatch; the mod only displays it (v2 stays warn-only).",
+      "properties": {
+        "schema": { "const": 1 },
+        "level": { "enum": ["ok", "warn", "block"] },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "level", "msg"],
+            "properties": {
+              "id": { "enum": ["account-override", "cut-running"], "description": "account-override: an explicit --account that differs from the lane default; `block` only where hw's own account resolution would refuse it, otherwise `warn`. cut-running: a suite cut holds the gate; warn, for any dispatch, never block." },
+              "level": { "enum": ["warn", "block"] },
+              "msg": { "type": "string", "maxLength": 240 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "x-state-classes": {
+    "description": "How a reader classifies a state file, from generated_at and its own clock. Evaluate in this order; the first that matches wins. See fixtures/index.json for one example of each.",
+    "1-dead": "file missing, unparsable, size > 1 MiB, schema != 1, a field the reader uses missing or mistyped, generated_at in the future (age < 0, no tolerance), or age > 60 s: no rows, never the old ones",
+    "2-stale": "15 s < age <= 60 s: rows dimmed, banner, action buttons hidden (also when herdr.ok is false: there are no rows to dim)",
+    "3-herdr-down": "age <= 15 s and herdr.ok is false: no rows",
+    "4-fresh": "age <= 15 s and herdr.ok is true"
+  }
+}

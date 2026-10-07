@@ -725,7 +725,7 @@ $TAIL"
 DONE_CHUNKS=7
 
 publish_done() {  # $1 = done_state value (delivered | undelivered)
-  local tokens rec
+  local tokens rec rc=0
   local -a chunks=()
   while IFS= read -r -d '' rec; do chunks+=("$rec"); done \
     < <(invoker_chunk_tokens sum "$DONE_CHUNKS" "$SUMMARY")
@@ -742,7 +742,9 @@ publish_done() {  # $1 = done_state value (delivered | undelivered)
     "${chunks[@]}")" || die "internal: could not build the done tokens"
   invoker_publish "$DONE_TTL_MS" "$tokens" \
     "$(printf '{"idle":"%s: %s","working":"%s: %s","blocked":"%s: %s"}' \
-       "$STATUS" "$TASK" "$STATUS" "$TASK" "$STATUS" "$TASK")"
+       "$STATUS" "$TASK" "$STATUS" "$TASK" "$STATUS" "$TASK")" || rc=$?
+  invoker_cockpit_kick
+  return "$rc"
 }
 
 PUB_RC=0
@@ -918,6 +920,7 @@ if [ "$STATUS" = blocked ]; then
     printf 'pane=%s\nproject=%s\ntask=%s\nenvelope=%s\n' "$HERDR_PANE_ID" "$PROJECT" "$TASK" "$ENVELOPE_ID"
   } > "$STATE_DIR/blocked-waiting" \
     || die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — $RECEIPT_NOTE — but $STATE_DIR/blocked-waiting could not be written, so \`hw ruling\` cannot resume this task and nothing will expire it. The pane is still open at $HERDR_PANE_ID. Do NOT re-run done-invoker."
+  invoker_cockpit_kick   # `blocked-waiting` is what makes a ruling valid on this pane
   printf 'brainer notified via %s (blocked, %s file(s)); %s; pane KEPT, waiting: `hw ruling %s "<the unblock>"` resumes this task, `hw reap` closes it after %sh unanswered.\n' \
     "$DELIVERY_ROUTE" "$FILES" "$RECEIPT_NOTE" "$HERDR_PANE_ID" "${HW_BLOCKED_WAIT_HOURS:-24}"
   exit 0

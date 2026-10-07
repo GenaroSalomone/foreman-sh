@@ -1,0 +1,331 @@
+{
+ "schema": 1,
+ "generated_at": 1789999910000,
+ "writer": {
+  "pid": 1234,
+  "hw_rev": "0000000",
+  "seq": 42,
+  "interval_s": 5
+ },
+ "invoker_pane": "w1:p1",
+ "herdr": {
+  "ok": true,
+  "server_started_ms": 1789996400000,
+  "error": null
+ },
+ "totals": {
+  "executors": 7,
+  "omitted": 0,
+  "asks": 1,
+  "working": 1,
+  "idle": 1,
+  "reports": 1,
+  "blocked": 1,
+  "challenges": 1,
+  "rulings_pending": 1
+ },
+ "rules": {
+  "cut": {
+   "running": false,
+   "since_ms": null,
+   "holder": null
+  }
+ },
+ "rows": [
+  {
+   "id": "demo:task-01",
+   "project": "demo",
+   "task": "task-01",
+   "pane": "w1:p11",
+   "run": "run-01",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_holding",
+   "turn_ended_at": 1789999939000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 13.5,
+    "tokens": 26000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "challenge",
+   "attention_since": 1789999939000,
+   "report": null,
+   "ask": {
+    "kind": "challenge",
+    "seq": "1/3",
+    "state": "delivered",
+    "at": 1789999939000,
+    "pending_reply": "/srv/demo/.hw/run-01/pending-reply-1"
+   },
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-02",
+   "project": "demo",
+   "task": "task-02",
+   "pane": "w1:p12",
+   "run": "run-02",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_holding",
+   "turn_ended_at": 1789999938000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 14.5,
+    "tokens": 27000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "ask",
+   "attention_since": 1789999938000,
+   "report": null,
+   "ask": {
+    "kind": "ask",
+    "seq": "1/3",
+    "state": "delivered",
+    "at": 1789999938000,
+    "pending_reply": "/srv/demo/.hw/run-02/pending-reply-1"
+   },
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-03",
+   "project": "demo",
+   "task": "task-03",
+   "pane": "w1:p13",
+   "run": "run-03",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_holding",
+   "turn_ended_at": 1789999937000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 15.5,
+    "tokens": 28000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "blocked",
+   "attention_since": 1789999937000,
+   "report": {
+    "envelope_id": "run-03:done",
+    "status": "blocked",
+    "state": "delivered",
+    "at": 1789999937000,
+    "summary": "Stopped: a handle is missing; name it to resume.",
+    "artifacts": 2,
+    "engram": null
+   },
+   "ask": null,
+   "actions": {
+    "verify": true,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "done": "task blocked, not done"
+    }
+   }
+  },
+  {
+   "id": "demo:task-04",
+   "project": "demo",
+   "task": "task-04",
+   "pane": "w1:p14",
+   "run": "run-04",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_after_report",
+   "turn_ended_at": 1789999936000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 16.5,
+    "tokens": 29000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 1,
+    "oldest_at": 1789999910000
+   },
+   "attention": "report",
+   "attention_since": 1789999936000,
+   "report": {
+    "envelope_id": "run-04:done",
+    "status": "done",
+    "state": "delivered",
+    "at": 1789999936000,
+    "summary": "Established the contract; nothing left open.",
+    "artifacts": 2,
+    "engram": null
+   },
+   "ask": null,
+   "actions": {
+    "verify": true,
+    "ruling": false,
+    "done": true,
+    "receipt": true,
+    "why_not": {
+     "ruling": "task already reported"
+    }
+   }
+  },
+  {
+   "id": "demo:task-05",
+   "project": "demo",
+   "task": "task-05",
+   "pane": "w1:p15",
+   "run": "run-05",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 17.5,
+    "tokens": 30000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "working",
+   "attention_since": 1789999935000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": true,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "done": "task still working"
+    }
+   }
+  },
+  {
+   "id": "demo:task-06",
+   "project": "demo",
+   "task": "task-06",
+   "pane": "w1:p16",
+   "run": "run-06",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "idle",
+   "turn_state": "ended_unreported",
+   "turn_ended_at": 1789999934000,
+   "turns": 3,
+   "children_running": null,
+   "ctx": {
+    "pct": 18.5,
+    "tokens": 31000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "idle",
+   "attention_since": 1789999934000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": false,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
+     "done": "turn ended without a report"
+    }
+   }
+  },
+  {
+   "id": "demo:task-07",
+   "project": "demo",
+   "task": "task-07",
+   "pane": "w1:p17",
+   "run": "run-07",
+   "task_n": 1,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "agent_status": "unknown",
+   "turn_state": null,
+   "turn_ended_at": null,
+   "turns": 0,
+   "children_running": null,
+   "ctx": {
+    "pct": 19.5,
+    "tokens": 32000,
+    "source": "turn-end"
+   },
+   "rulings_pending": {
+    "count": 0,
+    "oldest_at": null
+   },
+   "attention": "gone",
+   "attention_since": 1789999933000,
+   "report": null,
+   "ask": null,
+   "actions": {
+    "verify": false,
+    "ruling": false,
+    "done": true,
+    "receipt": true,
+    "why_not": {
+     "verify": "no report to verify",
+     "ruling": "pane no longer exists"
+    }
+   }
+  }
+ ]
+}

@@ -112,6 +112,9 @@ OTHER COMMANDS
     hw reports [<project>]           one line per task: which reports are on disk
     hw reports <project> <task>      the report text for one task
     hw reports <project> --full      the report text for every task in the lane
+    hw cockpit-state [--once|--loop N]
+                                    write the file the brainer's cockpit panel reads
+                                    (`brain` keeps it fresh; the invokers refresh it on events)
     hw output tree <path>...        executor declaration of repository-tree output
     hw output none | outside <ref>  executor declaration of no-tree / external output
     hw stage                        brainer check: which executor declared each staged path
@@ -154,7 +157,11 @@ OTHER COMMANDS
         RESUMES that same task in the same session (sent now) and it reports
         again with its own done-invoker.
 
-    hw next <pane> [--force] [--dry-run] [--sdd <mode>] "<task>" | --brief <path>
+    hw next <pane> [--force] [--dry-run] [--sdd <mode>] [--run <id>] "<task>" | --brief <path>
+        --run <id>: the run `hw revive` brought back, when it is not the newest
+        under the pane's .hw. A revived run that reported takes task N+1 with its
+        own done-invoker (no --retask); a reported run NOT revived is refused,
+        naming `hw revive`. Without --run nothing changes.
         Flags may appear before or after the task text. Without --sdd the
         effective live worktree surface is measured and incompatible vendor/mode
         pairs are refused before task creation or delivery. The launch record is

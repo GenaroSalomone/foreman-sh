@@ -1,0 +1,1 @@
+{"schema":1,"level":"warn","rules":[{"id":"cut-running","level":"warn","msg":"a suite cut is running; the dispatch will queue behind it"}]}

@@ -1,0 +1,35 @@
+{
+ "schema": 1,
+ "generated_at": 1789999998000,
+ "writer": {
+  "pid": 1234,
+  "hw_rev": "0000000",
+  "seq": 42,
+  "interval_s": 5
+ },
+ "invoker_pane": "w1:p1",
+ "herdr": {
+  "ok": true,
+  "server_started_ms": 1789996400000,
+  "error": null
+ },
+ "totals": {
+  "executors": 0,
+  "omitted": 0,
+  "asks": 0,
+  "working": 0,
+  "idle": 0,
+  "reports": 0,
+  "blocked": 0,
+  "challenges": 0,
+  "rulings_pending": 0
+ },
+ "rules": {
+  "cut": {
+   "running": false,
+   "since_ms": null,
+   "holder": null
+  }
+ },
+ "rows": []
+}

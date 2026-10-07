@@ -1,0 +1,1 @@
+{"schema":1,"level":"block","rules":[{"id":"account-override","level":"block","msg":"--account differs from the lane default and hw would refuse it"},{"id":"cut-running","level":"warn","msg":"a suite cut is running; the dispatch will queue behind it"}]}

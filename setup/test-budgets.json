@@ -273,9 +273,41 @@
       "exit": 0,
       "seconds": 1.2
     },
+    "795-cockpit-contract-is-frozen.sh": {
+      "exit": 0,
+      "seconds": 0.14
+    },
+    "796-cockpit-actions-are-the-verbs-refusals.sh": {
+      "exit": 0,
+      "seconds": 56.15
+    },
+    "797-cockpit-state-writer.sh": {
+      "exit": 0,
+      "seconds": 137.19
+    },
     "80-codex-brief-delivery.sh": {
       "exit": 0,
       "seconds": 9.16
+    },
+    "801-cockpit-mod-reads-the-state.sh": {
+      "exit": 0,
+      "seconds": 15.5
+    },
+    "802-cockpit-buttons-and-the-rule-band.sh": {
+      "exit": 0,
+      "seconds": 30
+    },
+    "803-brain-loads-the-cockpit-when-it-can.sh": {
+      "exit": 0,
+      "seconds": 25
+    },
+    "804-a-reopened-brainer-keeps-its-cockpit.sh": {
+      "exit": 0,
+      "seconds": 40
+    },
+    "805-the-pilot-recorder.sh": {
+      "exit": 0,
+      "seconds": 40
     },
     "81-codex-reply-command.sh": {
       "exit": 0,
@@ -326,6 +358,6 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-10-06T15:57:49Z",
+  "measured_at": "2026-10-06T20:19:59Z",
   "touched_budget_seconds": 180
 }

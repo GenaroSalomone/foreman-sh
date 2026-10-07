@@ -1,0 +1,816 @@
+#!/usr/bin/env python3
+"""cockpit-state — the writer of the cockpit's state file (contract: cockpit/schema.json).
+
+    cockpit-state [--once]              write the file once and exit
+    cockpit-state --loop N              write now and every N seconds; leaves when its
+                                        parent dies, or (--bind-pane) when the brainer
+                                        pane is gone from herdr
+    cockpit-state --kick                an EVENT happened: write, debounced to one write
+                                        per 250 ms, in the background; returns at once
+    cockpit-state --print-path          the state file this brainer's mod reads
+    cockpit-state ctx <transcript>      `{"pct":…,"tokens":…}` from the last assistant
+                                        usage of a claude transcript (exit 1: none)
+    cockpit-state --pilot               the pilot metric: median and p90 time from an envelope
+                                        (report, ask, challenge) to the brainer's first action on
+                                        its pane, and what has had none for 30 min
+
+    options  --invoker PANE   the brainer whose executors these rows are (default
+                              $HW_COCKPIT_INVOKER, else $HERDR_PANE_ID); --rundir DIR
+                              names it from that run's env instead. When either flag
+                              names a brainer that does not resolve (an empty --invoker,
+                              a run env without HW_INVOKER_PANE) nothing falls back to the
+                              environment's pane, which in an executor is its own: a kick
+                              writes nothing and leaves a line in <work>/.cockpit/skipped-kicks.log
+             --state PATH     the file (default $HW_COCKPIT_STATE, else
+                              <work>/.cockpit/<invoker>.json)
+             --stdout         print instead of writing (nothing is created)
+
+WHAT IT READS: `herdr pane list` (one RPC, ~7 ms with 40 panes), each executor's run
+directory (task, markers, hold files, queued rulings, receipt) and the suite gate's
+slot directory. NEVER a pane capture — `hw status` reads one per pane and took 25.5 s
+with 31 panes, which is why this exists. Read-only except its own file: written through
+a tmp file and `os.replace` under flock, so a reader sees the old file or the new one,
+never half of either, and capped at 256 KiB (rows are dropped from the END, which is the
+lowest-ranked, and counted in totals.omitted).
+
+THE ROW'S TRUTH IS ON DISK, NOT IN A TOKEN, wherever a token can outlive its task: an ask
+is a valid `pending-reply-<n>` hold in the task's state dir (ask tokens "outlive the task
+that opened them", bin/hw `_agent_blocked_on_own_ask`), a report is the task's `done`
+marker. A token only fills in what the disk fact does not carry (the summary, the context).
+
+WHAT IT DOES NOT DECIDE: which buttons are valid. That is `bin/hw-actions`, the module
+`hw done`, `hw ruling` and `hw receipt` take their refusals from, so a button is false
+exactly where the verb would refuse and says the verb's own words.
+
+THE PILOT RECORDER. Every write also appends one line per NEW report, ask or challenge a row
+carries (`{"at","pane","task","kind"}`, `at` the envelope's own time) to <state dir>/cockpit-events.jsonl,
+deduplicated against the file's tail, rotated to cockpit-events.jsonl.1 at 1 MiB. The mod appends its own
+`{"at","pane","verb"}` to cockpit-actions.jsonl beside it (a second file, because the mod's fs can only
+rewrite a whole file and would otherwise drop a line this writer appended in between). Both live under
+<work>/.cockpit, never in a repo. `--pilot` reads the two.
+
+Environment: HW_COCKPIT_HERDR (the herdr command, default `herdr`; tests stub it),
+HW_COCKPIT_WORK / WORK (the work root), HW_BRAIN_ROOT.
+"""
+import argparse
+import datetime
+import fcntl
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+BIN = os.path.dirname(os.path.realpath(__file__))
+SCHEMA = 1
+CAP_BYTES = 256 * 1024
+MAX_ROWS = 64
+DEBOUNCE_S = 0.25
+ORDER = ["challenge", "ask", "blocked", "report", "working", "idle", "gone"]
+SUM_CHUNKS = ["sum"] + ["sum%d" % i for i in range(2, 8)]
+TOKEN_WIDTH = 80  # invoker-common.sh INVOKER_TOKEN_CHARS: herdr cuts a token value here
+# What `ctx` assumes about a model's window. MEASURED for the 200k default (probe P5:
+# 44424 tokens = statusline 44.4k = 22 %); a `[1m]` model id is the 1M window by name.
+# Any other window is UNESTABLISHED, so it is not guessed: see ctx_from_transcript.
+WINDOW_DEFAULT = 200_000
+WINDOW_1M = 1_000_000
+
+
+def _load(name):
+    """A sibling bin/ tool as a module (they have no .py extension)."""
+    path = os.path.join(BIN, name)
+    sys.dont_write_bytecode = True
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+# ── small readers ────────────────────────────────────────────────────────────
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def iso_ms(s):
+    """`2026-10-06T14:49:35Z` → epoch ms, None when it is not that."""
+    try:
+        t = datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return int(t.timestamp() * 1000)
+
+
+def mtime_ms(path):
+    try:
+        return int(os.path.getmtime(path) * 1000)
+    except OSError:
+        return None
+
+
+def read_text(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def to_int(v):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def to_float(v):
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def work_root():
+    w = os.environ.get("HW_COCKPIT_WORK") or os.environ.get("WORK")
+    if not w:
+        root = os.environ.get("HW_BRAIN_ROOT") or os.path.dirname(BIN)
+        try:
+            with open(os.path.join(root, "projects.json"), encoding="utf-8") as fh:
+                w = json.load(fh).get("work")
+        except (OSError, ValueError):
+            w = None
+    return os.path.expanduser(w) if w else None
+
+
+def state_path(invoker):
+    p = os.environ.get("HW_COCKPIT_STATE")
+    if p:
+        return p
+    w = work_root()
+    if not w or not invoker:
+        return None
+    return os.path.join(w, ".cockpit", invoker + ".json")
+
+
+def hw_rev():
+    root = os.environ.get("HW_BRAIN_ROOT") or os.path.dirname(BIN)
+    try:
+        r = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"], capture_output=True,
+                           text=True, timeout=2)
+        return r.stdout.strip() or "unknown" if r.returncode == 0 else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+# ── herdr ────────────────────────────────────────────────────────────────────
+
+def herdr_panes():
+    """(ok, panes, error). One RPC; any failure is ok=False and rows empty."""
+    cmd = os.environ.get("HW_COCKPIT_HERDR", "herdr")
+    try:
+        r = subprocess.run([cmd, "pane", "list"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, [], "herdr pane list failed: %s" % (str(e) or type(e).__name__)
+    if r.returncode != 0:
+        return False, [], "herdr pane list exited %d" % r.returncode
+    try:
+        panes = json.loads(r.stdout)["result"]["panes"]
+    except (ValueError, KeyError, TypeError):
+        return False, [], "herdr pane list answered something that is not a pane list"
+    return True, panes, None
+
+
+# ── run directories ──────────────────────────────────────────────────────────
+
+def find_rundir(cwd, run):
+    """The pane's own run first (bin/state-witness.sh witness_run_dir), up to 12 parents."""
+    d = cwd or ""
+    for _ in range(12):
+        if not d or d == "/":
+            break
+        cand = os.path.join(d, ".hw", run)
+        if run and os.path.isdir(cand):
+            return cand
+        d = os.path.dirname(d)
+    return None
+
+
+def task_seq(rundir):
+    n = to_int("".join(c for c in (read_text(os.path.join(rundir, "task")) or "") if c.isdigit()))
+    return n if n and n > 0 else 1
+
+
+def task_dir(rundir):
+    n = task_seq(rundir)
+    return rundir if n == 1 else os.path.join(rundir, "t%d" % n)
+
+
+def receipt_value(rundir, key):
+    """The LAST value of `key` in the run's receipt.jsonl, None when absent."""
+    val = None
+    text = read_text(os.path.join(rundir, "receipt.jsonl")) or ""
+    for line in text.splitlines():
+        if '"%s"' % key not in line:
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("key") == key:
+            val = o.get("value")
+    return val
+
+
+def join_chunks(tokens, names):
+    """Rejoin a chunked token (`sum`, `sum2` …) into the text it carried.
+
+    herdr TRIMS trailing whitespace from every value (measured on live panes), and
+    invoker_chunk_tokens breaks at a space when it can, keeping the space on the chunk
+    it ended. So a chunk shorter than the width lost a separator and gets one back; a
+    chunk of exactly the width was a hard cut inside a word and gets none.
+    """
+    out = ""
+    present = [tokens[n] for n in names if isinstance(tokens.get(n), str) and tokens[n] != ""]
+    for i, c in enumerate(present):
+        out += c
+        if i < len(present) - 1 and len(c) < TOKEN_WIDTH:  # MUTATION-ANCHOR: 797-M07
+            out += " "
+    return out
+
+
+# ── the row ──────────────────────────────────────────────────────────────────
+
+def pending_rulings(rundir):
+    ages = []
+    for f in glob.glob(os.path.join(rundir, "pending-ruling*")):
+        n = os.path.basename(f)[len("pending-ruling"):]
+        if (n == "" or re.fullmatch(r"\.\d+", n)) and os.path.isfile(f):
+            m = mtime_ms(f)
+            if m is not None:
+                ages.append(m)
+    return {"count": min(len(ages), 5), "oldest_at": min(ages) if ages else None}
+
+
+def ask_of(rundir, tdir, pane_id, run, vendor, tokens, hold):
+    """The outstanding ask or challenge, from its hold file; None when nothing is owed.
+
+    `pending_reply` is the hold's path only when the reply verbs would be accepted:
+    the hold is valid for THIS pane (holdfacts, the validator channel-send itself asks)
+    and its route is herdr, which is what the verbs name.
+    """
+    best = None
+    for f in sorted(glob.glob(os.path.join(tdir, "pending-reply-*"))):
+        facts, err = hold.read_facts(f)
+        if facts is None:
+            continue
+        m = re.fullmatch(re.escape(run) + r"(?::t\d+)?:(ask|challenge):([1-9][0-9]*):reply", facts.get("logical_id", ""))
+        if not m:
+            continue
+        kind, n = m.group(1), int(m.group(2))
+        at = mtime_ms(f) or 0
+        valid = hold.problem(facts, run, pane_id, vendor) is None and facts.get("route") == "herdr"  # MUTATION-ANCHOR: 797-M08
+        label = tokens.get("ask_seq") if re.fullmatch(r"%d/\d+" % n, tokens.get("ask_seq") or "") else "%d/3" % n
+        cand = {"kind": kind, "seq": label,
+                "state": "delivered" if facts.get("state") == "delivered" else "undelivered",
+                "at": at, "pending_reply": os.path.abspath(f) if valid else None}
+        if best is None or at >= best["at"]:
+            best = cand
+    return best
+
+
+def report_of(rundir, tdir, tokens, blocked_waiting):
+    """The current task's report, or None. The `done` marker is the fact; done tokens
+    outlive a task like ask tokens do, so they only count with it, or when they say the
+    report was never delivered (then there is no marker to find)."""
+    marker = os.path.join(tdir, "done")
+    has_marker = os.path.isfile(marker) and not os.path.isfile(os.path.join(tdir, "reopened"))  # MUTATION-ANCHOR: 797-M09
+    status = tokens.get("done_status")
+    done_at = iso_ms(tokens.get("done_at"))
+    stranded = False
+    if not has_marker:
+        if status in ("done", "blocked") and tokens.get("done_state") == "undelivered" and done_at is not None:
+            floor = mtime_ms(os.path.join(rundir, "task")) if tdir != rundir else 0
+            stranded = done_at >= (floor or 0)
+        if not stranded:
+            return None
+    if status not in ("done", "blocked"):
+        status = "blocked" if blocked_waiting else (receipt_value(rundir, "report_status") or "done")
+        if status not in ("done", "blocked"):
+            status = "done"
+    summary = join_chunks(tokens, SUM_CHUNKS) if tokens.get("done_status") else ""
+    if not summary:
+        summary = str(receipt_value(rundir, "report_summary") or "")
+    artifacts = to_int(tokens.get("artifacts")) if tokens.get("done_status") else None
+    if artifacts is None:
+        artifacts = to_int(receipt_value(rundir, "report_artifacts")) or 0
+    engram = tokens.get("engram") if tokens.get("done_status") else None
+    if not engram:
+        engram = receipt_value(rundir, "report_engram") or None
+    seq = task_seq(rundir)
+    prefix = os.path.basename(rundir) + ("" if seq == 1 else ":t%d" % seq)
+    return {"envelope_id": prefix + ":done", "status": status,
+            "state": "undelivered" if (tokens.get("done_state") == "undelivered" and done_at is not None) else "delivered",
+            "at": done_at if done_at is not None else (mtime_ms(marker) or 0),
+            "summary": summary[:640], "artifacts": artifacts, "engram": engram if isinstance(engram, str) else None}
+
+
+def ctx_of(tokens):
+    pct, toks = to_float(tokens.get("ctx_pct")), to_int(tokens.get("ctx_tokens"))
+    if pct is None or toks is None or not (0 <= pct <= 100):
+        return {"pct": None, "tokens": None, "source": None}
+    return {"pct": pct, "tokens": toks, "source": "turn-end"}
+
+
+def build_row(pane, invoker, mods):
+    """One row, or None when this pane is not an executor of `invoker`."""
+    tokens = pane.get("tokens") or {}
+    task, run = tokens.get("hw_task"), tokens.get("hw_run")
+    if not task or not run:
+        return None
+    rundir = find_rundir(pane.get("cwd"), run)
+    if not rundir:
+        return None
+    env = mods["runenv"].read(rundir, lenient=True) or {}
+    if env.get("HW_INVOKER_PANE") != invoker:  # MUTATION-ANCHOR: 797-M03
+        return None
+    project = tokens.get("hw_project") or env.get("HW_PROJECT") or "unknown"
+    tdir = task_dir(rundir)
+    vendor = env.get("HW_EXECUTOR_VENDOR")
+    vendor = vendor if vendor in ("claude", "opencode", "codex") else "unknown"
+    pane_id = pane.get("pane_id")
+    blocked_waiting = os.path.isfile(os.path.join(tdir, "blocked-waiting"))
+    report = report_of(rundir, tdir, tokens, blocked_waiting)
+    ask = None if report else ask_of(rundir, tdir, pane_id, run, vendor, tokens, mods["holdfacts"])
+    status = pane.get("agent_status")
+    status = status if status in ("idle", "working", "unknown") else "unknown"
+    turn_state = tokens.get("turn_state")
+    if turn_state not in ("working", "ended_unreported", "ended_after_report", "ended_with_ruling", "ended_holding",
+                          "ended_human_boundary", "ended_awaiting_child", "handback_refused"):
+        turn_state = None
+    turn_at = iso_ms(tokens.get("turn_ended_at"))
+    children = tokens.get("children_running") or None
+
+    if ask:
+        attention, since = ask["kind"], ask["at"]
+    elif report:
+        attention = "blocked" if report["status"] == "blocked" else "report"
+        since = report["at"]
+    elif status == "working" or (turn_state == "ended_awaiting_child" and children):
+        attention, since = "working", turn_at
+    else:
+        attention, since = "idle", turn_at
+
+    try:
+        facts = mods["actions"].facts_from_pane(pane, rundir)
+        actions = mods["actions"].actions_for_row(facts)
+    except Exception as e:  # one row must not take the file down; say so where the button is
+        why = "cockpit-state could not evaluate this row: %s" % (str(e) or type(e).__name__)
+        actions = {"verify": False, "ruling": False, "done": False, "receipt": False,
+                   "why_not": {"verify": why, "ruling": why, "done": why, "receipt": why}}
+
+    return {
+        "id": "%s:%s" % (project, task), "project": project, "task": task, "pane": pane_id, "run": run,
+        "task_n": task_seq(rundir), "vendor": vendor, "model": receipt_value(rundir, "model_running") or None,
+        "agent_status": status, "turn_state": turn_state, "turn_ended_at": turn_at,
+        "turns": to_int(tokens.get("turns")), "children_running": children, "ctx": ctx_of(tokens),
+        "rulings_pending": pending_rulings(rundir), "attention": attention, "attention_since": since,
+        "report": report, "ask": ask, "actions": actions,
+    }
+
+
+def cut_state(work):
+    """Is a release cut holding a suite-gate slot? Its slot's `owner.cmd` starts
+    `release cut` (setup/release/cut: sg_take "release cut $VERSION" cut)."""
+    off = {"running": False, "since_ms": None, "holder": None}
+    if not work:
+        return off
+    for slot in sorted(glob.glob(os.path.join(work, ".locks", "suite-gate", "slot.*"))):
+        cmd = (read_text(os.path.join(slot, "owner.cmd")) or "").strip()
+        pid = to_int(read_text(os.path.join(slot, "owner.pid")))
+        if not cmd.startswith("release cut") or not pid:
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            start = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                                   timeout=2).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if " ".join(start.split()) != " ".join((read_text(os.path.join(slot, "owner.start")) or "").split()):  # MUTATION-ANCHOR: 797-M16
+            continue
+        at = to_int(read_text(os.path.join(slot, "owner.at")))
+        task = (read_text(os.path.join(slot, "owner.task")) or "").strip()
+        return {"running": True, "since_ms": at * 1000 if at else None, "holder": task or cmd}
+    return off
+
+
+def key_of(r):
+    return (ORDER.index(r["attention"]), r["attention_since"] or 0, r["id"])  # MUTATION-ANCHOR: 797-M10
+
+
+def totals_of(rows, omitted):
+    def n(a):
+        return sum(1 for r in rows if r["attention"] == a)
+    return {"executors": len(rows), "omitted": omitted, "working": n("working"), "idle": n("idle"),
+            "asks": n("ask"), "reports": n("report"), "blocked": n("blocked"), "challenges": n("challenge"),
+            "rulings_pending": sum(r["rulings_pending"]["count"] for r in rows)}
+
+
+def build_state(invoker, seq, interval_s, rev, now=None):
+    mods = {"runenv": _load("runenv"), "holdfacts": _load("holdfacts"), "actions": _load("hw-actions")}
+    ok, panes, err = herdr_panes()
+    rows = []
+    if ok:
+        seen = {}
+        for p in panes:
+            r = build_row(p, invoker, mods)
+            if r is None:
+                continue
+            # one task, one row: a re-dispatch leaves its old pane around, the newest run wins
+            if r["id"] in seen and seen[r["id"]]["run"] >= r["run"]:
+                continue
+            seen[r["id"]] = r
+        rows = sorted(seen.values(), key=key_of)
+    omitted = max(0, len(rows) - MAX_ROWS)  # MUTATION-ANCHOR: 797-M12
+    rows = rows[:MAX_ROWS]
+    state = {"schema": SCHEMA, "generated_at": now if now is not None else now_ms(),
+             "writer": {"pid": os.getpid(), "hw_rev": rev, "seq": seq, "interval_s": interval_s},
+             "invoker_pane": invoker,
+             "herdr": {"ok": ok, "server_started_ms": None, "error": err},
+             "totals": totals_of(rows, omitted), "rules": {"cut": cut_state(work_root())}, "rows": rows}
+    return fit(state)
+
+
+def serialize(state):
+    return json.dumps(state, indent=1) + "\n"
+
+
+def fit(state):
+    """Cap the file as WRITTEN (indented) at 256 KiB by dropping rows from the end (lowest rank)."""
+    while len(serialize(state).encode()) > CAP_BYTES and state["rows"]:
+        state["rows"].pop()  # MUTATION-ANCHOR: 797-M04
+        state["totals"] = totals_of(state["rows"], state["totals"]["omitted"] + 1)
+    return state
+
+
+# ── the pilot recorder ───────────────────────────────────────────────────────
+
+EVENTS = "cockpit-events.jsonl"
+ACTIONS = "cockpit-actions.jsonl"
+EVENTS_CAP = 1024 * 1024
+TAIL_BYTES = 256 * 1024
+MISSED_MS = 30 * 60 * 1000
+
+
+def read_jsonl(path, tail=None):
+    try:
+        with open(path, "rb") as fh:
+            if tail:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - tail))
+            data = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    out = []
+    for line in data.split("\n"):
+        try:
+            v = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(v, dict):
+            out.append(v)
+    return out
+
+
+def events_of(state):
+    for r in state["rows"]:
+        if r.get("report"):
+            yield {"at": r["report"]["at"], "pane": r["pane"], "task": r["task"], "kind": "report"}
+        if r.get("ask"):
+            yield {"at": r["ask"]["at"], "pane": r["pane"], "task": r["task"], "kind": r["ask"]["kind"]}
+
+
+def record_events(state, path):
+    """Append the events not already in the file's tail. Never raises: the recorder must not take
+    the state file down with it."""
+    try:
+        new = [e for e in events_of(state) if isinstance(e["at"], int)]
+        if not new:
+            return
+        f = os.path.join(os.path.dirname(path), EVENTS)
+        with open(f + ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            seen = {(e.get("at"), e.get("pane"), e.get("task"), e.get("kind")) for e in read_jsonl(f, TAIL_BYTES)}
+            lines = [json.dumps(e, separators=(",", ":")) + "\n" for e in new
+                     if (e["at"], e["pane"], e["task"], e["kind"]) not in seen]
+            if not lines:
+                return
+            try:
+                if os.path.getsize(f) >= EVENTS_CAP:
+                    os.replace(f, f + ".1")
+            except OSError:
+                pass
+            fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, "".join(lines).encode())
+            finally:
+                os.close(fd)
+    except Exception as e:
+        print("cockpit-state: could not record events: %s" % (str(e) or type(e).__name__), file=sys.stderr)
+
+
+def pilot(cdir, now):
+    ev = read_jsonl(os.path.join(cdir, EVENTS + ".1")) + read_jsonl(os.path.join(cdir, EVENTS))
+    ac = read_jsonl(os.path.join(cdir, ACTIONS + ".1")) + read_jsonl(os.path.join(cdir, ACTIONS))
+    acts = {}
+    for a in ac:
+        if isinstance(a.get("at"), int) and a.get("pane"):
+            acts.setdefault(a["pane"], []).append(a["at"])
+    times, missed = [], []
+    for e in ev:
+        if not isinstance(e.get("at"), int):
+            continue
+        later = [t for t in acts.get(e.get("pane"), []) if t >= e["at"]]
+        if later:
+            times.append(min(later) - e["at"])
+        elif now - e["at"] > MISSED_MS:
+            missed.append(e)
+    times.sort()
+
+    def q(p):  # nearest rank
+        return times[max(0, -(-p * len(times) // 100) - 1)]
+    return times, q, missed
+
+
+def run_pilot(cdir):
+    now = to_int(os.environ.get("HW_COCKPIT_NOW_MS")) or now_ms()
+    times, q, missed = pilot(cdir, now)
+    if times:
+        print("acted on %d envelopes: median %.1fs, p90 %.1fs" % (len(times), q(50) / 1000, q(90) / 1000))
+    else:
+        print("acted on 0 envelopes: median -, p90 -")
+    print("no action after 30 min: %d" % len(missed))
+    for e in missed:
+        print("  %s %s %s (%d min ago)" % (e["pane"], e["task"], e["kind"], (now - e["at"]) // 60000))
+    return 0
+
+
+# ── writing ──────────────────────────────────────────────────────────────────
+
+def write_once(invoker, path, interval_s, rev, to_stdout=False):
+    if to_stdout:
+        print(json.dumps(build_state(invoker, 0, interval_s, rev), indent=1))
+        return 0
+    if not path:
+        print("cockpit-state: no state path (no work root, and no HW_COCKPIT_STATE)", file=sys.stderr)
+        return 2
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    lock = open(path + ".lock", "a")
+    deadline = time.time() + 3
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.time() > deadline:
+                return 0  # another writer is mid-write; its file is as new as ours
+            time.sleep(0.02)
+    try:
+        prev = 0
+        try:
+            with open(path, encoding="utf-8") as fh:
+                prev = int(json.load(fh)["writer"]["seq"])
+        except (OSError, ValueError, KeyError, TypeError):
+            prev = 0
+        body = serialize(build_state(invoker, prev + 1, interval_s, rev))
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        # 0600: the rows carry report summaries, which are the brainer's to read and nobody else's
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:  # MUTATION-ANCHOR: 797-M20
+            fh.write(body)
+        os.replace(tmp, path)  # MUTATION-ANCHOR: 797-M01
+        record_events(json.loads(body), path)
+        clean_stale_tmps(path)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+    return 0
+
+
+def clean_stale_tmps(path):
+    """A writer killed between creating its tmp file and the rename leaves the tmp behind (the
+    state file itself is untouched: that is the point of the rename). Called under the flock, so
+    no live writer is mid-write: any tmp whose pid is gone is garbage."""
+    for t in glob.glob(path + ".tmp.*"):
+        pid = to_int(t.rsplit(".", 1)[1])
+        if not pid or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            os.unlink(t)  # MUTATION-ANCHOR: 797-M22
+
+
+def kick(invoker, path):
+    """An event. The claim is a directory: whoever makes it owns the next write, which
+    happens DEBOUNCE_S later and reads the state as it is THEN, so every event that
+    arrives in between is covered by that one write (trailing-edge coalescing)."""
+    if not path:
+        return 0
+    claim = path + ".kick"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        os.mkdir(claim)
+    except FileExistsError:
+        age = time.time() - (os.path.getmtime(claim) if os.path.exists(claim) else 0)
+        if age < 5:
+            return 0  # a pending write will include this event  # MUTATION-ANCHOR: 797-M02
+        try:
+            os.rmdir(claim)
+            os.mkdir(claim)
+        except OSError:
+            return 0
+    except OSError:
+        return 0
+    subprocess.Popen([sys.executable, os.path.realpath(__file__), "--kick-run", "--invoker", invoker, "--state", path],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    return 0
+
+
+def kick_run(invoker, path):
+    time.sleep(DEBOUNCE_S)
+    try:
+        os.rmdir(path + ".kick")  # release BEFORE reading, so an event during the write re-arms
+    except OSError:
+        pass
+    return write_once(invoker, path, 5, hw_rev())
+
+
+def loop(invoker, path, every, bind_pane):
+    """The heartbeat. Two lifetimes, never both:
+
+    · default — it dies with the shell that started it (parent pid changes, or was already
+      1 when it booted: python takes ~100 ms to start and the shell may be gone by then);
+    · --bind-pane — it is detached (`bin/brain` starts it and exits, claude runs in the PANE,
+      not under brain) and dies with the brainer's pane: gone from `herdr pane list`, the
+      next beat leaves. A herdr that does not answer keeps it alive writing herdr.ok:false —
+      an outage is not a closed pane. ONE per brainer: a second one finds the lock held and
+      leaves, so a repeated `brain` start never stacks writers.
+    """
+    lock = None
+    if bind_pane and path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lock = open(path + ".loop.lock", "a")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # MUTATION-ANCHOR: 797-M19
+        except OSError:
+            return 0
+    ppid, rev = os.getppid(), hw_rev()
+    if not bind_pane and ppid == 1:  # MUTATION-ANCHOR: 797-M17
+        return 0  # orphaned before it started (the shell that launched it already exited)
+    while True:
+        if bind_pane:
+            ok, panes, _ = herdr_panes()
+            if ok and not any(p.get("pane_id") == invoker for p in panes):  # MUTATION-ANCHOR: 797-M18
+                return 0  # the brainer's pane is gone: this writer dies with it
+        try:
+            write_once(invoker, path, every, rev)
+        except Exception as e:  # MUTATION-ANCHOR: 797-M21  # one bad beat (a full disk, a herdr hiccup in a reader) must not end the heartbeat
+            print("cockpit-state: write failed: %s" % (str(e) or type(e).__name__), file=sys.stderr)
+        if not bind_pane and os.getppid() != ppid:  # MUTATION-ANCHOR: 797-M11
+            return 0  # the brainer's shell is gone: this writer dies with the pane
+        time.sleep(every)
+
+
+# ── ctx ──────────────────────────────────────────────────────────────────────
+
+def ctx_from_transcript(path):
+    """{"pct","tokens"} from the last main-thread assistant usage, or None.
+
+    tokens = input + cache_read + cache_creation, the number the statusline shows
+    (MEASURED, probe P5). The window is 200k, or 1M when the model id says `[1m]`;
+    a model whose window this does not know reads as the 200k default — which can
+    OVERstate the percentage, never hide a nearly full context."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 512 * 1024))
+            tail = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(tail):
+        if '"usage"' not in line:
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        msg = o.get("message") or {}
+        u = msg.get("usage")
+        if o.get("type") != "assistant" or o.get("isSidechain") or not isinstance(u, dict):
+            continue
+        toks = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+        if toks <= 0:
+            continue
+        window = WINDOW_1M if "[1m]" in str(msg.get("model", "")) else WINDOW_DEFAULT  # MUTATION-ANCHOR: 797-M15
+        return {"pct": round(min(100.0, toks * 100.0 / window), 1), "tokens": toks}
+    return None
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def invoker_of_rundir(rundir):
+    """The brainer a run reports to. A chained task keeps its state in `<run>/t<N>` and the env
+    file stays in the run directory itself."""
+    rundir = rundir.rstrip("/")
+    if re.fullmatch(r"t\d+", os.path.basename(rundir)):
+        rundir = os.path.dirname(rundir)
+    return (_load("runenv").read(rundir, lenient=True) or {}).get("HW_INVOKER_PANE")
+
+
+def note_skipped_kick(a):
+    """A kick that named a brainer it could not resolve: one line in <work>/.cockpit/skipped-kicks.log
+    (the callers discard stderr, so a file is the only place it can be read). Best effort, bounded."""
+    w = work_root()
+    line = "%s kick skipped: no brainer pane from %s\n" % (
+        time.strftime("%Y-%m-%dT%H:%M:%S"), ("--rundir " + a.rundir) if a.rundir else "an empty --invoker")
+    sys.stderr.write("cockpit-state: " + line)
+    if not w:
+        return
+    try:
+        d = os.path.join(w, ".cockpit")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        f = os.path.join(d, "skipped-kicks.log")
+        if os.path.exists(f) and os.path.getsize(f) > 65536:
+            return
+        with open(f, "a") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[0] == "ctx":
+        c = ctx_from_transcript(argv[1])
+        if c is None:
+            return 1
+        print(json.dumps(c))
+        return 0
+    ap = argparse.ArgumentParser(prog="cockpit-state", add_help=True)
+    ap.add_argument("--once", action="store_true")
+    ap.add_argument("--loop", type=int, metavar="N")
+    ap.add_argument("--kick", action="store_true")
+    ap.add_argument("--kick-run", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--print-path", action="store_true")
+    ap.add_argument("--bind-pane", action="store_true")
+    ap.add_argument("--pilot", action="store_true")
+    ap.add_argument("--stdout", action="store_true")
+    ap.add_argument("--invoker")
+    ap.add_argument("--rundir")
+    ap.add_argument("--state")
+    a = ap.parse_args(argv)
+    if a.pilot:
+        w = work_root()
+        cdir = os.path.dirname(a.state or os.environ.get("HW_COCKPIT_STATE") or "") or (w and os.path.join(w, ".cockpit"))
+        if not cdir:
+            print("cockpit-state: no state dir (no work root, and no HW_COCKPIT_STATE)", file=sys.stderr)
+            return 2
+        return run_pilot(cdir)
+    invoker = a.invoker or (invoker_of_rundir(a.rundir) if a.rundir else None)
+    if not invoker and (a.invoker is not None or a.rundir):  # MUTATION-ANCHOR: 797-M23
+        # The caller NAMED a brainer (an executor's kick, from the invoker it was dispatched by)
+        # and it did not resolve. The environment's pane is then the executor's own: writing
+        # to it would draw a cockpit for a pane that is no brainer. Kick nothing, say so.
+        note_skipped_kick(a)
+        return 0 if (a.kick or a.kick_run) else 2
+    invoker = invoker or os.environ.get("HW_COCKPIT_INVOKER") or os.environ.get("HERDR_PANE_ID")
+    if not invoker:
+        print("cockpit-state: no brainer pane (--invoker, $HW_COCKPIT_INVOKER or $HERDR_PANE_ID)", file=sys.stderr)
+        return 2
+    path = a.state or state_path(invoker)
+    if a.print_path:
+        if not path:
+            return 2
+        print(path)
+        return 0
+    if a.kick:
+        return kick(invoker, path)
+    if a.kick_run:
+        return kick_run(invoker, path)
+    if a.loop is not None:
+        if a.loop < 1:
+            print("cockpit-state: --loop wants a whole number of seconds >= 1", file=sys.stderr)
+            return 2
+        return loop(invoker, path, a.loop, a.bind_pane)
+    return write_once(invoker, path, 5, hw_rev(), a.stdout)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

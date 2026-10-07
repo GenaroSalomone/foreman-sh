@@ -713,6 +713,85 @@ esac
 BRAIN="${HW_BRAIN_ROOT:-$_brain_root}"
 # --version needs no lane table: it must answer from a brain whose table is broken.
 case "${1:-}" in -V|--version) printf 'hw %s\n' "$(cli_version "$BRAIN")"; exit 0 ;; esac
+
+# ── hw-core: the verbs that run as a Go binary (T0, the pilot: receipt, log, handle, help) ──
+# THE DEFAULT IS BASH, AND NOTHING BELOW RUNS UNLESS HW_IMPL (or HW_IMPL_<VERB>) IS
+# SET. `go` execs hw-core for a ported verb; `bash` is the path that has always run
+# and is the rollback; `shadow` runs both, prints bash's answer and appends any
+# difference in stdout, stderr or exit status to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (HW_SHADOW_JSONL names another file). A hw-core older than core/'s sources is treated as not built. A hw-core that is
+# not built falls back to bash with ONE warning line. The contract hw-core keeps is
+# setup/contracts/hw.md; the bash of these four verbs is frozen, a fix to one goes
+# to core/ (setup/decisions.md, «El núcleo de hw migra a Go»).
+_core_impl_for() {  # <verb> → bash | go | shadow
+  local up v
+  up="$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+  eval "v=\"\${HW_IMPL_$up:-\${HW_IMPL:-bash}}\""
+  case "$v" in
+    bash|go|shadow) printf '%s' "$v" ;;
+    *) die "HW_IMPL=$v is not an implementation — the valid ones are bash, go and shadow" ;;
+  esac
+}
+_core_find() {  # the hw-core binary, or nothing
+  local c os arch ext=""
+  if [ -n "${HW_CORE:-}" ]; then [ -x "$HW_CORE" ] && printf '%s' "$HW_CORE"; return 0; fi
+  os="$(uname -s | tr 'A-Z' 'a-z')"; arch="$(uname -m)"
+  case "$os" in mingw*|msys*|cygwin*) os=windows; ext=.exe ;; esac
+  case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+  for c in "$HW_BIN_DIR/hw-core$ext" "$HW_BIN_DIR/../core/dist/$os-$arch/hw-core$ext"; do
+    if [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
+  done
+  return 0
+}
+_core_stale() {  # <binary> — succeeds when a source in core/ is newer than it (the same test as contract_core_bin)
+  local src="$HW_BIN_DIR/../core"
+  [ -d "$src" ] || return 1
+  [ -n "$(find "$src" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$1" -print -quit 2>/dev/null)" ]
+}
+_core_shadow() {  # <core> <argv...> — runs both, prints bash's, exits with bash's status
+  local core="$1" tmp rc_b rc_g log diffs="" s
+  shift
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-shadow.XXXXXX")" || { warn "hw-core shadow: no temporary directory; running the bash implementation"; return 0; }
+  set +e
+  env -u HW_IMPL_RECEIPT -u HW_IMPL_LOG -u HW_IMPL_HANDLE -u HW_IMPL_HELP HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+  # bash has already written what the verb writes (the receipt's completion_marker); Go reads it and must not append it again
+  HW_CORE_READONLY=1 "$core" "$@" >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
+  set -e
+  for s in out err; do cmp -s "$tmp/b.$s" "$tmp/g.$s" || diffs="$diffs std$s"; done
+  [ "$rc_b" = "$rc_g" ] || diffs="$diffs status"
+  if [ -n "$diffs" ]; then
+    # the line carries transcript text: it goes to the user's state dir, never into the brain tree
+    log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
+    { mkdir -p "$(dirname "$log")" && jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg verb "$1" --arg argv "$*" \
+        --arg diffs "${diffs# }" --argjson bash_rc "$rc_b" --argjson go_rc "$rc_g" \
+        --rawfile bo "$tmp/b.out" --rawfile go_ "$tmp/g.out" --rawfile be "$tmp/b.err" --rawfile ge "$tmp/g.err" \
+        '{at: $at, verb: $verb, argv: $argv, differs: ($diffs | split(" ")), bash_rc: $bash_rc, go_rc: $go_rc,
+          stdout: {bash: $bo[0:400], go: $go_[0:400]}, stderr: {bash: $be[0:400], go: $ge[0:400]}}' >>"$log"; } 2>/dev/null || true
+  fi
+  cat "$tmp/b.out"; cat "$tmp/b.err" >&2
+  rm -rf "$tmp"
+  exit "$rc_b"
+}
+case "${1:-}" in
+  receipt|log|handle|help)
+    if [ "$1" = log ] && { [ -n "${HW_TASK:-}" ] || [ -n "${HW_RUN:-}" ]; }; then
+      _core_mode=bash   # `log` is a brainer verb: the executor gate below refuses it, and Go must not skip that
+    else
+      _core_mode="$(_core_impl_for "$1")"
+    fi
+    if [ "$_core_mode" != bash ]; then
+      _core_bin="$(_core_find)"
+      if [ -z "$_core_bin" ]; then
+        warn "hw-core is not built (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core builds it"
+      elif [ -z "${HW_CORE:-}" ] && _core_stale "$_core_bin"; then
+        warn "hw-core is older than the sources in core/ (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core rebuilds it"
+      else
+        export HW_BRAIN_ROOT="$BRAIN"
+        if [ "$_core_mode" = go ]; then exec "$_core_bin" "$@"; fi
+        _core_shadow "$_core_bin" "$@"
+      fi
+    fi
+    ;;
+esac
 lane_config_load "$BRAIN" || die "the lane table did not load, so no lane is known — fix $BRAIN/projects.json (the reason is above)"
 
 # herdr-rpc reaches the API-only RPCs the CLI does not expose: `layout.apply`
@@ -1835,6 +1914,7 @@ _agent_start() {
   if [ "${SANDBOX:-0}" = 1 ] && [ "${_SANDBOX_ARMED:-}" != "$pane" ]; then
     _agent_start_sandboxed "$@"; return
   fi
+  [ "$kind" != claude ] || claude_session_env_prep "$pane"  # MUTATION-ANCHOR: 810-M02
   while [ "$tries" -lt 15 ]; do
     if [ "$registered" = 1 ]; then
       # agent_not_ready keeps the registration. Poll that exact agent; a
@@ -2630,6 +2710,12 @@ _write_run_env() {
   if _design_gate_applies; then
     _receipt_into "$dir" design_boundary_t1 "$(_brief_boundary)" \
       "brief frontmatter boundary: in $BRIEF at dispatch — done-invoker requires an APPROVED design judgment"
+  fi
+  # checks.md, which done-invoker requires of a build's done report: keyed by
+  # task like the boundary, written by the same gate the prompt line ran.
+  if _checks_gate_applies; then
+    _receipt_into "$dir" checks_required_t1 required \
+      "kind build (declared or undeclared) at dispatch — done-invoker requires \$HW_ARTIFACTS/checks.md"
   fi
   # THE DEPLOYED CHECK done-invoker HOLDS AN ODD RUN TO. Task 1 here; `hw next`
   # writes deployed_check_t<N> for a re-task. _validate_sdd_gentle
@@ -6068,6 +6154,27 @@ _design_gate_applies() {
   esac
 }
 
+# A BUILD LEAVES `checks.md`: one row per requirement of the brief's Proof and
+# Verification, with its evidence. Same kinds as the code closing, so the prompt
+# line, the receipt below and done-invoker's refusal all read this one answer.
+_checks_gate_applies() {
+  case "$(_brief_kind_for_close)" in
+    ""|build) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+_checks_note() {
+  printf '%s' 'Before working, write $HW_ARTIFACTS/checks.md from the brief'"'"'s ## Proof and
+## Verification sections: a table, one row per requirement,
+
+    requirement | verdict | evidence | correction
+
+verdict is pass, fail or unresolved; evidence is a command plus its result, or
+a file:line. Fill it in as you go. done-invoker refuses a done report when the
+file is missing, has no rows, or has a row with an empty verdict.'
+}
+
 _design_judgment_note() {  # $1 = the declared boundary
   # Under `review: rdd` the design is still judged first (done-invoker holds it),
   # but the review at the end is native RDD, not a second Judgment Day.
@@ -6355,6 +6462,9 @@ branch changed against main (capped, the cut ones printed). It is still not the
 full suite and caches no full verdict, but a red it prints is yours to fix now,
 not after the merge.')" ;;
   esac
+  if _checks_gate_applies; then
+    preamble="$(printf '%s\n\n%s' "$preamble" "$(_checks_note)")"
+  fi
   # THE DESIGN BEFORE THE CODE, where the brief declares a boundary. Before the
   # closing, because it happens first.
   if _design_gate_applies; then
@@ -7658,6 +7768,7 @@ _new_brief() {
   if [ -e "$file" ]; then
     warn "brief already exists, opening it: $file"
   else
+    _archived_brief_gate "$proj" "$task"
     mkdir -p "$(dirname "$file")"
     # A project may carry its own template; fall back to the shared one.
     tpl="$BRAIN/$proj/BRIEF-TEMPLATE.md"
@@ -11583,6 +11694,12 @@ done < <(_hw_run_dirs)
 [ -r "$HW_LIB/hw/ledger.sh" ] || { printf 'hw: cannot load %s/hw/ledger.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
 . "$HW_LIB/hw/ledger.sh"
 
+# Archived briefs (briefs/archive/<yyyy-mm>/), the refusal to launch one, and the verb that
+# moves them: lib/hw/briefs.sh — _archived_brief_*, _briefs_*, cmd_briefs.
+# shellcheck source=../lib/hw/briefs.sh
+[ -r "$HW_LIB/hw/briefs.sh" ] || { printf 'hw: cannot load %s/hw/briefs.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
+. "$HW_LIB/hw/briefs.sh"
+
 
 # "<worktree root>:<lane>" per line, for each product-repo lane in table order —
 # the roots `hw status` walks for worktrees outside $WORK.
@@ -11760,6 +11877,7 @@ if [ "$_HW_CALLER_EXECUTOR" = 1 ]; then
     unstick)  _executor_refuse unstick "does not restart another pane" ;;
     reap)     case " $* " in *" --apply "*) _executor_refuse "reap --apply" "does not remove worktrees" ;; esac ;;
     sweep)    case " $* " in *" --apply "*) _executor_refuse "sweep --apply" "does not close other runs" ;; esac ;;
+    briefs)   case "${2:-}" in archive|restore|unarchive) _executor_refuse "briefs $2" "does not move the brain's briefs" ;; esac ;;
     preview)  _executor_refuse preview "does not keep or release another run's preview" ;;
     revive)   _executor_refuse revive "does not reopen another run's pane" ;;
     train)    _executor_refuse train "does not merge other tasks' branches or advance main" ;;
@@ -11860,6 +11978,7 @@ if [ "${1:-}" = stage ]; then shift; cmd_stage "$@"; exit 0; fi
 if [ "${1:-}" = worktrees ]; then shift; cmd_worktrees "$@"; exit 0; fi
 if [ "${1:-}" = reap ]; then shift; cmd_reap "$@"; exit 0; fi
 if [ "${1:-}" = ledger ]; then shift; cmd_ledger "$@"; exit 0; fi
+if [ "${1:-}" = briefs ]; then shift; cmd_briefs "$@"; exit 0; fi
 if [ "${1:-}" = reports ]; then
   shift
   HW_REPORTS_REPAIR=1
@@ -12308,6 +12427,11 @@ USAGE
     hw ledger [<lane>] [--brief <path>|--task <t>] [--state <s>] [--json]
                        each brief as never-dispatched, in-progress or done, from
                        $WORK/.hw-ledger/<lane>.jsonl plus the run's done marker
+    hw briefs archive <lane> [--apply]
+                       move the lane's finished briefs to briefs/archive/<yyyy-mm>/
+                       (plan only without --apply); an archived task does not launch
+    hw briefs restore <lane> <task> | unarchive <lane> --manifest <file>
+                       the way back, one brief or a whole manifest
 
   KEYCHAIN HANDLES
     --no-handle-check  skip the keychain-handle preflight
@@ -12625,7 +12749,8 @@ fi
 # nearest names; `--no-brief` is the deliberate way through, with a one-line warning.
 if [ -z "$BRIEF" ]; then
   BRIEF="$(_infer_brief "$PROJ" "$TASK")"
-  [ -n "$BRIEF" ] && info "brief inferred: $BRIEF"
+  # No flat brief: an ARCHIVED one ends the launch here, naming how to get it back.
+  if [ -n "$BRIEF" ]; then info "brief inferred: $BRIEF"; else _archived_brief_gate "$PROJ" "$TASK"; fi
 fi
 _briefless_gate
 if [ -n "$BRIEF" ]; then

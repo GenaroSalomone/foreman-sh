@@ -44,7 +44,7 @@ pass "790: a bin/ copy with no lib/ refuses loudly, naming the module"
 out="$(HW_LIB_DIR="$ROOT/lib" "$TMP/copy/bin/hw" reap --help 2>&1)" || fail "790: HW_LIB_DIR did not stand in for a missing lib/ — $out"
 printf '%s' "$out" | rg -q 'usage: hw reap' || fail "790: HW_LIB_DIR run printed no usage — $out"
 pass "790: HW_LIB_DIR stands in for a lib/ that is not beside bin/"
-mkdir -p "$TMP/copy/lib/hw"; printf 'cmd_reap() { echo BESIDE-WINS; }\n' > "$TMP/copy/lib/hw/reap.sh"; : > "$TMP/copy/lib/hw/status.sh"; : > "$TMP/copy/lib/hw/done.sh"; : > "$TMP/copy/lib/hw/next.sh"; : > "$TMP/copy/lib/hw/ledger.sh"
+mkdir -p "$TMP/copy/lib/hw"; printf 'cmd_reap() { echo BESIDE-WINS; }\n' > "$TMP/copy/lib/hw/reap.sh"; : > "$TMP/copy/lib/hw/status.sh"; : > "$TMP/copy/lib/hw/done.sh"; : > "$TMP/copy/lib/hw/next.sh"; : > "$TMP/copy/lib/hw/ledger.sh"; : > "$TMP/copy/lib/hw/briefs.sh"
 out="$(HW_LIB_DIR="$ROOT/lib" "$TMP/copy/bin/hw" reap 2>&1)" || true
 [ "$out" = BESIDE-WINS ] || fail "790: HW_LIB_DIR overrode the lib/ beside bin/ — $out"
 pass "790: the lib/ beside bin/ wins over HW_LIB_DIR"

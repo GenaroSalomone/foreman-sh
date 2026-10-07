@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""verdict-incremental — after a red full run, rerun only what the fix can have changed.
+
+    verdict-incremental plan   <root> [--full] [--tree <t>] [--out <file>]
+    verdict-incremental record <root> --results <file> --rc <n> --elapsed <s> [--tree <t> --commit <c>]
+    verdict-incremental chain  <common-dir> <tree>
+
+WHY. The 0.3.7 train ran `setup/verify-for-push` six times in about five hours
+(measured 2026-10-07: 870-3879 s each). Every fix changes the tree, the verdict
+cached for the old tree stops applying, and fixing ONE test paid the WHOLE suite
+again. A full run already knows, per job, what passed and what failed; a fix
+that touches three files cannot have turned a subject that never names them.
+
+THE RECORD. A FULL run (every job, `HW_TEST_ONLY` unset) leaves
+`<common-dir>/hw-push-verified/<tree>.subjects` whether it was green or red:
+the tree, the commit, and one `ok|red` row per job, as setup/test-hw judged it
+(`HW_TEST_RESULTS`). The name is not 40 hex, so every reader of that directory
+that looks for a tree verdict skips it (pre-push, bin/hw, release/cut).
+
+THE PLAN. For HEAD's tree T2 it picks the recorded full run T1 whose tree differs
+least, and reruns ONLY:
+
+  · the jobs red in T1;
+  · what setup/gate-select says the changed paths reach — the fast subjects,
+    the `# gate-reference:` goldens, the changed subject files themselves, and
+    EVERY slow subject `touched` names (its budget cut is the pre-commit's
+    economy; this is the full run, so nothing is cut);
+  · the subjects that carry a mutant anchored on a changed file
+    (setup/mutation-anchors.tsv);
+  · the guard jobs, when a guard changed;
+  · any job T1 never ran (a new subject).
+
+If all of them pass, verify-for-push caches a FULL verdict for T2 that names T1
+(`base_tree=`, `incremental=1`). T1 is always a real full run, never another
+incremental one: a hop onto an incremental verdict would compound
+gate-select's one blind spot (a path built at runtime names nothing) instead
+of paying it once.
+
+IT FALLS BACK TO A FULL RUN, saying why, when any of these holds:
+
+  · `--full` (or HW_VERDICT_FULL=1);
+  · no usable record, or the record's run had a red that belongs to no job;
+  · the diff touches the runner or anything it loads — the list is READ from
+    setup/test-hw (every `$HERE/<file>` and `$SOURCE_ROOT/<file>` it names,
+    plus what those scripts source), not kept by hand — or anything under
+    setup/tests/ that is not a subject (_common.sh, lib*);
+  · more than MAX_FILES files changed (30): gate-select over-selects with the
+    diff, and measured 2026-10-07 on 15 sampled commits a diff of 14+ paths or
+    one in the runner's machinery already reached `all`;
+  · T1 is more than MAX_COMMITS commits away (25): the 0.3.7 train made 6 runs
+    in ~5 hours with 1-2 commits between them, so 25 is >10 times that and past
+    it the diff is a new change, not a fix;
+  · gate-select FAILS (an error is not an answer).
+
+A path gate-select cannot map (`all`: built at runtime, named by no fast
+subject) is NOT a fall back: the pre-commit already answers it with the whole
+FAST gate, and so does this, plus every slow subject `touched` names. Measured
+on 20 sampled commits, 7 answered `all`, mostly a bin/ script only slow
+subjects name; falling back to the full suite for those would leave most fixes
+paying it. The blind spot is gate-select's own and is the same one the fast gate
+carries; the full run it feeds is still a full run for every job it did not skip.
+
+A fall back is the old behaviour exactly. Nothing here can cache a verdict
+cheaper than the full run's unless every named job passed.
+"""
+import fnmatch
+import hashlib
+import importlib.machinery
+import importlib.util
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+# gate-select is IMPORTED below; a .pyc beside it would be an untracked file in the checkout.
+sys.dont_write_bytecode = True
+MAX_FILES = int(os.environ.get("HW_VERDICT_MAX_FILES", "30"))
+MAX_COMMITS = int(os.environ.get("HW_VERDICT_MAX_COMMITS", "25"))
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+GUARD_JOBS = ("test-deny-repo-writes.mjs", "test-deny-repo-writes-filesystem.mjs",
+              "test-opencode-hw-blocked-reason.mjs", "test-herdr-opencode-background-state.mjs",
+              "mutate-deny-repo-writes.sh")
+# Named by the brief, in case the runner's own text stops naming them.
+EXTRA_SHARED = ("setup/verify-for-push", "setup/verdict-incremental", "setup/release/cut",
+                "guards.json", "bin/hw-test*")
+
+
+def git(root, *args, check=True):
+    r = subprocess.run(["git", "-C", root, "-c", "core.quotepath=off", *args],
+                       capture_output=True, text=True,
+                       env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
+    if check and r.returncode != 0:
+        raise RuntimeError("git %s: %s" % (" ".join(args), r.stderr.strip()))
+    return r
+
+
+def common_dir(root):
+    c = git(root, "rev-parse", "--git-common-dir").stdout.strip()
+    return c if os.path.isabs(c) else os.path.join(root, c)
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+# ── what the runner loads: read from it, never kept by hand ───────────────────
+
+def runner_files(root):
+    """Repo-relative paths the runner names or sources; globs allowed."""
+    found = {"setup/test-hw"}
+    text = re.sub(r"(?m)^\s*#.*$", "", read(os.path.join(root, "setup", "test-hw")))
+    todo = []
+    for m in re.finditer(r"\$\{?(HERE|SOURCE_ROOT)\}?/([A-Za-z0-9_./-]+)", text):
+        base = "setup" if m.group(1) == "HERE" else ""
+        rel = os.path.normpath(os.path.join(base, m.group(2)))
+        if rel.startswith(".."):
+            continue
+        todo.append(rel)
+    for m in re.finditer(r"\$HERE/\.\./([A-Za-z0-9_./-]+)", text):
+        todo.append(os.path.normpath(m.group(1)))
+    seen = set()
+    while todo:
+        rel = todo.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        full = os.path.join(root, rel)
+        # Directories the runner walks are not files it loads: guards/ and
+        # tests/ are handled by what a job IS (a guard job, a subject).
+        if not os.path.isfile(full):
+            continue
+        found.add(rel)
+        # One level of what a loaded script sources: `. "$HERE/x"`, `source x`.
+        for sm in re.finditer(r"(?m)^\s*(?:\.|source)\s+[\"']?[^\s\"';]*?([A-Za-z0-9_-]+\.sh)\b",
+                              re.sub(r"(?m)^\s*#.*$", "", read(full))):
+            for d in ("setup", "bin", "setup/tests"):
+                cand = os.path.join(d, sm.group(1))
+                if os.path.isfile(os.path.join(root, cand)) and cand not in seen:
+                    todo.append(cand)
+    found.discard("setup/guards")
+    # The guard drivers and mutation arm are JOBS, selected by what they are.
+    return {f for f in found if not f.startswith("setup/guards/") and not f.startswith("setup/tests/[")}
+
+
+def is_runner_path(path, shared):
+    if path in shared:
+        return True
+    if any(fnmatch.fnmatch(path, g) for g in shared if "*" in g):
+        return True
+    if path.startswith("setup/tests/") and not re.match(r"^setup/tests/[0-9]+-[^/]*\.sh$", path):
+        return True  # _common.sh, lib*, fixtures: every subject can read them
+    return False
+
+
+# ── records ──────────────────────────────────────────────────────────────────
+
+def parse_record(path):
+    head, rows = {}, {}
+    text = read(path)
+    if not text:
+        return None
+    part = text.split("\n\n", 1)
+    for line in part[0].split("\n"):
+        if "=" in line:
+            k, v = line.split("=", 1)
+            head[k] = v
+    for line in (part[1] if len(part) > 1 else "").split("\n"):
+        f = line.split("\t")
+        if len(f) == 3 and f[2] in ("ok", "red"):
+            rows[f[0]] = (f[1], f[2])
+    return {"head": head, "rows": rows}
+
+
+def usable_base(path, tree_from_name):
+    rec = parse_record(path)
+    if not rec:
+        return None, "unreadable"
+    h = rec["head"]
+    if h.get("kind") != "full":
+        return None, "not a full run"
+    if h.get("tree") != tree_from_name or not HEX40.match(tree_from_name):
+        return None, "names another tree"
+    if h.get("runner_red") != "0":
+        return None, "its run had a red that belongs to no job"
+    if not rec["rows"]:
+        return None, "no job rows"
+    return rec, ""
+
+
+def write_atomic(path, text):
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def cmd_record(root, results, rc, elapsed, tree=None, commit=None):
+    # THE TREE THAT WAS TESTED, not the one HEAD points to when the run ends: a
+    # full run lasts ~1000 s over a snapshot taken at its start, and another
+    # agent committing into the shared tree meanwhile moves HEAD. Filing the
+    # results under that later tree would hand the next plan a base whose diff
+    # is near-empty and whose rows describe other bytes. verify-for-push passes
+    # what it captured before the run; without it, HEAD is the best there is.
+    if tree or commit:
+        if not (tree and commit and HEX40.match(tree) and HEX40.match(commit)):
+            print("verdict-incremental: --tree and --commit go together and are 40-hex — no record written", file=sys.stderr)
+            return 1
+        r = git(root, "rev-parse", "--verify", "-q", commit + "^{tree}", check=False)
+        if r.returncode != 0 or r.stdout.strip() != tree:
+            print("verdict-incremental: commit %s is not tree %s — no record written" % (commit[:9], tree[:9]), file=sys.stderr)
+            return 1
+    else:
+        tree = git(root, "rev-parse", "HEAD^{tree}").stdout.strip()
+        commit = git(root, "rev-parse", "HEAD").stdout.strip()
+    rows = []
+    runner_red = 0
+    for line in read(results).split("\n"):
+        f = line.split("\t")
+        if len(f) != 3 or f[2] not in ("ok", "red"):
+            continue
+        if f[0] == "runner":
+            runner_red = 1
+            continue
+        rows.append(f)
+    if not rows:
+        print("verdict-incremental: %s has no job rows — no record written" % results, file=sys.stderr)
+        return 1
+    reds = sum(1 for r in rows if r[2] == "red")
+    # A non-zero run with no red JOB is red for a reason no job owns.
+    if int(rc) != 0 and reds == 0:
+        runner_red = 1
+    d = os.path.join(common_dir(root), "hw-push-verified")
+    os.makedirs(d, exist_ok=True)
+    head = ["kind=full", "tree=" + tree, "commit=" + commit,
+            "recorded_at=" + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "elapsed_seconds=" + str(elapsed), "rc=" + str(rc), "runner_red=%d" % runner_red,
+            "jobs=%d" % len(rows), "reds=%d" % reds]
+    body = "\n".join("\t".join(r) for r in rows)
+    write_atomic(os.path.join(d, tree + ".subjects"), "\n".join(head) + "\n\n" + body + "\n")
+    print("verdict-incremental: recorded %d jobs (%d red) for tree %s" % (len(rows), reds, tree), file=sys.stderr)
+    return 0
+
+
+# ── the plan ─────────────────────────────────────────────────────────────────
+
+def load_gate_select(root):
+    path = os.path.join(root, "setup", "gate-select")
+    return path if os.path.isfile(path) else None
+
+
+def run_gate_select(root, paths, mode=None):
+    gs = load_gate_select(root)
+    if gs is None:
+        raise RuntimeError("setup/gate-select is absent")
+    pat = ""
+    lib = os.path.join(root, "setup", "hooks", "suite-trigger-pattern.sh")
+    if os.path.isfile(lib):
+        r = subprocess.run(["bash", "-c", '. "$1" && printf %s "${SUITE_TRIGGER_PATTERN:-}"', "_", lib],
+                           capture_output=True, text=True)
+        pat = r.stdout
+    with tempfile.NamedTemporaryFile("w", delete=False, prefix="vi-changed.") as fh:
+        fh.write("\n".join(paths) + "\n")
+        name = fh.name
+    try:
+        args = ["python3", gs, root, name, pat] + ([mode] if mode else [])
+        r = subprocess.run(args, capture_output=True, text=True)
+    finally:
+        os.unlink(name)
+    if r.returncode != 0:
+        raise RuntimeError("setup/gate-select failed (exit %d): %s" % (r.returncode, (r.stderr or r.stdout).strip().split("\n")[-1]))
+    return [l for l in r.stdout.split("\n") if l.strip()]
+
+
+def gate_select_module(root):
+    gs = load_gate_select(root)
+    if gs is None:
+        return None
+    loader = importlib.machinery.SourceFileLoader("vi_gate_select", gs)
+    spec = importlib.util.spec_from_loader("vi_gate_select", loader)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        loader.exec_module(mod)
+    except Exception:
+        return None
+    return mod
+
+
+def is_guard_path(root, path):
+    """The guard drivers' own definition (gate-select's GUARD), else the directory."""
+    mod = gate_select_module(root)
+    if mod is not None and hasattr(mod, "GUARD"):
+        return mod.GUARD.search(path) is not None
+    return path.startswith("setup/guards/")
+
+
+def fast_subjects(root, tests):
+    """Every subject setup/test-budgets.json classifies fast (what the fast gate runs)."""
+    import json
+    try:
+        b = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+        thr = b["fast_gate_threshold_seconds"]
+        return sorted(n for n, v in b["files"].items() if v["seconds"] <= thr and n in tests)
+    except (ValueError, KeyError, TypeError):
+        return list(tests)  # unreadable budgets: every subject is the safe answer
+
+
+def anchored_subjects(root, changed, tests):
+    """Subjects whose mutants are anchored on a changed file: `<N>-Mxx<TAB><file>`."""
+    out = {}
+    for line in read(os.path.join(root, "setup", "mutation-anchors.tsv")).split("\n"):
+        f = line.split("\t")
+        if len(f) < 2 or f[1] not in changed:
+            continue
+        n = f[0].split("-M")[0]
+        hit = [x for x in tests if re.match(r"^%s-" % re.escape(n), x)]
+        for x in hit:
+            out.setdefault(x, "a mutant anchored on %s" % f[1])
+    return out
+
+
+def cmd_plan(root, full, out, expect_tree=None):
+    def fallback(why):
+        print("full %s" % why)
+        return 0
+
+    if full or os.environ.get("HW_VERDICT_FULL"):
+        return fallback("--full was asked for")
+    try:
+        tree = git(root, "rev-parse", "HEAD^{tree}").stdout.strip()
+        d = os.path.join(common_dir(root), "hw-push-verified")
+    except RuntimeError as e:
+        return fallback("could not read the repository (%s)" % e)
+    if expect_tree and expect_tree != tree:
+        return fallback("HEAD's tree is %s, not the %s the caller captured: the checkout moved" % (tree[:9], expect_tree[:9]))
+    tests_dir = os.path.join(root, "setup", "tests")
+    tests = sorted(x for x in os.listdir(tests_dir) if re.match(r"^[0-9]+-.*\.sh$", x)) if os.path.isdir(tests_dir) else []
+    if not tests:
+        return fallback("no subject files found")
+    shared = set(EXTRA_SHARED) | runner_files(root)
+
+    best = None
+    skipped = []
+    for fn in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not fn.endswith(".subjects"):
+            continue
+        base = fn[:-len(".subjects")]
+        rec, why = usable_base(os.path.join(d, fn), base)
+        if rec is None:
+            skipped.append("%s (%s)" % (base[:9], why))
+            continue
+        if git(root, "cat-file", "-e", base + "^{tree}", check=False).returncode != 0:
+            skipped.append("%s (tree is not in this repository)" % base[:9])
+            continue
+        r = git(root, "diff", "--name-only", "--no-renames", "-z", base, tree, check=False)
+        if r.returncode != 0:
+            skipped.append("%s (diff failed)" % base[:9])
+            continue
+        files = [x for x in r.stdout.split("\0") if x]
+        commit = rec["head"].get("commit", "")
+        dist = None
+        if HEX40.match(commit) and git(root, "cat-file", "-e", commit + "^{commit}", check=False).returncode == 0:
+            c = git(root, "rev-list", "--count", commit + "...HEAD", check=False)
+            if c.returncode == 0 and c.stdout.strip().isdigit():
+                dist = int(c.stdout.strip())
+        key = (len(files), dist if dist is not None else 10 ** 9)
+        if best is None or key < best[0]:
+            best = (key, base, rec, files, dist)
+    if best is None:
+        return fallback("no recorded full run to start from%s" % (" (skipped: %s)" % ", ".join(skipped[:3]) if skipped else ""))
+    _, base, rec, changed, dist = best
+    if dist is None:
+        return fallback("the recorded run %s names a commit this repository does not have, so its distance is unknown" % base[:9])
+    if dist > MAX_COMMITS:
+        return fallback("the nearest recorded full run (%s) is %d commits away, over %d" % (base[:9], dist, MAX_COMMITS))
+    if len(changed) > MAX_FILES:
+        return fallback("%d files changed since the nearest recorded full run (%s), over %d" % (len(changed), base[:9], MAX_FILES))
+    for p in changed:
+        if is_runner_path(p, shared):  # MUTATION-ANCHOR: 820-M02
+            return fallback("%s is the runner or something it loads: any verdict can move" % p)
+
+    run = {}  # name -> why
+
+    def add(name, why):
+        run.setdefault(name, why)
+
+    rows = rec["rows"]
+    for name, (_k, st) in sorted(rows.items()):
+        if st == "red":
+            add(name, "red in the recorded run %s" % base[:9])
+    try:
+        sel = run_gate_select(root, changed) if changed else []
+        tch = run_gate_select(root, changed, "touched") if changed else []
+    except RuntimeError as e:
+        return fallback(str(e))
+    guards_changed = False
+    for line in sel:
+        f = line.split(None, 2)
+        if f[0] == "all":
+            for name in fast_subjects(root, tests):
+                add(name, "gate-select cannot map the diff (%s): the whole fast gate" % (f[1] if len(f) > 1 else ""))
+        elif f[0] in ("core", "subject", "reference", "deferred") and len(f) > 1:
+            add(f[1], "gate-select %s%s" % (f[0], " <- " + f[2] if len(f) > 2 else ""))
+        elif f[0] == "guards":
+            guards_changed = True
+    for line in tch:  # MUTATION-ANCHOR: 820-M01
+        f = line.split(None, 3)
+        if f[0] in ("touched", "touched-skipped") and len(f) > 1:
+            add(f[1], "gate-select touched <- %s" % f[-1])
+    for name, why in anchored_subjects(root, set(changed), tests).items():
+        add(name, why)
+    if guards_changed or any(is_guard_path(root, p) for p in changed):
+        for g in GUARD_JOBS:
+            add(g, "a guard changed")
+    for x in tests:
+        if x not in rows:
+            add(x, "a job the recorded run never ran")
+    present = set(tests) | set(GUARD_JOBS)
+    run = {k: v for k, v in run.items() if k in present}
+    total = len(present)
+    if not run:
+        return fallback("nothing selected — refusing an empty run")
+
+    print("incremental base_tree=%s base_commit=%s files=%d commits=%d jobs=%d of %d"
+          % (base, rec["head"].get("commit", ""), len(changed), dist, len(run), total))
+    for name in sorted(run):
+        print("run %s %s" % (name, run[name]))
+    if out:
+        write_atomic(out, "\n".join(sorted(run)) + "\n")
+    return 0
+
+
+# ── what a release will accept ───────────────────────────────────────────────
+
+def cmd_chain(common, tree):
+    """Exit 0 when <tree>'s verdict is a real full run, or one incremental hop off one."""
+    d = os.path.join(common, "hw-push-verified")
+    v = parse_kv(os.path.join(d, tree))
+    if v.get("tree") != tree or v.get("gate") != "full":
+        print("no full verdict for tree %s" % tree)
+        return 1
+    if v.get("incremental") != "1":
+        print("a real full run")
+        return 0
+    base = v.get("base_tree", "")
+    if v.get("chain_depth") != "1" or not HEX40.match(base):
+        print("an incremental verdict that does not name a base tree at one hop (chain_depth=%s, base_tree=%s)"
+              % (v.get("chain_depth", "?"), base or "?"))
+        return 1
+    rec, why = usable_base(os.path.join(d, base + ".subjects"), base)
+    if rec is None:
+        print("its base %s is not a recorded real full run (%s)" % (base[:9], why))
+        return 1
+    print("one incremental hop off the real full run %s" % base[:9])
+    return 0
+
+
+def parse_kv(path):
+    out = {}
+    for line in read(path).split("\n"):
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out.setdefault(k, v)
+    return out
+
+
+def main(argv):
+    if len(argv) < 3:
+        print(__doc__.split("WHY.")[0].strip(), file=sys.stderr)
+        return 2
+    cmd, root = argv[1], os.path.abspath(argv[2])
+    rest = argv[3:]
+    opt = {}
+    flags = set()
+    i = 0
+    while i < len(rest):
+        if rest[i] in ("--results", "--rc", "--elapsed", "--out", "--tree", "--commit"):
+            opt[rest[i]] = rest[i + 1] if i + 1 < len(rest) else ""
+            i += 2
+        else:
+            flags.add(rest[i])
+            i += 1
+    if cmd == "plan":
+        return cmd_plan(root, "--full" in flags, opt.get("--out"), opt.get("--tree"))
+    if cmd == "record":
+        return cmd_record(root, opt.get("--results", ""), opt.get("--rc", "1"), opt.get("--elapsed", "0"),
+                          opt.get("--tree"), opt.get("--commit"))
+    if cmd == "chain":
+        return cmd_chain(argv[2], rest[0] if rest else "")
+    print("verdict-incremental: unknown command %s" % cmd, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -17,7 +17,7 @@ executor in its own worktree that reports back with `done-invoker`.
 - [herdr](https://herdr.dev), running, with its Claude Code integration:
   `herdr integration install claude`
 - [Claude Code](https://claude.com/claude-code), with its first run finished (below)
-- recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (hw's pickers)
+- recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (the picker behind a bare `hw`)
 - for an OpenCode lane: [OpenCode](https://opencode.ai) 1.18.31 or newer, and herdr's OpenCode
   integration: `herdr integration install opencode` (run `opencode` once first,
   so its config directory exists)
@@ -242,6 +242,11 @@ identity, under the lane's canonical name in `projects.json`: a pane standing in
 alias path (a symlink to the lane directory) or in a symlink to the lane is that lane.
 Executors are not relaunched.
 
+The cockpit mod needs Claude Code 2.1.289 or newer: below that, `brain` prints
+`cockpit needs claude >= 2.1.289` and opens without it. To open a brainer without
+it on purpose, set `FOREMAN_COCKPIT=0` or pass `brain <lane> --no-cockpit`. What
+it shows and what its buttons run are in the README.
+
 The executor gets its own guard. The installer writes
 `~/brain/<lane>/.opencode-executor/`, and `hw` passes that directory to the
 executor as `OPENCODE_CONFIG_DIR`. It holds a plugin that refuses any shell
@@ -261,17 +266,67 @@ that needs no login. The installer never reads it.
 The vendor is fixed when the lane is created. Running the installer again
 with another `--vendor` for the same lane is refused.
 
+## Frameworks for `--sdd`
+
+`hw` asks `--sdd none|speckit|gentle` on every dispatch where a framework is in
+play. `none` needs nothing. The other two are third-party projects the installer
+does not install, and each is refused before anything is built when it is not
+there:
+
+| Mode | What the machine needs |
+|---|---|
+| `speckit` | [Spec Kit](https://github.com/github/spec-kit) (MIT), with a `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Claude Code only: Codex and OpenCode dispatches are refused. |
+| `gentle` | [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai) (MIT), through `hw gentle-home`, and `"sdd_modes": ["gentle"]` on the lane in `projects.json`, which you add by hand. Claude Code only. |
+
+foreman-sh is not part of either project and implies no endorsement by them.
+
+`hw gentle-home` downloads the pinned gentle-ai release (4.0.0) from its GitHub
+releases, checks it against a sha256 pinned in `hw` for your platform (macOS or
+Linux, arm64 or amd64) and installs it for Claude Code only, with `HOME` pointed
+inside `~/.local/share/hw/gentle-home` (`HW_GENTLE_HOME` or `--dir` moves it).
+It is idempotent and writes nothing outside that directory. It refuses a
+directory inside your real `~/.claude`, `~/.config/opencode` or `~/.codex`, and
+a download whose checksum differs: that one is deleted and nothing is installed.
+
+```sh
+hw gentle-home --check   # complete? exits 1 if not; --path prints the directory
+hw gentle-home           # provision it
+rm -rf ~/.local/share/hw/gentle-home   # remove it; nothing else was touched
+```
+
+A gentle brief declares `delivery:` and may declare `review: rdd`, which makes
+gentle-ai's native RDD the task's only review; without it the task closes with
+Judgment Day (below). Provisioned by an older `hw`, a home fails `--check`:
+run `hw gentle-home` again.
+
+## Dispatching: briefs, the ledger and `hw preflight`
+
+`hw <lane> <task>` reads the brief at `~/brain/<lane>/briefs/<task>.md`, or the
+one `--brief` names. With neither it stops, naming the path it looked for and
+the nearest brief names; `--no-brief` launches without a contract on purpose,
+and warns that the executor has no verification. For a brief under
+`~/brain/<lane>/briefs/`, `hw` commits it at dispatch when the brain is a git repository on `main` (the
+installer does not make it one) and the brief is untracked or changed; on another
+branch it warns and leaves it. Each real
+dispatch also appends a line to the ledger, which `hw ledger` reads (see the
+table below). A bare `hw` opens an `fzf` picker over every lane's briefs.
+
+`hw preflight --json -- <hw arguments>` prints what `hw` would warn or refuse
+about a dispatch you have not run, as `{"level":"ok|warn|block","rules":[…]}`.
+It is read-only and exits 0 whatever the level (a malformed call exits 1).
+
 ## What it installs
 
 | Where | What |
 |---|---|
-| `~/brain/bin`, `layouts`, `lanes/git-worktree.sh`, `setup/guards` | the mechanism, copied from this checkout; refreshed on every run |
+| `~/brain/bin`, `lib/hw`, `layouts`, `lanes/git-worktree.sh`, `setup/guards`, `cockpit` | the mechanism, copied from this checkout; refreshed on every run. `bin/hw` loads its modules from `lib/hw` (`reap`, `status`, `done`, `next`, `ledger`) and stops naming one that is missing |
 | `~/brain/projects.json`, `guards.json` | your lanes and what the guards protect; created, then only added to |
 | `~/brain/<lane>/` | `CLAUDE.md`, `decisions.md`, `briefs/`, and `.claude/` with the read-only guard |
 | `~/brain/<lane>/.opencode-executor/` | an OpenCode lane only: the executor's guard plugin and its policy |
 | `~/work/<lane>/<task>` | each task's git worktree: beside the brain, never inside it (the brain guard would refuse every command an executor ran there), and outside your repo. Set by `"work"` in `projects.json` |
 | `~/.config/hw/permissions` | only with `--permissions` or an answer in a terminal: `ask` or `skip` (see Permissions above) |
 | `~/work/.hw-ledger/<lane>.jsonl` | the dispatch ledger `hw ledger` reads: one line per real dispatch (brief and its sha, run, account, model, effort, vendor, base, pane). Outside every worktree, so `hw reap` never removes it; `HW_LEDGER_DIR` moves it |
+| `~/brain/<lane>/briefs/archive/<yyyy-mm>/` | what `hw briefs archive --apply` moves a finished brief into, with a `MANIFEST.tsv` (path, blob, reason) that `hw briefs unarchive` reads. Inside the brain, committed; `hw <lane> <task>` refuses an archived task instead of launching it with no brief |
 | `~/archive/<lane>/<task>/` | what `hw reap --apply` and `hw done` keep of a merged task before removing its worktree: its `.artifacts`, `qa-report`, `test-results`, `playwright-report`, and a `pg_dump -Fc` of its database on a lane with `db.provisioned`. Beside `"work"`; `HW_ARCHIVE_ROOT` moves it |
 | `~/.local/bin` | links: `hw`, `brain`, `done-invoker`, `ask-invoker`, `channel-send`, `decisions`, and `opencode-auto` for an OpenCode lane |
 | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | one Stop hook, merged; the previous file is kept as `settings.json.bak-brain-install` |

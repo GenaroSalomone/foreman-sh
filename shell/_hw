@@ -20,6 +20,7 @@ _hw() {
     'status:what is running, and what never closed'
     'handle:does a keychain handle resolve? present/absent only'
     'ledger:which briefs were dispatched, and how they ended'
+    'briefs:archive finished briefs, or bring them back'
   )
 
   _hw_canon() {

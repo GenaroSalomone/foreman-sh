@@ -141,7 +141,10 @@ unset _v 2>/dev/null || true
 # deliberate opt-in off, which is the "an arm nobody runs is not coverage"
 # failure `setup/mutation-coverage` exists to catch — a fix that caused it would
 # be worse than the bug.
-_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING "  # MUTATION-ANCHOR: 54-M02
+# HW_IMPL (and HW_CORE, the binary it routes to, and HW_SHADOW_JSONL, where shadow writes) ARE INPUTS THIS DIRECTORY OWNS, since the Go pilot (core/): `HW_IMPL=go|shadow
+# bash setup/test-hw` runs the whole suite through hw-core for the verbs it has (bin/hw's
+# shim). Unset it and the answer is bash's, which is the default and the rollback.
+_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING HW_IMPL HW_CORE HW_SHADOW_JSONL "  # MUTATION-ANCHOR: 54-M02
 for _v in ${!HW_@}; do  # MUTATION-ANCHOR: 54-M01
   case "$_HW_TEST_INPUTS" in *" $_v "*) continue ;; esac
   unset "$_v" 2>/dev/null || true
@@ -256,6 +259,21 @@ LIVE_ROOT="${TEST_HW_LIVE_ROOT:-$ROOT}"
 export HW_LIB_DIR="$ROOT/lib"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hw-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+# HW_CORE IS A SEAM, like HW_LIB_DIR above: a subject that runs hw from a COPY of bin/ has no
+# core/dist beside it, and with HW_IMPL=go|shadow the shim would warn that hw-core is not built. When the
+# suite is asked for an implementation other than bash, it hands the shim the hw-core it has (the built
+# one, or one built here) — never a warning line the subject did not ask for.
+if [ -n "${HW_IMPL:-}" ] && [ "$HW_IMPL" != bash ] && [ -z "${HW_CORE:-}" ]; then
+  # the export of this suite may not carry contract-hw/: without it there is no hw-core to hand over
+  if [ -f "$ROOT/setup/tests/contract-hw/world.sh" ]; then
+    . "$ROOT/setup/tests/contract-hw/world.sh"
+    _core="$(contract_core_bin "$TMP/hw-core-build")" || { printf 'runner: HW_IMPL=%s and the go toolchain is here, but hw-core did not build\n' "$HW_IMPL" >&2; exit 1; }
+  else
+    _core=""
+  fi
+  if [ -n "$_core" ]; then export HW_CORE="$_core"; else printf 'runner: HW_IMPL=%s but there is no hw-core to hand over (no go toolchain, or no contract-hw/ in this suite) — the shim will fall back to bash with its warning\n' "$HW_IMPL" >&2; fi
+  unset _core
+fi
 # hw_lib_beside <bindir> — a lib/ of its own beside a copy of bin/hw, so a MUTANT of
 # a moved module (lib/hw/next.sh) is mutated in a file the copy actually sources:
 # hw reads the lib/ beside its bin/ first (HW_LIB_DIR above only fills in for none).
@@ -718,4 +736,71 @@ indent = re.match(r"\s*", lines[i]).group(0)
 lines[i:j + 1] = [indent + r if r else r for r in repl.split("\n")]
 p.write_text("\n".join(lines))
 PYANCHOR
+}
+
+# par_run <function-or-command> [args...]   /   par_wait
+#
+# INDEPENDENT CHECKS OF ONE SUBJECT RUN SIDE BY SIDE, replayed in the order they were started.
+# A subject that kills N mutants one after another pays the sum of N runs; each mutant owns its own
+# copy and its own output, so nothing about them needs to be serial (806 did this by hand on
+# 2026-10-07: twelve mutants took 275s one by one and 99s side by side). `par_run` forks a
+# subshell, so the `fail` (an `exit 1`) inside it ends that job only; its stdout and stderr are
+# kept, and `par_wait` replays them in start order — the same lines a serial run prints, in the
+# same order, which is what setup/mutation-coverage reads — and fails the subject, naming the
+# job, if any of them did. At most HW_TEST_PAR (default 4) are in flight: a subject is one pooled
+# job, and the pool counts jobs, not the processes a job starts.
+#
+# A job must not write to a path another job writes, and must not read anything a later job
+# makes. A command that edits the caller's shell state (a variable the rest of the subject reads)
+# is not a job: the subshell keeps that edit to itself.
+PAR_N=0; PAR_PIDS=(); PAR_INFLIGHT=()
+par_run() {
+  local n cap="${HW_TEST_PAR:-4}"
+  case "$cap" in ""|*[!0-9]*|0) cap=4 ;; esac
+  PAR_DIR="${PAR_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/par.XXXXXX")}"
+  while [ "${#PAR_INFLIGHT[@]}" -ge "$cap" ]; do
+    wait "${PAR_INFLIGHT[0]}" 2>/dev/null || true
+    PAR_INFLIGHT=(${PAR_INFLIGHT[@]+"${PAR_INFLIGHT[@]:1}"})
+  done
+  PAR_N=$((PAR_N + 1)); n="$PAR_N"
+  printf '%s' "$*" > "$PAR_DIR/$n.what"
+  ( set +e; ( set -e; "$@" ); printf '%s' "$?" > "$PAR_DIR/$n.rc" ) > "$PAR_DIR/$n.out" 2> "$PAR_DIR/$n.err" &
+  PAR_PIDS[$n]=$!
+  PAR_INFLIGHT+=("$!")
+}
+par_wait() {
+  local n=1 rc what pid
+  while [ "$n" -le "$PAR_N" ]; do
+    wait "${PAR_PIDS[$n]}" 2>/dev/null || true
+    cat "$PAR_DIR/$n.out"
+    cat "$PAR_DIR/$n.err" >&2
+    rc="$(cat "$PAR_DIR/$n.rc" 2>/dev/null || echo 'no status')"
+    if [ "$rc" != 0 ]; then
+      what="$(cat "$PAR_DIR/$n.what" 2>/dev/null || true)"
+      for pid in ${PAR_PIDS[@]+"${PAR_PIDS[@]}"}; do pkill -P "$pid" 2>/dev/null || true; kill "$pid" 2>/dev/null || true; done
+      rm -rf "$PAR_DIR"
+      fail "par: job $n ($what) ended with status $rc"
+    fi
+    n=$((n + 1))
+  done
+  rm -rf "$PAR_DIR"; PAR_DIR=""; PAR_N=0; PAR_PIDS=(); PAR_INFLIGHT=()
+}
+
+# load_scale [<cap>] — how many times slower than an idle machine a wall-clock assertion should be
+# allowed to run RIGHT NOW: 1 on a quiet machine, up to <cap> (default 3) on a busy one. The larger of
+# the load rule (ceil(load1 / cpus), the 1-minute average) and the CPU probe of setup/fast-gate-budget.sh
+# (wall / cpu of a CPU-bound loop, rounded at 1.3x like the gate: 1.29 is 1, 1.30 is 2, what the scheduler is giving this process now), because the
+# average lags a burst by a minute: setup/tests/733. A subject scales the LIMIT of an elapsed-time
+# assertion with this and keeps the limit under the budget the defect would burn, so the assertion
+# still tells the defect from the load. HW_TEST_LOAD1 / HW_TEST_NCPU / HW_TEST_PROBE inject the readings.
+load_scale() {
+  local cap="${1:-3}" lc l c p s=1
+  . "$ROOT/setup/fast-gate-budget.sh" 2>/dev/null || { printf '1'; return 0; }
+  lc="$(fg_load_ncpu)"; l="${lc% *}"; c="${lc#* }"
+  case "$l:$c" in ''|*[!0-9:]*|:*|*:) ;; *) [ "$c" -gt 0 ] && s=$(( (l + 100 * c - 1) / (100 * c) )) ;; esac
+  p="$(fg_probe_x100)"
+  case "$p" in ''|*[!0-9]*) ;; *) [ $(( (p + 99) / 100 )) -le "$s" ] || s=$(( (p + 70) / 100 )) ;; esac
+  [ "$s" -ge 1 ] || s=1
+  [ "$s" -le "$cap" ] || s="$cap"
+  printf '%s' "$s"
 }

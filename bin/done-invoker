@@ -475,6 +475,47 @@ $SUMMARY" ;;
   esac
 fi
 
+# -- A BUILD CLOSES ON `checks.md`: ONE ROW PER REQUIREMENT, WITH ITS VERDICT --
+#
+# hw records `checks_required_t<task>` for a build (declared or undeclared kind)
+# and tells the executor to write $ARTIFACTS_ROOT/checks.md from the brief's
+# Proof and Verification:  requirement | verdict | evidence | correction.
+# A DONE needs the file, at least one row, and a verdict on every row — pass,
+# fail or unresolved. The last two are allowed: they must be visible, not absent.
+# The counts go into the envelope (CHECKS_NOTE, below).
+#
+# NOT GATED: `--blocked`. NOT CHECKABLE HERE: that the evidence column is true.
+CHECKS_NOTE=""
+if [ "$STATUS" = done ]; then  # MUTATION-ANCHOR: 818-M05
+  _ck="$(jq -r --arg k "checks_required_t$(invoker_task_seq)" 'select(.key==$k) | .value' "$(invoker_run_dir)/receipt.jsonl" 2>/dev/null | tail -1 || true)"
+  if [ -n "$_ck" ]; then  # MUTATION-ANCHOR: 818-M04
+    _ck_file="$ARTIFACTS_ROOT/checks.md"
+    _ck_how="Write $_ck_file as a table, one row per requirement of the brief's Proof and Verification:  requirement | verdict | evidence | correction  (verdict: pass, fail or unresolved). NOTHING was sent or marked."
+    [ -f "$_ck_file" ] || die "this is a build and there is no $_ck_file. $_ck_how"  # MUTATION-ANCHOR: 818-M01
+    # header and separator rows are skipped; the verdict is the 2nd column
+    _ck_sum="$(awk '
+      { l = $0; gsub(/^[ \t]+|[ \t]+$/, "", l) }
+      l !~ /\|/ || l ~ /^[|: \t-]+$/ { next }
+      { sub(/^\|/, "", l); n = split(l, c, "|"); v = tolower(c[2]); gsub(/^[ \t`*]+|[ \t`*]+$/, "", v); gsub(/^[ \t]+|[ \t]+$/, "", c[1])
+        if (!hdr && v == "verdict") { hdr = 1; next }
+        rows++
+        if (v == "pass" || v == "fail" || v == "unresolved") cnt[v]++
+        else if (!bad) { bad = rows; why = (v == "" ? "an empty verdict" : "the verdict \"" v "\"") " (" c[1] ")" } }
+      END { printf "%d\t%d\t%d\t%d\t%d\t%s\n", rows, cnt["pass"], cnt["fail"], cnt["unresolved"], bad, (why == "" ? "-" : why) }' "$_ck_file" 2>/dev/null || true)"
+    IFS=$'\t' read -r _ck_rows _ck_pass _ck_fail _ck_unres _ck_bad _ck_why <<EOF
+$_ck_sum
+EOF
+    [ "${_ck_rows:-0}" -gt 0 ] 2>/dev/null || die "$_ck_file has no rows: a table of requirement | verdict | evidence | correction with nothing under its header proves nothing. $_ck_how"  # MUTATION-ANCHOR: 818-M02
+    [ "${_ck_bad:-0}" = 0 ] || die "row ${_ck_bad} of $_ck_file has ${_ck_why}. Every row needs pass, fail or unresolved. $_ck_how"  # MUTATION-ANCHOR: 818-M03
+    _ck_parts=""
+    [ "$_ck_pass"  = 0 ] || _ck_parts="$_ck_parts, $_ck_pass pass"
+    [ "$_ck_fail"  = 0 ] || _ck_parts="$_ck_parts, $_ck_fail fail"
+    [ "$_ck_unres" = 0 ] || _ck_parts="$_ck_parts, $_ck_unres unresolved"
+    CHECKS_NOTE="
+checks.md: ${_ck_parts#, } ($_ck_file)"
+  fi
+fi
+
 # Only once. A second call means the task did not actually finish the first time,
 # and the brainer should not be told twice.
 # Keyed on the RUN, not the directory. `hw done` keeps a repo-less work
@@ -647,7 +688,7 @@ if [ "$STATUS" = done ]; then
   HEAD="[executor finished — $PROJECT:$TASK, pane $HERDR_PANE_ID]"
   TAIL="Report: in engram under project \`$ENGRAM_LABEL\` — search it, or
 mem_get_observation the ids named above.
-Artifacts: $FILES file(s) in $ARTIFACTS_ROOT$FILES_NOTE
+Artifacts: $FILES file(s) in $ARTIFACTS_ROOT$FILES_NOTE$CHECKS_NOTE
 
 Distil what is decision-grade into decisions.md; the raw report stays in engram.
 After the receiver admitted the report, done-invoker closes the hw-owned task tab or

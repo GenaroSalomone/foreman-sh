@@ -81,17 +81,49 @@ fg_time_cmd() {
   return "$rc"
 }
 
-# fg_decide <wall_ms> <cpu_ms> <budget_ms> <load1x100> <ncpu>
+# fg_probe_x100 → how many times slower than itself a CPU-bound probe runs on this
+# machine RIGHT NOW, times 100 (wall / cpu: 100 = it was never descheduled). Read only when a
+# subject is already over its budget, so it costs nothing on a green gate. The 1-minute load
+# average lags a burst by a minute and counts hardware threads as cores: MEASURED 2026-10-07,
+# 240 read wall 3169ms against a 3000ms budget (CPU 1899ms) at load1=4.43 on 14 cpus, "unsaturated"
+# by the load rule, with other executors' suites bursting beside it. The probe asks the
+# scheduler directly. HW_TEST_PROBE=<x100> replaces it (a simulated one, setup/tests/217 and 732).
+fg_probe_x100() {
+  if [ -n "${HW_TEST_PROBE:-}" ]; then printf '%s' "$HW_TEST_PROBE"; return 0; fi
+  # A SIMULATED LOAD IS A SIMULATED MACHINE: the real probe would read the real one.
+  [ -z "${HW_TEST_LOAD1:-}" ] || return 0
+  python3 -c '
+import time
+w0, c0 = time.perf_counter(), time.process_time()
+x = 0
+while time.process_time() - c0 < 0.2:
+    x += 1
+w, c = time.perf_counter() - w0, time.process_time() - c0
+print(int(w / c * 100) if c > 0 else "")
+' 2>/dev/null || true
+}
+
+# fg_decide <wall_ms> <cpu_ms> <budget_ms> <load1x100> <ncpu> [<probe_x100>]
 #   → "<pass|refuse> <wall|cpu> <reason>"
+# SATURATED is either the load rule (load1 > cpus/2) or the probe (the machine gave a CPU-bound
+# loop under 1/1.3 of the time it asked for, right now).
 fg_decide() {
-  local wall="$1" cpu="$2" budget="$3" load="${4:-}" ncpu="${5:-}"
+  local wall="$1" cpu="$2" budget="$3" load="${4:-}" ncpu="${5:-}" probe="${6:-}" why=""
   if [ "$wall" -le "$budget" ]; then echo "pass wall within-budget"; return 0; fi
-  if [ -z "$load" ] || [ -z "$ncpu" ] || [ "$ncpu" -le 0 ]; then echo "refuse wall load-unknown"; return 0; fi
+  if { [ -z "$load" ] || [ -z "$ncpu" ] || [ "$ncpu" -le 0 ]; } && [ -z "$probe" ]; then echo "refuse wall load-unknown"; return 0; fi
   if [ "$cpu" -le 0 ]; then echo "refuse wall cpu-unmeasurable"; return 0; fi
-  if [ $(( load * 2 )) -gt $(( 100 * ncpu )) ]; then
-    if [ "$cpu" -le $(( 2 * budget )) ]; then echo "pass cpu saturated"; else echo "refuse cpu saturated"; fi
+  if [ -n "$load" ] && [ -n "$ncpu" ] && [ "$ncpu" -gt 0 ] && [ $(( load * 2 )) -gt $(( 100 * ncpu )) ]; then why=saturated; fi
+  if [ -z "$why" ] && [ -n "$probe" ] && [ "$probe" -ge 130 ]; then why=contended-now; fi  # MUTATION-ANCHOR: 733-M01
+  if [ -n "$why" ]; then
+    if [ "$cpu" -le $(( 2 * budget )) ]; then echo "pass cpu $why"; else echo "refuse cpu $why"; fi
     return 0
   fi
+  # A NEAR MISS THAT WAS NOT SPENT COMPUTING. Over budget by at most a quarter, with CPU time within the
+  # budget itself: the subject did what it always did and then waited (a fork, a lock, a neighbour's
+  # disk) — MEASURED 2026-10-07, 240 at 3169ms against 3000ms and 492 at 9762ms against 9560ms, best of
+  # three runs each, aborting fast gates that had run minutes of green. Drift made of compute shows in
+  # the CPU, and drift made of waiting shows past a quarter over; neither passes here.
+  if [ "$cpu" -le "$budget" ] && [ "$wall" -le $(( budget + budget / 4 )) ]; then echo "pass grace waiting"; return 0; fi  # MUTATION-ANCHOR: 733-M02
   echo "refuse wall unsaturated"
 }
 

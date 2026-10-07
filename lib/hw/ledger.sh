@@ -23,6 +23,11 @@
 # contended by one lane at a time; a line is far below PIPE_BUF, so `>>` (O_APPEND) does
 # not interleave two dispatches.
 #
+# ARCHIVED BRIEFS (lib/hw/briefs.sh) are still listed: `hw ledger` also reads
+# briefs/archive/<yyyy-mm>/, marks the row `archived`, and reports `done_at` (the done
+# marker's mtime, or what the ledger recorded the first time it saw one) so the archive
+# can name the month. The picker and the completion read only the flat directory.
+#
 # A DRY RUN WRITES NOTHING. Held here as well as at the call sites: a ledger that says a
 # dispatch happened when none did is worse than none.
 
@@ -74,6 +79,15 @@ _ledger_next() {  # $1 pane  $2 rundir  $3 task seq  $4 brief path ("" when the 
   TASK="$(_run_env_value "$2" HW_TASK 2>/dev/null || true)"
   [ -n "$BRIEF" ] && TASK="$(basename "$BRIEF" .md)"
   [ -n "$PROJ" ] && [ -n "$TASK" ] || return 0
+  # THE SESSION'S OWN MODEL, EFFORT AND VENDOR. `hw next` re-tasks a pane that already
+  # runs: the globals here are the CLI's defaults for a launch that did not happen, so
+  # the line said "sonnet" for a pane that was opus (judgment day, registro-de-despachos).
+  # Read from the run's `dispatch` file and env the way cmd_next and the reuse-route
+  # refusals read them. Unreadable stays empty: no value beats the wrong one.
+  local MODEL EFFORT AGENT  # MUTATION-ANCHOR: 811-M07
+  MODEL="$(_next_dispatch_model "$2" 2>/dev/null || true)"
+  EFFORT="$(_next_dispatch_effort "$2" 2>/dev/null || true)"
+  AGENT="$(_run_env_value "$2" HW_EXECUTOR_VENDOR 2>/dev/null || true)"  # MUTATION-ANCHOR-END: 811-M07
   _ledger_commit_brief
   _ledger_dispatch "$1" 0 "$3" "$2"
 }
@@ -290,8 +304,11 @@ lanes = [only_lane] if only_lane else sys.argv[8:]
 as_json = as_json == "1"
 brain = os.path.realpath(brain)
 
+def iso(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
 def load(lane):
-    rows, seen_done = [], set()
+    rows, seen_done = [], {}
     try:
         fh = open(os.path.join(ldir, lane + ".jsonl"), encoding="utf-8")
     except OSError:
@@ -303,29 +320,30 @@ def load(lane):
             except ValueError:
                 continue
             if r.get("event") == "done":
-                seen_done.add((r.get("run"), r.get("seq", 1)))
+                seen_done[(r.get("run"), r.get("seq", 1))] = r.get("done_at") or r.get("ts")
             elif "task" in r:
                 rows.append(r)
     return rows, seen_done, os.path.join(ldir, lane + ".jsonl")
 
 def judge(r, seen, lane, pending):
-    """-> (state, evidence)"""
+    """-> (state, evidence, done_at)"""
     key = (r.get("run"), r.get("seq", 1))
     rd, seq = r.get("rundir") or "", r.get("seq", 1)
     d = rd if seq <= 1 else os.path.join(rd, "t%d" % seq)
     if rd and os.path.isfile(os.path.join(d, "reopened")):
-        return "in-progress", "reopened"
+        return "in-progress", "reopened", None
     if rd and os.path.isfile(os.path.join(d, "done")):
+        at = iso(os.path.getmtime(os.path.join(d, "done")))
         if key not in seen:
             pending.append({"v": 1, "event": "done", "lane": lane, "task": r.get("task"), "run": key[0],
-                            "seq": key[1], "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-            seen.add(key)
-        return "done", "done marker"
+                            "seq": key[1], "ts": iso(time.time()), "done_at": at})
+            seen[key] = at
+        return "done", "done marker", at
     if key in seen:
-        return "done", "reported (recorded earlier)"
+        return "done", "reported (recorded earlier)", seen[key]
     if rd and not os.path.isdir(rd):
-        return "done", "workdir removed"
-    return "in-progress", "no done marker"
+        return "done", "workdir removed", None
+    return "in-progress", "no done marker", None
 
 out = []
 for lane in lanes:
@@ -337,9 +355,14 @@ for lane in lanes:
     listed = set()
     bdir = os.path.join(brain, lane, "briefs")
     files = sorted(glob.glob(os.path.join(bdir, "*.md")))
-    for f in files:
+    # An archived brief (briefs/archive/<yyyy-mm>/) is still a brief: its state is still told.
+    # A flat file of the same name is the live one and hides it.
+    afiles = sorted(glob.glob(os.path.join(bdir, "archive", "*", "*.md")))
+    flat = set(os.path.basename(f)[:-3] for f in files)
+    for f in files + afiles:
         name = os.path.basename(f)[:-3]
-        if name.startswith("_"):
+        archived = f in afiles
+        if name.startswith("_") or (archived and (name in flat or name in listed)):
             continue
         real = os.path.realpath(f)
         if only_brief and real != only_brief:
@@ -349,15 +372,21 @@ for lane in lanes:
         hist = by_task.get(name, [])
         listed.add(name)
         if not hist:
-            out.append({"lane": lane, "task": name, "state": "never-dispatched", "brief": f})
+            row = {"lane": lane, "task": name, "state": "never-dispatched", "brief": f}
+            if archived:
+                row["archived"] = True
+            out.append(row)
             continue
         last = hist[-1]
-        st, ev = judge(last, seen, lane, pending)
-        out.append({"lane": lane, "task": name, "state": st, "evidence": ev, "brief": f, "dispatches": len(hist),
-                    "run": last.get("run"), "ts": last.get("ts"), "model": last.get("model"),
-                    "vendor": last.get("vendor"), "account": last.get("account"), "effort": last.get("effort"),
-                    "brief_sha": last.get("brief_sha"), "brief_commit": last.get("brief_commit"),
-                    "pane": last.get("pane")})
+        st, ev, at = judge(last, seen, lane, pending)
+        row = {"lane": lane, "task": name, "state": st, "evidence": ev, "brief": f, "dispatches": len(hist),
+               "run": last.get("run"), "ts": last.get("ts"), "done_at": at, "model": last.get("model"),
+               "vendor": last.get("vendor"), "account": last.get("account"), "effort": last.get("effort"),
+               "brief_sha": last.get("brief_sha"), "brief_commit": last.get("brief_commit"),
+               "pane": last.get("pane")}
+        if archived:
+            row["archived"] = True
+        out.append(row)
     # dispatches that point at no brief in this lane's briefs/ (--no-brief, --brief elsewhere)
     for name, hist in by_task.items():
         if name in listed or only_brief:
@@ -365,9 +394,9 @@ for lane in lanes:
         if only_task and name != only_task:
             continue
         last = hist[-1]
-        st, ev = judge(last, seen, lane, pending)
+        st, ev, at = judge(last, seen, lane, pending)
         out.append({"lane": lane, "task": name, "state": st, "evidence": ev, "brief": last.get("brief"),
-                    "dispatches": len(hist), "run": last.get("run"), "ts": last.get("ts"),
+                    "dispatches": len(hist), "run": last.get("run"), "ts": last.get("ts"), "done_at": at,
                     "model": last.get("model"), "vendor": last.get("vendor"), "account": last.get("account"),
                     "effort": last.get("effort"), "brief_sha": last.get("brief_sha"),
                     "brief_commit": last.get("brief_commit"), "pane": last.get("pane")})
@@ -389,6 +418,6 @@ else:
         extra = ""
         if o["state"] != "never-dispatched":
             extra = "  %s  %s  %s" % ((o.get("ts") or "")[:16], o.get("model") or o.get("vendor") or "-", o.get("run") or "")
-        print("%-16s %-14s %s%s" % (o["state"], o["lane"], o["task"], extra))
+        print("%-16s %-14s %s%s%s" % (o["state"], o["lane"], o["task"], extra, "  (archived)" if o.get("archived") else ""))
 PY
 }

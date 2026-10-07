@@ -862,6 +862,11 @@ cmd_next() {
     _receipt_into "$rundir" "design_boundary_t$nextseq" "$(_brief_boundary "$brief")" \
       "brief frontmatter boundary: in $brief at hw next — done-invoker requires an APPROVED design judgment"
   fi
+  # checks.md of a re-task, through the gate the preamble ran, keyed by task.
+  if [ -n "$brief" ] && BRIEF="$brief" _checks_gate_applies; then
+    _receipt_into "$rundir" "checks_required_t$nextseq" required \
+      "kind build (declared or undeclared) at hw next — done-invoker requires \$HW_ARTIFACTS/checks.md"
+  fi
   # THE DEPLOYED CHECK OF A GENTLE RE-TASK, keyed by task for the same reason.
   if [ "$next_gentle" = 1 ]; then
     local dc_src="brief frontmatter deployed_check: in $brief at hw next (required when absent) — done-invoker holds a done to it"

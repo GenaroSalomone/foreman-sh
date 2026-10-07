@@ -42,13 +42,22 @@ function isHwExecutor() {
   );
 }
 
+// How long `hw executor-turn-end` may take before the adapter gives up on it.
+// 2s is the answer on an idle machine; HW_TURN_END_TIMEOUT_MS lets a caller that
+// measures on a loaded one (setup/tests/595: the bash stub is killed before it
+// writes its line at load 60+) say so, without moving the default.
+function turnEndTimeoutMs() {
+  const n = Number(process.env.HW_TURN_END_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 2_000;
+}
+
 async function publishTurnEnded(hadInput) {
   if (!isHwExecutor()) return;
 
   try {
     const hw = join(brainBin(), "hw");
     await execFileAsync(hw, ["executor-turn-end"], { // # MUTATION-ANCHOR: 43-M05
-      timeout: 2_000,
+      timeout: turnEndTimeoutMs(),
       // Whether a message reached the root session since its last idle. One
       // prompt can end in more than one `session.idle` (measured 2026-10-02 on
       // a failed request: two), and hw counts turns after a report; a repeated

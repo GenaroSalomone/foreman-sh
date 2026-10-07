@@ -27,6 +27,18 @@ set -euo pipefail
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# --full: run every job even when a recorded full run could answer for most of
+# them (setup/verdict-incremental). The default asks it, and falls back to a
+# full run by itself whenever it cannot vouch for the diff.
+full_flag=""
+for _a in "$@"; do
+  case "$_a" in
+    --full) full_flag="--full" ;;
+    *) echo "verify-for-push: unknown argument $_a (the only one is --full)" >&2; exit 2 ;;
+  esac
+done
+unset _a
+
 # A DIRTY WORKING TREE CANNOT BE VERIFIED, on purpose. The cache is keyed by
 # an exact tree — HEAD's — and that identity is only meaningful if the
 # checkout actually IS that tree. Anything uncommitted in a TRACKED file
@@ -95,7 +107,44 @@ cache_dir="$(git rev-parse --git-common-dir)/hw-push-verified"
 mkdir -p "$cache_dir"
 cache_file="$cache_dir/$tree"
 
-echo "verify-for-push: running the full suite against $commit (tree $tree) — this is the ~1000s cost, run here, never inside pre-push." >&2
+# AFTER A RED FULL RUN THE FIX COSTS MINUTES, NOT A SUITE (setup/verdict-incremental).
+# The 0.3.7 train paid this script six times in ~5 hours, one whole suite per
+# fix. A full run leaves a per-job record (below); the next run on a nearby
+# tree reruns only the jobs red then plus the ones the diff can reach, and a
+# green caches a full verdict that NAMES the run it stands on. Anything the
+# planner cannot vouch for — the runner changed, too big a diff, no record, a
+# gate-select `all` — is the full run of before, with the reason printed. A
+# fixture tree with no planner is that too.
+vi="$ROOT/setup/verdict-incremental"
+only_file=""
+base_tree=""
+plan_why="no planner here"
+if [ -f "$vi" ]; then
+  only_file="$(mktemp "${TMPDIR:-/tmp}/verify-for-push-only.XXXXXX")"
+  plan_rc=0
+  plan_out="$(python3 "$vi" plan "$ROOT" $full_flag --tree "$tree" --out "$only_file" 2>&1)" || plan_rc=$?
+  plan_head="${plan_out%%$'\n'*}"   # not `| head -1`: under pipefail a long plan SIGPIPEs the printf and set -e ends this script silently
+  case "$plan_rc:$plan_head" in
+    0:incremental\ *)
+      base_tree="$(printf '%s' "$plan_head" | sed -n 's/.*base_tree=\([0-9a-f]*\).*/\1/p')"
+      plan_why="$plan_head"
+      echo "verify-for-push: INCREMENTAL — $plan_head" >&2
+      printf '%s\n' "$plan_out" | sed -n 's/^run /    run /p' >&2 ;;
+    0:full\ *)
+      plan_why="${plan_head#full }"
+      echo "verify-for-push: full run — ${plan_head#full }" >&2 ;;
+    *)
+      plan_why="the planner failed (exit $plan_rc): $plan_head"
+      echo "verify-for-push: full run — $plan_why" >&2 ;;
+  esac
+  [ -n "$base_tree" ] || { rm -f "$only_file"; only_file=""; }
+fi
+
+if [ -n "$only_file" ]; then
+  echo "verify-for-push: running the jobs a recorded full run cannot vouch for against $commit (tree $tree)." >&2
+else
+  echo "verify-for-push: running the full suite against $commit (tree $tree) — this is the ~1000s cost, run here, never inside pre-push." >&2
+fi
 started="$(date +%s)"
 rc=0
 # STREAMED, NOT CAPTURED THEN PRINTED. setup/test-hw waits for the machine's
@@ -104,10 +153,13 @@ rc=0
 # twenty minutes. `tee` shows it live and still keeps the bytes for the
 # headline below; pipefail makes the status test-hw's, not tee's.
 log="$(mktemp "${TMPDIR:-/tmp}/verify-for-push.XXXXXX")"
-trap 'rm -f "$log"' EXIT
+results="$(mktemp "${TMPDIR:-/tmp}/verify-for-push-results.XXXXXX")"
+trap 'rm -f "$log" "$results" "$only_file"' EXIT
 # HW_TEST_GATE IS PINNED, NOT INHERITED. An ambient `HW_TEST_GATE=fast` used to
 # reach the runner from here, and its green was cached as a FULL verdict — the
-# one thing main must never accept (2026-09-30, tests/250).
+# one thing main must never accept (2026-09-30, tests/250). The same goes for
+# HW_TEST_ONLY and HW_TEST_RESULTS: an ambient list would narrow a run this
+# script then caches as a whole one, so both are set here and nowhere else.
 # AND IT KEEPS ITS OWN TIMINGS, one row per job (setup/test-hw, HW_TEST_TIMINGS):
 # a slow verify is the one run whose shape nobody saw, and the file is what
 # says whether the seconds went to subjects, to the machine's pool or to the
@@ -117,14 +169,30 @@ timings="${HW_TEST_TIMINGS:-${TMPDIR:-/tmp}/verify-for-push-timings.$tree.tsv}"
 # stopped at its first red cost one ~13-minute run per red — 0.3.0-rc.1 needed
 # three in a row, each showing one problem. Every job runs, every red is listed
 # at the end, and the exit is still red, so nothing is cached below.
-HW_TEST_TIMINGS="$timings" HW_TEST_GATE=full bash setup/test-hw --keep-going 2>&1 | tee "$log" || rc=$?
+HW_TEST_ONLY="$only_file" HW_TEST_RESULTS="$results" HW_TEST_TIMINGS="$timings" HW_TEST_GATE=full bash setup/test-hw --keep-going 2>&1 | tee "$log" || rc=$?
 out="$(cat "$log")"
 elapsed=$(( $(date +%s) - started ))
+# A FULL RUN LEAVES ITS PER-JOB RECORD WHETHER IT WAS GREEN OR RED: it is what
+# the next, nearby tree starts from. An incremental run leaves none — a base is
+# always a REAL full run, never a hop off another incremental one.
+if [ -z "$only_file" ] && [ -f "$vi" ] && [ -s "$results" ]; then
+  python3 "$vi" record "$ROOT" --results "$results" --rc "$rc" --elapsed "$elapsed" --tree "$tree" --commit "$commit" >&2 \
+    || echo "verify-for-push: could not record this run's per-job results — the next run on a nearby tree will be a full one" >&2
+fi
 if [ "$rc" -ne 0 ]; then
   echo "verify-for-push: FAILED after ${elapsed}s — no verdict cached; setup/hooks/pre-push will refuse this tree." >&2
   exit 1
 fi
-headline="$(printf '%s\n' "$out" | grep -E '^[0-9]+ tests passed' | tail -1 || true)"
+if [ -n "$only_file" ]; then
+  # The runner's own line says what it counted and that it is not the whole
+  # suite; the verdict keeps that sentence, in the shape every reader of
+  # `headline=` already parses, and names the run it stands on.
+  _n="$(printf '%s\n' "$out" | sed -n 's/^INCREMENTAL: \([0-9][0-9]*\) tests passed.*/\1/p' | tail -1)"
+  _jobs="$(grep -c . "$only_file" || true)"
+  headline="${_n:-0} tests passed  (TRACKED only — INCREMENTAL: the $_jobs jobs a recorded full run (tree $base_tree) cannot vouch for; the rest are that run's)"
+else
+  headline="$(printf '%s\n' "$out" | grep -E '^[0-9]+ tests passed' | tail -1 || true)"
+fi
 # WRITE THEN RENAME, NOT A DIRECT >. `pre-push` reads this file for existence
 # AND content (its own comment says why); a direct redirect truncates the
 # target to zero bytes before writing a single line, so a reader racing the
@@ -140,6 +208,14 @@ tmp_cache_file="$cache_file.tmp.$$"
   echo "elapsed_seconds=$elapsed"
   echo "headline=$headline"
   echo "host=$(hostname)"
+  if [ -n "$only_file" ]; then
+    # A full verdict that names the full run it stands on, one hop away.
+    # setup/release/cut accepts it only while `chain` still proves that.
+    echo "incremental=1"
+    echo "base_tree=$base_tree"
+    echo "chain_depth=1"
+    echo "jobs_rerun=$_jobs"
+  fi
 } > "$tmp_cache_file"
 mv -f "$tmp_cache_file" "$cache_file"
-echo "verify-for-push: PASSED in ${elapsed}s — cached for tree $tree. setup/hooks/pre-push will now let this exact tree through instantly." >&2
+echo "verify-for-push: PASSED${only_file:+ (INCREMENTAL on $base_tree)} in ${elapsed}s — cached for tree $tree. setup/hooks/pre-push will now let this exact tree through instantly." >&2

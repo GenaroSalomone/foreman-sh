@@ -190,12 +190,17 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 |---|---|
 | `brain <lane>` | Open the lane's brainer. |
 | `hw <lane> <task> --brief <path> --sdd none` | Launch an executor. Add `--dry-run` to preview. |
+| `hw` | With no arguments, an [fzf](https://github.com/junegunn/fzf) picker over every lane's briefs, plus a `+ new brief` row. Needs `fzf`. |
 | `hw status` | What is running, what reported and what is left over. |
-| `hw ledger [<lane>] [--brief <path>\|--task <t>] [--json]` | Every brief as never-dispatched, in-progress or done, from the ledger `hw` writes at each dispatch. `hw <lane> <task>` with no brief is refused, naming the path it looked for; `--no-brief` launches without one on purpose. |
+| `hw ledger [<lane>] [--brief <path>\|--task <t>] [--state <s>] [--json]` | Every brief as never-dispatched, in-progress or done, from the ledger `hw` writes at each dispatch. When the brain is a git repository on `main` (the installer does not make it one), `hw` also commits the brief at dispatch if it is untracked or changed. `hw <lane> <task>` with no brief is refused, naming the path it looked for; `--no-brief` launches without one on purpose. |
+| `hw briefs archive <lane> [--apply]` | Move the lane's finished briefs to `briefs/archive/<yyyy-mm>/` (a plan unless `--apply`). An archived task does not launch: `hw` names the archived path and `hw briefs restore <lane> <task>`; `hw briefs unarchive <lane> --manifest <file>` undoes a whole run. |
 | `hw log <lane> <task>` | What a task asked and reported. |
 | `hw ruling <pane> "<correction>"` | Correct an executor that is still working, or resume one that reported `--blocked`. |
 | `hw next <pane> --brief <path>` | Give the next task to an executor launched with `--keep-pane`. |
 | `hw done <lane> <task>` | Run the brief's verification and close the task's tab. Waits up to 60 s for the report's own turn to end. A merged, clean task is then reaped like `hw reap --apply`. |
+| `hw preflight --json -- <hw argv>` | Read-only verdict on a dispatch you have not run: `{"level":"ok\|warn\|block","rules":[…]}`. Two rules today: an `--account` other than the lane's, and a release cut holding the suite. Exits 0 whatever the level; only a malformed call exits 1. |
+| `hw gentle-home` | Provision gentle-ai's own home for `--sdd gentle` (below). |
+| `brain relaunch (--all\|<lane>…) [--dry-run]` | Reopen idle Claude Code brainers with the cockpit, keeping each one's conversation, pane and account. A working pane is skipped and named. |
 | `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove. `--apply` removes them, archiving `.artifacts`/`qa-report` to `archive/<lane>/<task>/` beside the work directory first. Dirty, unmerged or occupied work is never removed. Also lists executors kept after a `--blocked` report and left unanswered for 24h; `--apply` closes them. |
 | `hw train add <lane> <task>` | Merge a reported task's branch into `train-<lane>`. Only a `setup/test-budgets.json` conflict is resolved; any other is named. |
 | `hw train push <lane>` | Run the full suite on the train, then move `main` to it, keeping uncommitted edits in the checkout. Pushes nothing. |
@@ -203,9 +208,82 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 `<pane>` is the executor's herdr pane, as `hw status` lists it. `hw help all`
 lists every command and flag; `hw help <topic>` shows one part.
 
-`--sdd speckit` runs a task through [Spec Kit](https://github.com/github/spec-kit)
-when its skills are in the repository. To use another methodology your
-repository already has, name it in the brief.
+### Frameworks (`--sdd`)
+
+`--sdd` is required wherever a framework is in play. To use another
+methodology your repository already has, name it in the brief.
+
+| Mode | Use it for | Needs on the machine |
+|---|---|---|
+| `none` | Read-only, measurement, audit and operational work; the brief is the whole contract. | Nothing. |
+| `speckit` | A task that should go through Spec Kit's phases. | A `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Without one, `hw` refuses before building anything. Claude Code only. |
+| `gentle` | A task that should go through gentle-ai's ODD flow. | `hw gentle-home`, and a lane that lists `gentle` in `sdd_modes`. Claude Code only. |
+
+`gentle` also needs a brief that declares `delivery:` (`single-pr`,
+`stacked-to-main` or `feature-branch-chain`) and refuses `--here`. A
+`deployed_check:` is either `required` or `out-of-scope — <reason>`.
+`review: rdd` makes gentle-ai's native RDD the only review of the task; omit it
+and the task closes with Judgment Day. Outside `gentle`, `review:` only warns.
+
+`hw gentle-home [--dir <dir>] [--check | --path]` provisions gentle-ai's home:
+the pinned release (4.0.0), checked against a pinned sha256 for your platform,
+installed for Claude Code only with `HOME` pointed inside the directory
+(`~/.local/share/hw/gentle-home`, or `$HW_GENTLE_HOME`). It is idempotent.
+`--check` exits 1 when the home is incomplete, `--path` prints it, and it
+refuses a directory inside your real Claude Code, OpenCode or Codex config.
+Nothing outside the directory is written, so removing it is
+`rm -rf <dir>`. The download comes from gentle-ai's GitHub release; a checksum
+mismatch deletes it and installs nothing.
+
+Both frameworks are third-party projects that foreman-sh integrates with, each
+under its own licence. foreman-sh is not part of either, and no endorsement is
+implied:
+
+- [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), MIT licence.
+- [Spec Kit](https://github.com/github/spec-kit), MIT licence.
+
+## The cockpit
+
+A brainer opened by `brain` runs with a cockpit mod: a card per executor with
+its harness, model and effort, its context use and its age, and a band above
+the prompt that totals them and names the one that needs you (an unanswered
+`ask-invoker`, say). `/cockpit` opens the full pane. Each control runs a command
+that already exists, so it does nothing the command itself would refuse:
+
+| Control | Runs |
+|---|---|
+| `receipt` | `hw receipt <lane> <task>` |
+| `done` | `hw done <lane> <task>`, after you confirm |
+| `ruling` (a text box) | `hw ruling <pane> -`, with the text you type |
+| `reply` (a text box, on an open ask) | `channel-send`, back to the executor |
+| `verify` | Fills the prompt with a request to check the report against its evidence; runs no verb. |
+
+A control `hw` would refuse is shown with `hw`'s own reason. The band also shows
+the verdict of `hw preflight` for the dispatch your brainer is about to run, and only
+displays it. The cockpit needs Claude Code 2.1.289 or newer: below that, `brain`
+says so and opens without it. Turn it off with `FOREMAN_COCKPIT=0` or
+`brain <lane> --no-cockpit`.
+
+`brain <lane> --resume <id>` reopens a brainer's own conversation with the
+cockpit and exits 75 when it did not start. `brain relaunch --all` does the same for
+every idle brainer pane (or name lanes), in place, under the account (`CLAUDE_CONFIG_DIR`) the
+pane already had; `--dry-run` previews it. A pane whose agent is working, or
+that has no session to resume, is skipped and named; one that was stopped and
+did not come back is reported `FAILED` and the command exits 1. Executors are
+never relaunched.
+
+## Layout
+
+For contributors: `bin/hw` is the dispatcher and holds the launch path. Five
+modules under `lib/hw/` hold the verbs that grew past it, and `bin/hw` sources
+each one: `reap.sh` (`hw reap` and the removal `hw done` shares), `status.sh`
+(`hw status`), `done.sh` (`hw done` and the close-time verification), `next.sh`
+(`hw next`) and `ledger.sh` (the dispatch ledger, the brief commit, the picker
+rows, the no-brief refusal and `hw ledger`). They are libraries with no
+shebang: run `hw`, never the module. `install.sh` copies `lib/` into the brain,
+and `hw` stops with a message naming the module when one is missing. The
+cockpit is `cockpit/` (the mod) plus `bin/cockpit-state` and `bin/hw-actions`,
+which write the state it reads and decide which buttons are live.
 
 ## Customizing a lane (`projects.json`)
 

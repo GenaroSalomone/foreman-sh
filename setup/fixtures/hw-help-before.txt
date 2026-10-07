@@ -277,6 +277,11 @@ ADVANCED
     hw ledger [<lane>] [--brief <path>|--task <t>] [--state <s>] [--json]
                        each brief as never-dispatched, in-progress or done, from
                        $WORK/.hw-ledger/<lane>.jsonl plus the run's done marker
+    hw briefs archive <lane> [--apply]
+                       move the lane's finished briefs to briefs/archive/<yyyy-mm>/
+                       (plan only without --apply); an archived task does not launch
+    hw briefs restore <lane> <task> | unarchive <lane> --manifest <file>
+                       the way back, one brief or a whole manifest
 
   KEYCHAIN HANDLES
     --no-handle-check  skip the keychain-handle preflight

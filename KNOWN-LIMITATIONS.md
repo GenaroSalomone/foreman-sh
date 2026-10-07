@@ -170,6 +170,24 @@ it leaves the brain directory, is unguarded even with the hook registered.
   foreground path does not depend on the variable.
 - **Next decision:** revisit when OpenCode documents the feature as stable.
 
+### L14. `--sdd speckit` and `--sdd gentle` are Claude Code only, and gentle needs a download
+- **Scope:** dispatches with `--sdd speckit` or `--sdd gentle`, and `hw gentle-home`.
+- **Impact:** `hw` refuses both modes for a Codex or OpenCode executor before
+  building anything. `gentle` also refuses `--here`, needs a lane that lists it
+  in `sdd_modes` (added by hand to `projects.json`) and needs the home that
+  `hw gentle-home` downloads from gentle-ai's GitHub releases. Only macOS and
+  Linux on arm64 or amd64 have a pinned checksum; any other platform has no
+  gentle home. The pin is gentle-ai 4.0.0. The installer copies
+  `setup/guards/deny-gentle-real-home.py` into the brain, where `hw gentle-home`
+  takes it from (setup test 819); the live download and everything after it have
+  not been run from an installed brain. The cockpit is a separate gate:
+  it needs Claude Code 2.1.289 or newer, and `brain` opens without it below that.
+- **Evidence:** `measured` for the gentle refusals and the checksum check by the
+  setup suite (`setup/tests/190`), for the Spec Kit refusals by `75` and `64`
+  and for the cockpit floor by `803`, all from a checkout's `bin/hw`;
+  the suite feeds `hw gentle-home` a local tarball (`HW_GENTLE_TARBALL`), so the live download is `unverified`.
+- **Workaround:** use `--sdd none` with the methodology named in the brief.
+
 ## Guards
 
 ### L5. The write guards are a tripwire, not a sandbox

@@ -1434,6 +1434,7 @@ hw_permissions_resolve "" || { echo "brain: $PERMISSIONS_ERR" >&2; exit 1; }
 [ "$PERMISSIONS" = skip ] || echo "brain: permissions: ask ($PERMISSIONS_SRC) — the brainer will stop on permission prompts; answer them in its pane." >&2
 tries=0
 agent_args=()
+[ "$kind" != claude ] || claude_session_env_prep "$pane"  # MUTATION-ANCHOR: 810-M01
 if [ "$kind" = opencode ]; then
   opencode_port="$(_free_port)"
   agent_args=(-- --port "$opencode_port")

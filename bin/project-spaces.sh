@@ -765,6 +765,25 @@ claude_first_run_command() {  # $1 = account config dir, empty for the default
   fi
 }
 
+# A CLAUDE LAUNCHED BY brain/hw IS NEVER A CHILD SESSION. A pane's shell inherits the herdr server's
+# environment, and a server started from inside a Claude session carries CLAUDE_CODE_CHILD_SESSION=1:
+# every claude started there says "Transcript saving is off" and `--resume` then finds nothing.
+# `herdr agent start` types the executable itself, so the only seam is the pane's shell, which the
+# command inherits from: this types `unset` + the force variable into it. Called ONCE before
+# `herdr agent start --kind claude`, by every launcher (brain, hw `_agent_start`). A pane that already
+# runs an agent is left alone: typing into it would land in that agent's prompt, and `agent start`
+# refuses it anyway.
+claude_session_env_prep() {  # $1 = pane
+  local pane="${1:-}" prep
+  [ -n "$pane" ] || return 0
+  if herdr agent get "$pane" 2>/dev/null | jq -e '.result.agent != null' >/dev/null 2>&1; then return 0; fi
+  prep="unset CLAUDE_CODE_CHILD_SESSION"  # MUTATION-ANCHOR: 810-M03
+  prep="$prep; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"  # MUTATION-ANCHOR: 810-M04
+  herdr pane run "$pane" "$prep" >/dev/null 2>&1 \
+    || echo "claude: could not clear CLAUDE_CODE_CHILD_SESSION in $pane; Claude may report 'Transcript saving is off'." >&2
+  return 0
+}
+
 # claude_startup_dialog — stdin is what a Claude Code pane shows; prints the
 # first-run screen it is sitting on, or nothing. Matched on the dialog's own
 # title text, as Claude Code 2.1.281 prints it.

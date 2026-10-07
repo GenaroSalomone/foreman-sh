@@ -101,6 +101,17 @@ if [ "$_snap_phys" != "$SOURCE_ROOT" ]; then  # MUTATION-ANCHOR: 84-M01
 fi
 TESTS="$HERE/tests"
 . "$HERE/fast-gate-budget.sh"
+# A SUBJECT THE FAST GATE JUDGES BY TIME IS ONE THE MANIFEST CLASSIFIES FAST. The per-subject
+# budget (setup/fast-gate-budget.sh) is what keeps a slow file from quietly staying in the fast
+# gate. A SLOW subject that runs beside it (a `touched` or `reference` one, named by what the
+# branch changed) is there on purpose, so a budget of twice its own number says nothing about the
+# gate and only turns a busy machine into a red: MEASURED 2026-10-07, 492 (4.8s own) read 9.8s
+# at load 6.9 and aborted a fast gate that had run 160s of green.
+_fg_judged() { # <subject file name> — 0 when it is a fast subject (or has no entry at all)
+  local own
+  own="$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$1=//p")"
+  [ "$(fg_ms "${own:-0}")" -le "$(fg_ms "${FAST_THRESHOLD_SECONDS:-0}")" ]
+}
 [ -d "$TESTS" ] || { printf 'not ok - runner: %s does not exist\n' "$TESTS" >&2; exit 1; }
 
 # THE GLOB IS THE CONTRACT, SO PROVE NOTHING FELL OUTSIDE IT. A subject file
@@ -836,18 +847,24 @@ trap 'rm -f "$TALLY" "$TALLY.subject"; _pool_release_all; _queue_release; _gate_
 # measured it — load average 220, and two timing checks that pass alone went
 # red. bin/suite-gate holds the rule (slots = HW_SUITE_SLOTS, else
 # max(1, ncpus/4); a waiter says so once; never fails for the wait; a dead
-# holder is reclaimed; the cut goes first). Taken BEFORE the full-suite queue
-# and the pool, released LAST: the queue and the pool nest inside a slot.
+# holder is reclaimed; the cut goes first). THE LIBRARY IS LOADED HERE; the slot
+# itself is taken (`sg_take`, below) AFTER the full-suite turn, not before it:
+# a full run that is only WAITING for the turn holds no slot, so it never takes
+# the place of a fast gate that could be running (2026-10-07: three full suites
+# queued on three slots left every fast gate and `hw done` verification behind
+# them, a two-hour wait for ~15 minutes of work; setup/tests/731 holds it).
+# The slot is released LAST, and the pool nests inside it.
 # NOT TAKEN by a nested runner (its parent holds one), nor by a runner started
 # inside `hw done`'s or the cut's own hold (HW_SUITE_GATE_HELD, checked there),
 # nor where bin/suite-gate is absent (a fixture runner). The gate is
 # unreachable from `bash setup/tests/NN-*.sh` run by hand, as the pool is.
 _gate_release() { if declare -F sg_release >/dev/null 2>&1; then sg_release; fi; }
+SG_ON=0
 if [ -z "${TEST_HW_NESTED:-}" ] && [ -r "$HERE/../bin/suite-gate" ]; then
   # shellcheck source=../bin/suite-gate
   . "$HERE/../bin/suite-gate"
   SG_WORK="$SUITE_WORK"
-  sg_take "setup/test-hw (${HW_TEST_GATE:-full})" || true  # MUTATION-ANCHOR: 730-M06 — 1 = ceiling passed (said), 2 = no gate (said): both run on
+  SG_ON=1  # MUTATION-ANCHOR: 731-M01
 fi
 
 # ── ONE FULL SUITE PER MACHINE AT A TIME, IN ARRIVAL ORDER (2026-09-30) ─────
@@ -933,6 +950,21 @@ if [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ] && [ -z "${TEST_HW_NESTED:-}
     sleep 1
   done
   trap - INT TERM
+fi
+
+# THE SUITE SLOT, NOW THAT THE TURN (IF THIS RUN NEEDS ONE) IS HELD. A run with no
+# turn to wait for (the fast gate) takes it at once, as before.
+# A RUN THAT HOLDS THE TURN WAITS A BOUNDED TIME FOR ITS SLOT. Callers that take a slot FIRST and then run
+# this file as a child (`hw suite`, `hw done`'s verification, release/cut: they ride their own slot) queue for
+# the turn while holding it; if every slot is held by such callers waiting for the turn, a turn holder that
+# waited for a slot without a limit would wait for them while they wait for it (found by both judges of
+# 2026-10-07: HW_SUITE_SLOTS=1, one cut and one plain full run, is enough). Past the limit it runs without a
+# slot and says so, as sg_take already does at its own ceiling; setup/tests/731 P02 holds it.
+if [ "$SG_ON" = 1 ]; then
+  _sg_wait_ms=""
+  [ "$QUEUE_RUNNING_MINE" != 1 ] || _sg_wait_ms="${HW_SUITE_TURN_SLOT_WAIT_MS:-300000}"  # MUTATION-ANCHOR: 731-M02
+  HW_SUITE_GATE_WAIT_MS="${_sg_wait_ms:-${HW_SUITE_GATE_WAIT_MS:-7200000}}" \
+    sg_take "setup/test-hw (${HW_TEST_GATE:-full})" || true  # MUTATION-ANCHOR: 730-M06 — 1 = ceiling passed (said), 2 = no gate (said): both run on
 fi
 
 # A MUTATION ARM NOBODY RUNS IS NOT COVERAGE, and this is where that is caught.
@@ -1224,6 +1256,33 @@ if [ "$HW_TEST_GATE" = full ]; then
   # so still started first.
   JOB_LANE+=("guards"); JOB_HINT+=("270")
 fi
+# ── ONLY THESE JOBS: the incremental verdict's run (HW_TEST_ONLY=<file>) ────
+#
+# setup/verify-for-push asks setup/verdict-incremental which jobs a tree can
+# have changed since a recorded FULL run, and hands the answer here: one job
+# basename per line (a subject, or a guard job). It narrows the FULL gate only,
+# and every name must match a job this run built: a name that matches none is a
+# typo that would run less than was asked, so it is refused, never skipped.
+# Nothing else in the runner changes, so what a job does is what it always did.
+if [ -n "${HW_TEST_ONLY:-}" ]; then
+  [ "$HW_TEST_GATE" = full ] || { printf 'not ok - runner: HW_TEST_ONLY narrows the FULL gate only (HW_TEST_GATE=%s)\n' "$HW_TEST_GATE" >&2; exit 1; }
+  [ -r "$HW_TEST_ONLY" ] || { printf 'not ok - runner: HW_TEST_ONLY=%s is not a readable file\n' "$HW_TEST_ONLY" >&2; exit 1; }
+  _only_p=(); _only_k=(); _only_l=(); _only_h=(); _only_kept=$'\n'
+  for _o in "${!JOB_PATH[@]}"; do
+    _ob="$(basename "${JOB_PATH[$_o]}")"
+    if grep -qxF -- "$_ob" "$HW_TEST_ONLY"; then
+      _only_p+=("${JOB_PATH[$_o]}"); _only_k+=("${JOB_KIND[$_o]}"); _only_l+=("${JOB_LANE[$_o]}"); _only_h+=("${JOB_HINT[$_o]}")
+      _only_kept="$_only_kept$_ob"$'\n'
+    fi
+  done
+  while IFS= read -r _on || [ -n "$_on" ]; do
+    [ -n "$_on" ] || continue
+    case "$_only_kept" in *$'\n'"$_on"$'\n'*) ;; *) printf 'not ok - runner: HW_TEST_ONLY names %s, which is no job of this run\n' "$_on" >&2; exit 1 ;; esac
+  done < "$HW_TEST_ONLY"
+  [ "${#_only_p[@]}" -gt 0 ] || { printf 'not ok - runner: HW_TEST_ONLY=%s names no job\n' "$HW_TEST_ONLY" >&2; exit 1; }
+  JOB_PATH=("${_only_p[@]}"); JOB_KIND=("${_only_k[@]}"); JOB_LANE=("${_only_l[@]}"); JOB_HINT=("${_only_h[@]}")
+  printf 'runner: INCREMENTAL — %s of the full gate'"'"'s jobs, named by HW_TEST_ONLY=%s; this is not the whole suite\n' "${#JOB_PATH[@]}" "$HW_TEST_ONLY" >&2
+fi
 # THE GUARD JOBS' HOME IS THE GUARD'S, NOT THE CALLER'S (since 2026-09-22).
 # The subjects run under a HOME of their own (tests/_common.sh); the guard jobs
 # are not subjects and never source it. They need HOME to be one specific value:
@@ -1508,7 +1567,7 @@ _run_job() {
       # loop has already let the next subject start, and a re-run beside it would
       # time both against each other. The minimum of up to three runs is what
       # the loop judges (setup/fast-gate-budget.sh).
-      if [ "$rc" -eq 0 ] && [ "${HW_TEST_GATE:-}" = fast ] && [ -n "${FAST_THRESHOLD_SECONDS:-}" ] && [ "$kind" = subject ]; then
+      if [ "$rc" -eq 0 ] && [ "${HW_TEST_GATE:-}" = fast ] && [ -n "${FAST_THRESHOLD_SECONDS:-}" ] && [ "$kind" = subject ] && _fg_judged "$(basename "$f")"; then
         _b_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$(basename "$f")=//p")" "$FG_FACTOR")"
         _try=0
         while [ "$wall_ms" -gt "$_b_ms" ] && [ "$_try" -lt 2 ]; do
@@ -1718,7 +1777,9 @@ RETRIED_COUNT=0; RETRIED_LINES=""
 KEEP_GOING=0
 case "${HW_TEST_KEEP_GOING:-}" in 1|yes|true) KEEP_GOING=1 ;; esac
 RED_LINES=""; RED_RC=0; RED_COUNT=0
+JOB_RED=()
 _job_red() {
+  JOB_RED[${_i:-0}]=1
   if [ "$KEEP_GOING" != 1 ]; then _stop_everything; _tm_run; abort_marker; exit "$1"; fi
   RED_COUNT=$((RED_COUNT + 1))
   [ "$RED_RC" != 0 ] || RED_RC="$1"
@@ -1804,7 +1865,7 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   # just on whichever day someone remembers to re-measure. It is also the whole
   # reason the fast gate stays one at a time: this number has to be the
   # subject's own, not a reading of how busy the machine was around it.
-  if [ "$HW_TEST_GATE" = fast ] && [ -n "$FAST_THRESHOLD_SECONDS" ] && [ "${JOB_KIND[$_i]}" = subject ]; then
+  if [ "$HW_TEST_GATE" = fast ] && [ -n "$FAST_THRESHOLD_SECONDS" ] && [ "${JOB_KIND[$_i]}" = subject ] && _fg_judged "$(basename "$f")"; then  # MUTATION-ANCHOR: 732-M01
     _fg_own="$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$(basename "$f")=//p")"
     _fg_budget_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$_fg_own" "$FG_FACTOR")"
     _fg_own_ms="$(fg_ms "$_fg_own")"
@@ -1816,13 +1877,18 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
       _job_red 1 "setup/tests/$(basename "$f") failed on a fast-gate timing re-run (exit $rerun_rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
     fi
     read -r _fg_load _fg_ncpu <<< "$(fg_load_ncpu)"
-    read -r _fg_res _fg_mode _fg_why <<< "$(fg_decide "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "${_fg_load:-}" "${_fg_ncpu:-}")"
+    _fg_probe=""
+    [ "$_fg_wall" -le "$_fg_budget_ms" ] || _fg_probe="$(fg_probe_x100)"
+    read -r _fg_res _fg_mode _fg_why <<< "$(fg_decide "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "${_fg_load:-}" "${_fg_ncpu:-}" "$_fg_probe")"
     _fg_ldesc="load1=$(( ${_fg_load:-0} / 100 )).$(printf '%02d' $(( ${_fg_load:-0} % 100 ))) on ${_fg_ncpu:-?} cpus"
+    [ -z "$_fg_probe" ] || _fg_ldesc="$_fg_ldesc, a CPU probe ran at $(( _fg_probe / 100 )).$(printf '%02d' $(( _fg_probe % 100 )))x its own time"
     [ -z "${HW_TEST_LOAD1:-}" ] || _fg_ldesc="$_fg_ldesc [SIMULATED by HW_TEST_LOAD1/HW_TEST_NCPU]"
     if [ "$_fg_wall" -gt "$_fg_budget_ms" ] || [ "${_fg_first:-0}" -gt "$_fg_budget_ms" ]; then
       case "$_fg_res $_fg_mode" in
         "pass wall") printf 'runner: setup/tests/%s read %sms on the first run, over the %sms budget, and %sms at best on re-run — within budget (%s): the first reading was the machine\n' \
                        "$(basename "$f")" "${_fg_first:-$wall_ms}" "$_fg_budget_ms" "$_fg_wall" "$_fg_ldesc" >&2 ;;
+        "pass grace") printf 'runner: setup/tests/%s NEAR MISS, NOT REFUSED: %sms (best of re-runs) is over the %sms budget by at most a quarter, and its CPU user+sys %sms is within the budget — it waited, it did not compute (%s)\n' \
+                       "$(basename "$f")" "$_fg_wall" "$_fg_budget_ms" "$_fg_cpu" "$_fg_ldesc" >&2 ;;
         "pass cpu")  printf 'runner: setup/tests/%s BUDGET APPLIED TO CPU, NOT WALL: wall %sms (best of re-runs) is over the %sms budget but the machine is saturated (%s); CPU user+sys %sms is within twice that budget\n' \
                        "$(basename "$f")" "$_fg_wall" "$_fg_budget_ms" "$_fg_ldesc" "$_fg_cpu" >&2 ;;
       esac
@@ -1878,11 +1944,33 @@ if [ -n "$WITNESS_PID" ]; then
     printf '\nnot ok - runner: %s connection(s) reached the herdr WITNESS socket that stood where the live pane'"'"'s address was — some job addressed the pane it was started from, which on a live pane is a write onto somebody'"'"'s session. First request: %s\n' \
       "$(grep -c . "$WITNESS_LOG")" "$(head -1 "$WITNESS_LOG")" >&2
     [ "$KEEP_GOING" = 1 ] || { abort_marker; exit 1; }
+    WITNESS_RED=1
     RED_COUNT=$((RED_COUNT + 1)); [ "$RED_RC" != 0 ] || RED_RC=1
     RED_LINES="$RED_LINES
   not ok - runner: a job reached the herdr witness socket"
   fi
 fi
+
+# ── WHAT EACH JOB CONCLUDED, for the incremental verdict (HW_TEST_RESULTS=<file>) ─
+#
+# setup/verdict-incremental needs, per job, whether THIS run found it green or
+# red — and the per-job exit in HW_TEST_TIMINGS is not that: a subject that
+# exits 0 and fails mutation coverage, or runs over its budget, is red with rc 0.
+# So the verdict is the one the loop above reached (JOB_RED). One row per job:
+# `<basename> TAB <kind> TAB ok|red`; a red that belongs to no job (the witness
+# socket) is the row `runner TAB runner TAB red`, which makes the run unusable
+# as a base. Written in place after every job ran, never partially.
+_results_write() {
+  [ -n "${HW_TEST_RESULTS:-}" ] || return 0
+  local _rf="$HW_TEST_RESULTS.tmp.$$" _r
+  : > "$_rf" 2>/dev/null || { printf 'runner: cannot write HW_TEST_RESULTS=%s — this run records no results\n' "$HW_TEST_RESULTS" >&2; return 0; }
+  for _r in "${!JOB_PATH[@]}"; do
+    printf '%s\t%s\t%s\n' "$(basename "${JOB_PATH[$_r]}")" "${JOB_KIND[$_r]}" "$([ -n "${JOB_RED[$_r]:-}" ] && echo red || echo ok)" >> "$_rf"
+  done
+  [ "${WITNESS_RED:-0}" != 1 ] || printf 'runner\trunner\tred\n' >> "$_rf"
+  mv -f "$_rf" "$HW_TEST_RESULTS" 2>/dev/null || true
+}
+_results_write
 
 # EVERY RED OF A --keep-going RUN, together, and still no number. The exit is
 # the first red job's, so a caller that tested `$? -ne 0` reads the same verdict
@@ -1971,6 +2059,8 @@ else
   elif [ "$HW_TEST_GATE" = fast ]; then
     printf '\nFAST GATE: %s tests passed  (TRACKED only — %s of %s subject files, %s of them slow subjects that name what this branch changed; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
       "$TRACKED_OK" "${#FILES[@]}" "$(printf '%s\n' "$TESTS"/[0-9][0-9]*-*.sh | grep -c .)" "$TOUCHED_RUN"
+  elif [ -n "${HW_TEST_ONLY:-}" ]; then
+    printf '\nINCREMENTAL: %s tests passed  (TRACKED only — %s jobs named by HW_TEST_ONLY, NOT the whole suite)\n' "$TRACKED_OK" "$JOB_TOTAL"
   else
     printf '\n%s tests passed  (TRACKED only — the number this commit can reproduce)\n' "$TRACKED_OK"  # MUTATION-ANCHOR: 55-M01
   fi
@@ -1982,6 +2072,8 @@ else
     printf '  Quote the tracked number for a release; quote both, labelled, for a working tree.\n'
   elif [ "$HW_TEST_GATE" = fast ]; then
     printf '  no untracked subjects ran; this is the fast gate only, never the whole suite — see above\n'
+  elif [ -n "${HW_TEST_ONLY:-}" ]; then
+    printf '  no untracked subjects ran; this is an incremental run, never the whole suite — see above\n'
   else
     # SAID EVEN WHEN THERE IS NOTHING TO SAY. The qualification vanishing when it
     # is not needed is how an unqualified number comes back.

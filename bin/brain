@@ -75,6 +75,8 @@ case "${1:-}" in
 brain — open (or focus) a lane's long-lived brainer.
 
 usage: brain <lane> [--opencode|--claude] [--reset [--self] [--force]]
+       brain <lane> --resume <session-id>
+       brain relaunch [--all | <lane|pane>...] [--dry-run]
        brain                list the brainers that exist
        brain --version      print the version
 
@@ -82,6 +84,14 @@ usage: brain <lane> [--opencode|--claude] [--reset [--self] [--force]]
     brain <lane> --reset    replace the agent, keeping the space, tab and pane
     brain <lane> --no-cockpit   open a claude brainer without the cockpit mod
                             (FOREMAN_COCKPIT=0 does the same)
+    brain <lane> --resume ID    the same launch, resuming that conversation (a live
+                            brainer's id is herdr's agent_session.value)
+    brain relaunch          relaunch the open claude brainers with the cockpit, each
+                            resuming its own conversation in its own pane; a working
+                            pane is skipped and named. Brainers only: executors are
+                            not relaunched (the mod is brainer-only by design).
+                            A pane whose agent was stopped and did not come back is
+                            FAILED, and the command exits non-zero (--resume: 75).
 
 A lane is a name in projects.json, or one of its aliases. Its executors are
 launched with `hw help`.
@@ -112,6 +122,123 @@ sock.close()
 PY
 }
 
+# `brain relaunch [--all | <lane|pane>...] [--dry-run]` — each open claude brainer is relaunched IN PLACE,
+# resuming its own conversation, through the same launch `brain <lane> --resume` is (writer loop, env,
+# MCP config, cockpit mod). MEASURED 2026-10-07: a brainer resumed by hand (`claude --resume <id>
+# --plugin-dir …`) showed "NO STATE — writer down", because only `bin/brain` starts the writer and
+# gives the pane HW_COCKPIT_WORK. A brainer is a pane labelled `brain` running claude, standing in
+# $BRAIN/<lane>; its session id is herdr's `agent_session.value`. Executors are not touched: the mod is
+# brainer-only by design. One line per pane: relaunched, or skipped and why. Never cuts a turn: only a
+# pane herdr reports idle/done is replaced, and `--resume` re-asks that, from `agent get`, before /exit.
+# THE LANE A PANE STANDS IN, BY WHAT THE DIRECTORY IS, NOT BY HOW IT IS SPELT: herdr reports the cwd the
+# shell was given, so a symlinked $BRAIN, a trailing slash or a different case on a case-insensitive
+# volume must not make a brainer invisible to the relaunch. Prints the CANONICAL lane name (one of
+# projects.json's, $HW_LANES) whose directory is <cwd>'s, nothing otherwise. An alias is a symlink in $BRAIN
+# to the lane (an alias -> its lane): it is the same inode, and listing the brain root found the alias before the lane,
+# so only a name the lane table knows may answer, and realpath first so a cwd that is itself a symlink
+# (to the lane or to its alias) lands on the lane directory.
+brain_lane_of_cwd() {   # <cwd>
+  [ -n "${1:-}" ] || return 0
+  python3 -I - "$BRAIN" "$1" "${HW_LANES:-}" <<'PYLANE' 2>/dev/null || true
+import os, sys
+root, cwd, lanes = sys.argv[1:4]
+try:
+    cwd = os.path.realpath(cwd)
+    if not os.path.samefile(os.path.dirname(cwd), root):
+        sys.exit(0)
+    for e in sorted(lanes.split()):
+        if os.path.isdir(os.path.join(root, e)) and os.path.samefile(os.path.join(root, e), cwd):
+            print(e)
+            break
+except OSError:
+    pass
+PYLANE
+}
+
+brain_relaunch() {   # brain relaunch [--all | <lane|pane>...] [--dry-run]
+  local all=0 dry=0 targets=() a lane json rc=0 n=0 fails=0 pane cwd sid st out up
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all) all=1 ;;
+      --dry-run) dry=1 ;;
+      -h|--help) echo "usage: brain relaunch [--all | <lane|pane>...] [--dry-run]   (brainers only; executors are not relaunched)"; return 0 ;;
+      -*) echo "brain relaunch: unknown flag: $1  (try: --all, --dry-run)" >&2; return 64 ;;
+      *:p*) targets+=("pane:$1") ;;
+      *) if lane_known "$1"; then targets+=("lane:$1")
+         elif a="$(lane_alias brain "$1")" && [ -n "$a" ]; then targets+=("lane:$a")
+         else echo "brain relaunch: neither a lane nor a pane id: $1" >&2; return 64; fi ;;
+    esac
+    shift
+  done
+  [ "$all" = 1 ] || [ "${#targets[@]}" -gt 0 ] || { echo "brain relaunch: name lanes or panes, or pass --all" >&2; return 64; }
+  [ "$all" = 0 ] || [ "${#targets[@]}" = 0 ] || { echo "brain relaunch: --all and named targets do not combine" >&2; return 64; }
+  # A FAILED LIST IS NOT AN EMPTY LIST: nothing is relaunched on a herdr that did not answer.
+  json="$(herdr pane list 2>/dev/null)" && printf '%s' "$json" | jq -e '.result.panes | type == "array"' >/dev/null 2>&1 \
+    || { echo "brain relaunch: herdr did not answer \`pane list\`, so there is nothing to relaunch from." >&2; return 1; }
+  # `|`, NOT A TAB: a tab is IFS whitespace, so an empty session id collapsed and shifted the status into it.
+  while IFS='|' read -r pane cwd sid st; do
+    [ -n "$pane" ] || continue
+    lane="$(brain_lane_of_cwd "$cwd")"
+    if [ "$all" = 0 ]; then
+      local hit=0 t
+      for t in "${targets[@]}"; do
+        [ "$t" != "pane:$pane" ] && { [ -z "$lane" ] || [ "$t" != "lane:$lane" ]; } || hit=1
+      done
+      [ "$hit" = 1 ] || continue
+    fi
+    n=$((n + 1))
+    if [ -z "$lane" ] || ! lane_known "$lane"; then
+      printf 'skipped %s: its cwd (%s) is not a lane directory under %s\n' "$pane" "${cwd:-?}" "$BRAIN"; continue
+    fi
+    if [ -z "$sid" ]; then
+      printf 'skipped %s (%s): herdr reports no session id for it, so there is no conversation to resume\n' "$pane" "$lane"; continue
+    fi
+    case "$st" in
+      idle|done) ;;
+      *) printf 'skipped %s (%s): %s — a turn may be in flight, and a relaunch would cut it\n' "$pane" "$lane" "${st:-no status}"; continue ;;
+    esac
+    if [ "$dry" = 1 ]; then
+      printf 'would relaunch %s (%s) resuming %s\n' "$pane" "$lane" "$sid"; continue
+    fi
+    out="$("$BRAIN_BIN/brain" "$lane" --resume "$sid" --in-pane "$pane" 2>&1)" || rc=$?
+    if [ "$rc" = 75 ]; then
+      # 75 IS `brain`'S "A RESUME THAT STOPPED THE AGENT, OR WAS TO START ONE, AND DID NOT": the pane was touched, so this
+      # is a failure and the command's exit says so. Any other non-zero is a refusal BEFORE the /exit — nothing
+      # was sent, nothing lost — and stays a skip.
+      printf 'FAILED %s (%s): the agent was stopped and did not come back, rc=%s: %s\n' \
+        "$pane" "$lane" "$rc" "$(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+      rc=0; fails=$((fails + 1)); continue
+    fi
+    if [ "$rc" != 0 ]; then
+      printf 'skipped %s (%s): brain refused, rc=%s: %s\n' "$pane" "$lane" "$rc" "$(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+      rc=0; continue
+    fi
+    # THE PANE ID IS THE RETURN ADDRESS (HW_INVOKER_PANE): proved, not assumed, by finding the same
+    # pane, still labelled brain and running claude, after the relaunch.
+    up=0
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+      herdr pane list 2>/dev/null | jq -e --arg p "$pane" '.result.panes[] | select(.pane_id == $p and .label == "brain" and .agent == "claude")' >/dev/null 2>&1 \
+        && { up=1; break; }
+      sleep 1
+    done
+    [ "$up" = 1 ] || {
+      # `claude --resume` of a session that never had a turn finds no conversation and exits; the pane is
+      # then a bare shell. Nothing was lost (there was nothing), and `brain <lane>` opens a fresh one there.
+      printf 'FAILED %s (%s): claude did not come up resuming %s (a session with no turn yet has no conversation to resume) — the pane is a bare shell; `brain %s` starts a new brainer in it\n' "$pane" "$lane" "$sid" "$lane"
+      fails=$((fails + 1)); continue
+    }
+    printf 'relaunched %s (%s) resuming %s%s\n' "$pane" "$lane" "$sid" \
+      "$(printf '%s' "$out" | grep -Eo 'cockpit needs claude >= [0-9.]+ \(found [^)]*\)' | head -1 | sed 's/^/ — without the mod: /')"
+  done < <(printf '%s' "$json" | jq -r '.result.panes[] | select(.label == "brain" and .agent == "claude")
+      | [.pane_id, (.cwd // ""), (.agent_session.value // ""), (.agent_status // "")] | join("|")')
+  [ "$n" -gt 0 ] || echo "brain relaunch: no open claude brainer matched."
+  [ "$fails" = 0 ] || return 1
+  return 0
+}
+
+[ "${1:-}" != relaunch ] || { brain_relaunch "$@"; exit $?; }
+
 # A lane name, or one of its `brain_aliases` in projects.json.
 proj=""
 if [ -n "${1:-}" ]; then
@@ -141,6 +268,8 @@ NO_COCKPIT=0
 FORCE=0
 SELF=0
 AWAIT_PANE=""
+RESUME=""
+IN_PANE=""
 shift
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -151,6 +280,15 @@ while [ $# -gt 0 ]; do
     --opencode|-o) kind=opencode ;;
     --claude|-c) kind=claude ;;
     --no-cockpit) NO_COCKPIT=1 ;;
+    # --resume is the same launch with `--resume <id>` on claude's command line: the pane's
+    # live agent is replaced in place (the reset path, minus its refusal about executors,
+    # because the conversation they report to is kept).
+    --resume) kind=claude; shift; RESUME="${1:-}"
+              [ -n "$RESUME" ] || { echo "--resume needs a session id" >&2; exit 64; } ;;
+    # --in-pane is `brain relaunch`'s own: the pane to replace the agent in, instead of the
+    # lane's brainer tab, so a pane that is not the lane's registered tab is still the one touched.
+    --in-pane) shift; IN_PANE="${1:-}"
+               [ -n "$IN_PANE" ] || { echo "--in-pane needs a pane id" >&2; exit 64; } ;;
     --reset) RESET=1 ;;
     # --force is only ever read on the reset path, and it overrides exactly one
     # refusal: live executors still pointing at this brainer. It does not soften
@@ -168,10 +306,13 @@ while [ $# -gt 0 ]; do
     # runs, and everything that path reads is re-read after the wait.
     --await-idle) shift; AWAIT_PANE="${1:-}"
                   [ -n "$AWAIT_PANE" ] || { echo "--await-idle needs a pane id" >&2; exit 64; } ;;
-    *) echo "unknown flag: $1  (try: --opencode, --claude, --no-cockpit, --reset, --self, --force)" >&2; exit 64 ;;
+    *) echo "unknown flag: $1  (try: --opencode, --claude, --no-cockpit, --resume, --reset, --self, --force)" >&2; exit 64 ;;
   esac
   shift
 done
+[ -z "$RESUME" ] || [ "$kind" = claude ] || { echo "--resume is a Claude Code conversation: it does not apply to a $kind brainer" >&2; exit 64; }
+[ -z "$RESUME" ] || { [ "$RESET" = 0 ] && [ "$SELF" = 0 ] && [ -z "$AWAIT_PANE" ]; } || { echo "--resume replaces the agent keeping its conversation; it does not combine with --reset, --self or --await-idle" >&2; exit 64; }
+[ -z "$IN_PANE" ] || [ -n "$RESUME" ] || { echo "--in-pane means nothing without --resume" >&2; exit 64; }
 [ "$FORCE" = 0 ] || [ "$RESET" = 1 ] || { echo "--force means nothing without --reset" >&2; exit 64; }
 [ "$SELF" = 0 ] || [ "$RESET" = 1 ] || { echo "--self means nothing without --reset" >&2; exit 64; }
 [ -z "$AWAIT_PANE" ] || [ "$RESET" = 1 ] || { echo "--await-idle means nothing without --reset" >&2; exit 64; }
@@ -607,14 +748,30 @@ brain_blocker_gate() {  # $1 = project, $2 = brainer pane, $3 = flags; stdin = p
   return 0
 }
 
+# `--in-pane <pane>` (brain relaunch): the workspace and tab are the pane's own, read from herdr,
+# not looked up by the lane's labels — so the pane named is the pane replaced, even when the lane
+# also has a registered brainer tab elsewhere.
+IN_TAB=""
+if [ -n "$IN_PANE" ]; then
+  in_json="$(herdr_json "the panes of $IN_PANE" '.result.panes' pane list)"
+  in_ids="$(printf '%s' "$in_json" | jq -r --arg p "$IN_PANE" '.result.panes[] | select(.pane_id == $p) | "\(.workspace_id)\t\(.tab_id)"' 2>/dev/null | head -1 || true)"
+  [ -n "$in_ids" ] || { echo "brain: $IN_PANE is not a pane herdr knows. Nothing was sent and nothing was restarted." >&2; exit 1; }
+  ws="${in_ids%%$(printf '\t')*}"
+  IN_TAB="${in_ids#*$(printf '\t')}"
+fi
+
 # Already open? Focus the brainer's TAB, not the space — the space may hold
 # several executor tabs and landing on whichever was focused last is not "open the
 # brainer".
 if [ -n "$ws" ]; then
-  tab="$(herdr_list "the $tab_label tab in $ws" '.result.tabs' \
-         "$(printf '.result.tabs[] | select(.workspace_id == %s and .label == %s) | .tab_id' \
-            "$(jq -Rn --arg w "$ws" '$w')" "$(jq -Rn --arg l "$tab_label" '$l')")" \
-         tab list)"
+  if [ -n "$IN_TAB" ]; then
+    tab="$IN_TAB"
+  else
+    tab="$(herdr_list "the $tab_label tab in $ws" '.result.tabs' \
+           "$(printf '.result.tabs[] | select(.workspace_id == %s and .label == %s) | .tab_id' \
+              "$(jq -Rn --arg w "$ws" '$w')" "$(jq -Rn --arg l "$tab_label" '$l')")" \
+           tab list)"
+  fi
   if [ -n "$tab" ]; then
     # ONE pane list for every question below. Same fail-closed rule as the two
     # lookups above: a `pane list` that failed is not a brainer with no pane.
@@ -629,6 +786,16 @@ if [ -n "$ws" ]; then
     fi
     verdict=""
     [ -z "$pane" ] || verdict="$(printf '%s' "$panes_json" | lane_brainer_verdict "$pane" "$dir")"
+    # A RESUME OF AN OPEN BRAINER IS A REPLACEMENT OF ITS AGENT, in its own pane: the reset path's
+    # liveness checks, /exit and proof-of-exit apply unchanged, and a WORKING or BLOCKED pane is
+    # refused there. `--in-pane` names the pane, so it must be the one in that tab.
+    if [ -n "$RESUME" ] && [ -n "$pane" ]; then
+      [ -z "$IN_PANE" ] || [ "$IN_PANE" = "$pane" ] || {
+        printf 'brain: %s is not the brainer pane of its tab (that is %s). Nothing was sent and nothing was restarted.\n' "$IN_PANE" "$pane" >&2
+        exit 1
+      }
+      RESET=1
+    fi
 
     if [ "$RESET" = 1 ]; then
       [ -n "$pane" ] || {
@@ -935,7 +1102,9 @@ PY
       esac
       # MUTATION-ANCHOR-END: 137-M01
 
-      printf '%s' "$panes_json" | brain_blocker_gate "$proj" "$pane" "--reset" || exit 1
+      # A RESUME KEEPS THE CONVERSATION the executors report to, so the gate that exists to protect
+      # it has nothing to refuse.
+      [ -n "$RESUME" ] || printf '%s' "$panes_json" | brain_blocker_gate "$proj" "$pane" "--reset" || exit 1
 
       # CAPTURE IS NOT AUTHORITY — the rule `hw unstick` states in those words.
       # Every check above reads ONE pane list, taken before the blocker scan and
@@ -976,6 +1145,10 @@ PY
         herdr pane send-text "$pane" '/exit' >/dev/null 2>&1 \
           || { echo "brain: could not send /exit to $pane; nothing was restarted." >&2; exit 1; }
         sleep 1
+        # FROM HERE THE PANE IS TOUCHED. A resume that dies after this point exits 75, not 1, so that
+        # `brain relaunch` can tell "the agent was stopped and did not come back" from a refusal that
+        # sent nothing (its own FAILED vs skipped). Only a resume is held to it: --reset keeps its 1.
+        [ -z "$RESUME" ] || trap 'st=$?; [ "$st" = 0 ] || exit 75' EXIT
         herdr pane send-keys "$pane" enter >/dev/null 2>&1 \
           || { echo "brain: /exit was typed into $pane but could not be submitted; look at that pane before starting anything else." >&2; exit 1; }
         # POSITIVE EVIDENCE, NOT A FAILED CALL. `herdr agent get` exits 1 and
@@ -1143,8 +1316,32 @@ brain_account_env() {   # <project> <kind>
   printf 'CLAUDE_CONFIG_DIR=%s' "$dir"
 }
 account_flag=""
-account_flag="$(brain_account_env "$proj" "$kind")" || exit 1
+# A PANE RELAUNCHED IN PLACE KEEPS THE ACCOUNT ITS SHELL ALREADY RUNS UNDER (its CLAUDE_CONFIG_DIR is
+# the pane's environment, not re-applied here), so the lane's default is neither imposed nor verified.
+if [ -z "$IN_PANE" ]; then account_flag="$(brain_account_env "$proj" "$kind")" || exit 1; fi
 brain_acct_dir="${account_flag#CLAUDE_CONFIG_DIR=}"
+# THE PANE'S ACCOUNT, NOT THE CALLER'S. `brain relaunch` runs in whatever shell typed it, and its own
+# CLAUDE_CONFIG_DIR says nothing about the pane being replaced: trust and the first-run check were read
+# from the wrong account whenever the two differed. The pane's shell is at its prompt here (the /exit
+# above was proved), so it is asked for its own variable, through a file it writes.
+brain_pane_config_dir() {   # <pane> — prints the pane shell's CLAUDE_CONFIG_DIR (empty: the default account); 1 = no answer
+  local f i
+  f="$(mktemp "${TMPDIR:-/tmp}/brain-cfgdir.XXXXXX")" || return 1
+  rm -f "$f"
+  herdr pane run "$1" "printf '%s' \"\${CLAUDE_CONFIG_DIR:-}\" > '$f.tmp' && mv '$f.tmp' '$f'" >/dev/null 2>&1 || return 1
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -f "$f" ] && { printf "%s" "$(<"$f")"; rm -f "$f"; return 0; }
+    sleep 0.5
+  done
+  rm -f "$f.tmp"
+  return 1
+}
+if [ -n "$IN_PANE" ]; then
+  brain_acct_dir="$(brain_pane_config_dir "$IN_PANE")" || {
+    brain_acct_dir=""
+    echo "brain: could not read $IN_PANE's CLAUDE_CONFIG_DIR; its folder-trust and first-run checks used the default account." >&2
+  }
+fi
 workspace_env=(--env "ENGRAM_PROJECT=$ENGRAM_LABEL")
 # THE BRAINER'S ENGRAM GOES THROUGH THE LABEL PROXY, as an executor's does
 # (bin/engram-label-proxy; hw's _engram_proxy_args carries the per-vendor
@@ -1275,6 +1472,7 @@ else
   # script's own physical path (the installed tree has cockpit/ beside bin/). Only
   # claude, only at or above the version that has mods, never when opted out; below
   # the floor it is one line and the brainer opens without it. An opt-out says nothing.
+  [ -z "$RESUME" ] || agent_args+=(--resume "$RESUME")
   if [ "$NO_COCKPIT" = 0 ] && [ "${FOREMAN_COCKPIT:-1}" != 0 ]; then
     cockpit_dir="$(cd -P "$BRAIN_BIN/.." && pwd)/cockpit"
     cockpit_floor=2.1.289
@@ -1323,6 +1521,7 @@ if ! printf '%s' "${out:-}" | jq -e '.result.agent.interactive_ready == true' >/
       printf '%s\n' "$screen" | sed '/^[[:space:]]*$/d' | tail -8 | sed 's/^/    /' >&2
     fi
     echo "brain: start it by hand in that pane, or re-run once the pane is at its prompt." >&2
+    START_FAILED=1
   fi
 fi
 if [ -n "${tab:-}" ] && [ "$tab" != null ]; then
@@ -1330,8 +1529,16 @@ if [ -n "${tab:-}" ] && [ "$tab" != null ]; then
 else
   herdr workspace focus "$ws" >/dev/null
 fi
+# A RESUME THAT DID NOT START IS NOT "resumed". The agent it replaced is gone, the conversation is intact on
+# disk, and the pane is a bare shell: say so and fail, instead of the success line below and exit 0.
+if [ "${START_FAILED:-0}" = 1 ] && [ -n "$RESUME" ]; then
+  echo "FAILED resuming $RESUME in $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — the pane is a bare shell; the conversation is untouched, and \`brain $proj --resume $RESUME\` retries" >&2
+  exit 75
+fi
 if [ "${REVIVE:-0}" = 1 ]; then
   echo "restarted $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, new conversation, the old one had already exited — cwd $dir"
+elif [ -n "$RESUME" ] && [ "$RESET" = 1 ]; then
+  echo "resumed $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, conversation $RESUME — cwd $dir"
 elif [ "$RESET" = 1 ]; then
   echo "reset $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, new conversation — cwd $dir"
   [ "${RESET_CWD_UNFIXED:-0}" = 0 ] || {

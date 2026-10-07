@@ -345,12 +345,15 @@ pass "lint-shell: a real middle-stage no-match aborts an errexit assignment befo
 # fails this subject rather than hiding behind an accepted exit 1.
 set +e
 bin_files=(); for f in "$ROOT/bin"/*; do [ -f "$f" ] && bin_files+=("$f"); done  # a stray __pycache__ is not a subject
+# bin/hw's commands live in lib/hw/*.sh as they are split out; that code is still hw's, so its debt is
+# scanned and counted as hw's, not hidden by the move.
+for f in "$ROOT/lib/hw"/*.sh; do [ -f "$f" ] && bin_files+=("$f"); done
 bin_lint_out="$("$ROOT/bin/lint-shell" "${bin_files[@]}" 2>&1)"
 bin_lint_rc=$?
 set -e
 [ "$bin_lint_rc" = 1 ] || fail "lint-shell: expected the explicit consumer-debt exit 1, got $bin_lint_rc: $bin_lint_out"
 brain_archive_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/brain-archive:" || true)"
-hw_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/hw:" || true)"
+hw_count="$(printf '%s\n' "$bin_lint_out" | grep -cE "^$ROOT/(bin/hw|lib/hw/[a-z]+\.sh):" || true)"
 reconcile_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/hw-reconcile:" || true)"
 # THIS NUMBER IS A RATCHET AND IT ONLY GOES DOWN. hw went 10 -> 9 on 2026-09-07:
 # `_wt_disposition`'s second `n="$(git -C "$wt" status --porcelain 2>/dev/null
@@ -368,8 +371,11 @@ reconcile_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/hw-reconc
 # directly above is what pins it, and it is the assertion that means something.
 normalized="$(printf '%s\n' "$bin_lint_out" \
   | grep -v '^[0-9]* finding(s)' \
-  | sed -E "s#^$ROOT/bin/([^:]+):[0-9]+:#bin/\\1:#")"
+  | sed -E "s#^$ROOT/lib/hw/[a-z]+\.sh:#$ROOT/bin/hw:#; s#^$ROOT/bin/([^:]+):[0-9]+:#bin/\\1:#" | sort)"
 actual_hash="$(printf '%s\n' "$normalized" | shasum -a 256 | cut -d ' ' -f1)"
+# 2026-10-07 (c): `hw done` moved to lib/hw/done.sh and took two of the nine hw findings with it. The
+#   scan now includes lib/hw/*.sh, counted as hw's; the hash is over the SORTED set (a moved finding changes
+#   order, not content). Triage: the sorted set of main's bin/* scan and this one hash identically (14cb75e5…).
 # TRIAGED TWICE, and this is what triage means here: the old set and the new one
 # are diffed IN FULL before the hash moves.
 #   2026-09-07 (a): one line left it —
@@ -379,6 +385,6 @@ actual_hash="$(printf '%s\n' "$normalized" | shasum -a 256 | cut -d ' ' -f1)"
 #   lint-shell's summary line gaining "in M file(s) read"; with that line now
 #   excluded above, the old and new normalized texts hash identically. The hash
 #   below moved only because the exclusion changed what is hashed.
-[ "$actual_hash" = 809b9c8d7d31e28ef708225dffbaa99ebb70b8d69ae4520e31fa99b6c756fb62 ] \
+[ "$actual_hash" = 14cb75e5096d220a862a5a387a442c73611c7183090e281dfefb1654ac7f389a ] \
   || fail "lint-shell: full-bin semantic finding set changed (sha256=$actual_hash) and needs fresh triage: $bin_lint_out"
 pass "lint-shell: full bin/* scan is automatic and its 21 active-errexit consumer findings are exact, not an untriaged dump"

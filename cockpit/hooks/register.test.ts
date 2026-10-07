@@ -128,7 +128,7 @@ test('opencode rows show ctx n/a and every vendor draws a row', async ($, on) =>
   const lines = await texts(await drawPane($))
   expect(has(lines, /opencode.*ctx n\/a/)).toBe(true)
   expect(has(lines, /codex/)).toBe(true)
-  expect(has(lines, /unknown/)).toBe(true)
+  expect(has(lines, /^pi · /)).toBe(true)
 })
 
 test('a reply input appears only on an ask row that carries pending_reply', async ($, on) => {
@@ -238,4 +238,33 @@ test('a herdr-down file that has gone stale does not read as zero executors', as
   expect(has(lines, /^STALE/)).toBe(true)
   expect(has(lines, /HERDR UNREACHABLE: counts unknown/)).toBe(true)
   expect(has(lines, /0 executors/)).toBe(false)
+})
+
+// A why_not from hw carries newlines (and could carry an escape sequence); the engine refuses a
+// tree holding a control character, so the pane would fall back to the engine's own.
+test('a why_not with a newline or an escape sequence still draws the pane', async ($, on) => {
+  const base = JSON.parse(FIXTURES['fresh.json']!)
+  base.generated_at = NOW
+  base.rows[4].actions.why_not.done = 'task 1 has NOT reported\nWORKING right now — wait'
+  base.rows[4].actions.why_not.verify = '\x1b[31mred\x1b[0m'
+  world(on, JSON.stringify(base), NOW)
+  const ui = await drawPane($)
+  const lines = await texts(ui)
+  expect(has(lines, /^\[done\] task 1 has NOT reported WORKING right now — wait$/)).toBe(true)
+  expect(has(lines, /^\[verify\] red$/)).toBe(true)
+  expect(lines.some(l => /[\x00-\x1f\x7f]/.test(l))).toBe(false)
+})
+
+test('a card shows the run’s effort beside the model, and nothing when it has none', async ($, on) => {
+  world(on, FIXTURES['fresh.json']!, NOW)
+  const lines = await texts(await drawPane($))
+  expect(has(lines, /^claude · claude-sonnet-5-5 · high · ctx/)).toBe(true)
+  expect(has(lines, /^claude · claude-sonnet-5-5 · — · ctx/)).toBe(true)
+})
+
+test('a card names the harness as hw wrote it, and a missing model or effort is a dash', async ($, on) => {
+  world(on, FIXTURES['vendor-mix.json']!, NOW)
+  const lines = await texts(await drawPane($))
+  expect(has(lines, /^pi · — · — · ctx/)).toBe(true)
+  expect(has(lines, /^opencode · provider\/model-x · medium · ctx n\/a/)).toBe(true)
 })

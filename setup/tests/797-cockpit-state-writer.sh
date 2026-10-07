@@ -20,6 +20,8 @@
 #   · size_cap     256 KiB at most, rows dropped from the end
 #   · summary_rejoin  the done-invoker's 80-char chunks (trailing blanks trimmed by herdr)
 #                  read back as the text they carried, soft breaks and a hard cut alike
+#   · effort_published  the dispatch file's effort= line is rows[].effort; no line, or only the agent's default, is null
+#   · strings_are_clean  no published string holds a control byte or an escape sequence (a newline or a colour code is one space)
 #   · atomic       a reader never sees half a file (>= 1000 concurrent reads); every write is a new inode; seq rises by 1
 #   · killed_writer  kill -9 in the middle of a write leaves a whole file, and the next writer removes the tmp it left
 #   · debounce     15 events in 100 ms are at most 3 writes, and none is dropped
@@ -63,6 +65,7 @@ mutant_dir 797-M01; mutate_anchor 797-M01 "$MD/cockpit-state" 'open(path, "w").w
 mutant_dir 797-M02; mutate_anchor 797-M02 "$MD/cockpit-state" 'pass'; kill_mutant 797-M02 debounce "writes for 15 events"
 mutant_dir 797-M03; mutate_anchor 797-M03 "$MD/cockpit-state" 'if False:'; kill_mutant 797-M03 classes "another brainer's executor is listed"
 mutant_dir 797-M04; mutate_anchor 797-M04 "$MD/cockpit-state" 'break'; kill_mutant 797-M04 size_cap "over the 256 KiB cap"
+mutant_dir 797-M24; mutate_anchor 797-M24 "$MD/cockpit-state" 'return v'; kill_mutant 797-M24 strings_are_clean "summary"
 mutant_dir 797-M07; mutate_anchor 797-M07 "$MD/cockpit-state" 'if i < len(present) - 1:'; kill_mutant 797-M07 summary_rejoin "rejoined"
 mutant_dir 797-M08; mutate_anchor 797-M08 "$MD/cockpit-state" 'valid = True'; kill_mutant 797-M08 classes "pending_reply set on"
 mutant_dir 797-M09; mutate_anchor 797-M09 "$MD/cockpit-state" 'has_marker = True'; kill_mutant 797-M09 done_tokens_outlive_the_task "made task 2 a report"

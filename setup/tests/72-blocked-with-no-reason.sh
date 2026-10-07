@@ -152,7 +152,7 @@ expect_silent "hw next: and is never told it already reported when it did not" "
 MUTANT="$TMP/mutant/bin"
 mkdir -p "$MUTANT"
 cp -R "$ROOT/bin/." "$MUTANT/"
-mutate_anchor 72-M01 "$MUTANT/hw" 'and false'
+mutate_anchor 72-M01 "$(hw_lib_beside "$MUTANT")/next.sh" 'and false'
 rm -f "$MUTANT/hw.bak"
 chmod +x "$MUTANT/hw"
 out="$(W_TOKENS="$DONE_STUCK" W_STATUS=blocked "$MUTANT/hw" next wX:p1 --wait-ms 1000 --sdd none "next task" 2>&1 \

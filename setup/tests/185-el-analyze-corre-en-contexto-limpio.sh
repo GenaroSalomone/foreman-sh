@@ -56,7 +56,7 @@ render() {
     _framework_entry() { [ "$1" != speckit ] || printf "/speckit-specify"; }
     AGENT=claude
     _deliver_brief() { printf "%s" "$BRIEF_TEXT"; }
-    _receipt_session() { :; }; _receipt_model() { :; }
+    _receipt_session() { :; }; _ledger_commit_brief() { :; }; _ledger_dispatch() { :; }; _receipt_model() { :; }
     _send_brief fixture-pane
   '
 }
@@ -87,7 +87,7 @@ esac
 
 # The re-task route appends the same note, so it carries the gate by
 # construction — held by 166's grep on the entry line.
-grep -q '\[ "\$next_sdd" != speckit \] || entry_line=.*_speckit_phase_note' "$SRC" \
+grep -q '\[ "\$next_sdd" != speckit \] || entry_line=.*_speckit_phase_note' "$ROOT/lib/hw/next.sh" \
   || fail "hw next: a --sdd speckit re-task does not append the phase note that carries the gate"
 pass "hw next: a --sdd speckit re-task appends the phase note that carries the gate"
 

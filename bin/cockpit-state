@@ -225,6 +225,17 @@ def receipt_value(rundir, key):
     return val
 
 
+def effort_of(rundir):
+    """The run's resolved effort, from the `effort=` line of its dispatch file (the format
+    bin/hw's _next_dispatch_effort reads), None when absent or only the agent's own default."""
+    for line in (read_text(os.path.join(rundir, "dispatch")) or "").splitlines():
+        m = re.match(r"\s*effort=(.*)$", line)
+        if m:
+            v = re.sub(r"  \([^()]*\)$", "", m.group(1)).strip()
+            return None if v in ("", "<agent default>") else v
+    return None
+
+
 def join_chunks(tokens, names):
     """Rejoin a chunked token (`sum`, `sum2` …) into the text it carried.
 
@@ -339,8 +350,8 @@ def build_row(pane, invoker, mods):
         return None
     project = tokens.get("hw_project") or env.get("HW_PROJECT") or "unknown"
     tdir = task_dir(rundir)
-    vendor = env.get("HW_EXECUTOR_VENDOR")
-    vendor = vendor if vendor in ("claude", "opencode", "codex") else "unknown"
+    harness = env.get("HW_EXECUTOR_VENDOR")
+    vendor = harness if harness in ("claude", "opencode", "codex") else "unknown"
     pane_id = pane.get("pane_id")
     blocked_waiting = os.path.isfile(os.path.join(tdir, "blocked-waiting"))
     report = report_of(rundir, tdir, tokens, blocked_waiting)
@@ -374,7 +385,8 @@ def build_row(pane, invoker, mods):
 
     return {
         "id": "%s:%s" % (project, task), "project": project, "task": task, "pane": pane_id, "run": run,
-        "task_n": task_seq(rundir), "vendor": vendor, "model": receipt_value(rundir, "model_running") or None,
+        "task_n": task_seq(rundir), "vendor": harness or "unknown", "model": receipt_value(rundir, "model_running") or None,
+        "effort": effort_of(rundir),
         "agent_status": status, "turn_state": turn_state, "turn_ended_at": turn_at,
         "turns": to_int(tokens.get("turns")), "children_running": children, "ctx": ctx_of(tokens),
         "rulings_pending": pending_rulings(rundir), "attention": attention, "attention_since": since,
@@ -447,8 +459,29 @@ def build_state(invoker, seq, interval_s, rev, now=None):
     return fit(state)
 
 
+_ESC_SEQ = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]")
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def clean_text(v):
+    """One published string with no control character: an escape sequence or a control byte
+    becomes a space, runs of spaces collapse. The pane refuses a text child holding one."""
+    return re.sub(" +", " ", _CTRL.sub(" ", _ESC_SEQ.sub(" ", v))).strip()
+
+
+def clean(v):
+    if isinstance(v, str):
+        return clean_text(v)  # MUTATION-ANCHOR: 797-M24
+    if isinstance(v, list):
+        return [clean(x) for x in v]
+    if isinstance(v, dict):
+        return {k: clean(x) for k, x in v.items()}
+    return v
+
+
 def serialize(state):
-    return json.dumps(state, indent=1) + "\n"
+    """The one place a state becomes bytes, so the one place every string is cleaned."""
+    return json.dumps(clean(state), indent=1) + "\n"
 
 
 def fit(state):
@@ -565,7 +598,7 @@ def run_pilot(cdir):
 
 def write_once(invoker, path, interval_s, rev, to_stdout=False):
     if to_stdout:
-        print(json.dumps(build_state(invoker, 0, interval_s, rev), indent=1))
+        print(serialize(build_state(invoker, 0, interval_s, rev)), end="")
         return 0
     if not path:
         print("cockpit-state: no state path (no work root, and no HW_COCKPIT_STATE)", file=sys.stderr)

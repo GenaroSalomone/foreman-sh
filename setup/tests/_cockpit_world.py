@@ -112,7 +112,7 @@ class World:
     # ── building ──
     def executor(self, project="demo", task=None, *, pane=None, run=None, seq=1, vendor="claude", status="idle",
                  tokens=None, invoker=None, done=False, blocked_waiting=False, reopened=False, holds=(),
-                 rulings=(), model="claude-sonnet-5-5", cwd=None, with_run=True):
+                 rulings=(), model="claude-sonnet-5-5", cwd=None, with_run=True, effort=None):
         self.counter += 1
         n = self.counter
         task = task or "task-%02d" % n
@@ -128,6 +128,8 @@ class World:
                 fh.write("# written by hw\n" + "".join("%s='%s'\n" % kv for kv in env.items()))
             with open(os.path.join(rd, "receipt.jsonl"), "w") as fh:
                 fh.write(json.dumps({"key": "model_running", "value": model}) + "\n")
+            if effort is not None:  # the dispatch file's shape: `effort=<v>  (mark)`
+                open(os.path.join(rd, "dispatch"), "w").write("model=%s  (chosen)\n  effort=%s  (chosen)\n" % (model, effort))
             if seq > 1:
                 open(os.path.join(rd, "task"), "w").write("%d\n" % seq)
             td = rd if seq == 1 else os.path.join(rd, "t%d" % seq)

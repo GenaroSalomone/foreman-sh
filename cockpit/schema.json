@@ -79,7 +79,7 @@
     },
     "row": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "project", "task", "pane", "run", "task_n", "vendor", "model", "agent_status", "turn_state", "turn_ended_at", "turns", "children_running", "ctx", "rulings_pending", "attention", "attention_since", "report", "ask", "actions"],
+      "required": ["id", "project", "task", "pane", "run", "task_n", "vendor", "model", "effort", "agent_status", "turn_state", "turn_ended_at", "turns", "children_running", "ctx", "rulings_pending", "attention", "attention_since", "report", "ask", "actions"],
       "properties": {
         "id": { "type": "string", "description": "`<project>:<task>`. Unique in a file." },
         "project": { "type": "string" },
@@ -87,8 +87,9 @@
         "pane": { "type": "string", "description": "Executor pane id; the argument of the `ruling` verb." },
         "run": { "type": "string" },
         "task_n": { "type": "integer", "minimum": 1, "description": "1 for the first task of the session, +1 per `hw next`." },
-        "vendor": { "enum": ["claude", "opencode", "codex", "unknown"] },
+        "vendor": { "type": "string", "minLength": 1, "description": "The harness as hw recorded it (claude, opencode, codex, pi, …): text as it is, not a closed list; `unknown` when the run recorded none." },
         "model": { "type": ["string", "null"] },
+        "effort": { "type": ["string", "null"], "description": "The run's resolved effort, from the `effort=` line of its dispatch file; null when the run has none (or only the agent's own default). The card shows it beside the model, nothing when null." },
         "agent_status": { "enum": ["idle", "working", "unknown"], "description": "herdr's own status for the pane." },
         "turn_state": {
           "enum": ["working", "ended_unreported", "ended_after_report", "ended_with_ruling", "ended_holding", "ended_human_boundary", "ended_awaiting_child", "handback_refused", null],

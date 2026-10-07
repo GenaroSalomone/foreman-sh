@@ -174,7 +174,7 @@ def private_files():
     assert cw.run_writer(w, BIN, "--once").returncode == 0
     mode = os.stat(w.state_path()).st_mode & 0o777
     dmode = os.stat(os.path.dirname(w.state_path())).st_mode & 0o777
-    assert mode == 0o600, "the state file is mode %o, not 600" % mode                                     # 797-M20
+    assert mode == 0o600, "the state file is mode %o, not 600" % mode                                     # 797-M24
     assert dmode == 0o700, "the state directory is mode %o, not 700" % dmode
 
 
@@ -261,6 +261,46 @@ def summary_rejoin():
     w.publish()
     got = row(state(w), "r")["report"]["summary"]
     assert got == text[:len(got)] and len(got) == len(text), "rejoined %r want %r" % (got, text)    # 797-M07
+
+
+def effort_published():
+    """A run whose dispatch file has an `effort=` line publishes it; one without publishes null."""
+    w = cw.World(tmpdir())
+    w.executor(task="with", status="working", effort="high")
+    w.executor(task="without", status="working")
+    w.executor(task="default", status="working", effort="<agent default>")
+    w.executor(task="harness", status="working", vendor="pi")
+    w.publish()
+    s = state(w)
+    assert row(s, "with")["effort"] == "high", "effort %r" % row(s, "with")["effort"]
+    assert row(s, "without")["effort"] is None, "a run with no effort line must publish null"
+    assert row(s, "default")["effort"] is None, "the agent's own default is not an effort"
+    assert row(s, "harness")["vendor"] == "pi", "the harness is published as hw wrote it, got %r" % row(s, "harness")["vendor"]
+
+
+def strings_are_clean():
+    """No published string holds a control character or an escape sequence: the pane refuses
+    a text child that does. A newline and a colour code become one space."""
+    w = cw.World(tmpdir())
+    text = "line one\nline two \x1b[31mred\x1b[0m\tend\x07"
+    toks = dict(cw.chunk("sum", text, 7), done_status="done", done_state="delivered", done_at=cw.iso(time.time()),
+                artifacts="0", engram="brain")
+    w.executor(task="r", done=True, tokens=toks)
+    w.publish()
+    s = state(w)
+    def strings(v):
+        if isinstance(v, str):
+            yield v
+        elif isinstance(v, list):
+            for x in v:
+                yield from strings(x)
+        elif isinstance(v, dict):
+            for x in v.values():
+                yield from strings(x)
+    bad = [t for t in strings(s) if any(ord(ch) < 32 or 0x7f <= ord(ch) <= 0x9f for ch in t)]
+    got = row(s, "r")["report"]["summary"]
+    assert got == "line one line two red end", "summary %r" % got    # 797-M24
+    assert not bad, "control characters in the state: %r" % bad
 
 
 def atomic():
@@ -561,7 +601,7 @@ def timing_40():
     assert ts[0] < 300, "best of 7 is %.0f ms, the budget is 300" % ts[0]
 
 
-CHECKS = {f.__name__: f for f in (classes, done_tokens_outlive_the_task, row_order, private_files, killed_writer, loop_survives_a_failed_write, herdr_down, rows_cap, size_cap, summary_rejoin, atomic, debounce,
+CHECKS = {f.__name__: f for f in (classes, done_tokens_outlive_the_task, row_order, private_files, killed_writer, loop_survives_a_failed_write, herdr_down, rows_cap, size_cap, summary_rejoin, effort_published, strings_are_clean, atomic, debounce,
                                   loop_dies_with_parent, loop_binds_to_pane, ctx_from_transcript, cut_rule, timing_40, kick_names_its_brainer)}
 
 if __name__ == "__main__":

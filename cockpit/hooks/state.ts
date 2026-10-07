@@ -12,6 +12,7 @@ export type Row = {
   pane: string
   vendor: string
   model: string | null
+  effort?: string | null
   agent_status: string
   turn_state: string | null
   children_running: string | null
@@ -73,6 +74,7 @@ function badRow(r: unknown, i: number): string | null {
     if (!isStr(r[k])) return `${at}.${k}`
   }
   if (!nullOr(r.model, isStr)) return `${at}.model`
+  if (r.effort !== undefined && !nullOr(r.effort, isStr)) return `${at}.effort`
   if (!nullOr(r.turn_state, isStr)) return `${at}.turn_state`
   if (!nullOr(r.children_running, isStr)) return `${at}.children_running`
   if (!nullOr(r.attention_since, isInt)) return `${at}.attention_since`

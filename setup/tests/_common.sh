@@ -256,6 +256,15 @@ LIVE_ROOT="${TEST_HW_LIVE_ROOT:-$ROOT}"
 export HW_LIB_DIR="$ROOT/lib"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hw-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+# hw_lib_beside <bindir> — a lib/ of its own beside a copy of bin/hw, so a MUTANT of
+# a moved module (lib/hw/next.sh) is mutated in a file the copy actually sources:
+# hw reads the lib/ beside its bin/ first (HW_LIB_DIR above only fills in for none).
+# Prints the new lib/hw dir. <bindir> must have a parent the caller owns alone.
+hw_lib_beside() {
+  local d="$1/../lib/hw"
+  rm -rf "$d"; mkdir -p "$d"; cp "$ROOT"/lib/hw/*.sh "$d/"
+  (cd "$d" && pwd)
+}
 
 # THE SECOND CUT OF THE HERDR SWEEP ABOVE, here because it needs $TMP.
 #
@@ -647,9 +656,16 @@ fi
 # setup/tests/191-lanzar-solo-lo-pedido.sh, uses hw_dry_uncited. Its model-floor
 # fixtures get no such pass either: they cite their own request via REQ.
 HW_TEST_CITATION=(--requested-by "setup test suite fixture")
-hw_dry() { "$ROOT/bin/hw" "$@" "${HW_TEST_CITATION[@]}" --no-report --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
-hw_dry_report() { "$ROOT/bin/hw" "$@" "${HW_TEST_CITATION[@]}" --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
-hw_dry_uncited() { "$ROOT/bin/hw" "$@" --no-report --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
+#
+# AND FOR THE BRIEF (2026-10-07). A launch with no brief is refused unless `--no-brief`
+# says it is on purpose, and most fixtures dispatch a task name no brief exists for: the
+# fixture is about placement or ports, not about the contract. `--no-brief` only lifts the
+# refusal — a brief that IS found is still read — so these helpers pass it; the subject
+# that asserts on the refusal itself, setup/tests/811-*, calls hw directly.
+HW_TEST_NO_BRIEF=(--no-brief)
+hw_dry() { "$ROOT/bin/hw" "$@" "${HW_TEST_CITATION[@]}" "${HW_TEST_NO_BRIEF[@]}" --no-report --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
+hw_dry_report() { "$ROOT/bin/hw" "$@" "${HW_TEST_CITATION[@]}" "${HW_TEST_NO_BRIEF[@]}" --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
+hw_dry_uncited() { "$ROOT/bin/hw" "$@" "${HW_TEST_NO_BRIEF[@]}" --no-report --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
 
 # expect_out <label> <pattern> <hw args...>
 expect_out() {

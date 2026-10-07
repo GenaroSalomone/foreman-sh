@@ -401,7 +401,7 @@ pass "the codex guards follow the pane's measured vendor, not the vendor the fla
 # there are five, and the two it missed are `cmd_next`'s — a separate delivery
 # path with no coverage here, so `hw next` on codex stayed broken by the exact
 # mechanism this subject exists to kill. A count in a comment is not a guard.
-hand_coded="$(grep -c '\[ "\$INVOKER_SENDER_VENDOR" != claude \]' "$SOURCE" || true)"
+hand_coded="$(cat "$SOURCE" "$ROOT/lib/hw/next.sh" | grep -c '\[ "\$INVOKER_SENDER_VENDOR" != claude \]' || true)"
 [ "$hand_coded" = 0 ] \
   || fail "$hand_coded route-selection site(s) still hand-code != claude instead of asking _vendor_has_native_transport"
 # Sliced function-start to NEXT function-start, not to the first column-0 `}`:
@@ -416,7 +416,7 @@ for fn in _resolve_strong_sender _deliver_brief cmd_next; do
     index($0, f) == 1 { inside = 1; print; next }
     inside && /^[a-zA-Z_][a-zA-Z0-9_]*\(\) \{/ { exit }
     inside { print }
-  ' "$SOURCE")"
+  ' "$SOURCE" "$ROOT/lib/hw/next.sh")"
   case "$slice" in
     *_vendor_has_native_transport*) ;;
     *) fail "$fn does not ask _vendor_has_native_transport, so its route selection is not covered by this subject" ;;

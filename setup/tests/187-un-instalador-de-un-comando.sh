@@ -72,7 +72,7 @@ done
 stop_dir="$(rg -o "bash '([^']+)/bin/hw-stop-hook\.sh' stop" -r '$1' "$HOME/.claude/settings.json" 2>/dev/null | head -1)"
 [ -n "$stop_dir" ] && [ "$stop_dir/bin/hw-stop-hook.sh" -ef "$B/bin/hw-stop-hook.sh" ] || fail "the Stop hook was not merged into ~/.claude/settings.json"
 export TMPDIR="$TMP"
-dry="$(cd "$B" && hw app probe --sdd none --no-report --dry-run < /dev/null 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+dry="$(cd "$B" && hw app probe --sdd none --no-report --no-brief --dry-run < /dev/null 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
 for want in "dispatch app:probe" "worktree    $(dirname "$B")/work/app/probe  (new, own branch off trunk)" "engram      app" "agent       claude  (lane default for app)"; do
   printf '%s\n' "$dry" | rg -qF -- "$want" || fail "the new brain's dry run has no '$want': $(printf '%s' "$dry" | tail -3 | tr '\n' ' ')"
 done

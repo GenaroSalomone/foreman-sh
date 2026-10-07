@@ -99,7 +99,7 @@ pass "C05 Claude and Codex argument construction is untouched"
 
 # The full dry-run proves the selected identity reaches the review-facing
 # manifest, not only the process argv assembled by the extracted function.
-manifest="$(HOME="$HOME_FIX" "$ROOT/bin/hw" setup oc-primary-probe --agent opencode --model openai/gpt-5.6-sol --sdd none --no-report --dry-run 2>&1 || true)"
+manifest="$(HOME="$HOME_FIX" "$ROOT/bin/hw" setup oc-primary-probe --agent opencode --model openai/gpt-5.6-sol --sdd none --no-report --no-brief --dry-run 2>&1 || true)"
 case "$manifest" in
   *"primary     sol-orchestrator"*"explicit --agent passed by hw"*) ;;
   *) fail "C06 the dry-run manifest does not name sol-orchestrator as the explicit primary" ;;

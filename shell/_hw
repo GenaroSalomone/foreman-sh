@@ -19,6 +19,7 @@ _hw() {
     'done:close a space and report its database'
     'status:what is running, and what never closed'
     'handle:does a keychain handle resolve? present/absent only'
+    'ledger:which briefs were dispatched, and how they ended'
   )
 
   _hw_canon() {
@@ -33,7 +34,7 @@ _hw() {
     dir="$brain/$proj/briefs"
     [[ -d $dir ]] || return
     local -a b
-    b=(${dir}/*.md(N:t:r))
+    b=(${dir}/[^_]*.md(N:t:r))
     (( ${#b} )) && _describe -t briefs "brief for $proj" b
   }
 
@@ -54,7 +55,7 @@ _hw() {
       if [[ ${words[2]} == done ]]; then
         _hw_briefs "${words[3]}"
       else
-        _values 'option' '--agent' '--model' '--effort' '--here' '--no-db' '--brief' '--sdd' '--no-handle-check'
+        _values 'option' '--agent' '--model' '--effort' '--here' '--no-db' '--brief' '--sdd' '--no-brief' '--no-handle-check'
       fi
       ;;
     *)
@@ -64,7 +65,7 @@ _hw() {
         --model)  _values 'model' opus sonnet haiku fable ;;
         --brief)  _files -g '*.md' ;;
         --sdd)    _values 'sdd' speckit none ;;
-        *)        _values 'option' '--agent' '--model' '--effort' '--here' '--no-db' '--brief' '--sdd' '--no-handle-check' '--drop-db' ;;
+        *)        _values 'option' '--agent' '--model' '--effort' '--here' '--no-db' '--brief' '--sdd' '--no-brief' '--no-handle-check' '--drop-db' ;;
       esac
       ;;
   esac

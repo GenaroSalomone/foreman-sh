@@ -231,6 +231,17 @@ an OpenCode brainer of its own, with an `opencode.json`, keeps opening that
 one; `--claude` forces Claude Code, and `--opencode` still needs that file). `--model` takes
 `provider/model` and is optional; without it OpenCode uses its own default.
 
+A brainer already open without the cockpit mod picks it up without losing its
+conversation: `brain relaunch --all` (or `brain relaunch <lane>…`, `--dry-run` to
+preview) relaunches each idle Claude Code brainer in its own pane, resuming its
+own session and its own account (`CLAUDE_CONFIG_DIR`); a working pane is skipped
+and named, and a pane whose agent was stopped but did not come back is reported
+`FAILED` with a non-zero exit. `brain <lane> --resume <id>` is the single-lane
+form (exit 75 when it did not start). A pane is matched to its lane by directory
+identity, under the lane's canonical name in `projects.json`: a pane standing in an
+alias path (a symlink to the lane directory) or in a symlink to the lane is that lane.
+Executors are not relaunched.
+
 The executor gets its own guard. The installer writes
 `~/brain/<lane>/.opencode-executor/`, and `hw` passes that directory to the
 executor as `OPENCODE_CONFIG_DIR`. It holds a plugin that refuses any shell
@@ -260,6 +271,7 @@ with another `--vendor` for the same lane is refused.
 | `~/brain/<lane>/.opencode-executor/` | an OpenCode lane only: the executor's guard plugin and its policy |
 | `~/work/<lane>/<task>` | each task's git worktree: beside the brain, never inside it (the brain guard would refuse every command an executor ran there), and outside your repo. Set by `"work"` in `projects.json` |
 | `~/.config/hw/permissions` | only with `--permissions` or an answer in a terminal: `ask` or `skip` (see Permissions above) |
+| `~/work/.hw-ledger/<lane>.jsonl` | the dispatch ledger `hw ledger` reads: one line per real dispatch (brief and its sha, run, account, model, effort, vendor, base, pane). Outside every worktree, so `hw reap` never removes it; `HW_LEDGER_DIR` moves it |
 | `~/archive/<lane>/<task>/` | what `hw reap --apply` and `hw done` keep of a merged task before removing its worktree: its `.artifacts`, `qa-report`, `test-results`, `playwright-report`, and a `pg_dump -Fc` of its database on a lane with `db.provisioned`. Beside `"work"`; `HW_ARCHIVE_ROOT` moves it |
 | `~/.local/bin` | links: `hw`, `brain`, `done-invoker`, `ask-invoker`, `channel-send`, `decisions`, and `opencode-auto` for an OpenCode lane |
 | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | one Stop hook, merged; the previous file is kept as `settings.json.bak-brain-install` |

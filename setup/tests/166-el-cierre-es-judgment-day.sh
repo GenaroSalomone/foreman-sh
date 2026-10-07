@@ -43,7 +43,7 @@ render() {
     _framework_entry() { [ "$1" != speckit ] || printf "/speckit-specify"; }
     AGENT=claude
     _deliver_brief() { printf "%s" "$BRIEF_TEXT"; }
-    _receipt_session() { :; }; _receipt_model() { :; }
+    _receipt_session() { :; }; _ledger_commit_brief() { :; }; _ledger_dispatch() { :; }; _receipt_model() { :; }
     _send_brief fixture-pane
   '
 }
@@ -121,7 +121,7 @@ case "$(render "$TMP/build.md" none none 0 abc123 "")" in
 esac
 
 # The re-task route builds its own entry line; it must carry the note too.
-grep -q '\[ "\$next_sdd" != speckit \] || entry_line=.*_speckit_phase_note' "$SRC" \
+grep -q '\[ "\$next_sdd" != speckit \] || entry_line=.*_speckit_phase_note' "$ROOT/lib/hw/next.sh" \
   || fail "hw next: a --sdd speckit re-task does not carry the phase note"
 pass "hw next: a --sdd speckit re-task appends the phase note to its entry line"
 

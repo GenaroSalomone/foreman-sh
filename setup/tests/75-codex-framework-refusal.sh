@@ -6,7 +6,7 @@ SOURCE="${HW_SOURCE:-$ROOT/bin/hw}"
 SOURCE_BIN="$(dirname "$SOURCE")"
 ONLY_HANDOFF="${CODEX_REUSE_HANDOFF_ONLY:-0}"
 
-run_launch() { env -u HW_INVOKER_PANE -u HW_CHAINING_ENABLED "$SOURCE" setup "codex-$1" --agent "$2" --model "${3:-gpt-5.3-codex}" --sdd "$1" --no-report --dry-run 2>&1 || true; }
+run_launch() { env -u HW_INVOKER_PANE -u HW_CHAINING_ENABLED "$SOURCE" setup "codex-$1" --agent "$2" --model "${3:-gpt-5.3-codex}" --sdd "$1" --no-report --no-brief --dry-run 2>&1 || true; }
 if [ "$ONLY_HANDOFF" != 1 ]; then
   for mode in speckit; do
     out="$(run_launch "$mode" codex)"
@@ -41,7 +41,7 @@ PY
   # on disk, under a fake HOME, or that other gate would refuse it too and
   # mask the mutant surviving.
   m01home="$TMP/m01home"; mkdir -p "$m01home/.claude/skills/speckit-example"
-  out="$(env -u HW_INVOKER_PANE -u HW_CHAINING_ENABLED HOME="$m01home" "$mut/hw" setup codex-mut-opencode-speckit --agent opencode --model openai/gpt-5.6-terra --sdd speckit --no-report --fresh --dry-run 2>&1 || true)"
+  out="$(env -u HW_INVOKER_PANE -u HW_CHAINING_ENABLED HOME="$m01home" "$mut/hw" setup codex-mut-opencode-speckit --agent opencode --model openai/gpt-5.6-terra --sdd speckit --no-report --no-brief --fresh --dry-run 2>&1 || true)"
   case "$out" in *"dispatch setup:"*"dry run — nothing created"*) pass "mutant killed: M01 without OpenCode Speckit refusal the fresh launch reaches planning" ;; *) fail "M01 survived or misfired: $out" ;; esac
 fi
 
@@ -108,7 +108,7 @@ for pane_vendor in claude opencode; do
     rm -rf "$handoff_run/t2"
     : > "$handoff/send.log"
     set +e
-    out="$(HOME="$handoff_home" PATH="$handoff_stub:$PATH" HANDOFF_CWD="$handoff_wd" HANDOFF_VENDOR="$pane_vendor" HANDOFF_SEND_LOG="$handoff/send.log" "$handoff_bin/hw" setup "reuse-$pane_vendor-$mode" --agent codex --model gpt-5.3-codex --sdd "$mode" --no-report 2>&1)"
+    out="$(HOME="$handoff_home" PATH="$handoff_stub:$PATH" HANDOFF_CWD="$handoff_wd" HANDOFF_VENDOR="$pane_vendor" HANDOFF_SEND_LOG="$handoff/send.log" "$handoff_bin/hw" setup "reuse-$pane_vendor-$mode" --agent codex --model gpt-5.3-codex --sdd "$mode" --no-report --no-brief 2>&1)"
     rc=$?
     set -e
     case "$pane_vendor:$mode" in

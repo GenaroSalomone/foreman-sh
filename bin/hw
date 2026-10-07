@@ -5324,6 +5324,16 @@ _gentle_rdd_word() {  # MUTATION-ANCHOR: 781-M01
   if [ "${GENTLE_REVIEW:-}" = rdd ]; then printf 'RDD on (native)'; else printf 'RDD off'; fi
 }
 
+# The sentence that makes native RDD the only review of an `review: rdd` task.
+_rdd_only_review_line() {  # MUTATION-ANCHOR: 786-M02
+  printf '%s\n     %s\n     %s\n     %s\n     %s' \
+    'NATIVE RDD IS THE ONLY REVIEW OF THIS TASK. Do NOT run the judgment-day' \
+    'skill or any second reviewer over the same candidate, and do not report a' \
+    'Judgment Day verdict: two reviews of one candidate are two verdicts and' \
+    'twice the cost, and this brief chose RDD instead. (A design judgment the brief' \
+    'asks for under `boundary:` is a separate gate, before the code, not this.)'
+}  # MUTATION-ANCHOR-END: 786-M02
+
 # `review: rdd`: native RDD, run on a LOCAL CLONE. gentle-ai keeps its review
 # authority in <git-common-dir>/gentle-ai/review-transactions, which for this
 # worktree is the product repo's own .git: measured 2026-10-06, a START with
@@ -5377,6 +5387,7 @@ _gentle_rdd_bullet() {
   5. $gh/bin/gentle-ai-task writes rdd-log.jsonl in \$HW_ARTIFACTS for you,
      locally, from each capture's own answer: role, verdict, findings,
      duration. Telemetry is off; nothing leaves this machine.
+  6. $(_rdd_only_review_line)
 EOF
 }
 
@@ -5961,6 +5972,31 @@ _judgment_day_applies() {
   esac
 }
 
+# `--sdd gentle` with `review: rdd`: native RDD is the ONLY review. Measured
+# 2026-10-07 (gentle friction 12): all 5 gentle executors
+# reported "Native RDD approved" AND "Judgment Day APPROVED". Nothing in the
+# ODD block or the gentle-home asked for the second one; this file did, in the
+# closing every build gets (_judgment_day_note, and the base note ahead of it).
+# GENTLE_REVIEW is set only by _gentle_brief_gate, which only a gentle launch
+# or a gentle `hw next` runs, so any other mode is unchanged.
+_rdd_is_the_review() {
+  [ "${GENTLE_REVIEW:-}" = rdd ]  # MUTATION-ANCHOR: 786-M01
+}
+
+_rdd_closing_note() {
+  printf 'Closing this code task: native RDD is its only review, then done-invoker, in this order:
+
+1. Commit per work unit as you go, on this branch, with Conventional Commit
+   messages — not one commit at the end. The review target is what you
+   committed; uncommitted work is not reviewed and is not delivered.
+2. Run the native RDD review of the RDD bullet above, on the clone, and act on
+   what it returns. That is the one review of this task: do NOT run the
+   judgment-day skill, hw review-range or any second reviewer over the same
+   candidate. Two verdicts on one candidate is the cost this mode removes.
+3. The done-invoker report carries the RDD outcome (approved, or what
+   correction_required left open) and no Judgment Day verdict.'
+}
+
 _judgment_day_note() {
   printf 'Closing this code task: Judgment Day, then done-invoker, in this order:
 
@@ -6033,6 +6069,10 @@ _design_gate_applies() {
 }
 
 _design_judgment_note() {  # $1 = the declared boundary
+  # Under `review: rdd` the design is still judged first (done-invoker holds it),
+  # but the review at the end is native RDD, not a second Judgment Day.
+  local _dz_end="the code-mode Judgment Day"
+  ! _rdd_is_the_review || _dz_end="the native RDD review"
   printf 'Judge the design before the code. This brief declares a boundary:
 
     boundary: %s
@@ -6050,12 +6090,12 @@ $HW_ARTIFACTS/design-judgment.md with these lines:
 
 An APPROVED verdict lists, one amendment: line each, the bypass classes both
 judges confirmed and the approach can close; your code closes them, and the
-code-mode Judgment Day at the end is where that is checked. done-invoker
+%s at the end is where that is checked. done-invoker
 refuses a done report without an APPROVED verdict whose design still hashes to
 design_sha256. An ESCALATED design is a blocker, not a
 prompt to code anyway: report it with done-invoker --blocked, naming the
 bypass classes the judges found. Two rejected designs mean the approach is
-your brainer'"'"'s call.' "$1"
+your brainer'"'"'s call.' "$1" "$_dz_end"
 }
 
 # ── a Spec Kit phase is not the task ──
@@ -6270,7 +6310,7 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
   # careful.
   # GATED BY KIND TOO, like the closing below: an audit has no diff to judge, so
   # a paragraph about the range a judge would read is noise to it.
-  if _judgment_day_applies; then
+  if _judgment_day_applies && ! _rdd_is_the_review; then
     local base_note
     base_note="$(printf 'The base a Judgment Day target is built against, computed by hw at dispatch:
 
@@ -6322,7 +6362,11 @@ not after the merge.')" ;;
   fi
   # THE CLOSING OF A CODE TASK, gated by _judgment_day_applies above.
   if _judgment_day_applies; then
-    preamble="$(printf '%s\n\n%s' "$preamble" "$(_judgment_day_note)")"
+    if _rdd_is_the_review; then
+      preamble="$(printf '%s\n\n%s' "$preamble" "$(_rdd_closing_note)")"
+    else
+      preamble="$(printf '%s\n\n%s' "$preamble" "$(_judgment_day_note)")"
+    fi
   fi
   printf '%s' "$preamble"
 }
@@ -6350,28 +6394,6 @@ _brief_authorization() {
   printf '> requested_by: %s\n' "${REQUESTED_BY:-<none>}"
   printf '%s\n' "$AUTHORIZES" | awk -F ' :: ' '{printf "> authorized: destination: %s | operation: %s | credential handle: %s\n", $1, $2, $3}'
   printf '\nOnly these destinations and operations are authorized, and nothing beyond them:\nanother destination, another operation, or a credential or session not named\nhere stays unauthorized. Within them, act without asking; for anything else\nask-invoker, or report blocked. A handle is a resolver, never a value.'
-}
-
-# THE SAME BLOCK FOR A RE-TASK. `hw next` delivers a NEW brief and used to carry
-# the epistemic safeguard and the preamble but never the authorization, so a task
-# whose brief says `authorizes:` got it on the first dispatch only. Run in a
-# subshell, the way the launch path does it: the same validation, the same
-# requested_by requirement and the same handle check (_check_authorizes), then
-# the same block (_brief_authorization). A refusal leaves nothing delivered.
-_next_authorization() {  # $1 = the new brief's path; prints the block, or nothing
-  [ -f "${1:-}" ] || return 0
-  (
-    # CHECK_HANDLES is set by the launch path's flag parsing, which `hw next`
-    # never reaches: unset here it was an unbound variable under set -u.
-    BRIEF="$1"; BRIEF_DECLS_READ=0; BRIEF_DECLS=""; BRIEF_DECLARED=none; AUTHORIZES=""
-    CHECK_HANDLES="${CHECK_HANDLES:-1}"
-    _load_brief_decls
-    # A citation already in hand (--requested-by on the launch that reached
-    # here by the reuse route) outranks the brief's own, as it does at launch.
-    [ -z "${REQUESTED_BY:-}" ] && REQUESTED_BY="$(printf '%s\n' "$BRIEF_DECLS" | awk -F '\t' '$1 == "requested_by" { print $2; exit }')"  # MUTATION-ANCHOR: 703-M03
-    _check_authorizes
-    _brief_authorization
-  )
 }
 
 # ── the executor's own engram session, registered before it says a word ──
@@ -6462,7 +6484,8 @@ _send_brief() {
   local pane="$1" entry=""
   # Before the brief guard: a brief-less run saves to engram too.
   _engram_register_session
-  [ -n "$BRIEF" ] || return 0
+  _ledger_commit_brief
+  [ -n "$BRIEF" ] || { _ledger_dispatch "$pane" 0; return 0; }
 
   local preamble epistemic_safeguard authorization
   preamble="$(_brief_preamble)"
@@ -6534,6 +6557,7 @@ _send_brief() {
   # here is why" is exactly the fact worth keeping when a launch went wrong.
   local drc=0
   _deliver_brief "$pane" || drc=$?
+  _ledger_dispatch "$pane" "$drc"
   _receipt_session "$pane" "$drc"
   _receipt_model "$pane" "$drc" || true
   return "$drc"
@@ -7596,25 +7620,13 @@ _interactive() {
   command -v fzf >/dev/null 2>&1 || die "fzf not installed — brew install fzf"
   [ -d "$BRAIN" ] || die "no brain at $BRAIN"
 
-  local rows="" proj f name first
-  for proj in $HW_LANES; do
-    [ -d "$BRAIN/$proj/briefs" ] || continue
-    for f in "$BRAIN/$proj/briefs"/*.md; do
-      [ -e "$f" ] || continue
-      name="$(basename "$f" .md)"
-      # First non-empty, non-heading-marker line, as a one-line summary.
-      # `|| true`: grep exits 1 on an empty file, the assignment inherits it, and
-      # set -e used to kill the picker before it ever drew — for every project,
-      # because of one empty brief anywhere.
-      first="$(grep -m1 -v '^[[:space:]]*$' "$f" 2>/dev/null | sed 's/^#* *//' | cut -c1-60 || true)"
-      [ -n "$first" ] || first="(empty)"
-      rows="$rows$proj\t$name\t$first\n"
-    done
-  done
-  rows="$rows+ new brief\t\t(author one from BRIEF-TEMPLATE.md)\n"
+  local rows=""
+  # One pass over every brief (lib/hw/ledger.sh): the `# title`, not the frontmatter's `---`.
+  rows="$(_picker_rows)"$'\n'
+  rows="$rows+ new brief"$'\t\t'"(author one from BRIEF-TEMPLATE.md)"
 
   local pick
-  pick="$(printf "$rows" | column -t -s "$(printf '\t')" \
+  pick="$(printf '%s\n' "$rows" | column -t -s "$(printf '\t')" \
           | fzf --height=40% --reverse --prompt='task > ' \
                 --header='enter = launch    ctrl-c = cancel')" || exit 0
   [ -n "$pick" ] || exit 0
@@ -8512,32 +8524,6 @@ _leased_rundir_for() {  # $1 = worktree path
   return 1
 }
 
-# ── the verification hw runs itself ─────────────────────────────────────────
-#
-# THE REPORT STOPS BEING THE EVIDENCE.
-#
-# On 2026-08-25 three executors in a row delivered correct code and a false
-# process, and all three reports had to be corrected by hand. One ran the
-# pre-commit, saw it red, and pushed past it with `env -u ... git commit`. One
-# reported "Post-fix inherited: 173 tests passed" — the suite failed in the
-# direction it claimed to have run, and it had never been run that way. One
-# called a port complete because the diff "was the whole fix"; it had a hole.
-#
-# The pattern is not the model. It is that a report is PROSE, and prose has no
-# cost of lying: writing "173 tests passed" costs less than running it, and far
-# less than running it in both directions. The only defence was a human
-# re-measuring everything by hand, which is what cost that session.
-#
-# So hw runs it. The commands come from the brief, pinned at dispatch into
-# `.hw/<run>/verify` before the agent existed; hw executes them here, in the
-# task's own directory, and writes the exit code and a hash of the output to
-# the receipt. The agent is not asked and its report is not read — an executor
-# that types "all green" produces no line here, and a missing line is now the
-# visible thing it always should have been.
-#
-# NOT A GATE. A failing verification is recorded and said out loud; it does not
-# block the close, invent a lifecycle state, or hold the worktree. The human
-# decides what a red means. hw's job is that the red exists at all.
 #
 # 900s FIXED AGAINST A SUITE THAT IS NOW TWO GATES, NOT ONE. `setup/test-hw`'s
 # full run is ~1000s — already past this ceiling before anything else about the
@@ -8581,361 +8567,7 @@ _verify_names_full_suite() {  # <command>
   return 0
 }
 
-# A CLOSE THAT HAS ALREADY BEEN MEASURED DOES NOT MEASURE AGAIN.
-#
-# MEASURED 2026-10-06 on five stale setup tasks: verification 67, 176, 294, 396
-# and 901s, everything else 0-1s. The pinned command is nearly always
-# `HW_TEST_GATE=fast bash setup/test-hw`, and that suite already leaves a
-# verdict keyed by the exact tree (`<git-common-dir>/hw-push-verified/<tree>.fast`,
-# or `<tree>` for a full run), the cache pre-push reads. Re-running it for a
-# tree that has a green verdict re-measures a fact on disk; re-running it for a
-# task that never changed anything measures the base, not the task.
-#
-# Two shortcuts, both only on a CLEAN checkout, both a receipt line that says
-# which one — never a silent pass:
-#   skipped — HEAD is the review_base recorded at dispatch: nothing to verify.
-#   cached  — the pin is exactly the fast gate, the full suite or verify-for-push and a green
-#             verdict names HEAD's tree — or a FULL green one names a tree that
-#             differs from it only in lane docs (_verify_docs_cover).
-# EVERY DOUBT IS A MISS, and a miss runs the command as before: not a git
-# checkout, a dirty tree (tracked or untracked), no recorded base, a pin that is
-# more than one of those two commands, a verdict that cannot be read, names
-# another tree, carries the wrong gate or says anything failed.
-# HW_VERIFY_FRESH=1 forces the run.
-_verify_dispatch_base() {  # $1 = run directory -> the review_base sha recorded at dispatch, or nothing
-  jq -r 'select(.key=="review_base") | .value' "$1/receipt.jsonl" 2>/dev/null \
-    | tail -1 | rg -x '[0-9a-f]{40}' || true
-}
-_verify_cached_verdict() {  # $1 = common dir, $2 = tree, $3 = command -> prints "<tree> <when>" on a green hit
-  local dir="$1/hw-push-verified" tree="$2" cmd="$3" f gate
-  local -a cands=()
-  case "$cmd" in
-    "HW_TEST_GATE=fast bash setup/test-hw") cands=("$dir/$tree.fast" "$dir/$tree") ;;
-    "bash setup/test-hw"|"bash setup/verify-for-push") cands=("$dir/$tree") ;;  # MUTATION-ANCHOR: 770-M04
-    *) return 1 ;;
-  esac
-  for f in "${cands[@]}"; do
-    [ -r "$f" ] || continue
-    rg -qx "tree=$tree" "$f" 2>/dev/null || continue
-    # RED OR UNSAID IS NOT GREEN: only a green run is ever written, but a file
-    # that says otherwise is not read as a pass.
-    if rg -qi '^(headline|result|status)=.*(fail|\bred\b)' "$f" 2>/dev/null; then continue; fi  # MUTATION-ANCHOR: 770-M03
-    gate=full; rg -qx 'gate=fast' "$f" 2>/dev/null && gate=fast
-    case "$f:$gate" in
-      *.fast:fast) ;;
-      *.fast:*)    continue ;;
-      *:fast)      continue ;;
-    esac
-    printf '%s %s' "$tree" "$(sed -n 's/^verified_at=//p' "$f" | head -1)"
-    return 0
-  done
-  return 1
-}
-# THE SECOND COVER: a tree with no verdict of its own that differs from a FULL
-# green one only in lane documentation. MEASURED 2026-10-06: `hw done` ran
-# `bash setup/verify-for-push` for 901s and died 124 on a tree that pre-push
-# itself accepts, "differs only in lane documentation from tree 2dae21…". The
-# rule is setup/hooks/suite-trigger-pattern.sh's docs_only_diff_covers, the same
-# function pre-push calls — not a second copy. Only a full verdict is a base
-# (a fast one never covers anything here), the tree is already known clean, and
-# every doubt — no lib, no table, an unreadable verdict, a path outside the
-# list — is a miss.
-# prints "<verdict tree>\t<commit>\t<paths>" on a hit
-_verify_docs_cover() {  # $1 = worktree, $2 = common dir, $3 = tree
-  local lib="${BRAIN:-${HW_BRAIN_ROOT:-}}/setup/hooks/suite-trigger-pattern.sh"
-  [ -r "$lib" ] || return 1
-  (
-    cd "$1" || exit 1
-    . "$lib" || exit 1
-    [ -n "${SUITE_TRIGGER_PATTERN:-}" ] || exit 1
-    declare -F docs_only_init >/dev/null && declare -F docs_only_diff_covers >/dev/null || exit 1  # a lib that predates the cover is a miss
-    docs_only_init "$(git rev-parse --show-toplevel)" || exit 1
-    for f in "$2/hw-push-verified"/*; do
-      v="$(basename "$f")"
-      case "$v" in *[!0-9a-f]*|'') continue ;; esac
-      [ "${#v}" -eq 40 ] || continue
-      [ -r "$f" ] || continue
-      grep -qxF "tree=$v" "$f" 2>/dev/null || continue
-      grep -qxF "gate=fast" "$f" 2>/dev/null && continue
-      if grep -qiE '^(headline|result|status)=.*(fail|\bred\b)' "$f" 2>/dev/null; then continue; fi
-      git cat-file -e "$v^{tree}" 2>/dev/null || continue
-      paths="$(docs_only_diff_covers "$v" "$3")" || continue  # MUTATION-ANCHOR: 770-M05
-      printf '%s\t%s\t%s' "$v" "$(sed -n 's/^commit=//p' "$f" | head -1)" "$paths"
-      exit 0
-    done
-    exit 1
-  )
-}
-_verify_shortcut() {  # $1 = run directory, $2 = worktree, $3 = pin file. 0 = decided and receipted, 1 = run it
-  local rundir="$1" wd="$2" pin="$3" head base dirty tree common cmd hit lines
-  [ -z "${HW_VERIFY_FRESH:-}" ] || return 1
-  [ -e "$wd/.git" ] || return 1
-  head="$(git -C "$wd" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)" || return 1
-  [ -n "$head" ] || return 1
-  dirty="$(git -C "$wd" status --porcelain --untracked-files=normal 2>/dev/null)" || return 1
-  [ -z "$dirty" ] || return 1  # MUTATION-ANCHOR: 770-M02
-  base="$(_verify_dispatch_base "$rundir")"
-  if [ -n "$base" ] && [ "$head" = "$base" ]; then  # MUTATION-ANCHOR: 770-M01
-    _receipt_into "$rundir" verify_run "skipped — no change since dispatch ($base)" \
-      "HEAD == review_base recorded at dispatch and git status is clean in $wd; the pinned verification was not run"
-    info "verification skipped — no change since dispatch ($base); nothing here claims more than that"
-    return 0
-  fi
-  lines="$(rg -c '\S' "$pin" 2>/dev/null || true)"
-  [ "$lines" = 1 ] || return 1
-  cmd="$(rg '\S' "$pin" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
-  tree="$(git -C "$wd" rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null)" || return 1
-  common="$(git -C "$wd" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  case "$common" in /*) ;; *) common="$wd/$common" ;; esac
-  if ! hit="$(_verify_cached_verdict "$common" "$tree" "$cmd")"; then
-    case "$cmd" in
-      "HW_TEST_GATE=fast bash setup/test-hw"|"bash setup/test-hw"|"bash setup/verify-for-push") ;;
-      *) return 1 ;;
-    esac
-    local cover vt vc vp
-    cover="$(_verify_docs_cover "$wd" "$common" "$tree")" || return 1
-    IFS=$'\t' read -r vt vc vp <<<"$cover"
-    _receipt_into "$rundir" verify_run \
-      "cached — green full verdict for tree $vt ($vc); differs only in lane docs: $vp" \
-      "$common/hw-push-verified/$vt is a full green verdict; HEAD's tree $tree differs from it only in lane documentation (docs_only_diff_covers), $wd is clean; $cmd was not re-run"
-    ok "VERIFIED (cached)  green full verdict for tree $vt ($vc); differs only in lane docs: $vp  $cmd"
-    return 0
-  fi
-  _receipt_into "$rundir" verify_run \
-    "cached — green verdict for tree ${hit% *} from ${hit#* }" \
-    "$common/hw-push-verified/${hit% *}[.fast] named HEAD's tree, $wd is clean; $cmd was not re-run"
-  ok "VERIFIED (cached)  green verdict for tree ${hit% *} from ${hit#* }  $cmd"
-  return 0
-}
-
 _VERIFY_TIMEOUT="${HW_VERIFY_TIMEOUT_SECONDS:-900}"
-_verify_at_close() {  # $1 = run directory, $2 = directory to run in, $3/$4 = project/task
-  local rundir="$1" workdir="$2" vproj="${3:-}" vtask="${4:-}" pin n=0 rc out hash log to=""
-  local verifydir="$workdir"
-  # SETUP USED TO BE REDIRECTED TO THE MAIN CHECKOUT HERE, and that redirect
-  # expired on 2026-09-16. It existed because a setup work directory held
-  # artifacts and no code, so `bash setup/test-hw` had nothing to run; now that
-  # directory IS a worktree of brain and running the pinned verification
-  # anywhere else would measure a tree the task never touched — the exact
-  # "green on the wrong base" failure the --base field was added to stop.
-  #
-  # The redirect survives for a setup task that is NOT a worktree: a
-  # `--worktree none` dispatch, or one of the plain directories every setup task
-  # before that date left behind. There the old reason still holds exactly.
-  if lane_worktree_is_workdir "$vproj" && [ ! -e "$workdir/.git" ]; then
-    verifydir="$(_lane_main_checkout "$vproj")"
-    [ -n "$verifydir" ] || verifydir="${BRAIN:-${HW_BRAIN_ROOT:-}}"  # an extracted harness may not set BRAIN
-  fi
-  # `fd` hands back a trailing slash, which made every recorded log path read
-  # `.hw/<run>//verify-1.log`. A path in a receipt is meant to be pasted.
-  rundir="${rundir%/}"
-  [ -n "$rundir" ] && [ -d "$rundir" ] || return 0
-  # A CLOSE THAT NOBODY NEEDS VERIFIED SAYS SO, in the receipt. `--force` is what
-  # a human reaches for when a close looks stuck, and paying the whole
-  # verification again made it the slowest way out; a `--blocked` report has no
-  # finished work to verify. Both are decided by the caller, not inferred here.
-  if [ -n "${DONE_VERIFY_SKIP:-}" ]; then
-    _receipt_into "$rundir" verify_run "skipped (${DONE_VERIFY_SKIP})" \
-      "hw done $DONE_VERIFY_SKIP: the pinned verification was not run"
-    info "verification skipped (${DONE_VERIFY_SKIP}) — nothing here claims this task was verified"
-    return 0
-  fi
-  pin="$rundir/verify"
-  # NO PIN AT ALL is a different fact from AN EMPTY PIN, and only the second is
-  # worth a receipt: runs that predate this have no file, and inventing a
-  # measurement for them would be the defect this function exists to remove.
-  [ -f "$pin" ] || return 0
-  if [ ! -s "$pin" ]; then
-    _receipt_into "$rundir" verify_run \
-      "none — the brief declared no runnable command" \
-      "$pin, pinned from the brief at dispatch, is empty"
-    warn "NOT VERIFIED: this task's brief declared no command hw could run"
-    warn "nothing here says the work was checked — the report is the only claim there is"
-    return 0
-  fi
-  [ -d "$verifydir" ] || {
-    _receipt_into "$rundir" verify_run \
-      "not run — $verifydir does not exist" "test -d $verifydir at hw done"
-    warn "NOT VERIFIED: $verifydir is gone, so the pinned verification could not run"
-    return 0
-  }
-  # BEFORE THE LOCK AND THE MACHINE SLOT: a close that is decided from disk has
-  # nothing to wait for. Only where the measured tree IS the task's worktree —
-  # the main-checkout redirect above measures a tree this task never owned.
-  if [ "$verifydir" = "$workdir" ] && declare -F _verify_shortcut >/dev/null 2>&1 \
-     && _verify_shortcut "$rundir" "$workdir" "$pin"; then
-    info "measured: hw receipt $vproj $vtask"
-    return 0
-  fi
-  # `hw done` may be called by the brainer, not the executor. Reconstruct the
-  # task-owned artifacts location from the same project/workdir rule used at
-  # dispatch, so an unset (or stale) caller environment cannot become a false
-  # verification failure. Verification commands currently pin no executor-only
-  # HW_* inputs beyond this durable path.
-  HW_ARTIFACTS="$(_artifacts_dir_for "$vproj" "$workdir")"
-  export HW_ARTIFACTS
-  # A verification that hangs would hang `hw done`, and hw done is how a task
-  # leaves the board. Bounded, and the bound is stated in the source line.
-  # `${_VERIFY_TIMEOUT:-900}`, not the bare variable: an empty duration makes
-  # `timeout` exit 125 without ever running the command, and 125 would have been
-  # recorded as the verification's own exit code — a measurement of nothing,
-  # indistinguishable from a real failure. Caught by driving this function
-  # outside bin/hw, which is how the suite drives everything.
-  local secs="${_VERIFY_TIMEOUT:-900}"
-  if command -v timeout >/dev/null 2>&1; then to="timeout $secs"
-  elif command -v gtimeout >/dev/null 2>&1; then to="gtimeout $secs"; fi
-  # ── AND IT RUNS BEHIND THE LANE'S SUITE LOCK, the same one `hw suite` takes ──
-  #
-  # MEASURED: it did not. `hw suite <lane> -- <cmd>`
-  # existed, took a per-lane lock and reclaimed a dead holder's orphan, and the
-  # close verification ran its pinned command raw beside it. The command a brief
-  # pins is very often that lane's own suite — so two `hw done`s in one lane, or
-  # one close while somebody runs the suite by hand, ran over each other, on a
-  # lane where several executors share ONE tree and ONE index. A lock a human
-  # gets and the tool does not is a lock with a hole in it.
-  #
-  # NOT A GATE, AND THE BUDGET SAYS SO. `_suite_lock_take` never dies; a lane
-  # busy for the whole budget is recorded as NOT VERIFIED and the close
-  # continues, because `hw done` is how a task leaves the board and a lock must
-  # never be what keeps it on. The budget defaults to the verification's own
-  # timeout — waiting longer for a turn than the command is allowed to take is
-  # its own absurdity — and is injectable for the same reason every other clock
-  # in this file is.
-  #
-  # WHAT MUST NOT BE BROKEN, because it is not obvious and it was measured:
-  # a suite that has been orphaned (ppid=1) can still reach green and still have
-  # its verdict recovered, because its output goes to a real file. So a lock
-  # whose only question is "is a process alive" loses that case.
-  # `_suite_holder_alive` already answers a narrower question — pid AND process
-  # start time, with the claim window aged rather than assumed — and this reuses
-  # it unchanged rather than inventing a second liveness rule here.
-  #
-  # A LOCK THAT CANNOT BE CREATED IS NOT CONTENTION, and the difference is the
-  # whole point of this block. `_suite_lock_take` waits out its budget on ANY
-  # `mkdir` failure, and an unwritable parent fails the same way a held lock
-  # does — so without this branch a broken `$WORK` would be reported as
-  # "somebody else is running the suite", which is a fact hw would be inventing.
-  # Named, and the verification runs unlocked rather than not at all: an
-  # unprovable lock is a reason to say so, not a reason to measure nothing.
-  #
-  # THE CEILING, STATED RATHER THAN IMPLIED. The comment above says this
-  # function is bounded; with a lock in front of it the bound is now
-  # `vwait` PLUS `secs` per pinned command, not `secs`. Default 900 + 900. That
-  # is deliberate — a lane suite runs ~1000s, so a wait much shorter than one
-  # run would mean a close almost never gets its turn — and it is not a silent
-  # hang: `_suite_lock_take` announces the wait ONCE, names the holder and
-  # prints the budget. `HW_VERIFY_SUITE_WAIT_MS` moves it.
-  #
-  # THE $WORK CHECK COMES FIRST, and the order is the whole point.
-  # `_suite_lock_dir` dereferences `$WORK` bare, so resolving the path before
-  # checking it would abort the process under `set -u` instead of reaching the
-  # unserialised fallback this branch exists to provide. Raised by a blind
-  # adversarial reviewer on this candidate; today `cmd_done` happens to
-  # dereference `$WORK` earlier anyway, which makes it unreachable rather than
-  # correct, and unreachable is not a property to build on.
-  local vlock="" vheld=0 vwait vlock_prev="${HW_SUITE_LOCK_HELD:-}"
-  vwait="${HW_VERIFY_SUITE_WAIT_MS:-$(( secs * 1000 ))}"
-  # SAID BEFORE ANY WAIT, INCLUDING THE LOCK'S: this is the step that makes
-  # `hw done` slow, and nothing has closed while it runs. A caller whose tool gives
-  # up at 120s should know what it is waiting for, that the pane is still open,
-  # and both bounds.
-  info "hw done is now running this task's verification — the slow step; NOTHING is closed until it ends. Ceiling ${secs}s per command, plus up to $(( vwait / 1000 ))s first if another run holds the lane's suite lock, plus up to ${HW_SUITE_GATE_WAIT_MS:-7200000}ms for a machine suite slot (bin/suite-gate; never a failure, it runs without one past that)."
-  if _suite_lane_pooled "$vproj"; then
-    info "the $vproj lane has no suite lock: its suite shares the machine's worker pool with every other suite and runs its timing subjects alone — see _suite_lane_pooled. This verification takes a machine suite slot and may wait for one."
-  elif [ -z "${WORK:-}" ]; then
-    warn "the $vproj suite lock could not be located — WORK is unset, so this verification runs UNSERIALISED"
-    warn "if somebody else is running that lane's suite right now, these two are on the same tree"
-  else
-    vlock="$(_suite_lock_dir "$vproj")"  # MUTATION-ANCHOR: 142-M01
-    if ! mkdir -p "$(dirname "$vlock")" 2>/dev/null; then
-      warn "the $vproj suite lock could not be created under $WORK — this verification runs UNSERIALISED"
-      warn "if somebody else is running that lane's suite right now, these two are on the same tree"
-      vlock=""
-    fi
-  fi
-  if [ -z "$vlock" ]; then
-    :
-  elif _suite_lock_held_by_ancestor "$vlock" "$vproj"; then
-    # Already inside somebody's hold — see _suite_lock_held_by_ancestor.
-    info "the $vproj suite lock is already held further up this process tree; this verification runs inside that hold"
-    vlock=""
-  elif _suite_lock_take "$vlock" "$vproj" "$vwait" "hw done verification of ${vtask:-<unnamed task>}"; then
-    vheld=1
-    # THE INT/TERM ARMS EXIT, and that is not decoration. A trap whose body
-    # does not exit turns a delivered signal into "run this, then carry on
-    # from where you were" — so Ctrl-C during a locked verification would
-    # release the lock and let the close continue, which is the opposite of
-    # what the person pressing it asked for. Raised by both blind reviewers on
-    # this candidate. 130/143 are the conventional 128+signal codes.
-    # shellcheck disable=SC2064
-    trap "rm -rf '$vlock' 2>/dev/null || true; sg_release 2>/dev/null || true" EXIT
-    # shellcheck disable=SC2064
-    trap "rm -rf '$vlock' 2>/dev/null || true; exit 130" INT
-    # shellcheck disable=SC2064
-    trap "rm -rf '$vlock' 2>/dev/null || true; exit 143" TERM
-    # THE MARKER A NESTED `hw suite` READS, exported only while the lock is
-    # really held. See _suite_lock_held_by_ancestor for why a pid rides along.
-    export HW_SUITE_LOCK_HELD="$vproj:$SUITE_LOCK_TOKEN"
-    ok "holding the $vproj suite lock for this close's verification (pid $$)"
-  else
-    _receipt_into "$rundir" verify_run \
-      "not run — the $vproj suite lock was held by a live runner for the whole $(( vwait / 1000 ))s budget" \
-      "hw done waited for $vlock and did not get it; $(_suite_holder_line "$vlock")"
-    warn "NOT VERIFIED: the $vproj suite lock is held by a live runner — $(_suite_holder_line "$vlock")"
-    warn "hw done will NOT run this task's verification over somebody else's suite. Nothing here says the work was checked."
-    warn "when that runner is done: hw suite $vproj -- <the command in $pin>"
-    info "measured: hw receipt $vproj $vtask"
-    return 0
-  fi
-  # ONE SLOT OF THE MACHINE-WIDE GATE FOR THE WHOLE VERIFICATION, taken AFTER
-  # the lane lock (always that order) and never failing the close: a wait past
-  # HW_SUITE_GATE_WAIT_MS runs the commands without a slot and says so.
-  if declare -F sg_take >/dev/null 2>&1; then SG_WORK="${WORK:-}" sg_take "hw done verification of ${vtask:-<unnamed task>}" || true; fi  # MUTATION-ANCHOR: 730-M01
-  while IFS= read -r cmd; do
-    [ -n "$cmd" ] || continue
-    n=$((n + 1))
-    log="$rundir/verify-$n.log"
-    # THE ONE COMMAND SHAPE THIS TIMEOUT CANNOT SERVE: the full suite, named
-    # without the fast gate. `secs` above is sized for the fast gate (or a
-    # brief's own quick check); the full suite is ~1000s of real work and
-    # belongs to `setup/hooks/pre-push`, mandatorily, not to a synchronous
-    # `hw done` step. Warn rather than refuse — a human may have a reason —
-    # but say it where the mismatch is about to be paid for, not just in a
-    # comment nobody reads until it times out.
-    if _verify_names_full_suite "$cmd"; then
-      warn "verify command names the full suite without HW_TEST_GATE=fast — that is ~1000s against a ${secs}s timeout, and it will read as a failed verification, not a slow one. Full-suite coverage is already mandatory at push (setup/hooks/pre-push); point this brief's verify at the fast gate instead: HW_TEST_GATE=fast bash setup/test-hw"
-      warn "this was also said at dispatch, where the brief could still be edited for free"
-    fi
-    info "verifying: $cmd"
-    rc=0
-    out="$( cd "$verifydir" && $to bash -c "$cmd" 2>&1 )" || rc=$?
-    printf '%s\n' "$out" > "$log" 2>/dev/null || true
-    hash="$(printf '%s' "$out" | shasum -a 256 | cut -d' ' -f1)"
-    _receipt_into "$rundir" verify_run \
-      "exit $rc  sha256 $hash  $cmd" \
-      "hw done ran: (cd $verifydir && $to bash -c '$cmd'); output in $log"
-    if [ "$rc" = 0 ]; then
-      ok "VERIFIED  exit 0  $cmd"
-    else
-      warn "VERIFICATION FAILED  exit $rc  $cmd"
-      warn "the receipt records the failure; nothing here claims this task was verified"
-      warn "the output is in $log"
-    fi
-  done < "$pin"
-  if declare -F sg_release >/dev/null 2>&1; then sg_release; fi
-  if [ "$vheld" = 1 ]; then
-    rm -rf "$vlock" 2>/dev/null || true
-    trap - EXIT INT TERM
-    # RESTORED, not merely cleared: hw done may itself have been launched from
-    # inside somebody's hold, and dropping the marker would let the NEXT nested
-    # call claim a lock its ancestor is holding.
-    if [ -n "$vlock_prev" ]; then export HW_SUITE_LOCK_HELD="$vlock_prev"
-    else unset HW_SUITE_LOCK_HELD; fi
-    ok "released the $vproj suite lock"
-  fi
-  info "measured: hw receipt $vproj $vtask"
-  return 0
-}
 
 # Persist the completion pointer before closing its executor pane. Tokens live
 # on the sender, not the receiver, so this repairs reports sent by already-live
@@ -9006,722 +8638,6 @@ _snapshot_done_report() { # run directory
   fi
 }
 
-# ── a pane has an owner, and hw done must establish it before closing ───────
-#
-# THE INCIDENT. A brainer ran `hw done` on a
-# pane THE OPERATOR WAS USING AT THAT MOMENT. The session went with it. It came back
-# through `hw revive` — and nobody in the room knew that command existed until
-# after the panic, which is the other half of the defect: an emergency exit
-# announced after the fire is not an exit.
-#
-# WHAT hw KNEW AND DID NOT ASK. `hw done` closed the tab on the strength of a
-# label matching `<proj>:<task>`. Whether anything was happening inside it was
-# never a question — not whether the task had reported, not whether a turn was
-# running, not whether turns had ended in there that hw never dispatched.
-#
-# THE ORIGINAL PRESCRIPTION FOR THIS GUARD WAS `turns`, AND IT DOES NOT WORK.
-# Stated here because the next reader will reach for it too. `turns` counts
-# turn-ENDS (`cmd_executor_turn_end`), not hw dispatches: the turn-end hook
-# itself returns 8 and forces another one, so one brief routinely produces
-# several. MEASURED over the 189 `.hw/<run>/turns` files under $WORK:
-# 118 of them are at 2 or more with the task counter still at 1, the largest at
-# 233. "turns hw did not dispatch" = turns − dispatches would have refused ~62%
-# of every close ever made, and a guard that needs `--force` everywhere is a
-# guard nobody reads. Worse, the counter FROZE at the report (that branch
-# returned before incrementing), so the post-report window — the incident's own
-# window — produced no turns at all. The counter was wrong in both directions.
-#
-# SO THE FACTS THIS READS ARE THE ONES THAT DISCRIMINATE, three of them, each
-# named separately in the refusal because they mean different things:
-#
-#   · NO REPORT. Derived by `_report_evidence`, the same function `hw next`
-#     uses — one derivation of "reported", two callers. A second answer to that
-#     question is what produced the 2026-08-24 contradiction it was written for.
-#   · agent_status=working. A turn is running RIGHT NOW and the close would cut
-#     it mid-work. hw dispatched none of it: after a report `hw next` is the
-#     only re-task route and it advances the task counter first.
-#   · turns that ended AFTER the report. Counted since 2026-09-16 beside
-#     `turns`, on disk at `.hw/<run>/turns-post-report` and republished as the
-#     `turns_post_report` token. Disk first, token second — the same two-signal
-#     discipline as the report evidence, because a token carries a TTL and a
-#     file does not.
-#
-# `focused` IS EVIDENCE, NEVER A TRIGGER. It says a human is LOOKING at the
-# pane, and exactly one pane on the machine can hold it. "Nobody is looking"
-# is not "nobody is using it" — a human who switched tabs for thirty seconds
-# would be silently overruled by a guard that keyed on it. So it is reported
-# when true, and it never decides.
-#
-# `--force` is the one exit, and it is meant to cost a sentence of thought:
-# every refusal below names it, and taking it says the closer established
-# ownership some other way.
-_done_pane_for_run() {  # $1=rundir
-  [ -r "$1/receipt.jsonl" ] || return 0
-  jq -r 'select(.key=="pane") | .value' "$1/receipt.jsonl" 2>/dev/null | tail -1 || true
-}
-# Turns that ended in a pane after the report of task $2, disk first and the
-# token as fallback (see the guard's comment above). Empty when none.
-_done_post_report_turns() {  # $1=rundir $2=seq $3=herdr agent-get json
-  local rundir="$1" seq="$2" info="$3" post="" rec rec_seq tok tok_seq
-  if [ -r "$rundir/turns-post-report" ]; then
-    rec="$(cat "$rundir/turns-post-report" 2>/dev/null || true)"
-    rec_seq="${rec%% *}"
-    [ "$rec_seq" = "$seq" ] && post="$(printf '%s' "${rec##* }" | tr -dc '0-9' || true)"
-  else
-    tok="$(printf '%s' "$info" | jq -r '.result.agent.tokens.turns_post_report // empty' 2>/dev/null || true)"
-    tok_seq="${tok%% *}"
-    [ -n "$tok" ] && [ "$tok_seq" = "$seq" ] && post="$(printf '%s' "${tok##* }" | tr -dc '0-9' || true)"
-  fi
-  case "$post" in ''|0) post="" ;; esac
-  printf '%s' "$post"
-}
-_done_in_use_guard() {  # $1=project $2=task $3=rundir
-  local proj="$1" task="$2" rundir="$3"
-  local pane info status focus post ev seq reasons="" revive_note _has_agent=0
-  if [ "${DONE_FORCE:-0}" = 1 ]; then
-    warn "--force: closing $proj:$task WITHOUT establishing that its pane is free"
-    return 0
-  fi
-  # Each of these is "hw has nothing to read", not "the pane is free", and they
-  # are deliberately not refusals: hw done must still close a task whose run
-  # record, pane receipt or pane itself is gone, which is most old tasks.
-  [ -n "$rundir" ] || { info "no hw run record for $proj:$task, so there is no pane to establish ownership of"; return 0; }
-  pane="$(_done_pane_for_run "$rundir")"
-  [ -n "$pane" ] || { info "run $(basename "$rundir") recorded no pane receipt, so hw cannot tell whose pane this was"; return 0; }
-  # A SELF-CLOSE IS NOT AN INTERRUPTION, AND THIS GUARD WOULD HAVE BROKEN EVERY
-  # ONE OF THEM. MEASURED 2026-09-16, on the executor writing this: `done-invoker`
-  # closes its own pane by calling `hw done <proj> <task>` from INSIDE it
-  # (bin/done-invoker, both the lease-fallback and the ordinary close), and at
-  # that instant herdr reports that pane `agent_status=working` — because the
-  # turn running done-invoker IS a turn:
-  #
-  #     pane w7G:p9Y -> {"agent_status":"working","focused":true}
-  #
-  # So the `working` arm below would refuse every non-chained close, done-invoker
-  # would take its delivered-but-not-closed exit, and delivered task tabs would
-  # accumulate open forever — the exact failure that path exists to prevent,
-  # reintroduced by the guard meant to protect panes.
-  #
-  # SO THE EXEMPTION IS SCOPED TO THE ARMS A SELF-CLOSE CAUSES, and only those:
-  # `working` and the post-report turn count. It does NOT cover the unreported
-  # arm.
-  #
-  # THE FIRST VERSION OF THIS FIX RETURNED UNCONDITIONALLY, and that was wrong.
-  # Caught by a blind judge in the scoped re-judgment and reproduced before it
-  # was accepted: `HERDR_PANE_ID` is baked into EVERY pane at spawn, so the
-  # exemption keyed on "somebody is closing their own pane", not on
-  # "done-invoker is closing after reporting". An agent abandoning its task and
-  # running `hw done <proj> <task>` by hand, with no report ever written, closed
-  # silently — while the identical close from any other pane was refused. That
-  # defeats the guard's primary arm for the one caller most able to skip it.
-  #
-  # `done-invoker` is unaffected: it writes the done marker BEFORE it ever
-  # reaches the close, so the unreported arm has nothing to fire on there.
-  #
-  # AND setup/tests/24-done-closes-delivered.sh DID NOT CATCH THE ORIGINAL
-  # REGRESSION EITHER, which is the more useful half. Its herdr stub is
-  # `exit 0` — it answers nothing, so the guard sees no agent object and
-  # abstains, and the test passed for the wrong reason. setup/CLAUDE.md's own
-  # rule: the stubbed path is not the path.
-  local self_close=0
-  if [ -n "${HERDR_PANE_ID:-}" ] && [ "$pane" = "$HERDR_PANE_ID" ]; then  # MUTATION-ANCHOR: 150-M05
-    self_close=1
-  fi
-  # AND AN UNANSWERED HERDR IS SAID OUT LOUD, NOT SWALLOWED. Blind judge A: a
-  # transient herdr failure while a human is working in the pane leaves `info`
-  # empty, the guard abstained SILENTLY, and the close went through — the
-  # incident's own failure mode reopened by a different trigger.
-  #
-  # It stays a WARNING and not a refusal, deliberately. `hw done` must keep
-  # closing tasks whose pane is genuinely long gone, which is most old tasks,
-  # and this call cannot tell "herdr did not answer" from "there is no such
-  # agent". What is fixed is the SILENCE: a close that could not establish
-  # ownership now says so, instead of reading like one that established it.
-  # ASKED OF THE STRUCTURE, NOT OF THE TEXT. This was a substring match for
-  # `"agent"` on the raw reply, which any unrelated JSON carrying that word
-  # would satisfy and any reshaped herdr reply could break. Scoped re-judgment.
-  info="$(herdr agent get "$pane" 2>/dev/null || true)"
-  _has_agent=0
-  printf '%s' "$info" | jq -e '.result.agent' >/dev/null 2>&1 && _has_agent=1
-  if [ -z "$info" ] || [ "$_has_agent" = 0 ]; then
-    warn "could NOT establish whether pane $pane is free: herdr returned nothing usable for it. It may be long gone, or herdr may simply not have answered — this close cannot tell those apart, and is proceeding WITHOUT the check."
-    return 0
-  fi
-
-  seq="$(_chaining_current_task "$rundir")"
-  ev="$(_report_evidence "$pane" "$rundir")"
-  status="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
-  focus="$(printf '%s' "$info" | jq -r '.result.agent.focused // empty' 2>/dev/null || true)"
-  # DISK FIRST. The file is written by the executor's own turn-end hook and
-  # outlives the token, which carries a 24h TTL.
-  # THE RECORD IS `<seq> <count>`, and the seq is load-bearing: a chained
-  # session's task 2 must not be refused over task 1's post-report turns. A
-  # record whose seq is not this task's says nothing about this task.
-  # THE FILE IS AUTHORITATIVE WHEN IT EXISTS, and the token is only a fallback
-  # for when the run directory is gone. That ordering is load-bearing: a
-  # chained session's record reads `1 3` while task 2 is being closed, the seqs
-  # do not match — and falling through to the token there would hand `hw done`
-  # task 1's stale count and refuse task 2's ordinary close, which is the very
-  # bug the seq exists to prevent, rebuilt one line lower.
-  post="$(_done_post_report_turns "$rundir" "$seq" "$info")"
-  # A COUNT OF 1 WHILE THE PANE STILL SAYS `working` IS THE REPORT'S OWN TURN: its
-  # Stop hook has already counted it (the marker exists by then — measured with a
-  # real claude and `hw executor-turn-end`) and herdr has not caught up. It is
-  # "finishing", not "somebody is talking to it"; 2+ is still the latter.
-  if [ "$post" = 1 ] && [ "$status" = working ] && [ "$self_close" = 0 ]; then post=""; fi
-
-  # `done_state=undelivered` IS A REPORT THAT NEVER REACHED THE BRAINER, NOT ONE
-  # THAT DID. done-invoker publishes it before it tries to deliver and rewrites
-  # it to `delivered` only after the receiver admitted the envelope, so the
-  # token alone says "the executor finished", never "the brainer heard" — and
-  # the pane is the only copy of the transport failure. Closing it here filed a
-  # STRANDED report as reported. The marker still wins: `_report_evidence`
-  # returns `marker` first, so a delivered report never lands in this arm.
-  # THE REASONS (and `stranded`) ARE COMPUTED IN bin/hw-actions, shared with the
-  # cockpit's state writer, so its `done` button is valid by this predicate.
-  local stranded=0 _rc=0
-  reasons="$("$HW_BIN_DIR/hw-actions" done-reasons "$ev" "$status" "$self_close" "$post" "$seq" "$pane" "$(_run_done_marker "$rundir")")" || _rc=$?
-  [ "$_rc" != 2 ] || stranded=1
-  [ "$_rc" -le 2 ] || die "hw-actions done-reasons failed (exit $_rc) — nothing was closed"
-  [ -n "$reasons" ] || return 0
-
-  # REPORTED AND STILL WORKING, WITH NOBODY TALKING TO IT, IS A PANE FINISHING,
-  # NOT A PANE IN USE. Measured 2026-09-28/29: right after `done-invoker` the
-  # executor's pane still runs the turn that sent the report, herdr says
-  # `working`, and `hw done` answered "nothing was closed. Establish who owns
-  # that pane" — the wording for a stranger's session — to a brainer who only
-  # needed to run the same command a few seconds later. The refusal stands (the
-  # turn is real and the close would cut it); what changes is that it says which
-  # of the two it is. Any other reason (no report, turns after the report)
-  # keeps the ownership wording: those ARE somebody else's.
-  local finishing=0
-  if [ "$ev" != none ] && [ "$stranded" = 0 ] && [ "$status" = working ] && [ "$self_close" = 0 ] && [ -z "$post" ] && [ "$focus" != true ]; then
-    finishing=1
-  fi
-  # THE ONLY REASON IS THE TURN THAT SENT THE REPORT: WAIT FOR IT, DO NOT HAND
-  # THE RETRY BACK. Measured 2026-10-01, five times: the brainer re-ran `hw done`
-  # by hand a few seconds later and it closed. Poll the same herdr answer; close
-  # when the pane stops working with no turn after the report; refuse as before
-  # when the cap passes (HW_DONE_TURN_WAIT, default 60s) or a turn ENDS after the
-  # report (somebody is talking to it). --force never reaches here.
-  if [ "$finishing" = 1 ]; then
-    local cap="${HW_DONE_TURN_WAIT:-60}" poll="${HW_DONE_TURN_POLL:-1}" t0 ninfo
-    case "$cap" in ''|*[!0-9]*) cap=60 ;; esac
-    case "$poll" in ''|*[!0-9.]*|*.*.*) poll=1 ;; esac
-    t0=$(date +%s)
-    info "$pane reported and is finishing the turn that sent it — waiting up to ${cap}s for it to end before closing $proj:$task"
-    while [ $(( $(date +%s) - t0 )) -lt "$cap" ]; do
-      sleep "$poll"
-      ninfo="$(herdr agent get "$pane" 2>/dev/null || true)"
-      if ! printf '%s' "$ninfo" | jq -e '.result.agent' >/dev/null 2>&1; then
-        # Same stance as an unanswered herdr at the top of the guard: say it, proceed.
-        warn "herdr stopped answering for $pane while hw waited for its last turn — it may be gone; closing WITHOUT the rest of the check."
-        return 0
-      fi
-      info="$ninfo"
-      status="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
-      post="$(_done_post_report_turns "$rundir" "$seq" "$info")"
-      # THE REPORT'S OWN TURN END IS COUNTED BY THE STOP HOOK AS `<seq> 1` (the
-      # marker exists by then — measured with `hw executor-turn-end`), so 1 is
-      # the turn we are waiting for, not somebody talking to the pane. A second
-      # turn end (2+) is. A 1 with the pane working again is just waited out.
-      if [ -n "$post" ] && [ "$post" -gt 1 ]; then
-        reasons="  · $post turn(s) ended in $pane AFTER its report, and hw dispatched none of them. Somebody is talking to this pane."
-        finishing=0
-        break
-      fi
-      if [ "$status" != working ]; then
-        info "$pane finished the turn that sent the report — closing $proj:$task"
-        return 0
-      fi
-    done
-  fi
-  if [ "$finishing" = 1 ]; then
-    warn "hw done REFUSED for $proj:$task — its pane has REPORTED and is STILL FINISHING its last turn:"
-  else
-    warn "hw done REFUSED for $proj:$task — this pane is in use:"
-  fi
-  printf '%s\n' "$reasons" | while IFS= read -r _r; do [ -z "$_r" ] || warn "$_r"; done
-  _report_evidence_explain "$pane" "$ev" "$(_run_done_marker "$rundir")"
-  if [ "$focus" = true ]; then
-    warn "  · and it is FOCUSED: a human has this pane on screen right now. (Evidence only — an unfocused pane can be just as much in use, so this never decides on its own.)"
-  fi
-  # BEFORE THE CLOSE, NEVER AFTER. See the section comment: the recovery door is
-  # worth nothing if it is announced once the session is already gone.
-  revive_note="$(_done_revive_line "$proj" "$task" "$rundir")"
-  [ -z "$revive_note" ] || info "$revive_note"
-  if [ "$finishing" = 1 ]; then
-    die "NOT CLOSED YET — nothing was closed: the report is in and hw sees no turn after it, so this is most likely the turn that sent it ending (hw already waited HW_DONE_TURN_WAIT seconds for it and it is still working, so somebody is talking to it — hw status). Run the same command again: hw done $proj $task   (--force would cut that turn)"
-  fi
-  if [ "$stranded" = 1 ]; then
-    die "nothing was closed: the report is STRANDED. Redeliver it first (\`hw outbox flush $proj --to <brainer-pane>\`; do NOT re-run done-invoker if its exit was 5 — the report may already be there); close it deliberately, discarding the undelivered report, with: hw done $proj $task --force"
-  fi
-  die "nothing was closed. Establish who owns that pane — look at it — and then either let it finish, or close it deliberately with: hw done $proj $task --force"
-}
-# The recovery command, with the one precondition that decides whether it will
-# work stated rather than implied. `cmd_revive` refuses a run whose receipt
-# recorded no `session_resume` (58 of setup's 143 receipts are in that state),
-# and a brainer reading `hw revive` as a promise in the moment of panic is
-# exactly the wrong time to find that out.
-_done_revive_line() {  # $1=project $2=task $3=rundir
-  local rundir="$3"
-  if [ -n "$rundir" ] && [ -r "$rundir/receipt.jsonl" ] \
-     && grep -q '"key": *"session_resume"' "$rundir/receipt.jsonl" 2>/dev/null; then
-    printf 'if this closes and you wanted it back: hw revive %s %s — run %s recorded a session_resume, so the conversation is addressable' \
-      "$1" "$2" "$(basename "$rundir")"
-    return 0
-  fi
-  printf 'NOTE: hw revive %s %s will NOT bring this back — %s recorded no session_resume, so the conversation is not addressable and closing is final for it' \
-    "$1" "$2" "${rundir:+$(basename "$rundir")}"
-}
-
-# WHAT `hw done` SAYS ABOUT ITSELF: WHAT IT DID, AND WHERE THE SECONDS WENT.
-# Measured 2026-09-28/29: the close itself is milliseconds (herdr answers in
-# ~10ms, the brain-leak scan ~0.15s); the seconds are `_verify_at_close`, which
-# runs the brief's own ## Verification command (unless a clean tree already
-# has a green verdict or never left its dispatch base: see _verify_shortcut) — the fast gate ~55s, a full
-# suite up to 900s, plus up to 900s waiting for the lane's suite lock — BEFORE
-# anything closes. A caller whose tool gives up at 120s could not tell that from
-# a hang, and could not tell a close that happened from one that did not. So
-# `_done_outcome` names one of three facts the moment the close is decided, and
-# `cmd_done` ends with the clock split into the step that took it and the rest.
-_DONE_VERIFY_SECONDS=0
-_done_outcome() {  # $1=project $2=task $3=what herdr was asked to close, or "" when nothing was there
-  case "${_HERDR_CLOSE_RESULT:-}" in
-    closed) ok "CLOSED: $3 — this call closed it ($1:$2)" ;;
-    absent) info "NOTHING TO CLOSE: $3 was already gone when hw asked — this call closed nothing, and that is not a failure ($1:$2)" ;;
-    failed) warn "NOT CLOSED — FAILED: $3 may still be RUNNING; this call did not close it and exits non-zero ($1:$2). Look before anything else: hw status" ;;
-    *)      info "NOTHING TO CLOSE: no open tab or space labelled $1:$2 — closed earlier or never opened, so this call closed nothing, and that is not a failure" ;;
-  esac
-}
-# NO WRAPPER, ON PURPOSE. A function called on the left of `||` (or in an `if`)
-# runs with errexit OFF for its whole body and everything it calls — a wrapper
-# `_body || _rc=$?` silently turned every unguarded failure in here (a `local x=$(die…)`
-# in the lease path, a failed `_lease_write`) into "carry on", one of which closes
-# the pane. Found by both Judgment Day judges. So the clock is read at the top
-# of cmd_done and printed by `_done_took` at each return.
-_done_took() {
-  local total=$(( $(date +%s) - ${_DONE_T0:-$(date +%s)} ))
-  if [ "$total" -ge 5 ]; then
-    info "hw done took ${total}s: verification ${_DONE_VERIFY_SECONDS}s, everything else $(( total - _DONE_VERIFY_SECONDS ))s"
-  fi
-}
-# `closed-by-hand` beside the task's done marker: when, by which flag, and
-# whether a report existed. Written once — a repeated `hw done` (sweeps do) must
-# not move the first close, and a marker on a task that DID report must say so.
-_done_mark_closed_by_hand() {  # $1 = run directory
-  local rundir="${1%/}" mark by=none reported=no
-  [ -n "$rundir" ] && [ -d "$rundir" ] || return 0
-  mark="$(dirname "$(_run_done_marker "$rundir")")/closed-by-hand"
-  [ ! -e "$mark" ] || return 0
-  [ "${DONE_BLOCKED:-0}" = 1 ] && by=--blocked
-  [ "${DONE_FORCE:-0}" = 1 ] && by=--force
-  [ -f "$(_run_done_marker "$rundir")" ] && reported=yes
-  mkdir -p "$(dirname "$mark")" 2>/dev/null || return 0
-  printf 'at=%s\nby=%s\nreported=%s\n' "$(date +%s)" "$by" "$reported" > "$mark" 2>/dev/null || true  # MUTATION-ANCHOR: 700-M01
-}
-
-cmd_done() {
-  local proj="$1" task="$2" main wt branch close_failed=0
-  _DONE_T0="$(date +%s)"; _DONE_VERIFY_SECONDS=0
-  lane_known "$proj" || die "unknown project: $proj (expected: $(lane_names_bar))"
-  main="$(_lane_main_checkout "$proj")"
-  wt="$(_lane_wt_dir "$proj" "$task")"
-  [ -n "$wt" ] || wt="$WORK/$proj/$task"
-  branch="$(_lane_branch "$proj" "$task")"  # MUTATION-ANCHOR: 140-M06
-
-  # Capture first: close verification can run for 900 seconds, and the live pane
-  # is the only source for an old report that went to the wrong brainer.
-  local done_rundir
-  done_rundir="$(_task_rundirs "$proj" "$task" | head -1)"
-  [ -z "$done_rundir" ] || _snapshot_done_report "$done_rundir"
-  # BEFORE ANYTHING IS CLOSED OR CLEARED — before the reopened marker is
-  # removed, before the 900s close verification, and long before a tab goes. A
-  # refusal arriving after any of those has already spent what it exists to save.
-  #
-  # NOT "before anything is touched", which is what this said until the scoped
-  # re-judgment called it: `_snapshot_done_report` above already ran, and it
-  # appends to the run's receipt. That snapshot is idempotent and informational
-  # and it deliberately stays first — the live pane is the only source for an
-  # old report, and a 900s verification would lose it — but the claim was
-  # wider than the code and is narrowed rather than left standing.
-  _done_in_use_guard "$proj" "$task" "$done_rundir"
-  # A run `hw revive` reopened leaves the board again when it is closed, whether
-  # its executor reported a second time or a human closed it: the marker is a
-  # statement that a live pane is expected, and after this there is none.
-  if [ -n "$done_rundir" ] && [ -f "$(_run_reopened_marker "$done_rundir")" ]; then
-    rm -f "$(_run_reopened_marker "$done_rundir")" 2>/dev/null || true
-    info "run was reopened by hw revive; closing it clears that marker"
-  fi
-
-  # BEFORE ANYTHING IS CLOSED. The verification runs in the task's directory and
-  # every close path below reaches an end — including `--keep-preview`, which
-  # returns early. Running it first means the measurement exists whichever way
-  # this task leaves.
-  local _v0; _v0="$(date +%s)"
-  _verify_at_close "$(_task_rundirs "$proj" "$task" | head -1)" "$wt" "$proj" "$task"
-  _DONE_VERIFY_SECONDS=$(( $(date +%s) - _v0 ))
-  # And before anything closes: a product task does not leave with a commit that
-  # carries a brain path. The push guard sees the same scan, but a branch the
-  # operator pushes or merges after this never passes through it.
-  PROJ="$proj" _brain_leak_at_close "$proj" "$wt" "$branch"
-  # A blocked executor kept waiting for a ruling stops waiting when it is closed:
-  # the marker moves aside (`blocked-closed`) so sweep, reap and status stop
-  # treating a closed run as one that can still be resumed. AFTER THE
-  # VERIFICATION AND THE LEAK SCAN, not before: the scan can refuse the close
-  # and a verification of up to 900s can be interrupted, and a close stopped
-  # there had already moved the marker — a live pane nobody could resume and
-  # nothing would expire.
-  if [ -n "$done_rundir" ] && [ -f "$(_run_blocked_marker "$done_rundir")" ]; then
-    mv -f "$(_run_blocked_marker "$done_rundir")" "$(dirname "$(_run_blocked_marker "$done_rundir")")/blocked-closed" 2>/dev/null || true
-    info "it had reported BLOCKED and was waiting for a ruling; closing it ends the wait"
-  fi
-
-  # A HAND CLOSE LEAVES ITS OWN MARK. Without it `hw status` read a task closed
-  # here and a task whose executor died as the same `finished, unreported`
-  # (an audit found 19 of 24 such rows were hand closes). Written after
-  # every refusal above, so a close that did not happen leaves nothing.
-  _done_mark_closed_by_hand "$done_rundir"
-  # TAB FIRST, AND A TAB RECORD CAN NEVER CLOSE A WORKSPACE. hw has closed other
-  # people's agents before — a cleanup that worked by exclusion once
-  # killed a live brainer's own executors — and the answer then was
-  # that nothing is closed without an ownership record naming it. Tabs inherit
-  # that rule exactly: `.hw/<run>/tab` licenses a `tab close` and nothing else,
-  # `.hw/<run>/workspace` licenses a `workspace close` and nothing else. Runs that
-  # predate tab mode have only the second, so this is compatible by construction.
-  local rundir_tab="" tab="" ws=""
-  rundir_tab="$(_latest_run_record "$proj" "$task" tab)"
-  if [ -n "$rundir_tab" ]; then
-    tab="$rundir_tab"
-  else
-    tab="$(_tab_id_by_label "$proj:$task")"
-  fi
-  # UNDER A LEASE, THE AGENT GOES AND THE PREVIEW STAYS. Closing the tab takes
-  # the dev pane with it, which is exactly the coupling the lease exists to
-  # break: the executor is finished, the preview is not.
-  if [ "${KEEP_PREVIEW:-0}" = 1 ]; then
-    local lease_run agent_pane secs
-    lease_run="$(_task_rundirs "$proj" "$task" | head -1)"
-    [ -n "$lease_run" ] || die "no hw run directory for $proj:$task, so there is nothing to write a lease against."
-    secs="$(_lease_seconds "$KEEP_FOR")"
-    agent_pane="$(jq -r 'select(.key=="pane") | .value' "$lease_run/receipt.jsonl" 2>/dev/null | tail -1)"
-    if [ -n "$agent_pane" ]; then
-      _close_herdr_object pane "$agent_pane" \
-        "agent pane $agent_pane closed — the executor is released" \
-        "agent pane $agent_pane is already gone" || return 1
-    else
-      warn "no pane receipt for this run, so the agent pane could not be identified; nothing was closed"
-    fi
-    _lease_write "$lease_run" "$secs" "$KEEP_WHY"
-    ok "preview LEASED until $(_lease_field "$lease_run" until_h) — tab $tab, database and ports kept"
-    info "why: $KEEP_WHY"
-    [ -z "${HW_PORT_WEB:-}" ] || info "preview: http://127.0.0.1:$HW_PORT_WEB"
-    info "release it with: hw preview release $proj $task   (then hw done $proj $task --drop-db)"
-    info "hw reap will refuse this worktree while the lease holds, and hw status shows it expiring"
-    _done_took
-    return 0
-  fi
-  # THE EXIT IS ANNOUNCED BEFORE THE FIRE, NOT AFTER. On 2026-09-16 a close
-  # that turned out to be a mistake was recoverable the whole time and nobody
-  # in the room knew the command. It costs one line, and the only moment it is
-  # useful is the moment before.
-  _done_revive_pre="$(_done_revive_line "$proj" "$task" "$done_rundir")"
-  [ -z "$_done_revive_pre" ] || info "$_done_revive_pre"  # MUTATION-ANCHOR: 150-M03
-  _HERDR_CLOSE_RESULT=""
-  if [ -n "$tab" ]; then
-    _close_herdr_object tab "$tab" \
-      "tab $tab closed ($proj:$task)" \
-      "tab $tab is already gone" || close_failed=1
-    _done_outcome "$proj" "$task" "tab $tab"
-  else
-    ws="$(_ws_id_by_label "$proj:$task")"
-    if [ -n "$ws" ]; then
-      _close_herdr_object workspace "$ws" \
-        "space $ws closed" \
-        "space $ws is already gone" || close_failed=1
-      _done_outcome "$proj" "$task" "space $ws"
-    else
-      info "no open tab or space labelled $proj:$task"
-      _done_outcome "$proj" "$task" ""
-    fi
-  fi
-
-  # The pane is gone: tell the cockpit now, not at the next heartbeat.
-  [ -z "$done_rundir" ] || "$HW_BIN_DIR/cockpit-state" --kick --rundir "$done_rundir" >/dev/null 2>&1 || true
-
-  # A repo-less task has no branch to merge and no ports to free. What it does
-  # have is a directory of artifacts, which is the whole output — reported,
-  # never removed.
-  if _is_repoless "$proj"; then
-    if [ -d "$wt" ]; then
-      local n sz
-      # Exclude .hw: those are hw's own control files, not the task's output.
-      # Reporting them as artifacts made an empty task look like it produced two.
-      n="$(find "$wt" -type f -not -path '*/.hw/*' 2>/dev/null | wc -l | tr -d ' ' || true)"; : "${n:=0}"
-      sz="$(du -sh "$wt" 2>/dev/null | awk '{print $1}')"
-      if [ "$n" = 0 ]; then
-        info "no artifacts in $wt (correct when the output was a report)"
-      else
-        warn "artifacts KEPT in $wt ($n files, $sz) — hw never deletes them"
-      fi
-    else
-      info "no work directory at $wt"
-    fi
-    printf "\n  ${C_B}Nothing to merge:${C_0} %s has no repository.\n  Move anything worth keeping out of %s yourself.\n\n" "$proj" "$wt"
-    _done_took
-    return "$close_failed"
-  fi
-
-  # Ports are freed by the dev servers dying with their panes; nothing to unbind.
-  info "ports released with the panes"
-
-  # The database outlives the space on purpose: it holds whatever state the task
-  # produced. hw reports it and, only when asked, drops it — dropping by default
-  # would silently destroy work whose only copy is in that database. Which lane
-  # has one is the table's `db.provisioned`; every other lane gets the same
-  # one line, spelled with its own name.
-  local done_db_live=""
-  if [ -n "$(lane_get "$proj" db_provisioned)" ]; then
-    local db; db="$(basename "$wt" | tr '\-/' '__')"
-    if psql -U "$(id -un)" -d postgres -Atc "select 1 from pg_database where datname = '$db'" 2>/dev/null | grep -q 1; then
-      local size; size="$(psql -U "$(id -un)" -d postgres -Atc "select pg_size_pretty(pg_database_size('$db'))" 2>/dev/null)"
-      if [ "$DROP_DB" = 1 ]; then
-        if psql -U "$(id -un)" -d postgres -q -c "DROP DATABASE \"$db\"" 2>/dev/null; then
-          ok "database $db dropped (was $size)"
-        else
-          warn "could not drop $db — open connections? try again once the panes are gone"
-        fi
-      else
-        # Decided below, with the worktree: a disposable worktree takes its
-        # database with it (pg_dump into the archive first, see _reap_db).
-        done_db_live="$db ($size)"
-      fi
-    else
-      info "no database named $db"
-    fi
-  else
-    info "$proj has no per-worktree database to release"
-  fi
-
-  BASE_BRANCH="$(_lane_base "$proj")"; : "${BASE_BRANCH:=main}"
-
-  # THE MERGE IS PRINTED, never run: merging is the brainer's call. Removing a
-  # `safe` worktree is not printed — it is done, below (the operator, 2026-10-04).
-  #
-  # AND THE MERGE IS NOT PRINTED BLINDLY. This block used to end with
-  # `git worktree remove $wt` on every done, whatever the worktree held. For
-  # a product lane's coords-reconcile that line destroys `_coords-export/` —
-  # 588K of raw.json and four CSVs, the 754 rows that went to Mike — because the
-  # directory is git-ignored and `git status` therefore says clean. A command
-  # printed under the heading "clean up" is a command that gets pasted.
-  # NOTHING TO MERGE IF NOTHING WAS BRANCHED. A `--worktree none` task runs in a
-  # repo-less work directory and never creates `task/<name>`, and printing a
-  # merge for a branch that does not exist is the same defect as printing
-  # `git worktree remove` for a worktree that holds unreproducible data: a
-  # command under a confident heading gets pasted. Asked of git, not inferred
-  # from the flags — the run that created this task may not be the one closing it.
-  # A BRANCH EXISTING IS NOT WORK BEING ON IT. The check above asked git whether
-  # the ref exists and stopped there — so on 2026-08-25 `hw done <lane>
-  # classic-stage-impl` printed a full merge recipe for `task/classic-stage-impl`
-  # while that branch was at develop with ZERO commits and the entire day of work
-  # sat as 39 uncommitted files in the worktree. Paste that recipe and it merges
-  # nothing, cleanly, and you walk away believing the work landed. That is the
-  # same defect the existence check was added to fix, one level down: a confident
-  # heading over a command whose signal does not support it.
-  # COUNT AGAINST origin/$BASE_BRANCH WHEN IT EXISTS, AND NAME WHICHEVER REF WAS
-  # USED. This used to run "$BASE_BRANCH..$branch" against the LOCAL checkout
-  # only — on a READ-ONLY task whose local main was six days stale, that
-  # printed "11 commits — merge it" while origin/main..task/<x> was empty.
-  # "11 commits" with no subject is an unverifiable claim; naming the ref is
-  # the fix, not a flag to pick one.
-  local ahead=0 ahead_ref="$BASE_BRANCH" ahead_note=""
-  if git -C "$main" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
-    if git -C "$main" show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH" 2>/dev/null; then
-      ahead_ref="origin/$BASE_BRANCH"
-      local fetch_head fetch_epoch
-      # --git-path prints a path RELATIVE TO $main, not to this process's cwd
-      # or an absolute path — unprefixed, `[ -f "$fetch_head" ]` checked the
-      # wrong directory and silently found nothing.
-      fetch_head="$(git -C "$main" rev-parse --git-path FETCH_HEAD 2>/dev/null || true)"
-      [ -z "$fetch_head" ] || fetch_head="$main/$fetch_head"
-      if [ -n "$fetch_head" ] && [ -f "$fetch_head" ]; then
-        fetch_epoch="$(date -r "$fetch_head" +%s 2>/dev/null || echo 0)"
-        if [ "$fetch_epoch" -gt 0 ]; then
-          ahead_note=" (origin fetched $(( ($(date +%s) - fetch_epoch) / 3600 ))h ago)"
-        fi
-      fi
-    else
-      ahead_note=" (no origin/$BASE_BRANCH — counted against the local checkout, which may be behind origin)"
-    fi
-    ahead="$(git -C "$main" rev-list --count "$ahead_ref..$branch" 2>/dev/null || echo 0)"
-    case "$ahead" in ''|*[!0-9]*) ahead=0 ;; esac
-  fi
-  local dirty=0
-  # `grep -c` prints its count AND exits 1 when that count is zero, so
-  # `|| echo 0` appended a second "0" and a CLEAN worktree made the test below
-  # print `[: integer expression expected` — reproduced 2026-09-01 against an
-  # empty repo with HEAD's line: dirty=$'0\n0'. The count is already there; only
-  # the exit needs swallowing, and anything that is still not a number is 0.
-  # THE EXIT CODE, NOT JUST THE COUNT. `git status | grep -c '^'` prints 0 for a
-  # FAILED status exactly as for a clean tree, and `$dirty` decides whether the
-  # "THE WORK IS NOT ON THE BRANCH" warning below is printed at all. A zero
-  # nobody measured suppresses the warning that exists to stop work being lost.
-  local dirty_rc=0
-  if [ -d "$wt" ]; then
-    dirty="$(git -C "$wt" status --porcelain 2>/dev/null)" || dirty_rc=$?
-    if [ "$dirty_rc" -ne 0 ]; then
-      dirty=unknown
-    else
-      dirty="$(printf '%s' "$dirty" | grep -c '^' || true)"
-    fi
-  fi
-  case "$dirty" in unknown) ;; ''|*[!0-9]*) dirty=0 ;; esac
-  # THE RECIPE NAMES ONLY REMOTES THE LANE ACTUALLY HAS.
-  #
-  # MEASURED 2026-09-16, on the first setup close that reached this block: brain
-  # has NO `origin` — its remotes are `backup` (a local bare repo) and `github`
-  # (the sanitized export) — and the recipe printed `git fetch origin` and
-  # `git pull` under the heading "Merge it:". Pasted, that is
-  # `fatal: 'origin' does not appear to be a git repository`, on the one command
-  # a brainer runs to land a task's work. The block was unreachable for setup
-  # until the lane left REPOLESS in this same change, so it is a defect this
-  # change introduced rather than one it exposed.
-  #
-  # THE FACT IS ALREADY COMPUTED ten lines up: `$ahead_ref` is
-  # `origin/$BASE_BRANCH` when that remote-tracking ref exists and the bare
-  # local branch when it does not. Asking the same question a second way is how
-  # two answers start to disagree.
-  local sync_lines=""
-  case "$ahead_ref" in
-    origin/*) sync_lines="  git fetch origin"$'\n'"  git checkout $BASE_BRANCH"$'\n'"  git pull" ;;
-    *)        sync_lines="  git checkout $BASE_BRANCH"$'\n'"  ${C_DIM}# no origin in $main — nothing to fetch or pull${C_0}" ;;
-  esac
-  if git -C "$main" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null && [ "$ahead" -gt 0 ]; then
-    cat <<EOF
-
-${C_B}Merge it:${C_0}
-
-  cd $main
-$sync_lines
-  git merge --no-ff $branch          # $ahead commit(s) against $ahead_ref$ahead_note — or open a PR and squash-merge it
-
-EOF
-  elif git -C "$main" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
-    printf '\n'
-    warn "NOTHING TO MERGE: $branch exists but is level with $ahead_ref — 0 commits.$ahead_note"
-    if [ "$dirty" = unknown ]; then
-      warn "and whether the worktree holds uncommitted changes could NOT be read (git status failed). That is not the same as none — look before you remove anything."
-    elif [ "$dirty" -gt 0 ]; then
-      warn "and the worktree holds $dirty uncommitted change(s). THE WORK IS NOT ON THE BRANCH."
-      warn "It exists in exactly one place: $wt"
-      warn "Commit it there before anything else, or it is one \`git worktree remove\` from gone:"
-      printf '\n  git -C %s add -A && git -C %s commit -m "<what this is>"\n\n' "$wt" "$wt"
-      warn "\`hw reap\` already refuses this worktree while it is dirty, so nothing is lost right now."
-    else
-      info "the worktree is clean too, so this task produced no committed change"
-    fi
-  else
-    printf '\n'
-    info "no branch $branch in $main — nothing to merge"
-    info "that is expected for a --worktree none task: it ran in a work directory, not a worktree"
-  fi
-  # ASK GIT WHERE IT IS, don't assume the canonical path. coords-reconcile still
-  # lives at the pre-2026-08-22 root outside the repo, so the assumed path did not
-  # exist and this printed "already gone" about a worktree holding 588K of export.
-  # A wrong reassurance is worse than a wrong command.
-  if [ ! -d "$wt" ] && [ -n "$branch" ]; then
-    local found
-    found="$(git -C "$main" worktree list --porcelain 2>/dev/null \
-      | awk -v b="refs/heads/$branch" '/^worktree /{w=$2} /^branch /{if ($2==b) print w}' | head -1)"
-    if [ -n "$found" ] && [ -d "$found" ]; then
-      wt="$found"
-      warn "its worktree is not at the canonical root: $wt"
-    fi
-  fi
-  if [ ! -d "$wt" ]; then
-    printf '  %sno worktree for %s — already removed, or it never had one%s\n\n' "$C_DIM" "$branch" "$C_0"
-    [ -z "$done_db_live" ] || warn "database $done_db_live is STILL LIVE — drop it with: hw done $proj $task --drop-db"
-    _done_took
-    return "$close_failed"
-  fi
-  # THE BRANCH THE WORKTREE IS ON, not the one its task name derives. Now that
-  # this path removes, a worktree left detached (or switched) with commits of
-  # its own would read `safe` against a merged `task/<name>` and lose them to
-  # `git worktree remove` — the gate `hw reap` already has by reading HEAD.
-  # Only when git can read the tree: the lost-.git case still needs the
-  # derived name (see _wt_disposition).
-  local wt_branch="$branch"
-  if git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
-    wt_branch="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || echo detached)"
-  fi
-  # Its executor is gone (the tab closed above): the lock hw took at launch
-  # goes with it. Only hw's own — a lock somebody else took stays, and reads
-  # `locked` below.
-  local _lr
-  if _lr="$(_wt_lock_reason "$main" "$wt")" && [ "${_lr#hw }" != "$_lr" ]; then
-    git -C "$main" worktree unlock "$wt" >/dev/null 2>&1 && info "unlocked $(basename "$wt") — its executor is closed"
-  fi
-  _wt_disposition "$main" "$wt" "$wt_branch" "${BASE_BRANCH:-main}"
-  if [ "$WT_VERDICT" = safe ] || [ "$WT_VERDICT" = archivable ]; then
-    # `hw done` REAPS ITS OWN TASK. It used to print the two commands below and
-    # run neither, and "hw reap after every hw done" was a rule nobody ran:
-    # measured 2026-10-01, 16 worktrees `safe` for weeks in one lane and 191
-    # more held only by their outputs. Same body as `hw reap --apply`, same
-    # gates, re-asked after the archive.
-    #
-    # `safe` answers "does git need this directory". It does not answer "does a
-    # recorded session need it": `hw revive` repeats the cwd from the receipt
-    # and refuses when it is gone, so removing it is also the act that makes
-    # the session unrevivable. Said before it happens.
-    if [ -n "$done_rundir" ] && [ -r "$done_rundir/receipt.jsonl" ] \
-       && [ -n "$(jq -r 'select(.key=="session_resume") | .value' "$done_rundir/receipt.jsonl" 2>/dev/null | tail -1)" ]; then
-      info "removing the worktree also ends \`hw revive $proj $task\` for this session"
-    fi
-    printf '%sReaping it — %s%s\n' "$C_B" "$C_0" "$WT_WHY"
-    if _reap_worktree "$proj" "$main" "$wt" "$wt_branch" "${BASE_BRANCH:-main}"; then
-      [ -z "$REAP_ARCHIVE_DIR" ] || info "its outputs are in $REAP_ARCHIVE_DIR"
-      case "$ahead_ref" in
-        origin/*) info "a pushed branch stays on origin: git -C $main push origin --delete $branch" ;;
-      esac
-      done_db_live=""
-    fi
-  else
-    printf '  %s%s DO NOT REMOVE THIS WORKTREE YET%s\n' "$C_WARN" "!" "$C_0"
-    printf '      %s%s%s\n' "$C_DIM" "$WT_WHY" "$C_0"
-    local shed
-    if _wt_sheddable && shed="$(_wt_shed "$proj" "$wt")"; then
-      printf '      %sKept, and shed what its install rebuilds: %s%s\n' "$C_DIM" "$shed" "$C_0"
-    fi
-    case "$WT_VERDICT" in
-      irreplaceable)
-        printf '      %sgit status reports this worktree clean and it is not — those paths are%s\n' "$C_DIM" "$C_0"
-        printf '      %signored, so `git worktree remove` would delete them with no warning.%s\n' "$C_DIM" "$C_0"
-        printf '      %sMove what you need out first, then re-run `hw done` or `hw reap`.%s\n' "$C_DIM" "$C_0" ;;
-      unmerged)
-        printf '      %sMerge it first (above), then `hw reap %s`.%s\n' "$C_DIM" "$proj" "$C_0" ;;
-      dirty)
-        printf '      %sCommit or discard those changes, then `hw reap %s`.%s\n' "$C_DIM" "$proj" "$C_0" ;;
-      held)
-        printf '      %sThat pane is still sitting in it. Nothing to do until it moves.%s\n' "$C_DIM" "$C_0" ;;
-      not-a-worktree)
-        printf '      %sNothing to remove and nothing to merge: no branch was ever created for it.%s\n' "$C_DIM" "$C_0"
-        printf '      %sIts contents are the task output. Move what is worth keeping, then delete it by hand.%s\n' "$C_DIM" "$C_0" ;;
-      undetermined)
-        printf '      %sThis is NOT a verdict that the worktree is needed — it is the absence of one.%s\n' "$C_DIM" "$C_0"
-        printf '      %sFix what could not be read, then re-run. Do not remove it on the strength of%s\n' "$C_DIM" "$C_0"
-        printf '      %sa check that did not run: that is how 588K went once.%s\n' "$C_DIM" "$C_0" ;;
-      locked)
-        printf '      %sSomebody holds it; unlock it once nobody does, then `hw reap %s`.%s\n' "$C_DIM" "$proj" "$C_0" ;;
-      leased)
-        printf '      %sSomebody is still going to look at this preview. `hw preview` shows who and until when;%s\n' "$C_DIM" "$C_0"
-        printf '      %s`hw preview release %s <task>` ends it early.%s\n' "$C_DIM" "$proj" "$C_0" ;;
-    esac
-    printf '      %sSurvey every worktree the same way: hw reap %s%s\n\n' "$C_DIM" "$proj" "$C_0"
-  fi
-  [ -z "$done_db_live" ] || warn "database $done_db_live is STILL LIVE — drop it with: hw done $proj $task --drop-db"
-  _done_took
-  return "$close_failed"
-}
 
 
 # ── reap: the merge-and-remove half, but only where it is provably safe ─────
@@ -11251,124 +10167,6 @@ _route_forecast_check() {  # $1=project $2=task $3=route-now $4=detail-now
   die "ROUTE CHANGED since your dry run. The pane the dry run would have reused is no longer reusable (its chaining lease expired, it closed, or it was re-tasked), so this launch would build a whole new executor instead. NOTHING was built and NOTHING was sent. Decide again: re-read it with --dry-run. There is no flag that forces the reuse route — a pane can only be re-tasked while its lease is live, and that is the fact that changed."
 }
 
-# A missing pane gets the chaining diagnosis only when disk proves the exact
-# launch decision. This intentionally excludes old runs: absence of a key is
-# not proof that the brainer chose automatic close.
-#
-# The default was a fourth hand-typed copy of "$WORK plus the repo-backed lane
-# roots" until 2026-09-15 — missing two other lanes, same class of gap as
-# INVOKER_ENV_ROOTS (bin/project-spaces.sh's all_lane_worktree_roots doc
-# comment has the incident). Derives from that same function now, falling
-# back to the old literal if it is unavailable for any reason.
-# HW_NEXT_EVIDENCE_ROOTS still wins outright — setup/tests/12-hw-next.sh pins
-# a missing root through it on purpose.
-_next_autoclosed_run_for_pane() {
-  local pane="$1" roots _default_roots _derived
-  _default_roots="$WORK"
-  if command -v all_lane_worktree_roots >/dev/null 2>&1; then
-    _derived="$(all_lane_worktree_roots 2>/dev/null || true)"
-    [ -n "$_derived" ] && _default_roots="$WORK
-$_derived"
-  fi
-  roots="${HW_NEXT_EVIDENCE_ROOTS:-$_default_roots}"
-  HW_NEXT_PANE="$pane" HW_NEXT_ROOTS="$roots" HW_RUNENV="$HW_BIN_DIR/runenv" python3 - <<'PYEOF' 2>/dev/null || true
-import importlib.machinery, importlib.util, json, os, sys
-
-sys.dont_write_bytecode = True  # never a __pycache__ beside bin/runenv
-pane = os.environ["HW_NEXT_PANE"]
-roots = [r for r in os.environ.get("HW_NEXT_ROOTS", "").split("\n") if r]
-
-# bin/runenv is the one reader of a run's env file; loaded, not re-implemented.
-_loader = importlib.machinery.SourceFileLoader("runenv", os.environ["HW_RUNENV"])
-runenv = importlib.util.module_from_spec(importlib.util.spec_from_loader("runenv", _loader))
-_loader.exec_module(runenv)
-
-def env_value(path, key):
-    try:
-        values = runenv.read(path, lenient=True, bare=True)
-    except runenv.Unusable:
-        return None
-    return None if values is None else values.get(key)
-
-def receipt_pane(path):
-    found = None
-    try:
-        lines = open(path, encoding="utf-8")
-    except OSError:
-        return None
-    with lines:
-        for line in lines:
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if rec.get("key") == "pane" and rec.get("value"):
-                found = rec["value"]
-    return found
-
-for root in roots:
-    if not os.path.isdir(root):
-        continue
-    for directory, dirs, files in os.walk(root):
-        if "receipt.jsonl" not in files or os.path.basename(os.path.dirname(directory)) != ".hw":
-            continue
-        if receipt_pane(os.path.join(directory, "receipt.jsonl")) != pane:
-            continue
-        if env_value(os.path.join(directory, "env"), "HW_CHAINING_ENABLED") != "0":
-            continue
-        if not any(os.path.isfile(os.path.join(directory, k)) for k in ("tab", "workspace")):
-            continue
-        seq = "1"
-        try:
-            raw = open(os.path.join(directory, "task"), encoding="utf-8").read()
-            digits = "".join(c for c in raw if c.isdigit())
-            if digits and digits != "0":
-                seq = digits
-        except OSError:
-            pass
-        marker = (os.path.join(directory, "done") if seq == "1" else
-                  os.path.join(directory, "t" + seq, "done"))
-        if not os.path.isfile(marker):
-            continue
-        project = env_value(os.path.join(directory, "env"), "HW_PROJECT") or "unknown-project"
-        task = env_value(os.path.join(directory, "env"), "HW_TASK") or "unknown-task"
-        print("%s:%s (run %s, task %s)" % (project, task, os.path.basename(directory), seq))
-        raise SystemExit(0)
-PYEOF
-}
-
-_next_missing_pane_message() {
-  local pane="$1" panes evidence
-  panes="$(herdr pane list 2>/dev/null || true)"
-  # If Herdr itself is unavailable or malformed, the durable record cannot prove
-  # that this pane is absent now. Keep the generic two-cause diagnosis.
-  printf '%s' "$panes" | jq -e '.result.panes | type == "array"' >/dev/null 2>&1 \
-    || { printf 'herdr does not know pane %s (or herdr is unreachable on $HERDR_SOCKET_PATH)' "$pane"; return 0; }
-  if printf '%s' "$panes" | jq -e --arg p "$pane" 'any(.result.panes[]?; .pane_id == $p)' >/dev/null 2>&1; then
-    printf 'herdr pane %s exists but has no agent record, so hw cannot re-task it' "$pane"
-    return 0
-  fi
-  evidence="$(_next_autoclosed_run_for_pane "$pane")"
-  if [ -n "$evidence" ]; then
-    printf 'pane %s belonged to completed %s and was launched with automatic close. Chaining is a launch-time decision: launch with `hw ... --keep-pane` when this executor must survive its report for `hw next`.' "$pane" "$evidence"
-  else
-    printf 'herdr does not know pane %s (or herdr is unreachable on $HERDR_SOCKET_PATH)' "$pane"
-  fi
-}
-
-# _next_wait_from_run <rundir>
-#
-# A dispatch's environment is the durable bridge between the brainer that
-# launched an executor and the brainer process that later calls `hw next`.
-# Never source it: the format is deliberately narrow. bin/runenv reads it, and
-# this keeps only the decimal wait value we own.
-_next_wait_from_run() {
-  local value
-  value="$(_run_env_value "$1" HW_NEXT_WAIT_MS)" || return 1
-  case "$value" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$value"
-}
-
 # `_run_env_value <rundir> <KEY>` — one value of a run's env file, read by
 # bin/runenv (the only reader of that file). Returns 1 when the file or the key
 # is absent, 2 when the file is damaged (runenv names the line on stderr).
@@ -11376,171 +10174,6 @@ _next_wait_from_run() {
 # its text rather than refused.
 _run_env_value() {
   "$HW_BIN_DIR/runenv" --bare get "$1/env" "$2"
-}
-
-# _next_busy_message <pane> <wait_ms> <info_json>
-#
-# `hw next` gates on idle,done before it will move the counter. Rejected
-# because a pane is `blocked` on its OWN unanswered ask (ask_state=delivered)
-# is not the same rejection as a pane genuinely mid-turn: no wait budget ever
-# reaches idle,done from there, because nothing is going to move until the ask
-# is answered. Advising a retry with a bigger HW_NEXT_WAIT_MS in that case is
-# advice that cannot work — measured 2026-08-25, w41:p37: 90s then
-# 540s spent on a pane parked on its own ask #3/3 the whole time.
-#
-# So this names the open ask instead of the budget. A `blocked` pane with no
-# ask_state=delivered (a tool-permission prompt, say) still gets today's
-# message — this is not a general replacement for it.
-#
-# ASK TOKENS OUTLIVE THE TASK THAT OPENED THEM. `ask_state=delivered` is
-# published by the pane and STAYS published after the task closes — a task
-# that ends by reporting `done_status=blocked` (a DIFFERENT blocker than the
-# ask) keeps its old `ask_state=delivered` sitting right there. Measured
-# 2026-08-25, twice, against w41:p37: the executor had already closed
-# with `done_status=blocked` and a distinct blocker, and both a brainer and
-# this tool read the stale ask token as live and pointed at answering a
-# question that no longer existed. So an ask is only live if the task has NOT
-# reported done — check `done_status`/`done_state` before naming the ask, and
-# say plainly that the task closed when it has.
-_next_busy_message() {
-  local pane="$1" wait_ms="$2" info="$3"
-  local st ask_state ask_seq ask_at ask_text done_status done_state
-  local blocked_reason blocked_scope
-  st="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
-  blocked_reason="$(printf '%s' "$info" | jq -r '.result.agent.tokens.blocked_reason // empty' 2>/dev/null || true)"
-  blocked_scope="$(printf '%s' "$info" | jq -r '.result.agent.tokens.blocked_scope // empty' 2>/dev/null || true)"
-  ask_state="$(printf '%s' "$info" | jq -r '.result.agent.tokens.ask_state // empty' 2>/dev/null || true)"
-  done_status="$(printf '%s' "$info" | jq -r '.result.agent.tokens.done_status // empty' 2>/dev/null || true)"
-  done_state="$(printf '%s' "$info" | jq -r '.result.agent.tokens.done_state // empty' 2>/dev/null || true)"
-  if [ "$st" = blocked ] && [ "$ask_state" = delivered ] && [ "$done_status" != done ] && [ "$done_status" != blocked ]; then
-    ask_seq="$(printf '%s' "$info" | jq -r '.result.agent.tokens.ask_seq // "?"' 2>/dev/null || true)"
-    ask_at="$(printf '%s' "$info" | jq -r '.result.agent.tokens.ask_at // "an unknown time"' 2>/dev/null || true)"
-    ask_text="$(printf '%s' "$info" | jq -r \
-      '[.result.agent.tokens | .ask, .ask2, .ask3, .ask4, .ask5, .ask6, .ask7, .ask8]
-       | map(select(. != null)) | join("")' 2>/dev/null || true)"
-    printf '%s is blocked on its own ask %s, delivered %s and still unanswered: "%s". Re-tasking cannot reach idle,done from here no matter how large a budget you pass — hw next gates on idle,done, and a pane parked on its own ask never gets there until the ask is answered. Answer it, then retry: herdr agent get %s' \
-      "$pane" "$ask_seq" "$ask_at" "$ask_text" "$pane"
-  elif [ "$st" = blocked ] && [ "$ask_state" = delivered ]; then
-    printf '%s already reported done (done_status=%s, done_state=%s) — the ask token you see is stale, published before that report, and there is nothing left to answer. Do not answer it: read the actual report with `herdr agent get %s` and re-task from that, or override with --force if you are deliberately replacing it.' \
-      "$pane" "$done_status" "${done_state:-unknown}" "$pane"
-  elif [ "$st" = blocked ] && [ "$blocked_reason" = permission ]; then
-    printf '%s is blocked on a PERMISSION prompt (%s session), not on a turn that will end. Nothing was sent and the counter did not move. hw will not dismiss it for you: dismissing a permission prompt means DENY, and that is a decision about what the executor may do, not a stuck pane to rescue. Answer it — `herdr agent get %s`, and for a child prompt press ctrl+x then down to reach it — then retry.' \
-      "$pane" "${blocked_scope:-root}" "$pane"
-  elif [ "$st" = blocked ] && [ "$blocked_reason" = stuck ] \
-       && { [ "$done_status" = done ] || [ "$done_status" = blocked ]; }; then
-    # THE GAP THE ask_state=delivered BRANCH ABOVE ALREADY CLOSED, missing HERE.
-    # `blocked_reason=stuck` outlives the task the same way an ask token does
-    # (see the comment atop this function) — measured live 2026-09-03,
-    # w7G:p26: reported done_status=done/done_state=delivered, chaining lease
-    # live, footer idle, no question or permission anywhere, and herdr still
-    # published blocked_reason=stuck/scope=root. `hw unstick` would have
-    # RESTARTED a finished, reusable session on the strength of that stale
-    # token — its own guard (blocked_reason=stuck + a corroborating settled
-    # witness) does not read done_status either, so it would not have refused.
-    printf '%s already reported (done_status=%s, done_state=%s) — the blocked/stuck token you see is stale, published on a pane that has finished. Do not `hw unstick` it: that restarts OpenCode for nothing left to do. Read its report with `herdr agent get %s`, then `hw next %s "<next task>"` to reuse it or `hw done <project> <task>` to close it.' \
-      "$pane" "$done_status" "${done_state:-unknown}" "$pane" "$pane"
-  elif [ "$st" = blocked ] && [ "$blocked_reason" = stuck ]; then
-    printf '%s is blocked with NOTHING LEFT TO ANSWER: every prompt it raised has been answered or dismissed (last one in its %s session) and herdr still reports blocked. Nothing was sent and the counter did not move. No budget reaches idle from here and there is no modal for a human to clear, so do not retry with a larger HW_NEXT_WAIT_MS. A deliberate in-place recovery is available: `hw unstick %s`; it first refuses any visible question/permission, then restarts only OpenCode in the same pane (the active conversation is replaced; tab, cwd and worktree stay). If that is not acceptable, close it with `hw done` and dispatch again.' \
-      "$pane" "${blocked_scope:-root}" "$pane"
-  elif [ "$st" = blocked ] && [ "$blocked_reason" = error ]; then
-    printf '%s is blocked on a SESSION ERROR, not on input — there is no modal to dismiss and no budget that reaches idle. Nothing was sent and the counter did not move. Read what failed with `herdr agent get %s`; if that session is unrecoverable this is a relaunch, not a re-task.' \
-      "$pane" "$pane"
-  else
-    printf '%s was still busy after %ds (agent_status=%s), so nothing was sent and the task counter did not move. A mid-turn prompt is NOT dropped — it is acted on — but task N+1 answered inside task N is answered against the wrong state, with the counter already advanced, which is what this gate is for. Retry, or raise the budget: HW_NEXT_WAIT_MS=540000 hw next …' \
-      "$pane" "$((wait_ms / 1000))" "$st"
-  fi
-}
-
-# _next_finished_stale_stuck <agent-info-json>
-#
-# `done-invoker` publishes done_status first as undelivered, and changes
-# done_state to delivered only after the brainer-owned delivery is proved.  That
-# pair is therefore stronger completion evidence than the lifecycle plugin's
-# blocked/stuck classification, which can outlive the task that produced it.
-# Keep this exception deliberately exact: permission, an unanswered ask, a
-# genuine stuck pane without delivered done tokens, and a working pane must all
-# continue through the normal idle/done gate.
-_next_finished_stale_stuck() {
-  printf '%s' "$1" | jq -e '
-    .result.agent.agent_status == "blocked"
-    and .result.agent.tokens.blocked_reason == "stuck"
-    and ((.result.agent.tokens.done_status == "done") or (.result.agent.tokens.done_status == "blocked"))
-    and .result.agent.tokens.done_state == "delivered"  # MUTATION-ANCHOR: 72-M01 # MUTATION-ANCHOR: 12-M02
-  ' >/dev/null 2>&1
-}
-
-# Herdr can omit agent_session while an OpenCode pane is classified blocked.
-# A stale-stuck completion still needs the native receiver-proved route: Herdr's
-# fallback applies a second blocked-state gate and would reject it again.  The
-# launch receipt already binds session identity to this exact pane and vendor;
-# unlike endpoint recency, those three facts cannot select another conversation
-# that happens to share the cwd.
-_next_opencode_session_from_receipt() {
-  local rundir="$1" pane="$2" sid vendor receipt_pane
-  [ -r "$rundir/receipt.jsonl" ] || return 1
-  sid="$(jq -sr '[.[] | select(.key == "session_id")][-1].value // empty' "$rundir/receipt.jsonl" 2>/dev/null || true)"
-  vendor="$(jq -sr '[.[] | select(.key == "session_vendor")][-1].value // empty' "$rundir/receipt.jsonl" 2>/dev/null || true)"
-  receipt_pane="$(jq -sr '[.[] | select(.key == "pane")][-1].value // empty' "$rundir/receipt.jsonl" 2>/dev/null || true)"
-  if [[ "$sid" == ses_* ]] && [ "$vendor" = opencode ] && [ "$receipt_pane" = "$pane" ]; then
-    printf '%s' "$sid"
-    return 0
-  fi
-  return 1
-}
-
-# _next_settled_message <pane> <wait_ms> <info_json>
-#
-# The refusal for a gate that stopped early because the state was PROVED unable
-# to change — not a timeout, and it must not read like one. The distinction is
-# operational: a timeout means "retry, perhaps with a bigger budget"; this means
-# "no budget will ever work, and the pane needs a decision".
-#
-# THE FOUR STATES STAY DISTINGUISHABLE. `blocked` once meant four things and
-# collapsing any two is how this whole class started, so this branches on the
-# reason token to say which of them was contradicted, and never rewrites one as
-# another. What is new is only the LAST clause of each: the contradiction is
-# now established, so the advice can be definite instead of "retry bigger".
-_next_settled_message() {
-  local pane="$1" wait_ms="$2" info="$3"
-  local st reason scope done_status done_state
-  st="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
-  reason="$(printf '%s' "$info" | jq -r '.result.agent.tokens.blocked_reason // empty' 2>/dev/null || true)"
-  scope="$(printf '%s' "$info" | jq -r '.result.agent.tokens.blocked_scope // empty' 2>/dev/null || true)"
-  done_status="$(printf '%s' "$info" | jq -r '.result.agent.tokens.done_status // empty' 2>/dev/null || true)"
-  done_state="$(printf '%s' "$info" | jq -r '.result.agent.tokens.done_state // empty' 2>/dev/null || true)"
-
-  printf '%s: NOTHING WAS SENT and the task counter did not move. ' "$pane"
-  if [ "$st" = working ] && { [ "$done_status" = done ] || [ "$done_status" = blocked ]; }; then
-    printf 'herdr calls it `working`, but it already reported (done_status=%s) and the cross-check above finds nothing running and no prompt outstanding. That `working` is STALE — the lifecycle producer never cleared it — so the state you are waiting on will not change, at any budget. This executor is finished: read its report with `herdr agent get %s` and either re-task with --force (which files the unreported task as abandoned — check first whether the report simply failed to reach you) or close it with `hw done`.' \
-      "$done_status" "$pane"
-  elif [ "$st" = working ]; then
-    printf 'herdr calls it `working` and the cross-check above finds nothing running and no prompt outstanding, so that `working` is not a turn in progress. Do NOT raise HW_NEXT_WAIT_MS: the budget is not what is missing. Look at the pane, and if it has genuinely finished without reporting, close it with `hw done` or re-task with --force.' ''
-  elif [ "$st" = blocked ] && [ "$reason" = permission ]; then
-    printf 'herdr calls it blocked on a PERMISSION prompt (%s session), but its own endpoint reports no permission outstanding — that token is STALE, and there is no modal for anyone to answer. Do not go looking for a prompt to approve. `hw unstick` will not touch this either, because the signature is `permission`, not `stuck`. Read what it last did with `herdr agent get %s`, then close it with `hw done` and dispatch again.' \
-      "${scope:-root}" "$pane"
-  elif [ "$st" = blocked ] && [ "$reason" = question ]; then
-    printf 'herdr calls it blocked on a QUESTION (%s session), but its own endpoint reports no question outstanding, and the dismissal attempt above found no modal on screen. That token is STALE. Read what it last did with `herdr agent get %s`, then close it with `hw done` and dispatch again.' \
-      "${scope:-root}" "$pane"
-  elif [ "$st" = blocked ] && [ "$reason" = error ]; then
-    printf 'herdr calls it blocked on a SESSION ERROR and the cross-check confirms nothing is running and nothing is outstanding — so there is no modal, and no budget reaches idle. Read what failed with `herdr agent get %s`; an unrecoverable session is a relaunch, not a re-task.' \
-      "$pane"
-  elif [ "$st" = blocked ] && [ "$reason" = stuck ] \
-       && { [ "$done_status" = done ] || [ "$done_status" = blocked ]; }; then
-    # Same gap as the `working`+done_status branch above, on the OTHER token
-    # that outlives its task. Measured live 2026-09-03, w7G:p26: settled
-    # verdict, blocked_reason=stuck/scope=root, and done_status=done/
-    # done_state=delivered — a finished, reusable executor, not a stuck one.
-    # `hw unstick`'s own guard does not read done_status either, so pointing
-    # here at it would have let it restart a session with nothing left to do.
-    printf 'herdr calls it blocked/stuck, but it already reported (done_status=%s, done_state=%s) — that token is STALE, published on a pane that has finished, and the cross-check above only confirms nothing is CURRENTLY moving, not why. Do not `hw unstick` it. Read its report with `herdr agent get %s`, then `hw next %s "<next task>"` to reuse it or `hw done <project> <task>` to close it.' \
-      "$done_status" "${done_state:-unknown}" "$pane" "$pane"
-  elif [ "$st" = blocked ] && [ "$reason" = stuck ]; then
-    printf 'herdr calls it blocked/stuck (%s session) and the cross-check CONFIRMS it: nothing is moving and nothing is outstanding. This is the one case `hw unstick %s` is for — it re-runs this same cross-check before it touches anything, and refuses if the pane turns out to be working. If an in-place restart is not acceptable, close it with `hw done` and dispatch again.' \
-      "${scope:-root}" "$pane"
-  else
-    printf 'herdr calls it `%s`, and the cross-check above finds nothing moving and no prompt outstanding, so that state cannot change on its own. Raising the budget past %ds cannot help. Look at the pane and decide: `hw done` and dispatch again, or --force if you are deliberately replacing an executor that will never report.' \
-      "${st:-unknown}" "$((wait_ms / 1000))"
-  fi
 }
 
 
@@ -11997,572 +10630,6 @@ cmd_suite() {
   trap - EXIT INT TERM
   if [ "$held" = 1 ]; then ok "released the $proj suite lock"; fi
   return "$rc"
-}
-
-# _next_message <nextseq> <entry_line> <text> <rundir> <brief_path> <wtdir>
-#
-# THE RE-TASK CARRIES THE PREAMBLE TOO, and until 2026-09-21 it carried none of
-# it. RE-MEASURED 2026-09-21 by the selector `_brief_preamble` names: 158
-# re-task deliveries across 89 session transcripts, 0 of them carrying one byte
-# of the preamble or the epistemic safeguard, and 8 arriving after a
-# compaction boundary.
-#
-# WHAT IS *NOT* CARRIED, because `hw next` already owns it: the framework entry.
-# $entry_line is this route's own answer to what the launch says with its
-# "OUTSIDE THE FRAMEWORK FLOW" paragraph. Copying the launch MESSAGE would drag
-# it in; this copies the fragments whose absence was measured, and nothing else.
-#
-# BUILT FROM THE RUN ENV, NEVER FROM THE BRAINER'S. `hw next` runs in the
-# brainer's process, so $ENGRAM_PROJECT in this shell is the brainer's and would
-# be a lie in the executor's prompt. The value the executor actually inherited
-# was written once by `_write_run_env` at launch.
-_next_message() {
-  local nextseq="$1" entry_line="$2" text="$3" rundir="$4" brief_path="$5" wtdir="$6"
-  local authorization="${7:-}"
-  local preamble epistemic
-  preamble="$(
-    BRIEF="$brief_path"
-    HW_WORKDIR="$wtdir"
-    ENGRAM_PROJECT="$(_run_env_value "$rundir" ENGRAM_PROJECT 2>/dev/null || printf brain)"  # MUTATION-ANCHOR: 12-M04
-    # THE BASE, READ BACK RATHER THAN RECOMPUTED, for the reason the header of
-    # this block already gives: `hw next` runs in the BRAINER process, where
-    # neither PROJ nor a worktree path belongs to the executor. It is also the
-    # correct value on a re-task — a merge-base does not move when task 1
-    # commits, so task 2 is still reviewed from the same branch point, which is
-    # the whole point of a boundary. ABSENT stays absent: a run hw could not
-    # compute a base for gets no paragraph here either.
-    #
-    # NO APOSTROPHES IN THESE COMMENTS, and that is not style. This block is the
-    # body of a `"$( ... )"` command substitution, and bash does NOT treat `#`
-    # as starting a comment there: the first draft wrote "the BRAINER's process"
-    # and the parser carried that quote forward until it died 60 lines later on
-    # an unrelated `case`, naming a file and a construct with nothing wrong.
-    HW_REVIEW_BASE_REF="$(_run_env_value "$rundir" HW_REVIEW_BASE_REF 2>/dev/null || true)"
-    HW_REVIEW_BASE_BRANCH="$(_run_env_value "$rundir" HW_REVIEW_BASE_BRANCH 2>/dev/null || true)"
-    HW_EXECUTOR_VENDOR="$(_run_env_value "$rundir" HW_EXECUTOR_VENDOR 2>/dev/null || true)"
-    HW_PORT_WEB="$(_run_env_value "$rundir" HW_PORT_WEB 2>/dev/null || true)"  # MUTATION-ANCHOR: 750-M03
-    # THE LANE THIS RUN WAS ACTUALLY LAUNCHED FOR, read back the same way
-    # ENGRAM_PROJECT is above — never the brainer's own $PROJ, which on a
-    # --report-to re-task belongs to a different lane entirely. This is what
-    # lets _brief_preamble's one-lane-only policy line survive a
-    # `hw next` re-task instead of silently dropping it.
-    PROJ="$(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || true)"  # MUTATION-ANCHOR: 171-M07a
-    # Tasks of a gentle pane default to a required deployed check, as _brief_qa_override reads it.
-    if [ "$(_run_dispatch_framework "$rundir")" = gentle ]; then HW_GENTLE_PANE=1; else HW_GENTLE_PANE=0; fi
-    # The engram session registered at launch, read back from the receipt. A
-    # value starting with none is a failed registration, and says nothing.
-    HW_ENGRAM_SESSION="$(jq -r 'select(.key=="engram_session") | .value' "$rundir/receipt.jsonl" 2>/dev/null | tail -1 || true)"
-    # An `if`, not a `case`: an unbalanced `)` inside this substitution breaks bash 3.2.
-    if [ "${HW_ENGRAM_SESSION#none}" != "$HW_ENGRAM_SESSION" ]; then HW_ENGRAM_SESSION=""; fi
-    _brief_preamble
-  )"
-  epistemic="$(_brief_epistemic)"
-  # Before the brief text, after the preamble: the order the launch gives it.
-  [ -z "$authorization" ] || text="$(printf '%s\n\n---\n\n%s' "$authorization" "$text")"  # MUTATION-ANCHOR: 703-M01
-  # ONE printf, because `$( )` strips trailing newlines: a separator built at the
-  # end of its own substitution vanishes and two blocks run together. Same
-  # reason _send_brief keeps its separators inside the format string.
-  printf 'NEXT TASK (task %s of this session — the previous one is closed and reported).\nYour ask budget and your done-invoker are reset for it: report this one with\ndone-invoker when it is finished, exactly as you did the last.\n\n%s---\n\n%s\n\n---\n\n%s\n\n---\n\n%s' \
-    "$nextseq" "$entry_line" "$epistemic" "$preamble" "$text"  # MUTATION-ANCHOR: 12-M03
-}
-
-# What a gentle pane's re-task is told, built from the NEW brief by the same
-# gate the launch runs (so a bad delivery:, review: or deployed_check: refuses
-# the re-task before anything is sent). Sets GENTLE_DELIVERY, GENTLE_REVIEW and
-# GENTLE_DEPLOYED_CHECK in the caller.
-_next_gentle_read() {  # $1 = run dir, $2 = brief path
-  local rundir="$1" nbrief="$2" why d
-  [ -n "$nbrief" ] \
-    || die "hw next on a gentle pane REFUSED: ODD needs the next task as a brief (--brief <path>) that fixes its delivery strategy, because nobody answers in an executor's pane. Nothing was sent."
-  BRIEF="$nbrief"; BRIEF_DECLS="$(_brief_declares "$nbrief")" || BRIEF_DECLS=""
-  _gentle_brief_gate
-  d="$(gentle_home_dir)"
-  why="$(_gentle_home_ready "$d")" \
-    || die "hw next on a gentle pane REFUSED: gentle-ai's own home is not ready ($why). Nothing was sent. Provision it with: hw gentle-home"
-  # RDD is native (gentle-ai 4.0.0 reviews in process): no plugin or settings ride
-  # on the launch args, so any gentle pane can be re-tasked into review: rdd.
-}
-
-cmd_next() {
-  local pane="" force=0 brief="" text="" dry=0 wait_ms="" next_run=""
-  # THE MODE MUST BE ABLE TO CROSS A RE-TASK. Hit twice on one lane: a
-  # framework flow was re-tasked into a session hw had launched `--sdd none`, and it
-  # worked only because the orchestrator still happened to hold the flow state.
-  # `--dry-run` said nothing about it either. A per-task property that cannot be
-  # set on the next task is not per-task.
-  local next_sdd=""
-  pane="${1:-}"; shift || true
-  [ -n "$pane" ] || die "usage: hw next <executor-pane> [--run <revived-run-id>] [--sdd <mode>] [--force] [--dry-run] \"<next task>\" | --brief <path>  (flags may appear before or after the task text). Exit 0 means DELIVERED and the counter advanced; every refusal — a gate that would not open, an unknown pane, a task that has not reported — exits 1 and moves nothing."
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --brief) _need_val "$@"; brief="$2"; shift 2 ;;
-      --force) force=1; shift ;;
-      # Everything except the send and the counter bump. Worth keeping past the
-      # first test: re-tasking a live executor is the one operation here whose
-      # mistakes cost somebody else's session.
-      --dry-run) dry=1; shift ;;
-      --wait-ms) _need_val "$@"; wait_ms="$2"; shift 2 ;;
-      --sdd) _need_val "$@"; next_sdd="$2"; shift 2 ;;
-      # A REVIVED RUN, named. The pane's cwd resolves to the NEWEST run under
-      # .hw, and a run `hw revive --run <id>` brought back need not be it.
-      --run) _need_val "$@"; next_run="$2"; shift 2 ;;
-      # Same override as the launch path's, reachable here too: `hw next`
-      # hands a brief to an ALREADY-EXISTING worktree, which is exactly the
-      # case _refuse_if_stale_hooks exists for. Forwarded by the automatic
-      # reuse route below (`_reuse_args`) when the outer launch carried it.
-      --allow-stale-hooks) ALLOW_STALE_HOOKS=1; shift ;;
-      --) shift
-          if [ $# -gt 0 ]; then
-            if [ -n "$text" ]; then text="$text $*"; else text="$*"; fi
-          fi
-          break ;;
-      -*) die "unknown option: $1" ;;
-      # Accumulate and keep looping — a flag is valid in ANY position relative
-      # to the task text, not just before it. `hw next <pane> "task" --dry-run`
-      # used to swallow `--dry-run` into the text and dispatch for real.
-      # MUTATION-ANCHOR: 12-M01
-      *)  if [ -n "$text" ]; then text="$text $1"; else text="$1"; fi
-          shift ;;
-      # MUTATION-ANCHOR-END: 12-M01
-    esac
-  done
-
-  if [ -n "$brief" ]; then
-    [ -z "$text" ] || die "pass a brief or a task text, not both"
-    [ -r "$brief" ] || die "cannot read brief: $brief"
-    text="$(cat "$brief")"
-  fi
-  [ -n "$text" ] || die "the next task is empty — there is nothing to send"
-  # ONCE, before anything is sent or even gated: the dry run prints the size of
-  # the message this block is part of, and a refused authorization refuses both.
-  local next_auth=""
-  next_auth="$(_next_authorization "$brief")" || die "the re-task brief's authorization was refused above. NOTHING was sent."  # MUTATION-ANCHOR: 703-M02
-  case "$next_sdd" in
-    ""|speckit|none|gentle) ;;
-    *) die "--sdd must be speckit, none or gentle (got: $next_sdd)" ;;
-  esac
-
-  _next_load_invoker_lib
-
-  local info cwd vendor status
-  info="$(herdr agent get "$pane" 2>/dev/null || true)"
-  [ -n "$info" ] || die "$(_next_missing_pane_message "$pane")"
-  cwd="$(printf '%s' "$info" | jq -r '.result.agent.cwd // empty' 2>/dev/null || true)"
-  vendor="$(printf '%s' "$info" | jq -r '.result.agent.agent // empty' 2>/dev/null || true)"
-  status="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
-  [ -n "$cwd" ] || die "herdr reports no cwd for $pane, so hw cannot find its run directory"
-
-  local rundir
-  rundir="$(_next_run_dir "$cwd")" \
-    || die "no hw run directory at or above $cwd — that pane was not launched by hw, so it has no task state to advance"
-  # A REVIVED RUN THAT REPORTED CAN BE RE-TASKED, and only a revived one. Its
-  # chaining lease was spent or expired with the first launch, so the lease gate
-  # refused it and the brainer had to send task 2 with `channel-send --ruling`,
-  # leaving the executor `done-invoker --retask` (measured 2026-10-06
-  # on a revived executor in another lane; evidence is in engram). `hw revive` marks the
-  # run `reopened`: that marker IS the authority here, in place of a lease.
-  # `--run` says "this is the revived run", so a reported run without the marker
-  # is refused naming the way back instead of falling into the lease gate.
-  local next_reopened=0
-  if [ -n "$next_run" ]; then
-    case "$next_run" in */*|.*) die "--run takes a run id (a directory name under .hw/), not a path: $next_run" ;; esac
-    [ -d "$(dirname "$rundir")/$next_run" ] \
-      || die "no run '$next_run' beside $(basename "$rundir") under $(dirname "$rundir"). NOTHING was sent."
-    rundir="$(dirname "$rundir")/$next_run"
-    # A revived run that re-reported has no reopened marker (the report cleared it) but
-    # starts a chaining lease: a live lease is authority too, so task 3 is not refused.
-    local next_run_lease=""
-    next_run_lease="$(_chaining_lease_eligibility "$rundir" "$(_chaining_current_task "$rundir")")"  # MUTATION-ANCHOR: 785-M03
-    if [ -f "$(_run_done_marker "$rundir")" ] && [ ! -f "$(_run_reopened_marker "$rundir")" ] && [ "$next_run_lease" != live ]; then  # MUTATION-ANCHOR: 785-M01
-      die "run $next_run of $pane reported and was not revived (no reopened marker), so \`hw next --run\` has no authority to re-task it. NOTHING was sent and the counter did NOT move. Revive it first: hw revive $(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || printf '<project>') $(_run_env_value "$rundir" HW_TASK 2>/dev/null || printf '<task>') --run $next_run — then re-run this. A run still on its chaining lease needs no --run."
-    fi
-  fi
-  # The marker path follows the task counter, so it is read once, before the counter moves.
-  local next_reopened_marker; next_reopened_marker="$(_run_reopened_marker "$rundir")"
-  [ ! -f "$next_reopened_marker" ] || [ ! -f "$(_run_done_marker "$rundir")" ] || next_reopened=1
-
-  # Validate the effective framework against the measured alive pane before the
-  # counter, task directory, surface, or delivery can move. Launch routing finds
-  # reuse before validating a requested fresh vendor; that does not make an
-  # incompatible framework safe to apply to the pane it actually selected.
-  local next_wtdir prior_framework
-  next_wtdir="$(dirname "$(dirname "$rundir")")"
-  [ -d "$next_wtdir" ] || next_wtdir="$cwd"
-  # A re-task hands a brief to a worktree that ALREADY EXISTS — the exact
-  # shape of the branch-predates-the-cleanup problem this guards against — so
-  # it is checked here too, not just at a fresh launch. No $MAIN/$BASE is
-  # known in this call shape (`hw next <pane> "task"` names neither), so the
-  # remedy text falls back to naming the mechanism generically rather than a
-  # command this function cannot verify applies.
-  _refuse_if_stale_hooks "$next_wtdir" "" ""
-  # `_receipt` inside that call is a no-op here: $WT/$HW_RUN are the FRESH-
-  # launch route's globals and are unset on this route. $rundir is this route's
-  # own equivalent, so the override is recorded into it directly instead.
-  [ -z "$STALE_HOOKS_ALLOWED_FILES" ] \
-    || _receipt_into "$rundir" stale_hooks_allowed "$STALE_HOOKS_ALLOWED_FILES" "--allow-stale-hooks (hw next)"
-  prior_framework="$(_run_dispatch_framework "$rundir")"
-  # A GENTLE PANE STAYS GENTLE. ODD is in its system prompt for the whole
-  # session, so every task in it is an ODD task: what is per task (delivery, the
-  # RDD bullet, the deployed check) is read from the NEW brief and re-injected
-  # as the message's lead block. `--sdd gentle` on a pane that was not launched
-  # gentle cannot work (ODD enters only at launch), and another mode on one that
-  # was would leave ODD asking an unattended pane its questions.
-  local next_gentle=0
-  if [ "$prior_framework" = gentle ]; then
-    case "$next_sdd" in ""|gentle) next_gentle=1; next_sdd="" ;;  # MUTATION-ANCHOR: 781-M06
-      *) die "hw next --sdd $next_sdd REFUSED: $pane was launched --sdd gentle, so ODD is in its system prompt for the whole session and cannot be turned off for one task. Nothing was sent. Re-task it as gentle (omit --sdd) or launch a fresh executor." ;;
-    esac
-  elif [ "$next_sdd" = gentle ]; then
-    die "hw next --sdd gentle REFUSED: ODD enters Claude's system prompt at launch, and $pane was not launched --sdd gentle (its framework is ${prior_framework:-undetermined}). Nothing was sent. Launch it fresh: hw <project> <task> --sdd gentle --agent claude --keep-pane --why \"...\""
-  fi
-  local next_gentle_block=""
-  if [ "$next_gentle" = 1 ]; then
-    _next_gentle_read "$rundir" "$brief"
-    # PROJ is the RUN's lane (the RDD bullet names its base), never the brainer's.
-    next_gentle_block="$(PROJ="$(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || true)"; _gentle_preamble)"
-  fi
-  _validate_sdd_vendor_pair "$vendor" "$next_sdd" "$next_wtdir" "$prior_framework"
-  # A re-task cannot change the pane's model, so the launch record is the only
-  # place the orchestrator's model exists by the time an SDD mode is applied to
-  # it. A pane launched sonnet/none and later handed --sdd speckit is the same
-  # inversion the launch gate refuses, arriving by the one door that has no
-  # --model flag at all.
-  _validate_sdd_model_pair "$(_next_dispatch_model "$rundir")" "this pane was launched with that model; hw next cannot change it"
-
-  # BEFORE the gates that cost time, so `--dry-run` answers the question a
-  # brainer actually has — "is this pane still worth reusing?" — without
-  # sending anything.
-  _report_pane_context "$pane"
-
-  # Precedence is deliberate: an explicit call-site setting wins for an
-  # exceptional handoff, then the target's launch contract, then 90s only for
-  # legacy runs that predate the contract. HW_INVOKER_WAIT_MS is unrelated: it
-  # gates executor -> brainer delivery and must not silently tune this gate.
-  if [ -z "$wait_ms" ]; then
-    wait_ms="${HW_NEXT_WAIT_MS:-}"
-    [ -n "$wait_ms" ] || wait_ms="$(_next_wait_from_run "$rundir" || true)"
-    [ -n "$wait_ms" ] || wait_ms=90000
-  fi
-  case "$wait_ms" in ''|*[!0-9]*) die "--wait-ms/HW_NEXT_WAIT_MS must be a positive integer in milliseconds (got: $wait_ms)" ;; esac
-
-  local seq="" marker
-  [ -r "$rundir/task" ] && seq="$(tr -dc '0-9' < "$rundir/task" 2>/dev/null || true)"
-  case "$seq" in ''|0) seq=1 ;; esac
-  marker="$(_run_done_marker "$rundir")"
-
-  # An unreported task is not a finished one. Replacing it silently would file
-  # its work as never-dispatched and leave the brainer believing both landed.
-  #
-  # THE DERIVATION MOVED to `_report_evidence` on 2026-09-16, unchanged, so
-  # `hw done` could refuse an in-use pane on the SAME two signals rather than
-  # inventing a second answer to the same question. Its comment carries the
-  # incident this shape came from; only the refusal sentence is owned here,
-  # because re-tasking and closing are different things to be stopped from.
-  if [ ! -f "$marker" ] && [ "$force" != 1 ]; then
-    _next_ev="$(_report_evidence "$pane" "$rundir")"
-    case "$_next_ev" in
-      token*)
-        _report_evidence_explain "$pane" "$_next_ev" "$marker"
-        info "proceeding without --force; read its report with: herdr agent get $pane"
-        ;;
-      *)
-        die "task $seq of $(basename "$rundir") has not reported: no $marker, and $pane publishes no done token either — so there is no evidence it finished, from either source. Wait for its done-invoker, or override with --force if you are deliberately re-tasking an executor that will never report."
-        ;;
-    esac
-  fi
-
-  # channel-send, not `herdr agent prompt`: the receipt is the point. Resolved
-  # BEFORE the gate, so a dry run proves the route too — which route an executor
-  # gets is the part that differs per harness, so it is the part worth being
-  # able to check without sending anything.
-  local route target endpoint
-  invoker_resolve_sender "$pane"
-  if _next_finished_stale_stuck "$info" \
-     && [ "$INVOKER_SENDER_VENDOR" = opencode ] \
-     && [ -z "$INVOKER_SENDER_SESSION" ] \
-     && [ -n "$INVOKER_SENDER_ENDPOINT" ]; then
-    INVOKER_SENDER_SESSION="$(_next_opencode_session_from_receipt "$rundir" "$pane" || true)"
-  fi
-  if _vendor_has_native_transport "${INVOKER_SENDER_VENDOR:-}" \
-     && [ -n "$INVOKER_SENDER_SESSION" ] \
-     && [ -n "$INVOKER_SENDER_ENDPOINT" ]; then
-    route="$INVOKER_SENDER_VENDOR"
-    target="$INVOKER_SENDER_SESSION"
-    endpoint="$INVOKER_SENDER_ENDPOINT"
-  else
-    route=herdr; target="$pane"; endpoint=-
-  fi
-
-  # A DRY RUN NEVER ENTERS THE DELIVERY GATE, and never touches the pane.
-  #
-  # It used to sit AFTER the wait, so `hw next <pane> --dry-run "…"` inherited
-  # the full budget against a pane that would never change and printed nothing
-  # for over three minutes before being killed — measured 2026-08-27 against
-  # w4C:p9W, exit 144. A command whose entire purpose is to tell you what would
-  # happen must not be the slowest way to find out, and "the gate would not
-  # open" is the single most useful thing it can report.
-  #
-  # It also used to run AFTER invoker_clear_opencode_question, which DISMISSES A
-  # MODAL. A dry run that answers a question on the executor's behalf is worse
-  # than one that waits.
-  #
-  # So the gate is described, not entered: the witness reads the same facts the
-  # gate would, read-only, and says which way it would go.
-  if [ "$dry" = 1 ]; then
-    local chaining_seconds_dry="" chaining_state_dry=""
-    chaining_seconds_dry="$(_run_env_value "$rundir" HW_CHAINING_LEASE_SECONDS || true)"
-    if [ -n "$chaining_seconds_dry" ] && [ "$next_reopened" = 0 ]; then  # MUTATION-ANCHOR: 785-M02
-      chaining_state_dry="$(_chaining_lease_eligibility "$rundir" "$seq")"
-      if [ "$chaining_state_dry" != live ]; then # MUTATION-ANCHOR: 37-M18a
-        die "$(_chaining_lease_ineligible_message "$chaining_state_dry" "$seq" "$rundir")"
-      fi
-    fi
-    local nextseq_dry="$((seq + 1))"
-    [ "$next_gentle" = 0 ] || info "gentle pane: task $nextseq_dry carries ODD's per-task block from $brief — $(_gentle_rdd_word), delivery $GENTLE_DELIVERY, deployed check $GENTLE_DEPLOYED_CHECK"
-    ok "dry run: $pane is reachable, on task $seq of $(basename "$rundir") — NOTHING was sent and the pane was not touched"
-    info "route $route -> $target${endpoint:+ (endpoint $endpoint)}"
-    info "would create $rundir/t$nextseq_dry and deliver $(printf '%s' "$(_next_message "$nextseq_dry" "${next_gentle_block:+$next_gentle_block$'\n\n'}" "$text" "$rundir" "$brief" "$next_wtdir" "$next_auth")" | wc -c | tr -d ' ') bytes as task $nextseq_dry ($(printf '%s' "$text" | wc -c | tr -d ' ') of them the task text; the rest is the preamble hw prepends, minus any framework entry line)"
-    [ "$next_reopened" = 0 ] || info "run was revived (reopened): hw revive is the authority for this re-task, so its spent chaining lease is not consulted; task $nextseq_dry gets its own done-invoker with no --retask"
-    if [ -n "$chaining_seconds_dry" ] && [ "$next_reopened" = 0 ]; then
-      info "this one use would be consumed only after successful delivery; dry-run lease state is volatile and was not touched"
-    fi
-    if _next_finished_stale_stuck "$info"; then
-      ok "the delivery gate WOULD OPEN: $pane has authoritative delivered completion tokens; its blocked/stuck lifecycle token is stale (budget ${wait_ms}ms, unspent)"
-    else
-      case "$status" in
-        idle|done)
-          ok "the delivery gate WOULD OPEN: herdr reports $pane $status, so a prompt would be read now (budget ${wait_ms}ms, unspent)"
-            ;;
-          *)
-            info "herdr reports $pane $status, so the gate would wait (budget ${wait_ms}ms). Cross-checking whether that state can still change — this does not send, dismiss or wait:"
-            witness_state "$pane"
-            case "$WITNESS_VERDICT" in
-              live)
-                info "gate verdict: WOULD WAIT, and correctly. $WITNESS_DETAIL"
-                ;;
-              awaiting-human)
-                warn "gate verdict: WOULD NOT OPEN. $WITNESS_DETAIL"
-                ;;
-              settled)
-                warn "gate verdict: WOULD NOT OPEN, and no budget would help. $WITNESS_DETAIL"
-                warn "a real run would refuse here after confirming that twice, instead of spending ${wait_ms}ms on it"
-                ;;
-              *)
-                info "gate verdict: UNDETERMINED. $WITNESS_DETAIL"
-                ;;
-            esac
-            ;;
-      esac
-    fi
-    if [ -n "$next_sdd" ]; then
-      local dry_entry
-      dry_entry="$(_framework_entry "$next_sdd")"
-      info "would set SDD mode $next_sdd on the worktree, entry ${dry_entry:-<none for this mode>}"
-    else
-      info "SDD surface: unchanged — compatibility checked using the effective mode; live surface takes precedence, with the launch record as fallback when no live mode is obtained"
-    fi
-    return 0
-  fi
-
-  # Gate BEFORE the counter moves: a bump that is not followed by a delivered
-  # prompt would leave the executor's invokers pointing at a task it was never
-  # given, and its next done-invoker would write a marker for nothing.
-  # BEFORE the wait, not after it. A pane reading `blocked` is never going to
-  # reach idle on its own — that is the whole finding — so spending the budget
-  # first only delays the rescue by however long the caller was willing to
-  # wait. Measured: 94s to deliver with the attempt after the wait, ~4s with it
-  # before. The helper re-checks `blocked` itself and returns immediately on
-  # anything else, so calling it here costs one agent.get on the normal path.
-  # witness_wait, not invoker_wait_for_brainer: same gate, same budget, same
-  # `idle,done` condition, plus the one thing the raw wait cannot do — notice
-  # that it is waiting on a state which has been PROVED unable to change, and
-  # stop. Exit 5 is that, and only that. Exit 2 is still an ordinary timeout,
-  # which is what an `unknown` cross-check must cost: nothing extra.
-  local gate_rc=0
-  if _next_finished_stale_stuck "$info"; then
-    info "$pane already reported with delivered completion tokens; ignoring its stale blocked/stuck lifecycle token and re-tasking without --force."
-  else
-    if invoker_clear_opencode_question "$pane"; then
-      info "$pane was blocked on its own opencode question modal; dismissed it (the executor sees question.rejected) and the pane reached idle. Re-tasking now."
-    fi
-    witness_wait "$pane" "$wait_ms" || gate_rc=$?
-  fi
-  if [ "$gate_rc" != 0 ]; then
-    # One rescue before the die, and only one shape of rescue. An opencode
-    # executor parked on its own `question` modal reads `blocked` and STAYS
-    # there — the plugin has no event left to publish, so no budget and no
-    # retry reaches idle. That is the dead end this whole gate used to have no
-    # move for, and pressing one key is the move. `--force` is NOT: it files
-    # the task as abandoned to get past a pane that is merely waiting.
-    if invoker_clear_opencode_question "$pane"; then
-      info "$pane was blocked on its own opencode question modal; dismissed it (the executor sees question.rejected) and the pane reached idle. Re-tasking now."
-    else
-      local busy_info
-      busy_info="$(herdr agent get "$pane" 2>/dev/null || true)"
-      # A GATE THAT GIVES UP SAYS WHICH FACT IT READ AND WHAT CONTRADICTED IT.
-      # For eight hours this class of failure looked like "timed out" from
-      # outside, which is why nobody could act on it. WITNESS_DETAIL names the
-      # reader, the source and the disagreement; the existing message still
-      # carries the state-specific advice, so both are printed.
-      # A PANE WAITING FOR A PERSON IS NOT A BUSY PANE, and the advice is not
-      # the same. Without this branch gate_rc 6 fell through to the generic
-      # busy message, which tells the caller to wait or retry — for a state that
-      # only a human answering a prompt can move. The witness has already read
-      # that pane's own endpoint and had it CONFIRM an outstanding
-      # /question or /permission, so say that, and say the one thing that is
-      # never the answer here: --force files an unreported task as abandoned to
-      # get past a pane that is merely waiting for someone to press a key.
-      if _next_finished_stale_stuck "$busy_info"; then
-        info "$pane reported while the gate was checking it; delivered completion tokens now prove blocked/stuck is stale. Re-tasking without --force."
-        # Route selection happened before the wait. Re-resolve it from the
-        # completion snapshot so an OpenCode session omitted while blocked can
-        # use its exact launch-receipt binding instead of falling into Herdr's
-        # second blocked-state gate.
-        invoker_resolve_sender "$pane"
-        if [ "$INVOKER_SENDER_VENDOR" = opencode ] \
-           && [ -z "$INVOKER_SENDER_SESSION" ] \
-           && [ -n "$INVOKER_SENDER_ENDPOINT" ]; then
-          INVOKER_SENDER_SESSION="$(_next_opencode_session_from_receipt "$rundir" "$pane" || true)"
-        fi
-        if _vendor_has_native_transport "${INVOKER_SENDER_VENDOR:-}" \
-           && [ -n "$INVOKER_SENDER_SESSION" ] \
-           && [ -n "$INVOKER_SENDER_ENDPOINT" ]; then
-          route="$INVOKER_SENDER_VENDOR"
-          target="$INVOKER_SENDER_SESSION"
-          endpoint="$INVOKER_SENDER_ENDPOINT"
-        else
-          route=herdr; target="$pane"; endpoint=-
-        fi
-      else
-        if [ "$gate_rc" = 6 ]; then
-          warn "$WITNESS_DETAIL"
-          die "$pane is waiting for a PERSON, not for time: its own endpoint confirms a prompt is outstanding (see above). The task counter did NOT move and nothing was sent. Answer that prompt on the pane — or have ${HW_OPERATOR:-the operator} answer it — and re-run this identical hw next. Do not raise the budget and do not reach for --force: neither answers a question."
-        fi
-        if [ "$gate_rc" = 5 ]; then
-          warn "$WITNESS_DETAIL"
-          die "$(_next_settled_message "$pane" "$wait_ms" "$busy_info")"
-        fi
-        [ -z "${WITNESS_DETAIL:-}" ] || warn "cross-check: $WITNESS_DETAIL"
-        die "$(_next_busy_message "$pane" "$wait_ms" "$busy_info")"
-      fi
-    fi
-  fi
-
-  local nextseq="$((seq + 1))"
-  mkdir -p "$rundir/t$nextseq" || die "cannot create $rundir/t$nextseq"
-
-  # The mode is set on the WORKTREE before the brief is sent, in that order: an
-  # entry command that arrives before its framework is loaded is an instruction
-  # the executor cannot follow.
-  local entry_line=""
-  if [ -n "$next_sdd" ]; then
-    local entry
-    entry="$(_framework_entry "$next_sdd")"
-    _apply_sdd "$next_wtdir" "$next_sdd" \
-      || die "--sdd $next_sdd has no speckit-* skill on disk for $next_wtdir, so nothing was sent and the task counter did not move. Install Spec Kit where it is used, or re-task with --sdd none."
-    if [ -n "$entry" ]; then
-      entry_line="$(printf 'FIRST ACTION, before anything else: run %s for this task. The framework mode\nfor it is %s and what follows is its input, not a licence to start editing.\n\n' "$entry" "$next_sdd")"
-      # A plain assignment, not `$( )`: command substitution strips trailing
-      # newlines, and _next_message prints this directly before its `---`.
-      [ "$next_sdd" != speckit ] || entry_line="$entry_line"$'\n\n'"$(_speckit_phase_note)"$'\n\n'
-    else
-      entry_line="$(printf 'Framework mode for this task: %s. hw forces no entry command.\n\n' "$next_sdd")"
-    fi
-  fi
-
-  # A gentle pane's lead block: what ODD fixes for THIS task, from its own brief.
-  # An assignment, not `$( )` around the whole thing: a trailing blank line is
-  # part of the block and command substitution strips it.
-  [ "$next_gentle" = 0 ] || entry_line="$next_gentle_block"$'\n\n'  # MUTATION-ANCHOR: 781-M04
-
-  # The executor is told its own bookkeeping changed, because its budgets did —
-  # and, since 2026-09-21, it is told the rest of what a launch tells one.
-  local msg
-  msg="$(_next_message "$nextseq" "$entry_line" "$text" "$rundir" "$brief" "$next_wtdir" "$next_auth")"
-
-  # New bounded-chaining runs have a lease only after proved report delivery.
-  # Hold the SAME per-run lock as done-invoker and the detached expiry action
-  # across delivery, lease consumption, and counter advance. Expiry therefore
-  # cannot close between those acts, and a failed send leaves the lease intact.
-  local chaining_seconds="" chaining_locked=0
-  chaining_seconds="$(_run_env_value "$rundir" HW_CHAINING_LEASE_SECONDS || true)"
-  [ "$next_reopened" = 0 ] || chaining_seconds=""
-  if [ -n "$chaining_seconds" ]; then
-    _chaining_lock_take "$rundir" || die "could not acquire the run/task lock before consuming its chaining lease"
-    chaining_locked=1
-    local chaining_state
-    chaining_state="$(_chaining_lease_eligibility "$rundir" "$seq")"
-    if [ "$chaining_state" != live ]; then
-      _chaining_lock_release
-      die "$(_chaining_lease_ineligible_message "$chaining_state" "$seq" "$rundir")"
-    fi
-  fi
-
-  local send_rc=0  # MUTATION-ANCHOR: 05-M05
-  if [ "$route" = opencode ]; then
-    "$HW_BIN_DIR/channel-send" --require processed --id "$(basename "$rundir"):t$nextseq" \
-      "$route" "$target" "$endpoint" "$msg" >/dev/null || send_rc=$?
-  else
-    "$HW_BIN_DIR/channel-send" "$route" "$target" "$endpoint" "$msg" >/dev/null || send_rc=$?
-  fi
-  # EXIT 4 IS NOT A FAILED DELIVERY. channel-send returns it only after the
-  # message is proven present in the receiver's session; what did not finish is
-  # the TURN. Rolling the counter back there would be the worse of the two
-  # errors: the executor holds task N+1 while its invokers still call it N, so
-  # its report would be filed against the task it no longer has.
-  #
-  # This is the incident that made the distinction necessary. On 2026-08-25 the
-  # old synchronous route returned `HTTP 500 UnknownError` re-tasking
-  # a product-lane task; hw called it undelivered, rolled back, and
-  # the orchestrator — reasonably, given what hw told it — concluded the
-  # executor was unreachable and closed it. Nothing proved the message had NOT
-  # landed. Now the two outcomes have different exit codes and different words.
-  if [ "$send_rc" = 4 ] && [ "$route" = opencode ]; then  # MUTATION-ANCHOR: 05-M04
-    warn "$pane ACCEPTED task $nextseq — it is in its session — but the turn it started did not complete (see the message above)."
-    warn "that is a turn failure, not a delivery failure, so the counter advances: rolling it back would leave the executor holding a task its invokers do not know about."
-    info "check what it did with: herdr agent read $pane --source recent-unwrapped"
-  elif [ "$send_rc" != 0 ]; then
-    rmdir "$rundir/t$nextseq" 2>/dev/null || true
-    [ "$chaining_locked" = 0 ] || _chaining_lock_release
-    die "delivery to $pane failed via $route (exit $send_rc). The task counter was NOT advanced, so the executor is still on task $seq and its next done-invoker still refers to the task it actually ran. The pane is untouched and still usable — a failed delivery is not a reason to close an executor; fix the transport and retry."  # MUTATION-ANCHOR: 71-M03
-  fi
-
-  # Only now. The counter is the executor's contract with its own invokers, and
-  # advancing it before proven delivery is how a task gets a budget but no brief.
-  if [ "$chaining_locked" = 1 ]; then
-    # MUTATION-ANCHOR: 37-M18
-    printf 'state=consumed\nconsumed_at=%s\nconsumed_by=%s\n' \
-      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${HERDR_PANE_ID:-unknown}" >> "$(_chaining_lease_path "$rundir")" \
-      || { _chaining_lock_release; die "task delivered, but its chaining lease could not be marked consumed; refusing to advance the counter"; }
-    # MUTATION-ANCHOR-END: 37-M18
-  fi
-  # THE NEW TASK'S BOUNDARY, when its brief declares one — keyed by the task
-  # number, so done-invoker holds task N+1 to its own brief and not to task 1's.
-  # After proven delivery and with the counter, never before: a failed send
-  # must not leave a gate for a task that never arrived.
-  # The SAME gate _next_message's preamble ran — inherited TASK_KIND and all —
-  # so the executor is never held to a judgment its prompt did not ask for (on
-  # the reuse route a name-inferred or `asked: investigate` kind is in scope).
-  if [ -n "$brief" ] && BRIEF="$brief" _design_gate_applies; then
-    _receipt_into "$rundir" "design_boundary_t$nextseq" "$(_brief_boundary "$brief")" \
-      "brief frontmatter boundary: in $brief at hw next — done-invoker requires an APPROVED design judgment"
-  fi
-  # THE DEPLOYED CHECK OF A GENTLE RE-TASK, keyed by task for the same reason.
-  if [ "$next_gentle" = 1 ]; then
-    local dc_src="brief frontmatter deployed_check: in $brief at hw next (required when absent) — done-invoker holds a done to it"
-    _receipt_into "$rundir" "deployed_check_t$nextseq" "$GENTLE_DEPLOYED_CHECK" "$dc_src"  # MUTATION-ANCHOR: 781-M05
-  fi
-  # MUTATION-ANCHOR: 37-M19
-  printf '%s\n' "$nextseq" > "$rundir/task" \
-    || { [ "$chaining_locked" = 0 ] || _chaining_lock_release; die "delivered, but could not write $rundir/task — the executor is on task $nextseq and its invokers still think $seq. Write that file by hand before it reports."; }
-  # MUTATION-ANCHOR-END: 37-M19
-  # The reopened marker belongs to the task it reopened; task N+1 owes its own
-  # report and must not inherit the licence (done-invoker clears it the same way).
-  [ "$next_reopened" = 0 ] || rm -f "$next_reopened_marker" 2>/dev/null || true
-  [ "$chaining_locked" = 0 ] || _chaining_lock_release
-  ok "task $nextseq dispatched to $pane via $route (${vendor:-unknown} executor, $(printf '%s' "$msg" | wc -c | tr -d ' ') bytes)"
-  info "state for it: $rundir/t$nextseq — fresh ask budget, no done marker"
-  return 0
 }
 
 # ── hw wait ──────────────────────────────────────────────────────────────────
@@ -13497,6 +11564,25 @@ done < <(_hw_run_dirs)
 [ -r "$HW_LIB/hw/status.sh" ] || { printf 'hw: cannot load %s/hw/status.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
 . "$HW_LIB/hw/status.sh"
 
+# `hw done` lives in lib/hw/done.sh: _verify_* (the close path), _done_*, cmd_done.
+# shellcheck source=../lib/hw/done.sh
+[ -r "$HW_LIB/hw/done.sh" ] || { printf 'hw: cannot load %s/hw/done.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
+. "$HW_LIB/hw/done.sh"
+
+# `hw next` lives in lib/hw/next.sh: _next_authorization, _next_autoclosed_run_for_pane,
+# _next_missing_pane_message, _next_wait_from_run, _next_busy_message,
+# _next_finished_stale_stuck, _next_opencode_session_from_receipt,
+# _next_settled_message, _next_message, _next_gentle_read, cmd_next.
+# shellcheck source=../lib/hw/next.sh
+[ -r "$HW_LIB/hw/next.sh" ] || { printf 'hw: cannot load %s/hw/next.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
+. "$HW_LIB/hw/next.sh"
+
+# The dispatch ledger, the brief commit at dispatch, the picker's rows and the briefless
+# refusal live in lib/hw/ledger.sh: _ledger_*, _picker_rows, _briefless_*, cmd_ledger.
+# shellcheck source=../lib/hw/ledger.sh
+[ -r "$HW_LIB/hw/ledger.sh" ] || { printf 'hw: cannot load %s/hw/ledger.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
+. "$HW_LIB/hw/ledger.sh"
+
 
 # "<worktree root>:<lane>" per line, for each product-repo lane in table order —
 # the roots `hw status` walks for worktrees outside $WORK.
@@ -13773,6 +11859,7 @@ if [ "${1:-}" = output ]; then shift; cmd_output "$@"; exit 0; fi
 if [ "${1:-}" = stage ]; then shift; cmd_stage "$@"; exit 0; fi
 if [ "${1:-}" = worktrees ]; then shift; cmd_worktrees "$@"; exit 0; fi
 if [ "${1:-}" = reap ]; then shift; cmd_reap "$@"; exit 0; fi
+if [ "${1:-}" = ledger ]; then shift; cmd_ledger "$@"; exit 0; fi
 if [ "${1:-}" = reports ]; then
   shift
   HW_REPORTS_REPAIR=1
@@ -14214,6 +12301,14 @@ USAGE
                        and only with --agent claude; see hw gentle-home.
     hw gentle-home [--check|--path] provision gentle-ai's own HOME for --sdd gentle
 
+  THE BRIEF AND THE LEDGER
+    --no-brief         launch with no brief on purpose (without it a missing brief
+                       dies, naming the path it looked for and the nearest names);
+                       a brief that IS found is still used
+    hw ledger [<lane>] [--brief <path>|--task <t>] [--state <s>] [--json]
+                       each brief as never-dispatched, in-progress or done, from
+                       $WORK/.hw-ledger/<lane>.jsonl plus the run's done marker
+
   KEYCHAIN HANDLES
     --no-handle-check  skip the keychain-handle preflight
     hw handle <handle>...           does a keychain handle resolve?
@@ -14416,6 +12511,7 @@ TAB=1; TAB_EXPLICIT=0; SPACE_EXPLICIT=0
 DISPATCH_DRY=0
 SANDBOX=0; SANDBOX_SRC=""; SANDBOX_LINE=""
 CHECK_HANDLES=1
+NO_BRIEF=0
 ALLOW_STALE_HOOKS=0
 CHECK_REUSE=1
 FRESH_SOURCE=""
@@ -14425,6 +12521,8 @@ while [ $# -gt 0 ]; do
     --account) _need_val "$@"; ACCOUNT="$2"; ACCOUNT_SRC=chosen; shift 2 ;;
     --permissions) _need_val "$@"; PERMISSIONS_FLAG="$2"; shift 2 ;;
     --brief)  _need_val "$@"; BRIEF="$2";  shift 2 ;;
+    # A launch with no brief is a refusal unless it is asked for (_briefless_gate).
+    --no-brief) NO_BRIEF=1; shift ;;
     --model)  _need_val "$@"; MODEL="$2"; MODEL_SRC=chosen; shift 2 ;;
     # The same declaration `decision:` makes in a brief, for a dispatch that has
     # no brief or whose brief predates the decision. Typed at the dispatch that
@@ -14523,11 +12621,13 @@ elif [ -n "$KEEP_PANE_WHY" ]; then
   die "--why is only valid with --keep-pane"
 fi
 # An explicit --brief wins; otherwise brain/<project>/briefs/<task>.md is used
-# when it exists. No brief at all remains a perfectly normal run.
+# when it exists. No brief at all is REFUSED, naming the path looked for and the
+# nearest names; `--no-brief` is the deliberate way through, with a one-line warning.
 if [ -z "$BRIEF" ]; then
   BRIEF="$(_infer_brief "$PROJ" "$TASK")"
   [ -n "$BRIEF" ] && info "brief inferred: $BRIEF"
 fi
+_briefless_gate
 if [ -n "$BRIEF" ]; then
   [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
   # Read here, in hw's own process. The brief is handed to the agent as a

@@ -4,6 +4,46 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.7] — 2026-10-07
+
+### Added
+- `brain relaunch [--all | <lane|pane>...] [--dry-run]` relaunches every open,
+  idle Claude Code brainer in place with the cockpit mod, resuming its own
+  conversation (same pane, same account, writer loop and work root restored).
+  A working pane is skipped and named; below the cockpit floor it relaunches
+  without the mod and says so. Executors are not relaunched.
+- `brain <lane> --resume <session-id>` is the same launch for one lane.
+- `hw ledger` lists each brief as never-dispatched, in-progress or done, from a
+  durable ledger `hw` now writes at every real dispatch (brief and its sha,
+  run, account, model, effort, vendor, base, pane). A dry run writes nothing.
+- A dispatch commits its brief, and only that file, when the brain checkout is
+  on main and the brief is untracked or modified.
+
+### Changed
+- The cockpit pane draws one rounded card per executor, with a coloured
+  state badge, a context bar and aligned buttons, and a totals header of
+  chips; a stale or dead state gets a boxed, coloured banner.
+- `hw done` moved out of `bin/hw` into `lib/hw/done.sh`, the third module of
+  the split of `bin/hw` by command. Behaviour is unchanged.
+- `hw next` moved out of `bin/hw` into `lib/hw/next.sh`, the third module of
+  the split of `bin/hw` by command. Behaviour is unchanged.
+- `hw <lane> <task>` with no brief now refuses, naming the path it looked for and
+  the nearest names. `--no-brief` keeps the old launch, with a one-line warning.
+- The task picker shows each brief's title instead of the frontmatter's `---`,
+  skips `_`-prefixed files, and reads every brief in one pass.
+
+### Fixed
+- `brain relaunch` keeps each pane's own account: the folder-trust and first-run
+  checks read the pane's `CLAUDE_CONFIG_DIR`, not the caller's.
+- `brain relaunch` finds a brainer whose directory is spelt through a symlink or
+  another case, instead of skipping it.
+- A `brain <lane> --resume` whose start failed says `FAILED resuming` and exits
+  75 instead of printing `resumed` and exiting 0; `brain relaunch` reports such a
+  pane as `FAILED` (not `skipped`) and exits non-zero.
+- A `--sdd gentle` task with `review: rdd` is told native RDD is its only
+  review: its prompt no longer also asks for Judgment Day, and carries a line
+  saying not to run it. Without `review:`, Judgment Day is unchanged.
+
 ## [0.3.6] — 2026-10-06
 
 ### Added

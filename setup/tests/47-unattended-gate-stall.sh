@@ -48,7 +48,7 @@ render() {
       _framework_entry() { printf "/sdd-new"; }
       AGENT=claude
       _deliver_brief() { PROMPT="$BRIEF_TEXT"; }
-      _receipt_session() { :; }; _receipt_model() { :; }
+      _receipt_session() { :; }; _ledger_commit_brief() { :; }; _ledger_dispatch() { :; }; _receipt_model() { :; }
       _send_brief fixture-pane
       printf "%s" "$PROMPT" > "$OUT"
     '

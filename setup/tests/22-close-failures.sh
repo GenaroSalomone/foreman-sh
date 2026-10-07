@@ -72,7 +72,7 @@ pass "close: an unavailable verifier is a named failure, never inferred absence"
 # owned task tab, and legacy workspace. Sweep is the batch recovery path. Every
 # one must route through the same measured helper; no direct suppressed close is
 # allowed to reappear.
-done_body="$(awk '/^cmd_done\(\)/,/^}$/ ' "$ROOT/bin/hw")"
+done_body="$(awk '/^cmd_done\(\)/,/^}$/ ' "$ROOT/lib/hw/done.sh")"
 [ "$(printf '%s' "$done_body" | grep -c '_close_herdr_object' || true)" = 3 ] \
   || fail "close audit: cmd_done does not route exactly pane, tab and workspace through the measured helper"
 if printf '%s' "$done_body" | grep -E 'herdr (pane|tab|workspace) close .*dev/null' >/dev/null; then

@@ -107,7 +107,7 @@ esac
 grep -q '^_verify_names_full_suite() {' "$ROOT/bin/hw" \
   || fail "shape: _verify_names_full_suite is gone — the two moments are answering the question separately again"
 pass "shape: one detector answers it, at dispatch and at close"
-n="$(grep -c '_verify_names_full_suite' "$ROOT/bin/hw" || true)"
+n="$(cat "$ROOT/bin/hw" "$ROOT/lib/hw/done.sh" | grep -c '_verify_names_full_suite' || true)"
 [ "${n:-0}" -ge 3 ] \
   || fail "shape: _verify_names_full_suite appears $n times in bin/hw — its definition plus BOTH call sites should be there"
 pass "shape: it is called from both sites, not defined and used once"

@@ -30,8 +30,15 @@ export function span(ms: number): string {
   return `${Math.floor(s / 86400)}d`
 }
 
-const cut = (text: string, max: number) =>
-  text.length <= max ? text : `${text.slice(0, max - 1)}…`
+// Every string drawn goes through here: a control character or an escape sequence
+// (hw's why_not texts carry newlines) makes the engine refuse the whole tree.
+const scrub = (text: string) =>
+  text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/ {2,}/g, ' ').trim()
+const cut = (text: string, max: number) => {
+  const t = scrub(text)
+  return t.length <= max ? t : `${t.slice(0, max - 1)}…`
+}
+const WHY_MAX = 200
 
 const LOUD = new Set(['challenge', 'ask', 'blocked', 'report'])
 
@@ -83,49 +90,77 @@ export function banner(m: Model): string | null {
   }
 }
 
-function ctxText(r: Row): string {
-  return r.ctx.pct === null ? 'ctx n/a' : `ctx ${Math.round(r.ctx.pct)}%`
-}
-
 function rowKey(r: Row): string {
   return `row:${r.id}`
 }
 
+const BADGE: Record<string, { color: string | undefined; dim?: boolean }> = {
+  working: { color: 'green' },
+  idle: { color: undefined, dim: true },
+  blocked: { color: 'red' },
+  challenge: { color: 'red' },
+  ask: { color: 'yellow' },
+  report: { color: 'blue' },
+  gone: { color: undefined, dim: true },
+}
+
+// A six-cell bar of hw's own ctx percentage.
+function ctxBar(pct: number): string {
+  const n = Math.max(0, Math.min(6, Math.round((pct / 100) * 6)))
+  return '▰'.repeat(n) + '▱'.repeat(6 - n)
+}
+
+function ctxMeta(r: Row): string {
+  return r.ctx.pct === null ? 'ctx n/a' : `ctx ${Math.round(r.ctx.pct)}% ${ctxBar(r.ctx.pct)}`
+}
+
 function RowCard({ els, r, now, dim, act, notes }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes }) {
   const { Box, Text, Button, Input } = els
-  const since = r.attention_since === null ? '' : ` ${span(now - r.attention_since)}`
-  const model = r.model === null ? '' : ` ${r.model}`
+  const badge = BADGE[r.attention] ?? { color: undefined, dim: true }
+  const color = dim || badge.dim ? undefined : badge.color
+  const meta = [
+    cut(`${r.vendor || '—'} · ${r.model || '—'} · ${r.effort || '—'}`, 120),
+    ctxMeta(r),
+    r.agent_status === 'unknown' ? 'unknown' : null,
+    r.report !== null ? `reported ${span(now - r.report.at)} ago` : r.attention_since === null ? null : `${span(now - r.attention_since)}`,
+  ]
+    .filter(x => x !== null)
+    .join(' · ')
   const lines: unknown[] = []
   lines.push(
-    <Text key="head" dimColor={dim} color={dim ? undefined : tone(r.attention)} bold={!dim && LOUD.has(r.attention)}>
-      {`${r.attention.padEnd(10)}${r.id}  ${r.vendor}${model}  ${r.agent_status}${since}  ${ctxText(r)}`}
-    </Text>,
+    <Box key="head" gap={1}>
+      <Text key="id" bold dimColor={dim}>{cut(r.id, 120)}</Text>
+      <Text key="badge" bold={!dim && LOUD.has(r.attention)} dimColor={dim || badge.dim} color={color}>{`[${r.attention}]`}</Text>
+    </Box>,
+  )
+  lines.push(
+    <Text key="meta" dimColor>{meta}</Text>,
   )
   if (r.report !== null) {
     lines.push(
       <Text key="report" dimColor={dim}>
-        {`  report ${r.report.status} (${r.report.state}): ${cut(r.report.summary, SUMMARY_MAX)}`}
+        {`report ${r.report.status} (${r.report.state}): ${cut(r.report.summary, SUMMARY_MAX)}`}
       </Text>,
     )
   }
   if (r.ask !== null) {
     lines.push(
       <Text key="ask" dimColor={dim}>
-        {`  ${r.ask.kind} ${r.ask.seq} (${r.ask.state})`}
+        {`${r.ask.kind} ${r.ask.seq} (${r.ask.state})`}
       </Text>,
     )
   }
   if (r.children_running !== null) {
     lines.push(
       <Text key="children" dimColor>
-        {`  children: ${r.children_running}`}
+        {`children: ${r.children_running}`}
       </Text>,
     )
   }
   if (r.rulings_pending.count > 0) {
     lines.push(
       <Text key="rulings" dimColor={dim}>
-        {`  ${r.rulings_pending.count} ruling${r.rulings_pending.count === 1 ? '' : 's'} queued`}
+        {`${r.rulings_pending.count} ruling${r.rulings_pending.count === 1 ? '' : 's'} queued`}
       </Text>,
     )
   }
@@ -140,27 +175,24 @@ function RowCard({ els, r, now, dim, act, notes }: { els: Els; r: Row; now: numb
     )
   }
   // The buttons. Which ones exist is hw's call, read from `actions`; a false one
-  // shows hw's own reason. A stale state draws none.
+  // shows hw's own reason beneath the row. A stale state draws none.
   const a = r.actions
   if (!dim) {
-    const btn = (verb: 'done' | 'receipt' | 'verify', label: string, run: (r: Row) => void) =>
-      a[verb] ? (
-        <Button key={`${verb}:${r.id}`} label={label} onPress={() => run(r)} />
-      ) : (
-        <Text key={`${verb}:${r.id}`} dimColor>{`[${label}] ${a.why_not?.[verb] ?? 'not available'}`}</Text>
-      )
+    const verbs: ['verify' | 'receipt' | 'done', (r: Row) => void][] = [['verify', act.verify], ['receipt', act.receipt], ['done', act.done]]
+    const refused = verbs.filter(([v]) => !a[v])
     lines.push(
-      <Box key={`buttons:${r.id}`}>
-        {btn('verify', 'verify', act.verify)}
-        {btn('receipt', 'receipt', act.receipt)}
-        {btn('done', 'done', act.done)}
+      <Box key={`buttons:${r.id}`} gap={1}>
+        {verbs.filter(([v]) => a[v]).map(([v, run]) => <Button key={`${v}:${r.id}`} label={v} onPress={() => run(r)} />)}
       </Box>,
     )
+    for (const [v] of refused) {
+      lines.push(<Text key={`${v}:${r.id}`} dimColor>{cut(`[${v}] ${a.why_not?.[v] ?? 'not available'}`, WHY_MAX)}</Text>)
+    }
     lines.push(
       a.ruling ? (
         <Input key={`ruling:${r.id}`} label="ruling " placeholder="correction for this executor" submitLabel="queue" onSubmit={(text: string) => act.ruling(r, text)} />
       ) : (
-        <Text key={`ruling:${r.id}`} dimColor>{`[ruling] ${a.why_not?.ruling ?? 'not available'}`}</Text>
+        <Text key={`ruling:${r.id}`} dimColor>{cut(`[ruling] ${a.why_not?.ruling ?? 'not available'}`, WHY_MAX)}</Text>
       ),
     )
   }
@@ -173,7 +205,7 @@ function RowCard({ els, r, now, dim, act, notes }: { els: Els; r: Row; now: numb
     )
   }
   return (
-    <Box key={rowKey(r)} flexDirection="column">
+    <Box key={rowKey(r)} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={dim || color === undefined} paddingX={1}>
       {lines}
     </Box>
   )
@@ -215,18 +247,45 @@ export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes) {
   // classify leaves `state` null for dead and herdr-down: there are no rows to draw.
   const rows = m.state?.rows ?? []
   const dim = m.cls === 'stale'
+  const t = m.state?.totals
+  // hw's own counts as chips; unknown counts (herdr down) are said, not zeroed.
+  const chips: [number | undefined, string, string | undefined][] = [
+    [t?.working, 'working', 'green'],
+    [t?.idle, 'idle', undefined],
+    [t?.challenges, 'challenge', 'red'],
+    [t?.blocked, 'blocked', 'red'],
+    [t?.asks, 'ask', 'yellow'],
+    [t?.reports, 'reported', 'blue'],
+  ]
   return (
-    <Box key="pane" flexDirection="column">
+    <Box key="pane" flexDirection="column" gap={1}>
       {note !== null ? (
-        <Text key="banner" bold color={m.cls === 'stale' ? 'yellow' : 'red'}>
-          {note}
-        </Text>
+        <Box key="bannerbox" borderStyle="bold" borderColor={m.cls === 'stale' ? 'yellow' : 'red'} paddingX={1}>
+          <Text key="banner" bold color={m.cls === 'stale' ? 'yellow' : 'red'}>
+            {note}
+          </Text>
+        </Box>
       ) : null}
-      {m.state !== null ? (
-        <Text key="totals" dimColor={dim}>{totalsLine(m)}</Text>
+      {m.state !== null && !m.state.herdr.ok ? <Text key="totals" dimColor={dim}>{totalsLine(m)}</Text> : null}
+      {m.state !== null && m.state.herdr.ok ? (
+        <Box key="chips" flexWrap="wrap" columnGap={2}>
+          <Text key="n" bold dimColor={dim}>{`${m.state.totals.executors} executor${m.state.totals.executors === 1 ? '' : 's'}`}</Text>
+          {chips.map(([n, label, color]) =>
+            n === undefined || n === 0 ? null : (
+              <Text key={label} color={dim ? undefined : color} dimColor={dim || color === undefined}>{`● ${n} ${label}`}</Text>
+            ),
+          )}
+          {(t?.rulings_pending ?? 0) > 0 ? <Text key="rp" dimColor>{`${t?.rulings_pending} ruling queued`}</Text> : null}
+          {(t?.omitted ?? 0) > 0 ? <Text key="om" dimColor>{`${t?.omitted} not listed`}</Text> : null}
+          {m.state.rules.cut.running ? <Text key="cut" color={dim ? undefined : 'yellow'} dimColor={dim}>{`CUT running${m.state.rules.cut.holder === null ? '' : ` (${m.state.rules.cut.holder})`}`}</Text> : null}
+        </Box>
       ) : null}
       {m.cls === 'fresh' && rows.length === 0 ? <Text key="empty" dimColor>no executors</Text> : null}
-      {rows.map(r => RowCard({ els, r, now, dim, act, notes }))}
+      {rows.length > 0 ? (
+        <Box key="cards" flexDirection="column">
+          {rows.map(r => RowCard({ els, r, now, dim, act, notes }))}
+        </Box>
+      ) : null}
     </Box>
   )
 }

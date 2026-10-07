@@ -191,6 +191,7 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 | `brain <lane>` | Open the lane's brainer. |
 | `hw <lane> <task> --brief <path> --sdd none` | Launch an executor. Add `--dry-run` to preview. |
 | `hw status` | What is running, what reported and what is left over. |
+| `hw ledger [<lane>] [--brief <path>\|--task <t>] [--json]` | Every brief as never-dispatched, in-progress or done, from the ledger `hw` writes at each dispatch. `hw <lane> <task>` with no brief is refused, naming the path it looked for; `--no-brief` launches without one on purpose. |
 | `hw log <lane> <task>` | What a task asked and reported. |
 | `hw ruling <pane> "<correction>"` | Correct an executor that is still working, or resume one that reported `--blocked`. |
 | `hw next <pane> --brief <path>` | Give the next task to an executor launched with `--keep-pane`. |

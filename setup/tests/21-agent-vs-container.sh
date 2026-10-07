@@ -52,7 +52,7 @@ T=zz-agent-vs-container
 hw_live() {  # hw_live <rc-var-is-echoed> — runs the real hw, hermetically
   local rc=0
   env HOME="$TMP" HW_INVOKER_PANE= "$@" "$ROOT/bin/hw" setup "$T" \
-    --no-report > "$TMP/out" 2>&1 || rc=$?
+    --no-brief --no-report > "$TMP/out" 2>&1 || rc=$?
   printf '%s' "$rc"
 }
 tail_of() { sed 's/\x1b\[[0-9;]*m//g' "$TMP/out" | tail -1; }
@@ -71,7 +71,7 @@ esac
 sp_live() {
   local rc=0
   env HOME="$TMP" HW_INVOKER_PANE= "$@" "$ROOT/bin/hw" setup "$T" --space \
-    --no-report > "$TMP/out" 2>&1 || rc=$?
+    --no-brief --no-report > "$TMP/out" 2>&1 || rc=$?
   printf '%s' "$rc"
 }
 rc="$(sp_live STUB_WS_LABEL="setup:$T" STUB_TAB_AGENT=0)"
@@ -98,7 +98,7 @@ pass "container: the check counts panes herdr reports an agent for, not pane_cou
 # fails on its first pass, which is the shape of the real failure.
 rc=0
 env HOME="$TMP" HW_INVOKER_PANE= HERDR_PANE_ID=wX:p2 STUB_TAB_LABEL=none STUB_WS_LABEL=none \
-  "$ROOT/bin/hw" setup "$T" --here --no-report > "$TMP/out" 2>&1 || rc=$?
+  "$ROOT/bin/hw" setup "$T" --here --no-brief --no-report > "$TMP/out" 2>&1 || rc=$?
 out="$(sed 's/\x1b\[[0-9;]*m//g' "$TMP/out" || true)"
 case "$rc:$out" in
   1:*"did NOT start"*"NOT running"*) pass "launch: an agent that fails to start exits 1 and says the task is not running" ;;

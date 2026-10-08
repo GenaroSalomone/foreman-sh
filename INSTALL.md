@@ -121,6 +121,26 @@ It does not run that itself. That command writes your Claude Code config by
 engram's own rules, which falls outside what this installer says it writes,
 and it would add a second registration where the plugin already provides one.
 
+## Quick start: `foreman-sh init`
+
+One command takes a fresh install to a first dispatch:
+
+```sh
+foreman-sh init             # from a checkout: ./install.sh init
+foreman-sh init --dry-run   # prints the plan and changes nothing
+foreman-sh init --yes       # answers its questions yes
+```
+
+It checks `git`, `jq`, `python3`, `herdr`, `claude`, `rg`, `fd` and `sd`: a missing
+one is named with its install command and the run stops, because `init` installs
+nothing (`--with-recommended`, above, does when you ask). It then offers herdr's
+Claude integration and `engram setup claude-code` (it asks first, and `--yes` answers
+for you), builds `~/brain` with a `demo` lane over a toy repository at `~/code/toy`
+(`--lane NAME --repo PATH` for your own), copies a sample brief to
+`~/brain/demo/briefs/hello.md` and ends with `hw demo hello … --dry-run`. Claude
+Code's first run and your PATH stay yours: `init` names them. A second run changes
+nothing and says so. `--brain DIR` and `--bin-dir DIR` move what it writes.
+
 ## The command
 
 On macOS, the Homebrew formula is the shortest way. It installs foreman-sh

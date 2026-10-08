@@ -89,6 +89,21 @@ two more tools are optional:
 
 ## Quickstart
 
+### Quick start: `foreman-sh init`
+
+```sh
+foreman-sh init             # checks what you have, builds ~/brain with a demo lane, ends with a dry-run dispatch
+foreman-sh init --dry-run   # the plan only; --yes answers its questions
+```
+
+`init` installs nothing: a missing tool is named with its install command and it
+stops. Otherwise it builds `~/brain`, a `demo` lane on a toy repository, and a sample
+brief, and proves them with `hw demo hello … --dry-run`. Claude Code's first run and
+your `PATH` stay yours; it names them. A second run changes nothing and says so. The
+rest of this section is the same path, one step at a time.
+
+### Step by step
+
 On macOS, with [Homebrew](https://brew.sh):
 
 ```sh

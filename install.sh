@@ -99,6 +99,13 @@ INSTALL_CMD="./install.sh"
 [ -z "${FOREMAN_SH_INSTALLED_FROM:-}" ] || INSTALL_CMD="curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s --"
 # A package (the Homebrew formula) runs this file through its own command and names it.
 INSTALL_CMD="${FOREMAN_SH_INSTALL_CMD:-$INSTALL_CMD}"
+# `init` is the guided first run (init.sh): prerequisites, a brain, a first lane, a sample brief and a
+# dry-run dispatch, in one command. It is dispatched before the flags below, which know nothing of it.
+if [ "${1:-}" = init ]; then
+  shift
+  [ -f "$SRC/init.sh" ] || { printf 'install: init.sh is not in %s\n' "$SRC" >&2; exit 1; }
+  FOREMAN_SH_INIT_CMD="$INSTALL_CMD init" exec bash "$SRC/init.sh" "$@"
+fi
 # The oldest OpenCode this harness has been MEASURED against (INSTALL.md). Not
 # a guess at compatibility: an older one may work, and nothing here has shown it.
 OPENCODE_MIN="1.18.31"
@@ -112,7 +119,8 @@ install_version() {
 
 usage() {
   cat <<'EOF'
-usage: install.sh upgrade --brain DIR [--to VERSION] [--dry-run]
+usage: install.sh init [--brain DIR] [--lane NAME] [--repo PATH] [--yes] [--dry-run]
+       install.sh upgrade --brain DIR [--to VERSION] [--dry-run]
        install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor claude|opencode [--model P/M]]]
                   [--operator NAME] [--min-model haiku|sonnet|opus|none] [--requested-by required|warn|none]
                   [--bin-dir DIR] [--with-judgment-day] [--with-recommended] [--permissions ask|skip] [--check]
@@ -141,6 +149,11 @@ usage: install.sh upgrade --brain DIR [--to VERSION] [--dry-run]
                   only that. With --check it prints the commands and runs none
   --check         verify everything in one pass, list the fixes in the order they must be
                   done and end with one "Next step"; write nothing
+  init            from a fresh install to a first dispatch, in one command: checks the prerequisites
+                  (installs none: it names each with its command), makes the brain and a first lane
+                  (default demo, on a toy repository) with a sample brief, checks the Claude account
+                  and engram, and ends with a dry-run dispatch of that brief. A second run changes
+                  nothing and says so. --yes answers its questions, --dry-run prints the plan
   upgrade         (or --upgrade) reinstall with the flags this brain's install recorded
                   (<brain>/.foreman/install.json), from the newest release, then --check and print
                   that release's "In short". --to VERSION installs that one instead (the way

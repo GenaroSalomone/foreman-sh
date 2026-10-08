@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.9] — 2026-10-07
+
+### Added
+- `foreman-sh init` (`./install.sh init`): from a fresh install to a first dispatch in one
+  command. It checks git, jq, python3, herdr, claude, rg, fd and sd (naming a missing one with
+  its install command, never installing it), builds the brain and a `demo` lane over a toy
+  repository with a sample brief, checks the Claude account and engram, and ends with a dry-run
+  dispatch of that brief. A second run changes nothing and says so; `--yes` answers its
+  questions and `--dry-run` prints the plan.
+
 ## [0.3.8] — 2026-10-07
 
 ### Added

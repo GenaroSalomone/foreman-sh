@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.11] — 2026-10-08
+
+### Fixed
+- `brain <lane> --resume <id>` on a pane left as a bare shell (after a reboot)
+  starts the brainer under the lane's account; it used to look for the
+  conversation in the default account and say "No conversation found".
+
 ## [0.3.10] — 2026-10-08
 
 ### Changed

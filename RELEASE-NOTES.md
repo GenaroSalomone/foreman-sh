@@ -1,25 +1,21 @@
-# foreman-sh 0.3.10
+# foreman-sh 0.3.11
 
-`hw status` answers in about a second.
+A brainer resumed after a reboot comes back under its own account.
 
 ## In short
 
-- **`hw status` is about 17 times faster.** With 15 live panes it takes about 1.2 s instead of 20 s, and `hw status <lane>` takes 0.9 s instead of 3.6 s. The output is byte for byte what it was.
-- **The cause was one scan, not the language.** An outbox search walked every task tree. It now stops at the depth where reports live, and the closing sections run in parallel and print in order.
-- **A receipt line that is a JSON list** no longer crashes `hw status`.
+- **`brain <lane> --resume <id>` keeps the lane's account on a bare shell.** After a reboot the pane comes back without `CLAUDE_CONFIG_DIR`, and the resume used to look in the default account and fail with "No conversation found". It now exports the lane's verified account first.
+- **An account it cannot verify is still refused**, before anything is exported or started.
+- **`brain relaunch` and default-account lanes are unchanged.** A pane whose shell already carries the right account is left as it is.
 
 ## What changed
 
-2 changes since 0.3.9.
-
-### Changed
-- `hw status` runs in about 1 second instead of about 20 with 15 live panes, and `hw status
-  <lane>` in under 1 second. The outbox scan no longer walks every task tree, and the closing
-  sections run in parallel but print in the same order. The output is byte-identical, and
-  `HW_STATUS_SERIAL=1` runs them one after another.
+1 change since 0.3.10.
 
 ### Fixed
-- `hw status` no longer crashes on a receipt line that is a JSON list.
+- `brain <lane> --resume <id>` on a pane left as a bare shell (after a reboot)
+  starts the brainer under the lane's account; it used to look for the
+  conversation in the default account and say "No conversation found".
 
 ## Known limits
 
@@ -28,7 +24,7 @@
   ARM64 only. WSL2 was not re-measured for this release, and mutation
   testing was not run on Windows.
 
-## Upgrading from 0.3.9
+## Upgrading from 0.3.10
 
 Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,

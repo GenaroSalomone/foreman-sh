@@ -1371,9 +1371,9 @@ fi
 # A RESET ALREADY HAS ITS CONTAINER — that is the whole point of it — so it skips
 # both creation branches and goes straight to `agent start` on the pane it just
 # emptied. The env above is NOT re-applied: `--env` is read when a pane is
-# CREATED, so a reset keeps the ENGRAM_PROJECT and CLAUDE_CONFIG_DIR the pane was
-# opened with. A brainer whose ENV is wrong needs a new tab, not a reset; the
-# account check above still refuses rather than restarting under an unverified one.
+# CREATED, so a reset keeps the ENGRAM_PROJECT the pane was opened with (a brainer whose
+# ENV is wrong needs a new tab, not a reset). The account is the exception: it is exported
+# into the pane's shell below, and the check above refuses an unverified one.
 if [ "$RESET" = 1 ] || [ "${REVIVE:-0}" = 1 ]; then
   tab="$RESET_TAB"
   pane="$RESET_PANE"
@@ -1384,6 +1384,17 @@ if [ "$RESET" = 1 ] || [ "${REVIVE:-0}" = 1 ]; then
   if [ "$kind" = claude ] && [ -n "${WORK:-}" ]; then
     herdr pane run "$pane" "export HW_COCKPIT_WORK=$(printf '%q' "$WORK")" >/dev/null 2>&1 \
       || echo "brain: could not give $pane HW_COCKPIT_WORK; the cockpit mod may not find its state file there." >&2
+  fi
+  # THE ACCOUNT TOO, FOR THE SAME REASON. A pane herdr restored after a machine restart is a bare shell
+  # WITHOUT the CLAUDE_CONFIG_DIR it was created with (measured 2026-10-08), so `claude --resume` looked
+  # for the conversation in ~/.claude instead of the lane's account and answered "No conversation found".
+  # account_flag is the lane's default, resolved and parity-verified above (empty under `relaunch`, which
+  # keeps the pane's own account, and for the default account); exported unconditionally because a pane
+  # that already has it makes the export a no-op, and reading it first costs a round trip per reset.
+  if [ "$kind" = claude ] && [ -n "$account_flag" ]; then
+    herdr pane run "$pane" "export CLAUDE_CONFIG_DIR=$(printf '%q' "$brain_acct_dir")" >/dev/null 2>&1 \
+      && echo "brain: $pane runs under account CLAUDE_CONFIG_DIR=$brain_acct_dir (the lane's default)" >&2 \
+      || { echo "brain: could not give $pane CLAUDE_CONFIG_DIR=$brain_acct_dir; refusing to start the brainer under another account." >&2; exit 1; }
   fi
 elif [ -n "$ws" ]; then
   tab_raw="$(herdr tab create --workspace "$ws" --cwd "$dir" \

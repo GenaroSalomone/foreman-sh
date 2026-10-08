@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.12] — 2026-10-08
+
+### Fixed
+- INSTALL.md and the README's Quickstart now start, on macOS, with Homebrew's own
+  installer (which also brings the Command Line Tools): a clean machine had no `brew`
+  and the docs never said so.
+- The documented `hw … --dry-run` (README, INSTALL.md, the demo) carries `--no-report`
+  and says why: outside a herdr pane that `brain` opened it exited 1 with
+  `HW_INVOKER_PANE UNRESOLVED`. `hw` itself is unchanged.
+
 ## [0.3.11] — 2026-10-08
 
 ### Fixed

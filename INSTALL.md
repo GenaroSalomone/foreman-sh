@@ -6,6 +6,15 @@ executor in its own worktree that reports back with `done-invoker`.
 
 ## Prerequisites
 
+On macOS, first install [Homebrew](https://brew.sh), which needs Apple's Command Line
+Tools (its installer asks for them, so one command covers both; skip it if
+`brew --version` already answers). It then prints two `eval "$(…/brew shellenv)"`
+lines for your shell profile: add them and open a new terminal.
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
 - macOS, or Linux (Debian/Ubuntu-class, bash 5; tested in a container, see
   `KNOWN-LIMITATIONS.md` L1). Windows: WSL2, or native Windows under Git Bash,
   measured on a CI runner and a Windows 11 VM (see [Windows](#windows) below).
@@ -182,9 +191,13 @@ Then:
 ```sh
 brain myapp                                   # open the brainer
 $EDITOR ~/brain/myapp/briefs/first-task.md    # write a brief
-hw myapp first-task --brief ~/brain/myapp/briefs/first-task.md --sdd none --dry-run
+hw myapp first-task --brief ~/brain/myapp/briefs/first-task.md --sdd none --no-report --dry-run
 hw myapp first-task --brief ~/brain/myapp/briefs/first-task.md --sdd none
 ```
+
+The dry run carries `--no-report` because, outside a herdr pane that `brain` opened, `hw`
+exits 1 with `HW_INVOKER_PANE UNRESOLVED` (an executor launched there could not report
+back). The launch line has none: run it from the brainer.
 
 ## What it asks
 

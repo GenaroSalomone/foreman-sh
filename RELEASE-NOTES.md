@@ -1,21 +1,24 @@
-# foreman-sh 0.3.11
+# foreman-sh 0.3.12
 
-A brainer resumed after a reboot comes back under its own account.
+A new Mac reaches `foreman-sh init` by following INSTALL.md as written.
 
 ## In short
 
-- **`brain <lane> --resume <id>` keeps the lane's account on a bare shell.** After a reboot the pane comes back without `CLAUDE_CONFIG_DIR`, and the resume used to look in the default account and fail with "No conversation found". It now exports the lane's verified account first.
-- **An account it cannot verify is still refused**, before anything is exported or started.
-- **`brain relaunch` and default-account lanes are unchanged.** A pane whose shell already carries the right account is left as it is.
+- **INSTALL.md starts with Homebrew.** Measured on a clean macOS 26.6 VM, the docs never said to install Homebrew first; INSTALL.md, the README quick start and the demo README now open with Homebrew's official installer.
+- **Every documented `hw … --dry-run` passes as written.** Outside a `brain` pane the old line exited 1 with `HW_INVOKER_PANE UNRESOLVED`; the docs now carry `--no-report`, with one line on why.
+- **Measured from zero:** on the clean VM, five commands and 44 s from the brew formula to a finished `foreman-sh init --yes`; a second `init` changes nothing. Homebrew itself came preinstalled in the image, so its install time is not in that number.
 
 ## What changed
 
-1 change since 0.3.10.
+2 changes since 0.3.11.
 
 ### Fixed
-- `brain <lane> --resume <id>` on a pane left as a bare shell (after a reboot)
-  starts the brainer under the lane's account; it used to look for the
-  conversation in the default account and say "No conversation found".
+- INSTALL.md and the README's Quickstart now start, on macOS, with Homebrew's own
+  installer (which also brings the Command Line Tools): a clean machine had no `brew`
+  and the docs never said so.
+- The documented `hw … --dry-run` (README, INSTALL.md, the demo) carries `--no-report`
+  and says why: outside a herdr pane that `brain` opened it exited 1 with
+  `HW_INVOKER_PANE UNRESOLVED`. `hw` itself is unchanged.
 
 ## Known limits
 
@@ -24,7 +27,7 @@ A brainer resumed after a reboot comes back under its own account.
   ARM64 only. WSL2 was not re-measured for this release, and mutation
   testing was not run on Windows.
 
-## Upgrading from 0.3.10
+## Upgrading from 0.3.11
 
 Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,

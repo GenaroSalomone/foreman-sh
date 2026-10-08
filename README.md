@@ -89,6 +89,18 @@ two more tools are optional:
 
 ## Quickstart
 
+### Prerequisite on macOS: Homebrew
+
+Every command below that starts with `brew` needs [Homebrew](https://brew.sh), and
+Homebrew needs Apple's Command Line Tools. Its installer asks for the Tools if they are
+missing, so one command covers both (skip it if `brew --version` already answers):
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"   # brew.sh's own installer; it also installs the Command Line Tools
+```
+
+When it ends, it prints two `eval "$(…/brew shellenv)"` lines to add to your shell profile; do that and open a new terminal.
+
 ### Quick start: `foreman-sh init`
 
 ```sh
@@ -178,9 +190,13 @@ Then, in the brainer (type it with Claude Code's `!` prefix, or ask the brainer
 to do it):
 
 ```sh
-hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none --dry-run   # shows the plan, creates nothing
+hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none --no-report --dry-run   # shows the plan, creates nothing
 hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none             # launches it
 ```
+
+Without `--no-report`, the dry run exits 1 with `HW_INVOKER_PANE UNRESOLVED` anywhere but a
+herdr pane that `brain` opened: `hw` will not launch an executor whose report has nowhere
+to go. `--no-report` is only for this preview; the launch line has none.
 
 An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 `task/hello`, and its report arrives in the brainer's session.

@@ -714,14 +714,19 @@ BRAIN="${HW_BRAIN_ROOT:-$_brain_root}"
 # --version needs no lane table: it must answer from a brain whose table is broken.
 case "${1:-}" in -V|--version) printf 'hw %s\n' "$(cli_version "$BRAIN")"; exit 0 ;; esac
 
-# ── hw-core: the verbs that run as a Go binary (T0, the pilot: receipt, log, handle, help) ──
+# ── hw-core: the verbs that run as a Go binary (T0: receipt, log, handle, help; T1: worktrees and the table of status) ──
 # THE DEFAULT IS BASH, AND NOTHING BELOW RUNS UNLESS HW_IMPL (or HW_IMPL_<VERB>) IS
 # SET. `go` execs hw-core for a ported verb; `bash` is the path that has always run
 # and is the rollback; `shadow` runs both, prints bash's answer and appends any
 # difference in stdout, stderr or exit status to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (HW_SHADOW_JSONL names another file). A hw-core older than core/'s sources is treated as not built. A hw-core that is
 # not built falls back to bash with ONE warning line. The contract hw-core keeps is
-# setup/contracts/hw.md; the bash of these four verbs is frozen, a fix to one goes
+# setup/contracts/hw.md; the bash of these verbs is frozen, a fix to one goes
 # to core/ (setup/decisions.md, «El núcleo de hw migra a Go»).
+#
+# `worktrees` is exec'd like the T0 verbs. `status` is NOT: hw-core prints the table half of it
+# (cmd_status) and bin/hw prints the rest, so `_core_inline` runs it where cmd_status was called,
+# and the same call serves `cmd_worktrees --quiet` inside `hw status`. In `shadow`, a verb that
+# writes (`worktrees --migrate`) is never run twice: bash answers alone.
 _core_impl_for() {  # <verb> → bash | go | shadow
   local up v
   up="$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
@@ -747,48 +752,96 @@ _core_stale() {  # <binary> — succeeds when a source in core/ is newer than it
   [ -d "$src" ] || return 1
   [ -n "$(find "$src" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$1" -print -quit 2>/dev/null)" ]
 }
+_core_shadow_log() {  # <tmp dir> <rc bash> <rc go> <verb> <argv…> — appends the difference between b.* and g.*, if any
+  local tmp="$1" rc_b="$2" rc_g="$3" log diffs="" s
+  shift 3
+  # bash coloured what it printed when hw was started on a terminal, and Go, redirected to a file, did not: that
+  # is not a difference in the answer, and logged it would keep shadow.jsonl from ever being empty on a terminal.
+  # The comparison (and the line) read the text without its colour; what the user is shown keeps it.
+  for s in b.out b.err g.out g.err; do LC_ALL=C sed $'s/\033\\[[0-9;]*m//g' "$tmp/$s" >"$tmp/$s.plain"; done
+  for s in out err; do cmp -s "$tmp/b.$s.plain" "$tmp/g.$s.plain" || diffs="$diffs std$s"; done
+  [ "$rc_b" = "$rc_g" ] || diffs="$diffs status"
+  [ -n "$diffs" ] || return 0
+  # the line carries transcript text: it goes to the user's state dir, never into the brain tree
+  log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
+  { mkdir -p "$(dirname "$log")" && jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg verb "$1" --arg argv "$*" \
+      --arg diffs "${diffs# }" --argjson bash_rc "$rc_b" --argjson go_rc "$rc_g" \
+      --rawfile bo "$tmp/b.out.plain" --rawfile go_ "$tmp/g.out.plain" --rawfile be "$tmp/b.err.plain" --rawfile ge "$tmp/g.err.plain" \
+      '{at: $at, verb: $verb, argv: $argv, differs: ($diffs | split(" ")), bash_rc: $bash_rc, go_rc: $go_rc,
+        stdout: {bash: $bo[0:400], go: $go_[0:400]}, stderr: {bash: $be[0:400], go: $ge[0:400]}}' >>"$log"; } 2>/dev/null || true
+}
 _core_shadow() {  # <core> <argv...> — runs both, prints bash's, exits with bash's status
-  local core="$1" tmp rc_b rc_g log diffs="" s
+  local core="$1" tmp rc_b rc_g
   shift
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-shadow.XXXXXX")" || { warn "hw-core shadow: no temporary directory; running the bash implementation"; return 0; }
   set +e
-  env -u HW_IMPL_RECEIPT -u HW_IMPL_LOG -u HW_IMPL_HANDLE -u HW_IMPL_HELP HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+  env -u HW_IMPL_RECEIPT -u HW_IMPL_LOG -u HW_IMPL_HANDLE -u HW_IMPL_HELP -u HW_IMPL_STATUS -u HW_IMPL_WORKTREES HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
   # bash has already written what the verb writes (the receipt's completion_marker); Go reads it and must not append it again
   HW_CORE_READONLY=1 "$core" "$@" >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
   set -e
-  for s in out err; do cmp -s "$tmp/b.$s" "$tmp/g.$s" || diffs="$diffs std$s"; done
-  [ "$rc_b" = "$rc_g" ] || diffs="$diffs status"
-  if [ -n "$diffs" ]; then
-    # the line carries transcript text: it goes to the user's state dir, never into the brain tree
-    log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
-    { mkdir -p "$(dirname "$log")" && jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg verb "$1" --arg argv "$*" \
-        --arg diffs "${diffs# }" --argjson bash_rc "$rc_b" --argjson go_rc "$rc_g" \
-        --rawfile bo "$tmp/b.out" --rawfile go_ "$tmp/g.out" --rawfile be "$tmp/b.err" --rawfile ge "$tmp/g.err" \
-        '{at: $at, verb: $verb, argv: $argv, differs: ($diffs | split(" ")), bash_rc: $bash_rc, go_rc: $go_rc,
-          stdout: {bash: $bo[0:400], go: $go_[0:400]}, stderr: {bash: $be[0:400], go: $ge[0:400]}}' >>"$log"; } 2>/dev/null || true
-  fi
+  _core_shadow_log "$tmp" "$rc_b" "$rc_g" "$@"
   cat "$tmp/b.out"; cat "$tmp/b.err" >&2
   rm -rf "$tmp"
   exit "$rc_b"
 }
+_core_warned=""
+_core_usable() {  # <verb> — sets _core_bin and succeeds when hw-core can answer it; warns ONCE when it cannot
+  _core_bin="$(_core_find)"
+  if [ -z "$_core_bin" ]; then
+    [ -n "$_core_warned" ] || warn "hw-core is not built (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core builds it"
+  elif [ -z "${HW_CORE:-}" ] && _core_stale "$_core_bin"; then
+    [ -n "$_core_warned" ] || warn "hw-core is older than the sources in core/ (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core rebuilds it"
+  else
+    return 0
+  fi
+  _core_warned=1
+  return 1
+}
+# `_core_inline <verb> <bash function> [args…]` — a verb whose Go half answers a PART of what bin/hw prints:
+# the table of `hw status`, and the audit that `hw status` runs as `hw worktrees --quiet`. The environment
+# carries what the bash had in variables (HW_STATUS_PROJECT, _ALL, _ORPHANS_JSON). The function is what ran
+# before hw-core existed, and what runs when hw-core is off, missing or older than its sources.
+_core_inline() {
+  local verb="$1" fn="$2" tmp rc_b rc_g a
+  shift 2
+  _core_mode="$(_core_impl_for "$verb")"
+  if [ "$_core_mode" = shadow ]; then
+    for a in "$@"; do [ "$a" != --migrate ] || _core_mode=bash; done   # a writer is never run twice
+  fi
+  if [ "$_core_mode" != bash ] && _core_usable "$verb"; then
+    export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+    # a held job of `hw status` has a file for stdout, so hw-core cannot see the terminal bash started on
+    if [ "$_core_mode" = go ]; then HW_CORE_COLOR="${C_0:+1}" "$_core_bin" "$verb" "$@"; return $?; fi
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-shadow.XXXXXX")" || { warn "hw-core shadow: no temporary directory; running the bash implementation"; "$fn" "$@"; return $?; }
+    # a subshell, so a `die` inside the bash function ends its answer, not this one. -e is OFF out here, so the
+    # status of the subshell is read and the temp dir is cleaned whatever bash did; it is ON inside, as it is
+    # when the function runs alone, so a command that fails ends bash's answer with ITS status, not 0. Not
+    # `( … ) || rc_b=$?`: a list's left side runs with -e ignored, subshell and all, and `false; echo` would go on.
+    set +e
+    ( set -e; "$fn" "$@" ) >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+    HW_CORE_READONLY=1 "$_core_bin" "$verb" "$@" >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
+    set -e
+    _core_shadow_log "$tmp" "$rc_b" "$rc_g" "$verb" "$@"
+    cat "$tmp/b.out"; cat "$tmp/b.err" >&2
+    rm -rf "$tmp"
+    return "$rc_b"
+  fi
+  "$fn" "$@"
+}
 case "${1:-}" in
-  receipt|log|handle|help)
+  receipt|log|handle|help|worktrees)
     if [ "$1" = log ] && { [ -n "${HW_TASK:-}" ] || [ -n "${HW_RUN:-}" ]; }; then
       _core_mode=bash   # `log` is a brainer verb: the executor gate below refuses it, and Go must not skip that
     else
       _core_mode="$(_core_impl_for "$1")"
     fi
-    if [ "$_core_mode" != bash ]; then
-      _core_bin="$(_core_find)"
-      if [ -z "$_core_bin" ]; then
-        warn "hw-core is not built (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core builds it"
-      elif [ -z "${HW_CORE:-}" ] && _core_stale "$_core_bin"; then
-        warn "hw-core is older than the sources in core/ (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core rebuilds it"
-      else
-        export HW_BRAIN_ROOT="$BRAIN"
-        if [ "$_core_mode" = go ]; then exec "$_core_bin" "$@"; fi
-        _core_shadow "$_core_bin" "$@"
-      fi
+    if [ "$_core_mode" = shadow ] && [ "$1" = worktrees ]; then
+      for _core_a in "$@"; do [ "$_core_a" != --migrate ] || _core_mode=bash; done   # a writer is never run twice
+    fi
+    if [ "$_core_mode" != bash ] && _core_usable "$1"; then
+      export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+      if [ "$_core_mode" = go ]; then exec "$_core_bin" "$@"; fi
+      _core_shadow "$_core_bin" "$@"
     fi
     ;;
 esac
@@ -11746,10 +11799,16 @@ _outbox_roots() {  # $1=project (optional) — one directory per line
   done <<< "$(_status_worktree_roots)"
 }
 _outbox_metas() {  # $1=project (optional) — oldest first
-  local r
+  local r deep
   while IFS= read -r r; do
     [ -n "$r" ] || continue
-    find "$r" -maxdepth 8 \( -name node_modules -o -name .git \) -prune -o -type f -name '*.meta' -path '*/.hw/*/outbox/*' -print 2>/dev/null
+    # A run's `.hw` sits at <root>/<task>/.hw or <root>/<lane>/<task>/.hw, so no directory three
+    # levels down that is not a `.hw` (or inside one) can lead to an outbox: prune it, or the walk
+    # reads every task's whole source tree (about 17 of `hw status`'s 22 s on this machine).
+    deep="$r/*/*/*"  # MUTATION-ANCHOR: 827-M01
+    find "$r" -maxdepth 8 \( -name node_modules -o -name .git \) -prune -o \
+      \( -type d -path "$deep" ! -name .hw ! -path '*/.hw/*' -prune \) -o \
+      -type f -name '*.meta' -path '*/.hw/*/outbox/*' -print 2>/dev/null
   done <<< "$(_outbox_roots "${1:-}")" | sort -u | while IFS= read -r m; do
     # GNU stat first: its `-f` is filesystem status, which prints a block AND fails
     # on `%m`, so the BSD spelling tried first left that block in the sort key.
@@ -11927,18 +11986,39 @@ if [ "$1" = status ]; then
   if [ -z "${HW_STATUS_ORPHANS_JSON:-}" ]; then
     _orph_tmp="$(mktemp "${TMPDIR:-/tmp}/hw-orphans.XXXXXX")" && export HW_STATUS_ORPHANS_JSON="$_orph_tmp"
   fi
-  cmd_status
+  # THE SECTIONS BELOW READ NOTHING THE TABLE WRITES, so they start now and run
+  # while it is built; each is printed where it always was, in this order
+  # (lib/hw/status.sh, "what `hw status` runs side by side"). Only the orphans
+  # line needs the table's own output, so it stays in line.
+  # hw-core warns ONCE when HW_IMPL asks for it and it cannot answer; the worktrees job below is a
+  # subshell whose `_core_warned` this shell never sees, so the warning is given here, first, and
+  # the job inherits the mark.
+  _core_mode="$(_core_impl_for status)"; [ "$_core_mode" = bash ] || _core_usable status || true
+  _status_par_init
+  trap '_status_par_done' EXIT   # a section that dies, a closed pipe: the held output is not left in $TMPDIR
+  _status_par_start release _release_quiet
+  _status_par_start gate _gate_quiet
+  _status_par_start outbox _outbox_quiet "$HW_STATUS_PROJECT"
+  _status_par_start worktrees _core_inline worktrees cmd_worktrees --quiet
+  if [ -z "$HW_STATUS_PROJECT" ]; then
+    _status_par_start tabs _tabs_quiet
+    _status_par_start hygiene _hygiene_quiet
+    _status_par_start rules _rules_quiet
+    _status_par_start decisions _decisions_quiet
+  fi
+  _core_inline status cmd_status
   _orphans_quiet "${HW_STATUS_ORPHANS_JSON:-}"
   [ -z "$_orph_tmp" ] || rm -f "$_orph_tmp"
-  _release_quiet
-  _gate_quiet
-  _outbox_quiet "$HW_STATUS_PROJECT"
+  _status_par_replay release
+  _status_par_replay gate
+  _status_par_replay outbox
   if [ -z "$HW_STATUS_PROJECT" ]; then
-    cmd_worktrees --quiet; _tabs_quiet; _hygiene_quiet; _rules_quiet; _decisions_quiet
+    _status_par_replay worktrees; _status_par_replay tabs; _status_par_replay hygiene; _status_par_replay rules; _status_par_replay decisions  # MUTATION-ANCHOR: 827-M02
   else
-    cmd_worktrees --quiet
+    _status_par_replay worktrees
     info "scoped to $HW_STATUS_PROJECT — \`hw status\` with no project adds the cross-lane checks"
   fi
+  _status_par_done
   # A NEW VERB NOBODY FINDS IS A VERB NOBODY READS. `hw status` answers whether a
   # task reported; it deliberately does not carry what the report SAID, because
   # its tick is derived from done_status alone. Point at the thing that does,

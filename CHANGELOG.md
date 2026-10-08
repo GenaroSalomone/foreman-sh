@@ -4,6 +4,17 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.10] — 2026-10-08
+
+### Changed
+- `hw status` runs in about 1 second instead of about 20 with 15 live panes, and `hw status
+  <lane>` in under 1 second. The outbox scan no longer walks every task tree, and the closing
+  sections run in parallel but print in the same order. The output is byte-identical, and
+  `HW_STATUS_SERIAL=1` runs them one after another.
+
+### Fixed
+- `hw status` no longer crashes on a receipt line that is a JSON list.
+
 ## [0.3.9] — 2026-10-07
 
 ### Added

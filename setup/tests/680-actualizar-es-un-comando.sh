@@ -364,7 +364,7 @@ saw_mutant "M10 status names foreman-sh upgrade on an install that has no forema
 
 mutate_hw() {  # a copy of the brain, its hw never asking
   rm -rf "$TMP/mut-brain-hw"; cp -R "$BR" "$TMP/mut-brain-hw"
-  replace_in "$TMP/mut-brain-hw/bin/hw" '  _release_quiet
+  replace_in "$TMP/mut-brain-hw/bin/hw" '  _status_par_start release _release_quiet
 ' ''
 }
 mutate_hw

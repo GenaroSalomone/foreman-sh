@@ -1,24 +1,25 @@
-# foreman-sh 0.3.9
+# foreman-sh 0.3.10
 
-A fresh install now reaches its first dispatch with one command.
+`hw status` answers in about a second.
 
 ## In short
 
-- **`foreman-sh init`** (`./install.sh init`) checks the prerequisites and names the install command for any that are missing, without installing them. It builds the brain and a `demo` lane over a toy repository with a sample brief, checks the Claude account and engram, and ends with a dry-run dispatch of that brief.
-- **Safe to run twice.** A second run changes nothing and says so in about 2 seconds. `--yes` answers its questions and `--dry-run` prints the plan only.
-- **Fewer steps.** The manual path was 9 commands with one failure; `init --yes` is one command with none. The clean-install check now runs `init` twice from an empty HOME.
+- **`hw status` is about 17 times faster.** With 15 live panes it takes about 1.2 s instead of 20 s, and `hw status <lane>` takes 0.9 s instead of 3.6 s. The output is byte for byte what it was.
+- **The cause was one scan, not the language.** An outbox search walked every task tree. It now stops at the depth where reports live, and the closing sections run in parallel and print in order.
+- **A receipt line that is a JSON list** no longer crashes `hw status`.
 
 ## What changed
 
-1 change since 0.3.8.
+2 changes since 0.3.9.
 
-### Added
-- `foreman-sh init` (`./install.sh init`): from a fresh install to a first dispatch in one
-  command. It checks git, jq, python3, herdr, claude, rg, fd and sd (naming a missing one with
-  its install command, never installing it), builds the brain and a `demo` lane over a toy
-  repository with a sample brief, checks the Claude account and engram, and ends with a dry-run
-  dispatch of that brief. A second run changes nothing and says so; `--yes` answers its
-  questions and `--dry-run` prints the plan.
+### Changed
+- `hw status` runs in about 1 second instead of about 20 with 15 live panes, and `hw status
+  <lane>` in under 1 second. The outbox scan no longer walks every task tree, and the closing
+  sections run in parallel but print in the same order. The output is byte-identical, and
+  `HW_STATUS_SERIAL=1` runs them one after another.
+
+### Fixed
+- `hw status` no longer crashes on a receipt line that is a JSON list.
 
 ## Known limits
 
@@ -27,7 +28,7 @@ A fresh install now reaches its first dispatch with one command.
   ARM64 only. WSL2 was not re-measured for this release, and mutation
   testing was not run on Windows.
 
-## Upgrading from 0.3.8
+## Upgrading from 0.3.9
 
 Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,

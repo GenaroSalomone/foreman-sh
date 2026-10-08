@@ -525,6 +525,8 @@ def receipt_pane(rundir):
                     rec = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(rec, dict):  # MUTATION-ANCHOR: 828-M01
+                    continue  # a list, string, number or null is valid JSON and not a record
                 if rec.get("key") == "pane" and rec.get("value"):
                     pane = rec["value"]
     except OSError:
@@ -541,6 +543,8 @@ def receipt_value(rundir, key):
                 try:
                     rec = json.loads(line)
                 except ValueError:
+                    continue
+                if not isinstance(rec, dict):
                     continue
                 if rec.get("key") == key and rec.get("value"):
                     found = rec["value"]
@@ -1563,9 +1567,75 @@ _status_engram_labels() {
   for p in $HW_LANES; do printf '%s=%s\n' "$p" "$(_engram_label "$p")"; done
 }
 
+# ── what `hw status` runs side by side ──────────────────────────────────────
+# The sections after the table read nothing the table writes (a git call, a find,
+# an audit each), and they were run one after another: ~5 s of a 6 s status once
+# the outbox walk was bounded. They are started up front and PRINTED IN THE ORDER
+# THEY HAD, so the output is the same bytes. Within one invocation only: the
+# temp dir lives for this run and `_status_par_done` removes it.
+#
+# A job's output is captured and replayed at its place. When stdout and stderr
+# are one file (a terminal), a job's two streams go to ONE capture, so the order
+# between its `info` and its `warn` is kept; when they are two files or pipes,
+# they stay two captures and each is replayed to its own stream. A job's exit
+# status is replayed too, so a section that `die`d still ends the command.
+_STATUS_PAR_DIR=""
+_status_par_init() {
+  [ -n "$_STATUS_PAR_DIR" ] && return 0
+  _STATUS_PAR_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hw-status-par.XXXXXX")" \
+    || die "hw status: cannot create a temp directory under ${TMPDIR:-/tmp}"
+}
+_status_par_run() {  # <slot> <command…> — in the foreground, its output held for the replay
+  local slot="$1"; shift
+  if [ /dev/fd/1 -ef /dev/fd/2 ]; then  # MUTATION-ANCHOR: 827-M03
+    ( "$@" ) >"$_STATUS_PAR_DIR/$slot.out" 2>&1
+  else
+    ( "$@" ) >"$_STATUS_PAR_DIR/$slot.out" 2>"$_STATUS_PAR_DIR/$slot.err"
+  fi  # MUTATION-ANCHOR-END: 827-M03
+}
+# HW_STATUS_SERIAL=1 is the old order of work: nothing starts early, each job runs
+# when its output is first needed. It is the oracle the parallel path is held to
+# (setup/tests/827-*).
+_status_par_start() {  # <slot> <command…>
+  local slot="$1"; shift
+  _status_par_init
+  if [ "${HW_STATUS_SERIAL:-0}" = 1 ]; then
+    printf -v "_STATUS_PAR_CMD_$slot" '%q ' "$@"
+    return 0
+  fi
+  _status_par_run "$slot" "$@" &
+  printf -v "_STATUS_PAR_PID_$slot" '%s' "$!"
+}
+_status_par_wait() {  # <slot> — finished and captured; a no-op for a slot never started
+  local pv="_STATUS_PAR_PID_$1" cv="_STATUS_PAR_CMD_$1"
+  _STATUS_PAR_RC=0
+  if [ -n "${!pv:-}" ]; then
+    wait "${!pv}" || _STATUS_PAR_RC=$?
+  elif [ -n "${!cv:-}" ]; then
+    eval "_status_par_run $1 ${!cv}" || _STATUS_PAR_RC=$?
+  fi
+  printf -v "$pv" '%s' ""; printf -v "$cv" '%s' ""
+}
+_status_par_replay() {  # <slot> — its stdout, then its stderr, then its exit status
+  local f="$_STATUS_PAR_DIR/$1"
+  _status_par_wait "$1"
+  [ ! -f "$f.out" ] || cat "$f.out"
+  [ ! -s "$f.err" ] || cat "$f.err" >&2
+  return "$_STATUS_PAR_RC"  # MUTATION-ANCHOR: 827-M04
+}
+_status_par_done() { [ -z "$_STATUS_PAR_DIR" ] || rm -rf "$_STATUS_PAR_DIR"; _STATUS_PAR_DIR=""; }
+
 cmd_status() {
   local ws_json panes_json agents_json exited_ndjson server_started herdr_ok=1
 
+  # THE TWO AUDITS AND THE SERVER'S START TIME DEPEND ON NOTHING BELOW: they start
+  # now and their output is printed where it always was (see "what `hw status` runs
+  # side by side"). `_herdr_server_started` waits on the socket's owner (`lsof`),
+  # ~0.2 s, while herdr-rpc below sits out its 600 ms idle window.
+  _status_par_init
+  _status_par_start server_started _herdr_server_started
+  _status_par_start engram_audit eval 'python3 "$(_engram_proxy_bin)" --audit 2>&1 || true'
+  _status_par_start memory_audit eval 'python3 "$HW_BIN_DIR/memory-audit" 2>&1 || true'  # MUTATION-ANCHOR: 660-M05
   ws_json="$(_capture herdr workspace list)" || { herdr_ok=0; warn "herdr unreachable: $(printf '%s' "$ws_json" | head -1)"; ws_json='{}'; }
   if [ "$herdr_ok" = 1 ]; then
     # STDOUT ONLY. `_capture` exists to turn a failure's stderr into a readable
@@ -1584,7 +1654,8 @@ cmd_status() {
   else
     panes_json='{}'; agents_json='{}'; exited_ndjson=""
   fi
-  server_started="$(_herdr_server_started)"
+  _status_par_wait server_started
+  server_started="$(cat "$_STATUS_PAR_DIR/server_started.out")"
 
   _status_python_source |
   HW_ST_OK="$herdr_ok" HW_ST_RUNENV="$HW_BIN_DIR/runenv" \
@@ -1597,8 +1668,10 @@ cmd_status() {
   python3 -
   # THE LABELS THE PROXY DID NOT HOLD (design §5): read-only, one line, never a
   # failed status. Nonzero is a finding (3) or an unreadable store (1).
-  python3 "$(_engram_proxy_bin)" --audit 2>&1 || true
+  # Both were started at the top (they read nothing the table writes) and are
+  # replayed here, after it, where they always printed.
+  _status_par_replay engram_audit
   # THE ALWAYS-LOADED MEMORY INDEXES, same contract: read-only, one line, and
   # nothing at all when there is nothing to say (docs/brief-and-memory.md § Memory).
-  python3 "$HW_BIN_DIR/memory-audit" 2>&1 || true  # MUTATION-ANCHOR: 660-M05
+  _status_par_replay memory_audit
 }

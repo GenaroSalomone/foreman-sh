@@ -30,6 +30,18 @@ export function span(ms: number): string {
   return `${Math.floor(s / 86400)}d`
 }
 
+// A duration to the minute, the way a person reads how long something has run: `41m`, `3h12m`,
+// `2d4h`; under a minute, seconds. `span` above says only the largest unit and serves `ago`.
+export function dur(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h${String(m % 60).padStart(2, '0')}m`
+  return `${Math.floor(h / 24)}d${h % 24}h`
+}
+
 // Every string drawn goes through here: a control character or an escape sequence
 // (hw's why_not texts carry newlines) makes the engine refuse the whole tree.
 const scrub = (text: string) =>
@@ -39,6 +51,9 @@ const cut = (text: string, max: number) => {
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`
 }
 const WHY_MAX = 200
+
+// The colour of the existing attention palette (an ask) that marks a card gone quiet.
+const STALL_COLOR = 'yellow'
 
 const LOUD = new Set(['challenge', 'ask', 'blocked', 'report'])
 
@@ -110,14 +125,31 @@ function ctxBar(pct: number): string {
   return '▰'.repeat(n) + '▱'.repeat(6 - n)
 }
 
-function ctxMeta(r: Row): string {
-  return r.ctx.pct === null ? 'ctx n/a' : `ctx ${Math.round(r.ctx.pct)}% ${ctxBar(r.ctx.pct)}`
+// Tokens the way the statusline writes them: 900, 237.5k, 1.2M.
+function tokensText(n: number): string {
+  const f = (x: number, u: string) => `${x.toFixed(1).replace(/\.0$/, '')}${u}`
+  return n >= 1_000_000 ? f(n / 1_000_000, 'M') : n >= 1000 ? f(n / 1000, 'k') : `${n}`
 }
 
-function RowCard({ els, r, now, dim, act, notes }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes }) {
+// A percent only when the window is known; the tokens alone when it is not; n/a when nothing is.
+function ctxMeta(r: Row): string {
+  if (r.ctx.tokens === null) return 'ctx n/a'
+  return r.ctx.pct === null ? `ctx ${tokensText(r.ctx.tokens)}` : `ctx ${Math.round(r.ctx.pct)}% ${ctxBar(r.ctx.pct)}`
+}
+
+// The one decision about a stalled card: a working row whose last progress is older than the
+// threshold hw published (rules.no_progress_after_ms). How long, or null when it is not stalled.
+function noProgress(r: Row, now: number, thresholdMs: number): number | null {
+  if (r.attention !== 'working' || r.last_progress_at === null) return null
+  const age = now - r.last_progress_at
+  return age > thresholdMs ? age : null
+}
+
+function RowCard({ els, r, now, dim, act, notes, thresholdMs }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; thresholdMs: number }) {
   const { Box, Text, Button, Input } = els
   const badge = BADGE[r.attention] ?? { color: undefined, dim: true }
-  const color = dim || badge.dim ? undefined : badge.color
+  const stalled = noProgress(r, now, thresholdMs)
+  const color = dim || badge.dim ? undefined : stalled !== null ? STALL_COLOR : badge.color
   const meta = [
     cut(`${r.vendor || '—'} · ${r.model || '—'} · ${r.effort || '—'}`, 120),
     ctxMeta(r),
@@ -150,6 +182,14 @@ function RowCard({ els, r, now, dim, act, notes }: { els: Els; r: Row; now: numb
       </Text>,
     )
   }
+  if (r.attention === 'working') {
+    lines.push(
+      <Box key="times" gap={1}>
+        <Text key="worked" dimColor>{`working ${dur(now - r.dispatched_at)}${r.turn_started_at === null ? '' : ` · turn ${dur(now - r.turn_started_at)}`}`}</Text>
+        {stalled === null ? null : <Text key="stall" bold={!dim} color={dim ? undefined : STALL_COLOR}>{`no progress ${dur(stalled)}`}</Text>}
+      </Box>,
+    )
+  }
   if (r.children_running !== null) {
     lines.push(
       <Text key="children" dimColor>
@@ -160,7 +200,7 @@ function RowCard({ els, r, now, dim, act, notes }: { els: Els; r: Row; now: numb
   if (r.rulings_pending.count > 0) {
     lines.push(
       <Text key="rulings" dimColor={dim}>
-        {`${r.rulings_pending.count} ruling${r.rulings_pending.count === 1 ? '' : 's'} queued`}
+        {`${r.rulings_pending.count} ruling${r.rulings_pending.count === 1 ? '' : 's'} queued${r.rulings_pending.oldest_at === null ? '' : ` ${dur(now - r.rulings_pending.oldest_at)}`}`}
       </Text>,
     )
   }
@@ -283,7 +323,7 @@ export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes) {
       {m.cls === 'fresh' && rows.length === 0 ? <Text key="empty" dimColor>no executors</Text> : null}
       {rows.length > 0 ? (
         <Box key="cards" flexDirection="column">
-          {rows.map(r => RowCard({ els, r, now, dim, act, notes }))}
+          {rows.map(r => RowCard({ els, r, now, dim, act, notes, thresholdMs: m.state?.rules.no_progress_after_ms ?? Infinity }))}
         </Box>
       ) : null}
     </Box>

@@ -53,8 +53,9 @@
         },
         "rules": {
           "type": "object", "additionalProperties": false,
-          "required": ["cut"],
+          "required": ["cut", "no_progress_after_ms"],
           "properties": {
+            "no_progress_after_ms": { "$ref": "#/$defs/ms", "description": "The one threshold of the 'no progress' mark: a card whose turn is `working` and whose last_progress_at is older than this is marked. 30 min (the writer's NO_PROGRESS_MS); published so the mod holds no copy of the constant." },
             "cut": {
               "type": "object", "additionalProperties": false,
               "required": ["running", "since_ms", "holder"],
@@ -79,7 +80,7 @@
     },
     "row": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "project", "task", "pane", "run", "task_n", "vendor", "model", "effort", "agent_status", "turn_state", "turn_ended_at", "turns", "children_running", "ctx", "rulings_pending", "attention", "attention_since", "report", "ask", "actions"],
+      "required": ["id", "project", "task", "pane", "run", "task_n", "vendor", "model", "effort", "agent_status", "turn_state", "turn_ended_at", "dispatched_at", "turn_started_at", "last_progress_at", "turns", "children_running", "ctx", "rulings_pending", "attention", "attention_since", "report", "ask", "actions"],
       "properties": {
         "id": { "type": "string", "description": "`<project>:<task>`. Unique in a file." },
         "project": { "type": "string" },
@@ -96,16 +97,19 @@
           "description": "The `turn_state` token the executor's turn-end adapter published; null before its first turn ends or when the vendor publishes none."
         },
         "turn_ended_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }] },
+        "dispatched_at": { "$ref": "#/$defs/ms", "description": "When the run began: the first line of its receipt, else its dispatch file, else its env file. The card says `working <now - dispatched_at>`." },
+        "turn_started_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }], "description": "When the current turn began, for a `working` row; null otherwise. No adapter publishes a turn start, so it is derived from the tokens: the previous turn's `turn_ended_at`, or dispatched_at in the first turn. A turn that started after an idle gap (a ruling woke it) is therefore overstated by that gap." },
+        "last_progress_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }], "description": "For a `working` row, the newest of: dispatched_at, the last commit of the executor's worktree (its HEAD reflog), the newest file mtime in that worktree (not `.git`, `.hw`, `node_modules` or other caches; cached 30-60 s), and the mtime of its transcript (claude only: an opencode or codex executor woken after an idle gap reads as stalled until its first commit or file write). null for a row that is not working." },
         "turns": { "type": ["integer", "null"], "minimum": 0 },
         "children_running": { "type": ["string", "null"], "description": "Free text from the adapter, e.g. `2 shell`; null when none." },
         "ctx": {
           "type": "object", "additionalProperties": false,
           "required": ["pct", "tokens", "source"],
-          "description": "Context use. pct, tokens and source are all null when the vendor publishes nothing (the row then shows `ctx n/a`); never a guess.",
+          "description": "Context use. tokens and source are null when nothing is known (the row then shows `ctx n/a`); never a guess. pct is null when the tokens are known and the window is not (the row then shows the tokens alone): no window is ever assumed.",
           "properties": {
             "pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
             "tokens": { "type": ["integer", "null"], "minimum": 0 },
-            "source": { "enum": ["turn-end", null] }
+            "source": { "enum": ["statusline", "turn-end", "live", null], "description": "`statusline`: the claude pane's own statusline (`Ctx: <tokens> | Ctx Used: <pct>%`), read by the writer, the source when it exists; `turn-end`: published by the executor's Stop hook; `live`: read by the writer from the transcript while the executor works (the turn-end value wins when it is newer). The last two know the tokens and, unless the model id names its window (`[1m]`), not the percent." }
           }
         },
         "rulings_pending": {
@@ -178,7 +182,7 @@
     "preflight": {
       "type": "object", "additionalProperties": false,
       "required": ["schema", "level", "rules"],
-      "description": "`hw preflight --json -- <dispatch argv>` takes the argv of the dispatch WITHOUT its leading `hw` (so `hw demo task-a --brief b.md` is checked as `-- demo task-a --brief b.md`) and prints exactly one of these and exits 0 whatever the level; a non-zero exit or unparsable output means preflight is unavailable (the mod fails open). It has no side effects. `level` is the highest `rules[].level`, `ok` when rules is empty. `block` says hw itself would refuse the dispatch; the mod only displays it (v2 stays warn-only).",
+      "description": "`hw preflight --json -- <dispatch argv>` takes the argv of the dispatch WITHOUT its leading `hw` (so `hw demo task-a --brief b.md` is checked as `-- demo task-a --brief b.md`) and prints exactly one of these and exits 0 whatever the level; a non-zero exit or unparsable output means preflight is unavailable (the mod fails open). It changes nothing a person keeps: its only write is the cache of tool versions under `$XDG_CACHE_HOME/hw/deps` (derived data, rebuilt on a miss). `level` is the highest `rules[].level`, `ok` when rules is empty. `block` says hw itself would refuse the dispatch, or (dep-floor) that a tool the dispatch needs is below its floor and the dispatch would fail half way; the mod only displays it (v2 stays warn-only).",
       "properties": {
         "schema": { "const": 1 },
         "level": { "enum": ["ok", "warn", "block"] },
@@ -188,7 +192,7 @@
             "type": "object", "additionalProperties": false,
             "required": ["id", "level", "msg"],
             "properties": {
-              "id": { "enum": ["account-override", "cut-running"], "description": "account-override: an explicit --account that differs from the lane default; `block` only where hw's own account resolution would refuse it, otherwise `warn`. cut-running: a suite cut holds the gate; warn, for any dispatch, never block." },
+              "id": { "enum": ["account-override", "cut-running", "dep-floor"], "description": "account-override: an explicit --account that differs from the lane default; `block` only where hw's own account resolution would refuse it, otherwise `warn`. cut-running: a suite cut holds the gate; warn, for any dispatch, never block. dep-floor: a tool this dispatch uses (herdr, engram, the lane's agent, gentle-ai under --sdd gentle) is older than its floor in lib/hw/deps.conf (`block`; the message names the version, the floor and the command to update) or answered with no readable version (`warn`). A tool that is not installed raises nothing. There is one rule per tool, so the id can repeat." },
               "level": { "enum": ["warn", "block"] },
               "msg": { "type": "string", "maxLength": 240 }
             }

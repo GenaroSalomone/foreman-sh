@@ -15,6 +15,9 @@ export type Row = {
   effort?: string | null
   agent_status: string
   turn_state: string | null
+  dispatched_at: number
+  turn_started_at: number | null
+  last_progress_at: number | null
   children_running: string | null
   ctx: { pct: number | null; tokens: number | null; source: string | null }
   rulings_pending: { count: number; oldest_at: number | null }
@@ -47,7 +50,7 @@ export type State = {
   generated_at: number
   herdr: { ok: boolean; error: string | null }
   totals: Record<string, number>
-  rules: { cut: { running: boolean; since_ms: number | null; holder: string | null } }
+  rules: { cut: { running: boolean; since_ms: number | null; holder: string | null }; no_progress_after_ms: number }
   rows: Row[]
 }
 
@@ -78,6 +81,9 @@ function badRow(r: unknown, i: number): string | null {
   if (!nullOr(r.turn_state, isStr)) return `${at}.turn_state`
   if (!nullOr(r.children_running, isStr)) return `${at}.children_running`
   if (!nullOr(r.attention_since, isInt)) return `${at}.attention_since`
+  if (!isInt(r.dispatched_at)) return `${at}.dispatched_at`
+  if (!nullOr(r.turn_started_at, isInt)) return `${at}.turn_started_at`
+  if (!nullOr(r.last_progress_at, isInt)) return `${at}.last_progress_at`
   const ctx = r.ctx
   if (!isObj(ctx) || !nullOr(ctx.pct, x => typeof x === 'number')) return `${at}.ctx`
   const rp = r.rulings_pending
@@ -131,6 +137,7 @@ export function parse(text: string, size: number): { state: State } | { error: s
   if (!isObj(cut) || typeof cut.running !== 'boolean' || !nullOr(cut.holder, isStr)) {
     return { error: 'rules.cut' }
   }
+  if (!isInt((v.rules as Record<string, unknown>).no_progress_after_ms)) return { error: 'rules.no_progress_after_ms' }
   if (!Array.isArray(v.rows)) return { error: 'rows' }
   for (let i = 0; i < v.rows.length; i++) {
     const bad = badRow(v.rows[i], i)

@@ -108,11 +108,13 @@ class World:
         os.makedirs(self.work, exist_ok=True)
         self.herdr = os.path.join(tmp, "herdr")
         self.panes_json = os.path.join(tmp, "panes.json")
+        self.screens_dir = os.path.join(tmp, "screens")   # what `herdr agent read <pane>` prints, one file per pane
+        self.reads_log = os.path.join(tmp, "reads.log")    # one line per `agent read` the stub answered
 
     # ── building ──
     def executor(self, project="demo", task=None, *, pane=None, run=None, seq=1, vendor="claude", status="idle",
                  tokens=None, invoker=None, done=False, blocked_waiting=False, reopened=False, holds=(),
-                 rulings=(), model="claude-sonnet-5-5", cwd=None, with_run=True, effort=None):
+                 rulings=(), model="claude-sonnet-5-5", cwd=None, with_run=True, effort=None, dispatched_at=None, screen=None):
         self.counter += 1
         n = self.counter
         task = task or "task-%02d" % n
@@ -127,7 +129,11 @@ class World:
             with open(os.path.join(rd, "env"), "w") as fh:
                 fh.write("# written by hw\n" + "".join("%s='%s'\n" % kv for kv in env.items()))
             with open(os.path.join(rd, "receipt.jsonl"), "w") as fh:
-                fh.write(json.dumps({"key": "model_running", "value": model}) + "\n")
+                # real receipts carry the time of each fact: the first one is when the run began
+                line = {"key": "model_running", "value": model}
+                if dispatched_at is not None:
+                    line["at"] = iso(dispatched_at)
+                fh.write(json.dumps(line) + "\n")
             if effort is not None:  # the dispatch file's shape: `effort=<v>  (mark)`
                 open(os.path.join(rd, "dispatch"), "w").write("model=%s  (chosen)\n  effort=%s  (chosen)\n" % (model, effort))
             if seq > 1:
@@ -147,6 +153,9 @@ class World:
         p = {"pane_id": pane, "agent": vendor, "agent_status": status, "cwd": wd, "tokens": dict(tokens or {})}
         p["tokens"].update({"hw_project": project, "hw_task": task, "hw_run": run})
         self.panes.append(p)
+        if screen is not None:
+            os.makedirs(self.screens_dir, exist_ok=True)
+            open(os.path.join(self.screens_dir, pane.replace(":", "_")), "w").write(screen)
         return {"pane": pane, "run": run, "rundir": rd, "taskdir": (rd if seq == 1 else os.path.join(rd, "t%d" % seq)),
                 "task": task, "project": project, "pane_item": p}
 
@@ -165,11 +174,23 @@ class World:
             self.panes.append({"pane_id": "w9:p%d" % i, "agent_status": "unknown", "cwd": self.tmp})
 
     # ── the herdr stub ──
-    def publish(self, fail=False):
+    def publish(self, fail=False, hang_reads=False):
         json.dump({"id": "cli:pane:list", "result": {"panes": self.panes}}, open(self.panes_json, "w"))
+        body = "echo boom >&2; exit 1\n" if fail else 'cat "%s"\n' % self.panes_json
+        # `herdr agent read <pane> --source visible`: the pane's screen, or exit 1 when it has none
+        reads = ('if [ "$1" = agent ] && [ "$2" = read ]; then echo "$3" >> "%s"; %s'
+                 'f="%s/$(echo "$3" | tr : _)"; [ -f "$f" ] && cat "$f" || exit 1; exit 0; fi\n'
+                 % (self.reads_log, "sleep 30; " if hang_reads else "", self.screens_dir))
         with open(self.herdr, "w") as fh:
-            fh.write("#!/bin/sh\n" + ("echo boom >&2; exit 1\n" if fail else 'cat "%s"\n' % self.panes_json))
+            fh.write("#!/bin/sh\n" + reads + body)
         os.chmod(self.herdr, os.stat(self.herdr).st_mode | stat.S_IXUSR)
+
+    def reads(self):
+        """How many `agent read` calls the stub has answered so far."""
+        try:
+            return len(open(self.reads_log).read().split())
+        except OSError:
+            return 0
 
     def env(self, **extra):
         e = dict(os.environ)

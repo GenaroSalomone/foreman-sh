@@ -433,3 +433,31 @@ it leaves the brain directory, is unguarded even with the hook registered.
 - **Workaround:** register the hook (`.claude/hooks/session-start-*.py`
   calling `specialist_roster.main(<lane>)`), or run `hw reap <lane> --apply`
   after merging.
+
+## Versions
+
+### L15. Version floors: two of them are a baseline, not a measurement
+- **Scope:** `install.sh --check` and `hw preflight`, for herdr, Claude Code, OpenCode,
+  Node, gentle-ai, engram and jq. The floors are rows of `lib/hw/deps.conf`, the one
+  place any script reads them from.
+- **Impact:** a tool below its floor is refused (`MISSING … Install: <update command>`
+  by `--check`; a `dep-floor` rule at level `block` from `hw preflight`, only for the
+  tools the dispatch uses). `hw <lane> <task>` itself does not check them: the
+  preflight is what a brainer, or the cockpit's rule band, runs first. Claude Code
+  2.1.289, OpenCode 1.18.31, Node 22.7, jq 1.7 and gentle-ai 4.0.0 were already
+  demanded by a script and moved there unchanged (gentle-ai is an exact pin: a newer one
+  is refused too). herdr 0.9.1 and engram 3.0.0 are the versions that were installed when
+  the manifest was written, because nothing had named a floor for them.
+- **Evidence:** `measured` by `setup/tests/900-los-pisos-de-dependencias-viven-en-un-manifiesto.sh`
+  (old and new preflight against a stub below the floor, five mutants). `unverified`: that
+  herdr 0.9.0 or engram 2.9 fail; the two baseline floors may refuse a version that works.
+- **Workaround:** run the update command in the message. To accept an older tool,
+  lower its row in `lib/hw/deps.conf` (the install owns that file, and `upgrade` restores it).
+- **Cache:** the version is remembered by the binary's path, mtime and size in
+  `$XDG_CACHE_HOME/hw/deps` (default `~/.cache/hw/deps`). A binary replaced in place
+  with the same size within the same second would be read as the old one. So would a
+  launcher or version-manager shim (volta, asdf, mise, an npm launcher script) whose own file
+  does not change when the tool behind it does: after upgrading through one, a preflight can
+  keep reporting the old version until you delete that directory (`rm -rf ~/.cache/hw/deps`).
+  `unverified` for any given tool; `measured` only on the direct binaries of this machine.
+

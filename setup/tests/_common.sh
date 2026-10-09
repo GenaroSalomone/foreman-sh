@@ -277,10 +277,14 @@ fi
 # hw_lib_beside <bindir> — a lib/ of its own beside a copy of bin/hw, so a MUTANT of
 # a moved module (lib/hw/next.sh) is mutated in a file the copy actually sources:
 # hw reads the lib/ beside its bin/ first (HW_LIB_DIR above only fills in for none).
+# It carries EVERYTHING in lib/hw/, not only the *.sh: deps.sh reads deps.conf beside itself and
+# bin/hw dies ("lib/hw/deps.conf has no gentle-ai row") before reaching what a subject measures
+# when the copy lacks it (930). A real install with a missing floor must keep failing: only the
+# copy is completed, deps.sh is untouched.
 # Prints the new lib/hw dir. <bindir> must have a parent the caller owns alone.
 hw_lib_beside() {
   local d="$1/../lib/hw"
-  rm -rf "$d"; mkdir -p "$d"; cp "$ROOT"/lib/hw/*.sh "$d/"
+  rm -rf "$d"; mkdir -p "$d"; cp -R "$ROOT"/lib/hw/. "$d/"
   (cd "$d" && pwd)
 }
 
@@ -566,6 +570,9 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/herdr" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
+  # the version floor check (lib/hw/deps.sh) asks every tool its version; a stub that answered
+  # with a JSON object would read as "no readable version" and raise a warn in every preflight
+  "--version ") echo "herdr 9.9.9" ;;
   "workspace list") echo '{"result":{"workspaces":[]}}' ;;
   "tab list")       echo '{"result":{"tabs":[]}}' ;;
   # OVERRIDABLE, default EMPTY — the default is what every other subject file

@@ -27,6 +27,67 @@ set -euo pipefail
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# THE ONE WRITER OF A `gate=full` VERDICT. verify-for-push writes it after its
+# own green run, and setup/release/cut writes it (`--write-verdict`, below) after
+# the green full run IT paid for: the ~20 minutes of a cut are the same suite on
+# the same bytes, and a push of that tree right after used to pay them again.
+# Two writers would drift in fields or in atomicity, so there is this one.
+#
+# WRITE THEN RENAME, NOT A DIRECT >. `pre-push` reads this file for existence
+# AND content (its own comment says why); a direct redirect truncates the
+# target to zero bytes before writing a single line, so a reader racing the
+# write could see a file that exists but is momentarily empty — passing the
+# existence half of the check on content that was never actually verified.
+# `mv` within the same directory is atomic on every filesystem this runs on.
+# write_verdict <commit> <tree> <elapsed-seconds> <headline> [<base_tree> <jobs_rerun>]
+# — the last two make it an incremental verdict, one hop off a recorded full run.
+write_verdict() {
+  local commit="$1" tree="$2" elapsed="$3" headline="$4" base_tree="${5:-}" jobs="${6:-}"
+  local dir cache_file tmp_cache_file
+  dir="$(git rev-parse --git-common-dir)/hw-push-verified"
+  mkdir -p "$dir"
+  cache_file="$dir/$tree"
+  tmp_cache_file="$cache_file.tmp.$$"
+  {
+    echo "commit=$commit"
+    echo "tree=$tree"
+    echo "gate=full"
+    echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "elapsed_seconds=$elapsed"
+    echo "headline=$headline"
+    echo "host=$(hostname)"
+    if [ -n "$base_tree" ]; then
+      # A full verdict that names the full run it stands on, one hop away.
+      # setup/release/cut accepts it only while `chain` still proves that.
+      echo "incremental=1"
+      echo "base_tree=$base_tree"
+      echo "chain_depth=1"
+      echo "jobs_rerun=$jobs"
+    fi
+  } > "$tmp_cache_file"
+  mv -f "$tmp_cache_file" "$cache_file"
+}
+
+# --write-verdict <commit> <tree> <elapsed> <headline>: record a full verdict for
+# a run somebody else already paid for, and run nothing. Used by setup/release/cut
+# once its candidate gate has proved the checkout IS that tree and its full suite
+# ended green with a TRACKED only count.
+if [ "${1:-}" = "--write-verdict" ]; then
+  [ $# -eq 5 ] || { echo "verify-for-push: --write-verdict takes <commit> <tree> <elapsed> <headline>" >&2; exit 2; }
+  # the tree is a file name and the verdict's whole claim: 40 hex, and the tree OF that commit
+  case "$2:$3" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "verify-for-push: --write-verdict wants 40-hex commit and tree ids" >&2; exit 2 ;;
+  esac
+  [ "$(git rev-parse --verify -q "$2^{tree}" 2>/dev/null)" = "$3" ] \
+    || { echo "verify-for-push: --write-verdict: $3 is not the tree of commit $2" >&2; exit 2; }
+  case "$4" in ''|*[!0-9]*) echo "verify-for-push: --write-verdict elapsed must be whole seconds" >&2; exit 2 ;; esac
+  case "$5" in [0-9]*" tests passed  (TRACKED only"*) ;; *) echo "verify-for-push: --write-verdict refuses a headline that is not a TRACKED only count" >&2; exit 2 ;; esac
+  write_verdict "$2" "$3" "$4" "$5"
+  echo "verify-for-push: recorded a full verdict for tree $3 (no suite run here)." >&2
+  exit 0
+fi
+
 # --full: run every job even when a recorded full run could answer for most of
 # them (setup/verdict-incremental). The default asks it, and falls back to a
 # full run by itself whenever it cannot vouch for the diff.
@@ -106,6 +167,22 @@ tree="$(git rev-parse HEAD^{tree})"
 cache_dir="$(git rev-parse --git-common-dir)/hw-push-verified"
 mkdir -p "$cache_dir"
 cache_file="$cache_dir/$tree"
+
+# A TREE THAT ALREADY HAS ITS FULL VERDICT IS NOT MEASURED AGAIN. The verdict
+# names the exact tree and its bytes are all the suite reads, so a second run
+# could only agree; the one that wrote it may be the full run of this script or
+# the green full run of a release cut (--write-verdict above). `--full` asks for
+# the run anyway.
+has_verdict=0
+if [ -z "$full_flag" ] && grep -qxF "tree=$tree" "$cache_file" 2>/dev/null \
+   && grep -qxF "gate=full" "$cache_file" 2>/dev/null \
+   && grep -q '^headline=[0-9][0-9]* tests passed  (TRACKED only' "$cache_file" 2>/dev/null; then
+  has_verdict=1
+fi
+if [ "$has_verdict" = 1 ]; then  # MUTATION-ANCHOR: 850-M02
+  echo "verify-for-push: tree $tree already has a full verdict ($cache_file) — nothing to run; --full measures it again." >&2
+  exit 0
+fi
 
 # AFTER A RED FULL RUN THE FIX COSTS MINUTES, NOT A SUITE (setup/verdict-incremental).
 # The 0.3.7 train paid this script six times in ~5 hours, one whole suite per
@@ -193,29 +270,5 @@ if [ -n "$only_file" ]; then
 else
   headline="$(printf '%s\n' "$out" | grep -E '^[0-9]+ tests passed' | tail -1 || true)"
 fi
-# WRITE THEN RENAME, NOT A DIRECT >. `pre-push` reads this file for existence
-# AND content (its own comment says why); a direct redirect truncates the
-# target to zero bytes before writing a single line, so a reader racing the
-# write could see a file that exists but is momentarily empty — passing the
-# existence half of the check on content that was never actually verified.
-# `mv` within the same directory is atomic on every filesystem this runs on.
-tmp_cache_file="$cache_file.tmp.$$"
-{
-  echo "commit=$commit"
-  echo "tree=$tree"
-  echo "gate=full"
-  echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "elapsed_seconds=$elapsed"
-  echo "headline=$headline"
-  echo "host=$(hostname)"
-  if [ -n "$only_file" ]; then
-    # A full verdict that names the full run it stands on, one hop away.
-    # setup/release/cut accepts it only while `chain` still proves that.
-    echo "incremental=1"
-    echo "base_tree=$base_tree"
-    echo "chain_depth=1"
-    echo "jobs_rerun=$_jobs"
-  fi
-} > "$tmp_cache_file"
-mv -f "$tmp_cache_file" "$cache_file"
+write_verdict "$commit" "$tree" "$elapsed" "$headline" "$base_tree" "${_jobs:-}"
 echo "verify-for-push: PASSED${only_file:+ (INCREMENTAL on $base_tree)} in ${elapsed}s — cached for tree $tree. setup/hooks/pre-push will now let this exact tree through instantly." >&2

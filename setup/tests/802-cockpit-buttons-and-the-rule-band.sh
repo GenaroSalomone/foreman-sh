@@ -100,6 +100,7 @@ M = [
  ("a button press is not recorded for the pilot", "hooks/register.tsx", "await recordAction($, names.pane ?? '', verb)", "void 0"),
  ("the action file is overwritten, not appended to", "hooks/register.tsx", "`${old}${JSON.stringify", "`${JSON.stringify"),
  ("preflight has no time limit", "hooks/register.tsx", "const PREFLIGHT_MS = 3000", "const PREFLIGHT_MS = 3000000"),
+ ("a card that costs milliseconds makes the 40-row draw slow in all seven tries, not only on a loaded machine", "hooks/view.tsx", "function RowCard({ els, r, now, dim, act, notes, thresholdMs }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; thresholdMs: number }) {", "function RowCard({ els, r, now, dim, act, notes, thresholdMs }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; thresholdMs: number }) {\n  let burn = 0\n  for (let i = 0; i < 3000000; i++) burn += i % 7\n  if (burn < 0) throw new Error('unreachable')"),
 ]
 if sys.argv[1] == "count": print(len(M)); sys.exit(0)
 name, f, a, b = M[int(sys.argv[1])]

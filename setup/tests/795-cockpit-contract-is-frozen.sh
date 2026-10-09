@@ -10,6 +10,8 @@
 #   · every state fixture keeps the invariants a reader relies on: totals match
 #     rows, ids are unique, rows are in attention order, an action that is false
 #     has a why_not and one that is true has none, herdr down means no rows;
+#   · a working row carries dispatched_at <= turn_started_at <= generated_at and a last_progress_at after dispatch; any other row
+#     carries neither (turn_started_at / last_progress_at null); rules.no_progress_after_ms is positive;
 #   · fixtures/index.json gives each state fixture the class its own bytes earn
 #     (generated_at against now_ms, per x-state-classes) and the number of rows
 #     it draws, and every class has an example;
@@ -148,7 +150,13 @@ for f in sorted(os.listdir(F)):
         if r["attention"] in ("ask", "challenge") and (not r["ask"] or r["ask"]["kind"] != r["attention"]): bad(f + ": attention/ask kind")
         if r["ask"] and (r["ask"]["state"] == "delivered") != isinstance(r["ask"]["pending_reply"], str): bad(f + " " + r["id"] + ": pending_reply is a string exactly when the ask is delivered")
         if r["attention"] in ("report", "blocked") and not r["report"]: bad(f + ": attention report without report")
-        if r["ctx"]["pct"] is None and (r["ctx"]["tokens"] is not None or r["ctx"]["source"] is not None): bad(f + ": ctx half-null")
+        if (r["ctx"]["tokens"] is None) != (r["ctx"]["source"] is None) or (r["ctx"]["tokens"] is None and r["ctx"]["pct"] is not None): bad(f + ": ctx half-null (tokens and source go together; a percent needs tokens)")
+        # the times: a working card carries its turn start and its last progress, any other carries neither
+        if (r["attention"] == "working") != (r["turn_started_at"] is not None and r["last_progress_at"] is not None): bad("%s %s: turn_started_at and last_progress_at are set exactly on a working row" % (f, r["id"]))
+        if r["attention"] != "working" and (r["turn_started_at"] is not None or r["last_progress_at"] is not None): bad("%s %s: a row that is not working carries a turn start or a progress time" % (f, r["id"]))
+        if r["attention"] == "working" and not (r["dispatched_at"] <= r["turn_started_at"] <= d["generated_at"] and r["dispatched_at"] <= r["last_progress_at"] <= d["generated_at"] + 3600000):
+            bad("%s %s: dispatched_at <= turn_started_at <= generated_at and dispatched_at <= last_progress_at must hold" % (f, r["id"]))
+    if d["rules"]["no_progress_after_ms"] <= 0: bad(f + ": rules.no_progress_after_ms must be positive")
 
 verbs = []
 for l in open(os.path.join(C, "verbs.txt")):
@@ -167,9 +175,22 @@ for v in verbs:
     if tuple(v[1:]) != WANT[v[0]]: bad("verbs.txt: %s is %r, the contract says %r" % (v[0], v[1:], WANT[v[0]]))
 
 pat = re.compile(r"#\d{3,}|/Users/|@[A-Za-z0-9-]+\.[a-z]{2,}|\b(?:10|172\.16|192\.168)\.\d+\.\d+")
-for root, _, fs in os.walk(C):
-    for f in fs:
-        if pat.search(open(os.path.join(root, f)).read()): bad("%s holds a private-looking token" % os.path.join(root, f))
+# THE FILES GIT TRACKS, NOT EVERY FILE UNDER cockpit/. The contract is what is
+# committed; a generated, git-ignored file (cockpit/.claude-plugin/types/claude-code/
+# index.d.ts, which the main checkout carries and a clean worktree does not) is
+# not the contract, and its `/Users/` made this red in the checkout and green
+# in a worktree (measured 2026-10-08, the 0.3.12 train). A tree with no git
+# (an export) has no ignored files either, so there everything is the contract.
+import subprocess
+def contract_files():
+    r = subprocess.run(["git", "-C", C, "ls-files", "-z", "--full-name", "--", "."], capture_output=True)
+    top = subprocess.run(["git", "-C", C, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if r.returncode != 0 or top.returncode != 0 or not r.stdout:
+        return [os.path.join(root, f) for root, _, fs in os.walk(C) for f in fs]
+    return [os.path.join(top.stdout.strip(), n) for n in r.stdout.decode().split("\0") if n]  # MUTATION-ANCHOR: 852-M01
+for path in contract_files():
+    if not os.path.isfile(path): continue
+    if pat.search(open(path).read()): bad("%s holds a private-looking token" % path)
 print("  contract consistent")
 PY
 pass "795: schema, verbs and fixtures agree; every state class has an example"

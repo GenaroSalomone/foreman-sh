@@ -413,6 +413,7 @@ fi
 # pre-commit run tests staged bytes that are not HEAD's yet, so it caches
 # nothing. A tree with no git or no pattern file (a fixture) caches nothing.
 FAST_VERDICT_DIR=""; FAST_VERDICT_TREE=""; FAST_VERDICT_COMMIT=""; FAST_VERDICT_WHY=""
+FAST_VERDICT_SOURCE=head; FAST_VERDICT_LIVE=""
 _fast_verdict_prepare() {
   local live="${TEST_HW_LIVE_ROOT:-}" dirty common
   [ -n "$live" ] || { FAST_VERDICT_WHY="no live checkout named"; return 0; }
@@ -429,12 +430,36 @@ _fast_verdict_prepare() {
     FAST_VERDICT_TREE=""; FAST_VERDICT_WHY="could not compute which tracked paths are dirty"; return 0
   fi
   if printf '%s\n' "$dirty" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
-    FAST_VERDICT_TREE=""
-    FAST_VERDICT_WHY="uncommitted changes to a path SUITE_TRIGGER_PATTERN names, so the bytes under test are not HEAD's"
-    return 0
+    # THE BYTES UNDER TEST ARE NOT HEAD'S, SO THE VERDICT IS KEYED BY THEIR OWN TREE.
+    # It used to cache nothing here, and that is why the commit that follows paid
+    # the gate a second time: pre-commit has no verdict to find for the tree it is
+    # about to commit (measured 2026-10-08: huecos-de-tests, >10 min, twice per
+    # commit). The tree of the working tree is what a `git add -A && git commit`
+    # would record; pre-commit looks the staged tree up by that same name, so a
+    # commit of any OTHER set of bytes finds nothing and runs the gate as before.
+    FAST_VERDICT_TREE="$(_worktree_tree "$live")" || FAST_VERDICT_TREE=""
+    if [ -z "$FAST_VERDICT_TREE" ]; then
+      FAST_VERDICT_WHY="uncommitted changes to a path SUITE_TRIGGER_PATTERN names, so the bytes under test are not HEAD's, and their own tree could not be computed"
+      return 0
+    fi
+    FAST_VERDICT_SOURCE=worktree
+    FAST_VERDICT_LIVE="$live"
   fi
   case "$common" in /*) ;; *) common="$live/$common" ;; esac
   FAST_VERDICT_DIR="$common/hw-push-verified"
+}
+# The tree git would record for <checkout>'s working tree (tracked changes AND untracked, not-ignored
+# files), built in a COPY of its index so the real one, its lock and its stat cache are not touched.
+_worktree_tree() { # <checkout> → the tree id, or nothing
+  local live="$1" idx tree=""
+  idx="$(mktemp "${TMPDIR:-/tmp}/hw-wt-index.XXXXXX")" || return 1
+  if cp "$(git -C "$live" rev-parse --path-format=absolute --git-path index 2>/dev/null)" "$idx" 2>/dev/null \
+     || { rm -f "$idx"; GIT_INDEX_FILE="$idx" git -C "$live" read-tree HEAD 2>/dev/null; }; then
+    GIT_INDEX_FILE="$idx" git -C "$live" add -A 2>/dev/null \
+      && tree="$(GIT_INDEX_FILE="$idx" git -C "$live" write-tree 2>/dev/null)" || tree=""
+  fi
+  rm -f "$idx" 2>/dev/null || true
+  [ -n "$tree" ] && printf '%s' "$tree"
 }
 _fast_verdict_write() { # <headline>
   local f tmp
@@ -442,11 +467,18 @@ _fast_verdict_write() { # <headline>
     printf 'runner: no fast-gate verdict cached — %s\n' "${FAST_VERDICT_WHY:-unknown}" >&2
     return 0
   fi
+  # A WORKING-TREE VERDICT IS ONLY AS GOOD AS THE BYTES STAYING PUT. The tree was named before the run;
+  # if the checkout moved while it ran, the verdict would describe a tree nobody tested.
+  if [ "$FAST_VERDICT_SOURCE" = worktree ] && [ "$(_worktree_tree "$FAST_VERDICT_LIVE")" != "$FAST_VERDICT_TREE" ]; then  # MUTATION-ANCHOR: 880-M03
+    printf 'runner: no fast-gate verdict cached — the working tree changed while the gate ran, so the tree it named is not the one tested\n' >&2
+    return 0
+  fi
   f="$FAST_VERDICT_DIR/$FAST_VERDICT_TREE.fast"  # MUTATION-ANCHOR: 250-M05
   tmp="$f.tmp.$$"
   if mkdir -p "$FAST_VERDICT_DIR" 2>/dev/null && {
        printf 'commit=%s\n' "$FAST_VERDICT_COMMIT"
        printf 'tree=%s\n' "$FAST_VERDICT_TREE"
+       printf 'source=%s\n' "$FAST_VERDICT_SOURCE"
        printf 'gate=fast\n'
        printf 'verified_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
        printf 'headline=%s\n' "$1"
@@ -1774,13 +1806,41 @@ trap '_stop_everything; exit 143' TERM
 # _job_red <exit> <line> — a red job. Stops the run as it always has, or under
 # keep-going records the line and returns 1 so the loop moves to the next job.
 RETRIED_COUNT=0; RETRIED_LINES=""
+# A SUBJECT CUT BY ITS TIMEOUT CEILING IS RETRIED ONCE, ALONE, AFTER EVERY OTHER JOB.
+# MEASURED 2026-10-08, the 0.3.12 train: tests 780, 241, 361 and 680 each died on
+# the ceiling under the load of the run they were part of and aborted the whole
+# ~20 minute suite; each passed alone. A cut is what the ceiling's own message
+# says it is — "spent in loaded seconds" — so the first reading of a cut subject
+# is the machine's, and the second is its own: the retry runs with no other job
+# of this run beside it. ONLY the runner's cut (exit 124 with a ceiling record) is
+# retried; a red of logic, a failed mutation arm, a budget refusal and a SECOND cut
+# stay red exactly as before. The run stays green only by naming it:
+# `retried after timeout: <test>`.
+TIMEOUT_DEFER=""; TIMEOUT_RETRIED_COUNT=0; TIMEOUT_RETRIED_LINES=""
 KEEP_GOING=0
 case "${HW_TEST_KEEP_GOING:-}" in 1|yes|true) KEEP_GOING=1 ;; esac
 RED_LINES=""; RED_RC=0; RED_COUNT=0
 JOB_RED=()
+# _cut_line <name> <elapsed> <ceiling> [<suffix>] — the red a subject cut by its ceiling is named with.
+_cut_line() {
+  printf '\nnot ok - runner: setup/tests/%s TIMED OUT after %ss, over its %ss ceiling (budget x HW_TEST_TIMEOUT_FACTOR=%s, floor HW_TEST_TIMEOUT_FLOOR=%s, spent in loaded seconds: up to HW_TEST_TIMEOUT_LOAD_MAX=%s times the wall on a busy machine) — its process group was killed, nothing else%s\n' \
+    "$1" "$2" "$3" "${HW_TEST_TIMEOUT_FACTOR:-5}" "${HW_TEST_TIMEOUT_FLOOR:-60}" "${HW_TEST_TIMEOUT_LOAD_MAX:-4}" "${4:-}" >&2
+}
+# A RUN THAT STOPS BEFORE ITS DEFERRED RETRIES leaves those subjects cut and unproven:
+# each is named red, as the run would have named it before the retry existed.
+_report_unretried() {
+  local _u _un _uel _ucap
+  for _u in $TIMEOUT_DEFER; do
+    [ -s "$JOBDIR/$_u.timeout.first" ] || continue
+    read -r _uel _ucap < "$JOBDIR/$_u.timeout.first"
+    _un="$(basename "${JOB_PATH[$_u]}")"
+    _cut_line "$_un" "$_uel" "$_ucap" "; the run stopped on another red before it could be retried alone"
+    rm -f "$JOBDIR/$_u.timeout.first"
+  done
+}
 _job_red() {
   JOB_RED[${_i:-0}]=1
-  if [ "$KEEP_GOING" != 1 ]; then _stop_everything; _tm_run; abort_marker; exit "$1"; fi
+  if [ "$KEEP_GOING" != 1 ]; then _stop_everything; _report_unretried; _tm_run; abort_marker; exit "$1"; fi
   RED_COUNT=$((RED_COUNT + 1))
   [ "$RED_RC" != 0 ] || RED_RC="$1"
   RED_LINES="$RED_LINES
@@ -1826,6 +1886,16 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
     fi
     rm -f "$JOBDIR/$_i.first.out" "$JOBDIR/$_i.first.err"
   fi
+  if [ "$rc" -eq 124 ] && [ "$retried" = 0 ] && [ "${JOB_KIND[$_i]}" = subject ] && [ -s "$JOBDIR/$_i.timeout" ]; then  # MUTATION-ANCHOR: 851-M01
+    read -r _to_el _to_cap < "$JOBDIR/$_i.timeout"
+    printf 'runner: setup/tests/%s was cut after %ss by its %ss ceiling — it is retried once, alone, after every other job\n' \
+      "$(basename "$f")" "$_to_el" "$_to_cap" >&2
+    # the cut run is not tallied or printed: the retry is the run that counts
+    cp -f "$JOBDIR/$_i.timeout" "$JOBDIR/$_i.timeout.first"
+    rm -f "$JOBDIR/$_i.out" "$JOBDIR/$_i.err" "$JOBDIR/$_i.cov" "$JOBDIR/$_i.parse"
+    TIMEOUT_DEFER="$TIMEOUT_DEFER $_i"
+    _i=$((_i + 1)); NEXT_EMIT="$_i"; continue
+  fi
   cat "$JOBDIR/$_i.out"
   cat "$JOBDIR/$_i.out" >> "$TALLY"
   [ ! -s "$JOBDIR/$_i.err" ] || cat "$JOBDIR/$_i.err" >&2
@@ -1835,8 +1905,7 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
     # killed: the other subjects ran on.
     if [ -s "$JOBDIR/$_i.timeout" ]; then
       read -r _to_el _to_cap < "$JOBDIR/$_i.timeout"
-      printf '\nnot ok - runner: setup/tests/%s TIMED OUT after %ss, over its %ss ceiling (budget x HW_TEST_TIMEOUT_FACTOR=%s, floor HW_TEST_TIMEOUT_FLOOR=%s, spent in loaded seconds: up to HW_TEST_TIMEOUT_LOAD_MAX=%s times the wall on a busy machine) — its process group was killed, nothing else\n' \
-        "$(basename "$f")" "$_to_el" "$_to_cap" "${HW_TEST_TIMEOUT_FACTOR:-5}" "${HW_TEST_TIMEOUT_FLOOR:-60}" "${HW_TEST_TIMEOUT_LOAD_MAX:-4}" >&2
+      _cut_line "$(basename "$f")" "$_to_el" "$_to_cap"
     fi
     _stops="the run stops here"; [ "$KEEP_GOING" != 1 ] || _stops="continuing (--keep-going)"
     case "${JOB_KIND[$_i]}" in
@@ -1928,6 +1997,60 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
   _i=$((_i + 1))
   NEXT_EMIT="$_i"
 done
+# THE SUBJECTS CUT BY THEIR CEILING, retried one at a time with nothing else of this
+# run beside them (see TIMEOUT_DEFER above). Every job has ended by here, so "alone"
+# is literal for this run.
+for _d in $TIMEOUT_DEFER; do
+  f="${JOB_PATH[$_d]}"; _name="$(basename "$f")"; _i="$_d"
+  read -r _to_el _to_cap < "$JOBDIR/$_d.timeout.first"
+  rm -f "$JOBDIR/$_d.timeout.first" "$JOBDIR/$_d.timeout" "$JOBDIR/$_d.out" "$JOBDIR/$_d.err"
+  rc=0; fg_time_cmd "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" fg_capped "$HERE/test-budgets.json" "$_name" "$JOBDIR/$_d.timeout" bash "$f" || rc=$?
+  _retry_wall="$FG_WALL_MS"
+  cat "$JOBDIR/$_d.out"
+  cat "$JOBDIR/$_d.out" >> "$TALLY"
+  [ ! -s "$JOBDIR/$_d.err" ] || cat "$JOBDIR/$_d.err" >&2
+  _retry_bad=""
+  if [ "$rc" -ne 0 ]; then
+    if [ -s "$JOBDIR/$_d.timeout" ]; then
+      read -r _to_el2 _to_cap2 < "$JOBDIR/$_d.timeout"
+      _cut_line "$_name" "$_to_el2" "$_to_cap2" "; this was its RETRY, alone, after a first cut at ${_to_el}s over ${_to_cap}s"
+    fi
+    printf '\nnot ok - suite: setup/tests/%s failed (exit %s) on its retry after a timeout — %s\n' \
+      "$_name" "$rc" "$([ "$KEEP_GOING" != 1 ] && echo 'the run stops here' || echo 'continuing (--keep-going)')" >&2
+    _retry_bad="setup/tests/$_name failed (exit $rc) on its retry after a timeout"
+  else
+    _cov_rc=0
+    "$COVERAGE" "$f" "$JOBDIR/$_d.out" > "$JOBDIR/$_d.cov" 2>&1 || _cov_rc=$?  # MUTATION-ANCHOR: 851-M02
+    if [ "$_cov_rc" -ne 0 ]; then
+      printf '\nnot ok - suite: setup/tests/%s failed mutation coverage (exit %s) on its retry after a timeout: %s\n' \
+        "$_name" "$_cov_rc" "$(cat "$JOBDIR/$_d.cov" 2>/dev/null)" >&2
+      _retry_bad="setup/tests/$_name failed mutation coverage (exit $_cov_rc) on its retry after a timeout"
+    else
+      [ ! -s "$JOBDIR/$_d.cov" ] || cat "$JOBDIR/$_d.cov"
+    fi
+  fi
+  if [ -z "$_retry_bad" ] && [ "$HW_TEST_GATE" = fast ] && [ -n "$FAST_THRESHOLD_SECONDS" ] && _fg_judged "$_name"; then
+    # the fast gate's own number is the subject's own: alone, it must still fit
+    _fg_budget_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$_name=//p")" "$FG_FACTOR")"
+    if [ "$_retry_wall" -gt "$_fg_budget_ms" ]; then
+      printf '\nnot ok - runner: setup/tests/%s took %sms alone on its retry after a timeout, over the %sms fast-gate budget in setup/test-budgets.json\n' \
+        "$_name" "$_retry_wall" "$_fg_budget_ms" >&2
+      _retry_bad="setup/tests/$_name over its fast-gate budget (${_retry_wall}ms > ${_fg_budget_ms}ms) on its retry after a timeout"
+    fi
+  fi
+  count_into "$f" "$JOBDIR/$_d.out"
+  if [ -n "$_retry_bad" ]; then
+    _red_rc="$rc"; [ "$_red_rc" -ne 0 ] || _red_rc=1
+    _job_red "$_red_rc" "$_retry_bad" || true
+  else
+    TIMEOUT_RETRIED_COUNT=$((TIMEOUT_RETRIED_COUNT + 1))
+    TIMEOUT_RETRIED_LINES="$TIMEOUT_RETRIED_LINES
+  retried after timeout: $_name (first run cut after ${_to_el}s over its ${_to_cap}s ceiling; alone it passed in ${_retry_wall}ms)"
+    printf 'retried after timeout: %s (first run cut after %ss over its %ss ceiling; alone it passed in %sms)\n' "$_name" "$_to_el" "$_to_cap" "$_retry_wall"
+  fi
+  rm -f "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" "$JOBDIR/$_d.cov" "$JOBDIR/$_d.timeout" "$JOBDIR/$_d.timeout.first"
+done
+_i="$JOB_TOTAL"
 rm -f "$TALLY.subject"
 _tm_run
 
@@ -2036,6 +2159,9 @@ fi
 # beside the headline it qualifies, and silent when nothing was retried.
 if [ "$RETRIED_COUNT" -gt 0 ]; then
   printf '\nRETRIED: %s timing subject(s) failed once and passed on their single retry:%s\n' "$RETRIED_COUNT" "$RETRIED_LINES"
+fi
+if [ "$TIMEOUT_RETRIED_COUNT" -gt 0 ]; then
+  printf '\nRETRIED AFTER TIMEOUT: %s subject(s) were cut by their ceiling once and passed on their single retry, alone:%s\n' "$TIMEOUT_RETRIED_COUNT" "$TIMEOUT_RETRIED_LINES"
 fi
 if [ -n "$UNKNOWN_NAMES" ]; then
   # NO HEADLINE AT ALL. "tracked" was never established here, so any integer

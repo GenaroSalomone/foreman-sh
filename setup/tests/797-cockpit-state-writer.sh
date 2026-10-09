@@ -28,11 +28,16 @@
 #   · loop_dies_with_parent  --loop leaves when the shell that started it is gone
 #   · loop_binds_to_pane  the detached writer `bin/brain` starts: one per brainer, survives its
 #                  launching shell and a herdr outage, leaves when the brainer's pane does
-#   · ctx_from_transcript  44424 tokens = 22.2 % (probe P5), 1M by model id, sidechains skipped
+#   · ctx_from_transcript  44424 tokens (probe P5), the percent only when the model id names its window (`[1m]`), sidechains skipped
+#   · ctx_live     a working claude card shows the ctx of its transcript (receipt session_id +
+#                  CLAUDE_CONFIG_DIR) before any turn has ended; a turn-end value newer than the
+#                  transcript wins; an unresolved session, an idle card and a non-claude one stay n/a;
+#                  a transcript that did not move is not read again
 #   · cut_rule     a live `release cut` slot says so; a dead holder or a reused pid does not
 #   · kick_names_its_brainer  a kick whose brainer does not resolve writes nothing (never the executor's
 #                  own pane) and logs it; a resolved one still kicks its brainer
-#   · timing_40    --once under 300 ms for 40 executors (best of 7; the numbers are printed)
+#   · timing_40    --once under 300 ms for 40 executors (best of 7; the numbers are printed); the limit is 300 x load_scale
+#                  (1-3, _common.sh) like 798's: 80-130 ms alone, 331 inside the full suite on a loaded machine
 #
 # and each of the writer's rules has a mutant that the checks above must kill.
 #
@@ -45,7 +50,7 @@ CHECKS="$ROOT/setup/tests/_cockpit_writer_checks.py"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/t797.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
-out="$(python3 -I "$CHECKS" "$ROOT/bin" 2>&1)" || { printf '%s\n' "$out" >&2; fail "797: the writer's checks failed on the real tree (above)"; }
+out="$(HW_TIMING_SCALE="$(load_scale 3)" python3 -I "$CHECKS" "$ROOT/bin" 2>&1)" || { printf '%s\n' "$out" >&2; fail "797: the writer's checks failed on the real tree (above)"; }
 printf '%s\n' "$out"
 pass "797: the writer says what is on disk — classes, caps, atomic write, debounce, loop, ctx, cut, timing"
 
@@ -78,6 +83,10 @@ mutant_dir 797-M20; mutate_anchor 797-M20 "$MD/cockpit-state" 'with open(tmp, "w
 mutant_dir 797-M21; mutate_anchor 797-M21 "$MD/cockpit-state" 'except ZeroDivisionError as e:'; kill_mutant 797-M21 loop_survives_a_failed_write "died with its first failed write"
 mutant_dir 797-M22; mutate_anchor 797-M22 "$MD/cockpit-state" 'pass'; kill_mutant 797-M22 killed_writer "tmp files of killed writers survive"
 mutant_dir 797-M12; mutate_anchor 797-M12 "$MD/cockpit-state" 'omitted = 0'; kill_mutant 797-M12 rows_cap "totals.omitted is wrong"
-mutant_dir 797-M15; mutate_anchor 797-M15 "$MD/cockpit-state" 'window = WINDOW_DEFAULT'; kill_mutant 797-M15 ctx_from_transcript "window is not honoured"
+mutant_dir 797-M15; mutate_anchor 797-M15 "$MD/cockpit-state" 'window = None'; kill_mutant 797-M15 ctx_from_transcript "window is not honoured"
 mutant_dir 797-M23; mutate_anchor 797-M23 "$MD/cockpit-state" 'if False:'; kill_mutant 797-M23 kick_names_its_brainer "fell back to the executor's own pane"
 mutant_dir 797-M16; mutate_anchor 797-M16 "$MD/cockpit-state" 'if False:'; kill_mutant 797-M16 cut_rule "reused pid"
+mutant_dir 797-M25; mutate_anchor 797-M25 "$MD/cockpit-state" 'if False:'; kill_mutant 797-M25 ctx_live "no live ctx"
+mutant_dir 797-M26; mutate_anchor 797-M26 "$MD/cockpit-state" 'if hit is None:'; kill_mutant 797-M26 ctx_live "did not move" "grew was not re-read"
+mutant_dir 797-M27; mutate_anchor 797-M27 "$MD/cockpit-state" 'if live:'; kill_mutant 797-M27 ctx_live "turn-end value newer than the transcript"
+mutant_dir 797-M28; mutate_anchor 797-M28 "$MD/cockpit-state" 'except ZeroDivisionError:'; kill_mutant 797-M28 ctx_live "ValueError" "exited"

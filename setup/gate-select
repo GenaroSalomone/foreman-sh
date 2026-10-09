@@ -119,11 +119,14 @@ def universe(root):
 
 
 def loads(text, base):
-    """<text> SOURCES or IMPORTS a file named <base>: its code runs as part of it."""
+    """<text> SOURCES or IMPORTS a file named <base>: its code runs as part of it.
+
+    <base> is the LAST component of the sourced path: `. "$LIB/hw/deps.sh"` sources deps.sh,
+    not a file called hw (the `/` after the name is a directory, so it does not count)."""
     stem = re.escape(re.sub(r"\.(py|js|mjs|sh)$", "", base))
     b = re.escape(base)
     return re.search(
-        r"(^|[;&|({\s])(\.|source)\s+[\"']?[^\s\"';]*" + b + r"(?![A-Za-z0-9_.-])"
+        r"(^|[;&|({\s])(\.|source)\s+[\"']?[^\s\"';]*" + b + r"(?![A-Za-z0-9_./-])"
         r"|\bimport\s+" + stem + r"\b|\bfrom\s+" + stem + r"\s+import\b"
         r"|(require\(|\bfrom\s+|import\()\s*[\"'][^\"']*" + stem + r"(\.m?js)?[\"']",
         text, re.M) is not None

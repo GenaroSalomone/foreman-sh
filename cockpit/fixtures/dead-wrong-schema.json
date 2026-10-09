@@ -29,7 +29,8 @@
    "running": false,
    "since_ms": null,
    "holder": null
-  }
+  },
+  "no_progress_after_ms": 1800000
  },
  "rows": [
   {
@@ -45,6 +46,9 @@
    "agent_status": "idle",
    "turn_state": "ended_holding",
    "turn_ended_at": 1789999939000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -91,6 +95,9 @@
    "agent_status": "idle",
    "turn_state": "ended_holding",
    "turn_ended_at": 1789999938000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -137,6 +144,9 @@
    "agent_status": "idle",
    "turn_state": "ended_holding",
    "turn_ended_at": 1789999937000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -183,6 +193,9 @@
    "agent_status": "idle",
    "turn_state": "ended_after_report",
    "turn_ended_at": 1789999936000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -229,6 +242,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -268,6 +284,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999934000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -308,6 +327,9 @@
    "agent_status": "unknown",
    "turn_state": null,
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 0,
    "children_running": null,
    "ctx": {

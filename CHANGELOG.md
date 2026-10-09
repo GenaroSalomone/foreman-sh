@@ -4,6 +4,47 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.3.13] — 2026-10-08
+
+### Added
+- The cockpit card of a working executor says how long it has been at it and how
+  long its current turn has run (`working 3h12m · turn 41m`), and marks `no
+  progress 47m`, in the attention colour, when nothing has moved for 30 minutes:
+  no commit on its branch, no changed file in its worktree, no new transcript
+  line. A queued ruling now shows its age (`1 ruling queued 25m`). The state file
+  gains `dispatched_at`, `turn_started_at` and `last_progress_at` per row and
+  `rules.no_progress_after_ms`; the worktree walk is cached for 30-60 s.
+- One manifest for the versions the harness needs, `lib/hw/deps.conf`: herdr, Claude Code,
+  OpenCode, Node, gentle-ai, engram and jq, each with its floor and the command that prints
+  its version. `install.sh --check` and `hw preflight` read it, and a tool below its floor is
+  refused with the command to update it (`dep-floor` in the preflight, only for the tools
+  the dispatch uses). An old tool used to show up when a dispatch failed half way. The
+  versions are cached by the binary's path, mtime and size.
+- `subagent_model` per lane and `hw --subagent-model <inherit|haiku|sonnet|opus|fable|claude-*>`:
+  the model a Claude Code executor's subagents run on when they name none, handed
+  over as `CLAUDE_CODE_SUBAGENT_MODEL` (Claude Code only; opencode and codex are
+  `NOT APPLIED`). The dry run prints it as chosen or defaulted; the receipt, the
+  run env and the dispatch ledger record it. An agent that pins its own `model:`
+  keeps it.
+
+### Changed
+- A brief whose frontmatter has a key `hw` does not know still dispatches, with a
+  warning; the warning now suggests the nearest known key (`requieres:` →
+  `requires`) and its list of known keys is the parser's own, so it includes
+  `review`, which it used to leave out.
+- The floors that were fixed in `brain` (Claude Code, for the cockpit), `hw` (gentle-ai) and
+  `install.sh` (OpenCode, Node, jq) are read from that manifest; their behaviour is the same.
+  `install.sh --check` now also reports herdr, Claude Code and engram against their floors.
+
+### Fixed
+- The cockpit card's context use is what the pane's own statusline says (tokens and
+  percent of the window Claude Code really has), read with `herdr agent read` and cached
+  for 10 s per pane. It showed `ctx 100%` on a 1M-window model whose statusline said 41%,
+  because the transcript fallback assumed a 200k window, and `ctx n/a` on working
+  executors with no turn end yet. The fallbacks (turn-end value, transcript) now give the
+  tokens and a percent only when the model id names its window (`[1m]`); a card that knows
+  the tokens and not the window shows `ctx 237.5k`.
+
 ## [0.3.12] — 2026-10-08
 
 ### Fixed

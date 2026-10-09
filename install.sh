@@ -106,9 +106,12 @@ if [ "${1:-}" = init ]; then
   [ -f "$SRC/init.sh" ] || { printf 'install: init.sh is not in %s\n' "$SRC" >&2; exit 1; }
   FOREMAN_SH_INIT_CMD="$INSTALL_CMD init" exec bash "$SRC/init.sh" "$@"
 fi
-# The oldest OpenCode this harness has been MEASURED against (INSTALL.md). Not
-# a guess at compatibility: an older one may work, and nothing here has shown it.
-OPENCODE_MIN="1.18.31"
+# The version floors live in lib/hw/deps.conf,
+# the one file hw, brain and this script all read. Sourced from the tree being installed.
+[ -r "$SRC/lib/hw/deps.sh" ] || { printf 'install: %s/lib/hw/deps.sh is missing — this tree does not carry the version floors\n' "$SRC" >&2; exit 1; }
+# shellcheck source=lib/hw/deps.sh
+. "$SRC/lib/hw/deps.sh"
+DEPS_NO_CACHE=1   # --check promises to write nothing; the version cache is for hw, which asks often
 
 # The tag this checkout sits on, else its short sha. The marker install.sh
 # writes carries the same value, so an installed brain reports it too.
@@ -650,6 +653,26 @@ FIX_TOOLS="" FIX_INTEGRATIONS="" ENGRAM_MISSING=0
 NL=$'\n'
 fix_tool() { FIX_TOOLS="${FIX_TOOLS}${FIX_TOOLS:+$NL}$1"; }
 fix_integration() { FIX_INTEGRATIONS="${FIX_INTEGRATIONS}${FIX_INTEGRATIONS:+$NL}$1"; }
+# floor <name> <unknown is MISSING: 0|1> [<what goes wrong below it>] — the binary is there
+# (`need` proved it); its version against lib/hw/deps.conf. Below the floor is MISSING with
+# the update command; a version that cannot be read is MISSING only where it always was.
+floor() {
+  local n="$1" strict="$2" why="${3:-}"
+  deps_row "$n" || die "lib/hw/deps.conf has no row for $n"
+  deps_status "$n" || true
+  case "$DEPS_STATE" in
+    ok) ok "$n $DEPS_VERSION (>= $DEPS_MIN)" ;;
+    absent) ;;
+    unknown)
+      if [ "$strict" = 1 ]; then
+        printf '  MISSING %s >= %s — found <no version>%s. Install: %s\n' "$n" "$DEPS_MIN" "$why" "$DEPS_UPDATE"; missing=1
+        case "$DEPS_UPDATE" in http*) fix_tool "$n >= $DEPS_MIN: $DEPS_UPDATE" ;; *) fix_tool "$DEPS_UPDATE" ;; esac
+      else say "WARN  $(deps_message "$n") — its floor is $DEPS_MIN"; fi ;;
+    *)
+      printf '  MISSING %s >= %s — found %s%s. Install: %s\n' "$n" "$DEPS_MIN" "$DEPS_VERSION" "$why" "$DEPS_UPDATE"; missing=1
+      case "$DEPS_UPDATE" in http*) fix_tool "$n >= $DEPS_MIN: $DEPS_UPDATE" ;; *) fix_tool "$DEPS_UPDATE" ;; esac ;;
+  esac
+}
 need() {  # <command> <why> <how>
   if type -P "$1" >/dev/null 2>&1; then ok "$1"
   else printf '  MISSING %s — %s. Install: %s\n' "$1" "$2" "$3"; missing=1; fix_tool "$3"; fi
@@ -660,16 +683,13 @@ need jq      "hw reads projects.json with it"        "$PKG jq"
 # jq 1.6 (Debian 12, Ubuntu 22.04) exits 0 on EMPTY input under `jq -e`; 1.7 exits 4. Several
 # checks read "jq -e succeeded" as "the reply was what I asked for", so an old jq is refused.
 if type -P jq >/dev/null 2>&1; then
-  jq_ver="$(jq --version 2>/dev/null | sed -E 's/^jq-([0-9]+)\.([0-9]+).*/\1.\2/' || true)"
-  case "$jq_ver" in
-    [0-9]*.[0-9]*)
-      if [ "${jq_ver%%.*}" -gt 1 ] || { [ "${jq_ver%%.*}" -eq 1 ] && [ "${jq_ver#*.}" -ge 7 ]; }; then ok "jq $jq_ver (>= 1.7)"
-      else printf '  MISSING jq >= 1.7 — found %s, whose `jq -e` treats empty input as success. Install: https://jqlang.github.io/jq/download/\n' "$jq_ver"; missing=1; fix_tool "jq >= 1.7: https://jqlang.github.io/jq/download/"; fi ;;
-  esac
+  floor jq 0 ", whose \`jq -e\` treats empty input as success"
 fi
 need python3 "the guards and the JSON merges"        "$([ "$(uname -s)" = Linux ] && echo "apt install python3" || echo "xcode-select --install")"
 need herdr   "every brainer and executor is a herdr pane" "https://herdr.dev"
 need claude  "the agent runtime"                     "https://claude.com/claude-code"
+if type -P herdr >/dev/null 2>&1; then floor herdr 0; fi
+if type -P claude >/dev/null 2>&1; then floor claude 0; fi
 # Linux needs four more that macOS setups carry already: hw and its scripts
 # call sd, fd and rg, and the OpenCode guard plugin is an ES module run by Node.
 if [ "$(uname -s)" = Linux ]; then
@@ -677,12 +697,10 @@ if [ "$(uname -s)" = Linux ]; then
   need fd "hw finds files with it" "apt install fd-find, then link fdfind as fd"
   need rg "hw and the guards search with it" "apt install ripgrep"
   if type -P node >/dev/null 2>&1; then
-    node_ver="$(node --version 2>/dev/null | sed -E 's/^v//' || true)"
-    node_mm="$(printf '%s' "$node_ver" | sed -E 's/^([0-9]+)\.([0-9]+).*/\1 \2/')"
-    if [ "${node_mm% *}" -gt 22 ] 2>/dev/null || { [ "${node_mm% *}" -eq 22 ] 2>/dev/null && [ "${node_mm#* }" -ge 7 ] 2>/dev/null; }; then ok "node $node_ver (>= 22.7)"
-    else printf '  MISSING node >= 22.7 — found %s; the OpenCode guard plugin is an ES module in a .js file. Install: https://nodejs.org/en/download\n' "${node_ver:-<no version>}"; missing=1; fix_tool "node >= 22.7: https://nodejs.org/en/download"; fi
+    floor node 1 "; the OpenCode guard plugin is an ES module in a .js file"
   else
-    printf '  MISSING node — the OpenCode guard plugin is an ES module in a .js file (22.7 or newer). Install: https://nodejs.org/en/download\n'; missing=1; fix_tool "node >= 22.7: https://nodejs.org/en/download"
+    deps_row node || die "lib/hw/deps.conf has no row for node"
+    printf '  MISSING node — the OpenCode guard plugin is an ES module in a .js file (%s or newer). Install: https://nodejs.org/en/download\n' "$DEPS_MIN"; missing=1; fix_tool "node >= $DEPS_MIN: https://nodejs.org/en/download"
   fi
 fi
 type -P python3 >/dev/null 2>&1 || die "python3 is required to continue"
@@ -730,20 +748,7 @@ fi
 if [ "$VENDOR" = opencode ]; then
   need opencode "this lane's executors run in it" "https://opencode.ai"
   if type -P opencode >/dev/null 2>&1; then
-    oc_ver="$(opencode --version 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
-    if python3 - "$oc_ver" "$OPENCODE_MIN" <<'PY'
-import re, sys
-def v(s):
-    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", s)
-    return tuple(map(int, m.groups())) if m else None
-have, want = v(sys.argv[1]), v(sys.argv[2])
-sys.exit(0 if have is not None and have >= want else 1)
-PY
-    then ok "opencode $oc_ver (>= $OPENCODE_MIN)"
-    else
-      printf '  MISSING opencode >= %s — found %s. Install: npm install -g opencode-ai@latest\n' "$OPENCODE_MIN" "${oc_ver:-<no version>}"
-      missing=1; fix_tool "npm install -g opencode-ai@latest"
-    fi
+    floor opencode 1
   fi
   if type -P herdr >/dev/null 2>&1; then
     if printf '%s\n' "$herdr_int" | grep -q '^opencode: current'; then
@@ -765,6 +770,7 @@ for soft in $_soft; do
     esac
   fi
 done
+if type -P engram >/dev/null 2>&1; then floor engram 0; fi
 if [ "$missing" = 1 ]; then
   [ "$CHECK" = 1 ] || die "install the missing prerequisites above and run this again; nothing was written"
   say "a real run would stop here — the rest is still checked, so every fix is named in one pass"

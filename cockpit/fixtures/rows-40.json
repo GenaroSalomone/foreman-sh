@@ -29,7 +29,8 @@
    "running": false,
    "since_ms": null,
    "holder": null
-  }
+  },
+  "no_progress_after_ms": 1800000
  },
  "rows": [
   {
@@ -45,6 +46,9 @@
    "agent_status": "idle",
    "turn_state": "ended_after_report",
    "turn_ended_at": 1789999906000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -91,6 +95,9 @@
    "agent_status": "idle",
    "turn_state": "ended_after_report",
    "turn_ended_at": 1789999915000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -137,6 +144,9 @@
    "agent_status": "idle",
    "turn_state": "ended_after_report",
    "turn_ended_at": 1789999924000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -183,6 +193,9 @@
    "agent_status": "idle",
    "turn_state": "ended_after_report",
    "turn_ended_at": 1789999933000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -229,6 +242,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -268,6 +284,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -307,6 +326,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -346,6 +368,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -385,6 +410,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -424,6 +452,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -463,6 +494,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -502,6 +536,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -541,6 +578,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -580,6 +620,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -619,6 +662,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -658,6 +704,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -697,6 +746,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -736,6 +788,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -775,6 +830,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -814,6 +872,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -853,6 +914,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -892,6 +956,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -931,6 +998,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -970,6 +1040,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1009,6 +1082,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1048,6 +1124,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1087,6 +1166,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1126,6 +1208,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1165,6 +1250,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1204,6 +1292,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1243,6 +1334,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1282,6 +1376,9 @@
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999908000,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1321,6 +1418,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999907000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1361,6 +1461,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999908000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1401,6 +1504,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999916000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1441,6 +1547,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999917000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1481,6 +1590,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999925000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1521,6 +1633,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999926000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1561,6 +1676,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999934000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -1601,6 +1719,9 @@
    "agent_status": "idle",
    "turn_state": "ended_unreported",
    "turn_ended_at": 1789999935000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {

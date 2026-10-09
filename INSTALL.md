@@ -31,6 +31,12 @@ lines for your shell profile: add them and open a new terminal.
   integration: `herdr integration install opencode` (run `opencode` once first,
   so its config directory exists)
 
+Every version floor above (herdr, Claude Code, OpenCode, Node, jq, engram, and gentle-ai's pin)
+is one row of `lib/hw/deps.conf`. `--check` prints each installed version against its floor and
+refuses one below it with the command to update it; `hw preflight --json -- <dispatch>` does the
+same for the tools that dispatch uses (rule `dep-floor`). A tool that is not installed is reported
+where it is needed, as before. The installed versions are remembered in `~/.cache/hw/deps`.
+
 `./install.sh --brain ~/brain --check` evaluates all of it in one pass and
 writes nothing. It names anything missing with its install command, then lists
 the fixes in the order they must be done (tools, Claude Code's first run,

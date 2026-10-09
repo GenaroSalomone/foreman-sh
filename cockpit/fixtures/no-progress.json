@@ -17,12 +17,12 @@
   "executors": 4,
   "omitted": 0,
   "asks": 0,
-  "working": 2,
-  "idle": 2,
+  "working": 4,
+  "idle": 0,
   "reports": 0,
   "blocked": 0,
   "challenges": 0,
-  "rulings_pending": 0
+  "rulings_pending": 1
  },
  "rules": {
   "cut": {
@@ -34,34 +34,34 @@
  },
  "rows": [
   {
-   "id": "demo:task-02",
+   "id": "demo:edge-29",
    "project": "demo",
-   "task": "task-02",
-   "pane": "w1:p12",
-   "run": "run-02",
+   "task": "edge-29",
+   "pane": "w1:p33",
+   "run": "run-np-2",
    "task_n": 1,
-   "vendor": "opencode",
-   "model": "provider/model-x",
-   "effort": "medium",
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
+   "effort": null,
    "agent_status": "working",
    "turn_state": "working",
    "turn_ended_at": null,
    "dispatched_at": 1789988478000,
    "turn_started_at": 1789997538000,
-   "last_progress_at": 1789999908000,
+   "last_progress_at": 1789998260000,
    "turns": 3,
    "children_running": null,
    "ctx": {
     "pct": null,
-    "tokens": null,
-    "source": null
+    "tokens": 237500,
+    "source": "statusline"
    },
    "rulings_pending": {
     "count": 0,
     "oldest_at": null
    },
    "attention": "working",
-   "attention_since": 1789999938000,
+   "attention_since": 1789997538000,
    "report": null,
    "ask": null,
    "actions": {
@@ -76,26 +76,26 @@
    }
   },
   {
-   "id": "demo:task-01",
+   "id": "demo:edge-31",
    "project": "demo",
-   "task": "task-01",
-   "pane": "w1:p11",
-   "run": "run-01",
+   "task": "edge-31",
+   "pane": "w1:p34",
+   "run": "run-np-3",
    "task_n": 1,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
    "agent_status": "working",
-   "turn_state": "ended_awaiting_child",
+   "turn_state": "working",
    "turn_ended_at": null,
    "dispatched_at": 1789988478000,
    "turn_started_at": 1789997538000,
-   "last_progress_at": 1789999908000,
+   "last_progress_at": 1789998140000,
    "turns": 3,
-   "children_running": "2 shell",
+   "children_running": null,
    "ctx": {
-    "pct": 13.5,
-    "tokens": 26000,
+    "pct": 17.5,
+    "tokens": 30000,
     "source": "turn-end"
    },
    "rulings_pending": {
@@ -103,7 +103,7 @@
     "oldest_at": null
    },
    "attention": "working",
-   "attention_since": 1789999939000,
+   "attention_since": 1789997538000,
    "report": null,
    "ask": null,
    "actions": {
@@ -118,88 +118,86 @@
    }
   },
   {
-   "id": "demo:task-04",
+   "id": "demo:moving",
    "project": "demo",
-   "task": "task-04",
-   "pane": "w1:p14",
-   "run": "run-04",
+   "task": "moving",
+   "pane": "w1:p32",
+   "run": "run-np-1",
    "task_n": 1,
-   "vendor": "pi",
-   "model": null,
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
    "effort": null,
-   "agent_status": "idle",
-   "turn_state": "ended_unreported",
-   "turn_ended_at": 1789999936000,
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
    "dispatched_at": 1789988478000,
-   "turn_started_at": null,
-   "last_progress_at": null,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789999940000,
    "turns": 3,
    "children_running": null,
    "ctx": {
-    "pct": null,
-    "tokens": null,
-    "source": null
+    "pct": 41.0,
+    "tokens": 410000,
+    "source": "statusline"
    },
    "rulings_pending": {
-    "count": 0,
-    "oldest_at": null
+    "count": 1,
+    "oldest_at": 1789998500000
    },
-   "attention": "idle",
-   "attention_since": 1789999936000,
+   "attention": "working",
+   "attention_since": 1789997538000,
    "report": null,
    "ask": null,
    "actions": {
     "verify": false,
-    "ruling": false,
+    "ruling": true,
     "done": false,
     "receipt": true,
     "why_not": {
      "verify": "no report to verify",
-     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
-     "done": "turn ended without a report"
+     "done": "task still working"
     }
    }
   },
   {
-   "id": "demo:task-03",
+   "id": "demo:stalled",
    "project": "demo",
-   "task": "task-03",
-   "pane": "w1:p13",
-   "run": "run-03",
+   "task": "stalled",
+   "pane": "w1:p31",
+   "run": "run-np-0",
    "task_n": 1,
-   "vendor": "codex",
-   "model": "model-y",
+   "vendor": "claude",
+   "model": "claude-sonnet-5-5",
    "effort": null,
-   "agent_status": "idle",
-   "turn_state": "ended_unreported",
-   "turn_ended_at": 1789999937000,
+   "agent_status": "working",
+   "turn_state": "working",
+   "turn_ended_at": null,
    "dispatched_at": 1789988478000,
-   "turn_started_at": null,
-   "last_progress_at": null,
+   "turn_started_at": 1789997538000,
+   "last_progress_at": 1789997180000,
    "turns": 3,
    "children_running": null,
    "ctx": {
-    "pct": null,
-    "tokens": null,
-    "source": null
+    "pct": 17.5,
+    "tokens": 30000,
+    "source": "turn-end"
    },
    "rulings_pending": {
     "count": 0,
     "oldest_at": null
    },
-   "attention": "idle",
-   "attention_since": 1789999937000,
+   "attention": "working",
+   "attention_since": 1789997538000,
    "report": null,
    "ask": null,
    "actions": {
     "verify": false,
-    "ruling": false,
+    "ruling": true,
     "done": false,
     "receipt": true,
     "why_not": {
      "verify": "no report to verify",
-     "ruling": "pane is idle: channel-send --ruling delivers to it now; nothing was queued",
-     "done": "turn ended without a report"
+     "done": "task still working"
     }
    }
   }

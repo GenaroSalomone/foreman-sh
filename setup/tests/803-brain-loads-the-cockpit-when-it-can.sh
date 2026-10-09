@@ -15,7 +15,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 BH="$TMP/tree/brain"
-mkdir -p "$BH/bin" "$BH/demo" "$BH/demo2" "$BH/cockpit/.claude-plugin" "$TMP/stub"
+mkdir -p "$BH/bin" "$BH/lib/hw" "$BH/demo" "$BH/demo2" "$BH/cockpit/.claude-plugin" "$TMP/stub"
+cp "$ROOT/lib/hw/deps.sh" "$ROOT/lib/hw/deps.conf" "$BH/lib/hw/"   # the claude floor is a row of this manifest
 cp "${BRAIN_SOURCE:-$ROOT/bin/brain}" "$BH/bin/brain"
 cp "$ROOT/bin/engram-label-proxy" "$ROOT/bin/project-spaces.sh" "$ROOT/bin/runenv" "$ROOT/bin/msys-compat.sh" "$ROOT/bin/sitecustomize.py" "$BH/bin/"
 chmod +x "$BH/bin/brain"
@@ -103,6 +104,19 @@ run 2.1.291 demo; need_started "no mod on disk"
 [ -z "$(flag_dir)" ] && [ "$(cockpit_lines)" = 1 ] || fail "with no cockpit folder brain must open without the flag and print one line: $(cat "$TMP/out")"
 mv "$BH/cockpit.away" "$BH/cockpit"
 pass "803: a tree with no cockpit folder opens without it and says so"
+
+# The floor is a row of lib/hw/deps.conf, not a number in bin/brain: move it and brain follows.
+cp "$BH/lib/hw/deps.conf" "$TMP/deps.conf.keep"
+sd '^claude\|[0-9.]+\|' 'claude|2.1.400|' "$BH/lib/hw/deps.conf"
+run 2.1.300 demo; need_started "a raised floor"
+[ -z "$(flag_dir)" ] && grep -q 'cockpit needs claude >= 2.1.400 (found 2.1.300)' "$TMP/out" || fail "803: brain did not follow the floor in lib/hw/deps.conf (2.1.400): $(cat "$TMP/out")"
+run 2.1.400 demo; need_started "at the raised floor"
+[ "$(flag_dir)" = "$BHP/cockpit" ] || fail "803: claude AT the manifest's floor was not given the cockpit"
+rm "$BH/lib/hw/deps.conf"
+run 2.1.400 demo; need_started "no manifest"
+[ -z "$(flag_dir)" ] && grep -q 'no version floor for the cockpit' "$TMP/out" || fail "803: a tree with no manifest must open without the cockpit and say so: $(cat "$TMP/out")"
+cp "$TMP/deps.conf.keep" "$BH/lib/hw/deps.conf"
+pass "803: the cockpit's claude floor is read from lib/hw/deps.conf; with no manifest brain opens without the cockpit and says so"
 
 # Old/new: the base's brain never passes the flag. Skipped once the base has it (after the merge).
 old="$TMP/old-brain"

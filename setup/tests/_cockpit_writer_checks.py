@@ -7,8 +7,11 @@ bin dir is a parameter so 797 can run the same check against a mutated copy of t
 writer and expect it to fail. Everything is built on disk in a temp dir by
 _cockpit_world.py; nothing here touches herdr or the real work root.
 """
+import importlib.machinery
+import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -541,7 +544,7 @@ def ctx_from_transcript():
         fh.write(json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5-5", "usage": {"input_tokens": 4424, "cache_read_input_tokens": 40000, "cache_creation_input_tokens": 0}}}) + "\n")
         fh.write(json.dumps({"type": "user", "message": {"content": "x"}}) + "\n")
     r = subprocess.run([os.path.join(BIN, "cockpit-state"), "ctx", p], capture_output=True, text=True)
-    assert r.returncode == 0 and json.loads(r.stdout) == {"pct": 22.2, "tokens": 44424}, r.stdout + r.stderr   # P5: 44424 → 22 %
+    assert r.returncode == 0 and json.loads(r.stdout) == {"pct": None, "tokens": 44424}, r.stdout + r.stderr   # P5 measured the tokens (44424 = the statusline's 44.4k); no window is assumed, so no percent
     big = os.path.join(d, "m.jsonl")
     open(big, "w").write(json.dumps({"type": "assistant", "message": {"model": "claude-opus-4-7[1m]", "usage": {"input_tokens": 100000}}}) + "\n")
     r = subprocess.run([os.path.join(BIN, "cockpit-state"), "ctx", big], capture_output=True, text=True)
@@ -550,6 +553,84 @@ def ctx_from_transcript():
     open(none, "w").write('{"type":"user"}\n')
     assert subprocess.run([os.path.join(BIN, "cockpit-state"), "ctx", none], capture_output=True).returncode == 1
     assert subprocess.run([os.path.join(BIN, "cockpit-state"), "ctx", os.path.join(d, "absent")], capture_output=True).returncode == 1
+
+
+def ctx_live():
+    """A working claude card shows the ctx of its transcript while its first turn is still running."""
+    d = tmpdir()
+    w = cw.World(d)
+    cfg = os.path.join(d, "claude-config")
+
+    def usage(tokens):
+        return json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5-5", "usage": {"input_tokens": tokens}}}) + "\n"
+
+    def session(x, sid, tokens, cwd_of=None, config=cfg):
+        """The run's receipt session_id, CLAUDE_CONFIG_DIR in its env, and the transcript where claude keeps it."""
+        with open(os.path.join(x["rundir"], "receipt.jsonl"), "a") as fh:
+            fh.write(json.dumps({"key": "session_id", "value": sid}) + "\n")
+        with open(os.path.join(x["rundir"], "env"), "a") as fh:
+            fh.write("CLAUDE_CONFIG_DIR='%s'\n" % config)
+        launch = os.path.dirname(os.path.dirname(x["rundir"]))
+        pdir = os.path.join(config, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd_of or launch))
+        os.makedirs(pdir, exist_ok=True)
+        path = os.path.join(pdir, sid + ".jsonl")
+        open(path, "w").write(usage(tokens))
+        return path
+
+    now = time.time()
+    first = w.executor(task="first", status="working")                       # no turn end yet: the case
+    session(first, "11111111-aaaa-bbbb-cccc-000000000001", 50000)
+    fresh = w.executor(task="fresh", status="working", tokens={"turn_state": "working", "turn_ended_at": cw.iso(now - 600),
+                                                                "ctx_pct": "10.0", "ctx_tokens": "20000"})
+    session(fresh, "11111111-aaaa-bbbb-cccc-000000000002", 80000)            # the transcript moved after the turn end
+    newer = w.executor(task="newer", status="working", tokens={"turn_state": "working", "turn_ended_at": cw.iso(now),
+                                                                "ctx_pct": "30.0", "ctx_tokens": "60000"})
+    p = session(newer, "11111111-aaaa-bbbb-cccc-000000000003", 90000)
+    os.utime(p, (now - 600, now - 600))                                       # the turn end is newer than the transcript
+    other = w.executor(task="otherdir", status="working")
+    session(other, "11111111-aaaa-bbbb-cccc-000000000004", 100000, cwd_of="/not/where/it/ran")  # found by its session id
+    lost = w.executor(task="lost", status="working")
+    with open(os.path.join(lost["rundir"], "receipt.jsonl"), "a") as fh:
+        fh.write(json.dumps({"key": "session_id", "value": "11111111-aaaa-bbbb-cccc-0000000000ff"}) + "\n")
+    nosid = w.executor(task="nosid", status="working")
+    ocode = w.executor(task="ocode", vendor="opencode", status="working")
+    session(ocode, "11111111-aaaa-bbbb-cccc-000000000005", 70000)
+    idle = w.executor(task="idle", status="idle")
+    session(idle, "11111111-aaaa-bbbb-cccc-000000000006", 70000)
+    broken = w.executor(task="broken", status="working")                     # a usage nobody foresaw: one card, not the file
+    bp = session(broken, "11111111-aaaa-bbbb-cccc-000000000007", 1000)
+    open(bp, "a").write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": "lots"}}}) + "\n")
+    w.publish()
+    s = state(w)
+    assert row(s, "broken")["ctx"] == {"pct": None, "tokens": None, "source": None}, \
+        "a malformed transcript line must leave its card n/a, not take the state file down: %s" % row(s, "broken")["ctx"]   # 797-M28
+    assert row(s, "first")["ctx"] == {"pct": None, "tokens": 50000, "source": "live"}, \
+        "a working card in its first turn has no live ctx: %s" % row(s, "first")["ctx"]      # 797-M25
+    assert row(s, "fresh")["ctx"] == {"pct": None, "tokens": 80000, "source": "live"}, "a transcript newer than the turn end must win: %s" % row(s, "fresh")["ctx"]
+    assert row(s, "newer")["ctx"] == {"pct": 30.0, "tokens": 60000, "source": "turn-end"}, \
+        "a turn-end value newer than the transcript must win: %s" % row(s, "newer")["ctx"]   # 797-M27
+    assert row(s, "otherdir")["ctx"]["tokens"] == 100000, "the session id did not find a transcript under another project dir"
+    n_a = {"pct": None, "tokens": None, "source": None}
+    for t in ("lost", "nosid", "ocode", "idle"):
+        assert row(s, t)["ctx"] == n_a, "%s: ctx must stay n/a, got %s" % (t, row(s, t)["ctx"])
+
+    # one long-lived process, the way `--loop` runs: a transcript that grew is re-read, one that did not is not
+    ldr = importlib.machinery.SourceFileLoader("cs_live", os.path.join(BIN, "cockpit-state"))
+    loopmod = importlib.util.module_from_spec(importlib.util.spec_from_loader(ldr.name, ldr))
+    ldr.exec_module(loopmod)
+    env = {"CLAUDE_CONFIG_DIR": cfg}
+    c, _ = loopmod.live_ctx(first["rundir"], env)
+    assert c == {"pct": None, "tokens": 50000}, c
+    tp = loopmod.transcript_of(first["rundir"], env)
+    calls = []
+    real = loopmod.ctx_from_transcript
+    loopmod.ctx_from_transcript = lambda path: (calls.append(path), real(path))[1]
+    loopmod.live_ctx(first["rundir"], env)
+    assert calls == [], "a transcript that did not move was read again (the cache is by mtime and size)"
+    with open(tp, "a") as fh:
+        fh.write(usage(120000))
+    c, _ = loopmod.live_ctx(first["rundir"], env)
+    assert c == {"pct": None, "tokens": 120000}, "a transcript that grew was not re-read: %s" % c    # 797-M26
 
 
 def cut_rule():
@@ -598,11 +679,15 @@ def timing_40():
     sys.stderr.write("  timing: 40 executors + 10 other panes, --once wall ms: best %.0f median %.0f worst %.0f\n" % (ts[0], ts[3], ts[-1]))
     size = os.path.getsize(w.state_path())
     assert size <= 256 * 1024, size
-    assert ts[0] < 300, "best of 7 is %.0f ms, the budget is 300" % ts[0]
+    # 300 ms is the idle-machine contract. HW_TIMING_SCALE (1-3, set by 797 from load_scale) stretches the LIMIT with the
+    # load right now, the way 798's two latency limits do: --once is 80-130 ms alone, 331 best-of-7 inside the full suite.
+    scale = int(os.environ.get("HW_TIMING_SCALE", "1"))
+    assert 1 <= scale <= 3, "HW_TIMING_SCALE is %d, the cap is 3" % scale
+    assert ts[0] < 300 * scale, "best of 7 is %.0f ms, the budget is %d (300 x load scale %d)" % (ts[0], 300 * scale, scale)
 
 
 CHECKS = {f.__name__: f for f in (classes, done_tokens_outlive_the_task, row_order, private_files, killed_writer, loop_survives_a_failed_write, herdr_down, rows_cap, size_cap, summary_rejoin, effort_published, strings_are_clean, atomic, debounce,
-                                  loop_dies_with_parent, loop_binds_to_pane, ctx_from_transcript, cut_rule, timing_40, kick_names_its_brainer)}
+                                  loop_dies_with_parent, loop_binds_to_pane, ctx_from_transcript, ctx_live, cut_rule, timing_40, kick_names_its_brainer)}
 
 if __name__ == "__main__":
     BIN = os.path.abspath(sys.argv[1])

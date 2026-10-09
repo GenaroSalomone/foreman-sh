@@ -72,6 +72,10 @@ foreman-sh answers each one with a mechanism:
 On macOS, Homebrew installs all of these but Claude Code's first run (see the
 Quickstart).
 
+Each tool has a minimum version, kept in one file (`lib/hw/deps.conf`). `install.sh --check` and
+`hw preflight` refuse a tool below it and print the command to update it
+([INSTALL.md](INSTALL.md), [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) L15).
+
 [engram](https://github.com/Gentleman-Programming/engram) is recommended, and
 two more tools are optional:
 
@@ -278,7 +282,14 @@ implied:
 A brainer opened by `brain` runs with a cockpit mod: a card per executor with
 its harness, model and effort, its context use and its age, and a band above
 the prompt that totals them and names the one that needs you (an unanswered
-`ask-invoker`, say). `/cockpit` opens the full pane. Each control runs a command
+`ask-invoker`, say). `/cockpit` opens the full pane. A working executor's card also says how long it
+has been at it and how long its current turn has run (`working 3h12m · turn
+41m`), and a queued ruling says how old it is (`1 ruling queued 25m`). When a
+working executor has not moved for 30 minutes (no commit on its branch, no file
+changed in its worktree, no new line in its transcript) the card says `no
+progress 47m` and turns yellow, so a stuck run does not look like a busy one.
+The turn's start is the previous turn's end, so a turn that began after the
+executor sat idle is shown longer than it is. Each control runs a command
 that already exists, so it does nothing the command itself would refuse:
 
 | Control | Runs |
@@ -338,6 +349,7 @@ name and `{task}` the task name.
 | `model` | string | The model executors get when the dispatch passes no `--model`. | empty: the vendor's own |
 | `model_floor` | object | `tier` (`haiku`, `sonnet` or `opus`) is the lowest Claude tier `hw` launches without `--below-floor-why`; `accepts` lists off-ladder model ids the lane admits. | no floor |
 | `model_pins` | object | Maps an alias (`haiku`, `sonnet`, `opus`, `fable`) to the full `claude-*` id `hw` passes in its place. | the alias as typed |
+| `subagent_model` | string | The model a Claude Code executor's subagents run on when they name none: `inherit`, an alias (`haiku`, `sonnet`, `opus`, `fable`) or a `claude-*` id. `hw` exports it as `CLAUDE_CODE_SUBAGENT_MODEL`, to Claude Code only (the manifest says `NOT APPLIED` for the others); `--subagent-model` overrides it per dispatch. An agent that pins its own `model:` keeps it. | `inherit` |
 | `account` | string | The Claude Code account the lane's sessions run under: `default` or `personal`. | `default` |
 | `artifacts` | string | Where executors may publish claude.ai artifacts: `deny`, `default` or `personal`. | the lane's `account` |
 | `requested_by` | string | `required` refuses a dispatch whose brief cites no request; `warn` says so and launches. | off |

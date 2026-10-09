@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -160,9 +161,27 @@ def main():
         # Copies retain their modes: subjects copy these bytes into writable
         # mutant fixtures. Isolation is a private copy, not a claim of a
         # hostile-process sandbox. Verify it again before releasing a headline.
+        # A TERM OR HUP THAT REACHES THIS WRAPPER REACHES THE SUITE TOO. The runner below holds a
+        # machine-wide queue ticket, slots and a pile of subject processes, and it already cleans
+        # all of it up on INT/TERM (setup/test-hw traps both) — but only if somebody tells it. A
+        # `kill`/`pkill`/`timeout` aimed at this process used to end it alone: the runner, no longer
+        # anyone's child, went on with parent 1 for hours (measured 2026-10-08: seven of them, one
+        # for 3h37m, left by tests/731, each in a `sleep 1` queue loop). The wrapper does not exit
+        # on the signal: the runner ends (rc 143), its output is drained, the verdict is settled as
+        # not green and the candidate is checked, as for any other failed run.
+        child = []
+        def forward(signum, _frame):
+            if child and child[0].poll() is None:
+                try:
+                    child[0].send_signal(signum)
+                except OSError:
+                    pass
+        for signum in (signal.SIGTERM, signal.SIGHUP):  # MUTATION-ANCHOR: 881-M01
+            signal.signal(signum, forward)  # MUTATION-ANCHOR-END: 881-M01
         proc = subprocess.Popen(['bash', str(candidate / 'setup/test-hw')],
                                 cwd=candidate, env=env, stdout=subprocess.PIPE,
                                 text=True)
+        child.append(proc)
         pending = []
         for line in proc.stdout:
             if pending or re.match(r'^(?:[0-9]+ tests passed|NO TRACKED NUMBER)', line):

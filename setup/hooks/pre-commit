@@ -161,6 +161,19 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
   # in this block need it. Swept by PREFIX because `env -u` cannot name
   # GIT_CONFIG_KEY_<n>, and the suite strips the same family again itself.
   hook_git_config_unset=()
+  # hook_verdict_green <tree> — 0 when `<git-common-dir>/hw-push-verified/<tree>.fast` is a GREEN
+  # fast-gate verdict that names exactly <tree>: its own `tree=` line (the file name alone is not
+  # trusted), `gate=fast`, and a headline that counted at least one passing test.
+  hook_verdict_green() {
+    local tree="$1" common v
+    [ -n "$tree" ] || return 1
+    common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    v="$common/hw-push-verified/$tree.fast"
+    [ -f "$v" ] || return 1
+    grep -qxF "tree=$tree" "$v" || return 1  # MUTATION-ANCHOR: 880-M01
+    grep -qxF "gate=fast" "$v" || return 1
+    grep -qE '^headline=FAST GATE: [1-9][0-9]* tests passed' "$v"  # MUTATION-ANCHOR: 880-M02
+  }
   for _gc_name in ${!GIT_CONFIG@}; do hook_git_config_unset+=(-u "$_gc_name"); done
   unset _gc_name 2>/dev/null || true
   if [ -x "$root/setup/test-hw" ]; then
@@ -181,9 +194,22 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
     # everything else still runs, mandatorily, in `setup/hooks/pre-push` for the
     # two remotes this repo allows — nothing is skipped, it is PAID LATER, at a
     # point that does not sit between every commit and the next thought.
+    # A GATE THAT ALREADY PASSED FOR THESE EXACT BYTES IS NOT RUN AGAIN. An executor
+    # runs `HW_TEST_GATE=fast bash setup/test-hw` and then commits, and this hook
+    # re-ran the gate over the same tree (measured 2026-10-08: more than ten minutes
+    # twice per commit, on a machine at load 78). `setup/test-hw` leaves
+    # `<git-common-dir>/hw-push-verified/<tree>.fast` for the tree it tested, the
+    # whole fast gate plus the slow subjects the branch touched — a superset of the
+    # selection this hook would run — so a verdict for the tree being committed
+    # (`git write-tree` of THIS index, the private one included) says what the run
+    # here would say. Any other tree has no such file, and the gate runs as always.
+    hook_reused=""
+    hook_tree="$(git write-tree 2>/dev/null)" || hook_tree=""
+    if hook_verdict_green "$hook_tree"; then hook_reused="$hook_tree"; fi  # MUTATION-ANCHOR: 880-M04
     hook_started="$(date +%s)"
     hook_rc=0
-    out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
+    out=""
+    [ -n "$hook_reused" ] || out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
                -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
                -u GIT_COMMON_DIR -u GIT_PREFIX \
                "${hook_git_config_unset[@]+"${hook_git_config_unset[@]}"}" \
@@ -262,7 +288,10 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
       } >&2
       exit 1
     fi
-    if [ -n "$hook_headline" ]; then
+    if [ -n "$hook_reused" ]; then
+      printf 'pre-commit: the fast gate already passed for this exact tree (%s) — not run again (%s)\n' \
+        "$hook_reused" "$(grep -m1 '^headline=' "$(git rev-parse --path-format=absolute --git-common-dir)/hw-push-verified/$hook_reused.fast" | sed 's/^headline=//')" >&2
+    elif [ -n "$hook_headline" ]; then
       printf 'pre-commit: the fast gate passed in %ss (measured on this run) — %s\n' \
         "$hook_elapsed" "$hook_headline" >&2
       [ -z "$hook_untracked" ] || printf 'pre-commit:  %s\n' "$(printf '%s' "$hook_untracked" | sed 's/^ *//')" >&2

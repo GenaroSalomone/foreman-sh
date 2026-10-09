@@ -32,6 +32,12 @@
    "rows_rendered": 12
   },
   {
+   "file": "no-progress.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 4
+  },
+  {
    "file": "rows-40.json",
    "now_ms": 1790000000000,
    "class": "fresh",

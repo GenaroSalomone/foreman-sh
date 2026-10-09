@@ -29,7 +29,8 @@
    "running": true,
    "since_ms": 1789999880000,
    "holder": "demo:task-01"
-  }
+  },
+  "no_progress_after_ms": 1800000
  },
  "rows": [
   {
@@ -45,6 +46,9 @@
    "agent_status": "idle",
    "turn_state": "ended_holding",
    "turn_ended_at": 1789999939000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {
@@ -91,6 +95,9 @@
    "agent_status": "idle",
    "turn_state": "ended_holding",
    "turn_ended_at": 1789999938000,
+   "dispatched_at": 1789988478000,
+   "turn_started_at": null,
+   "last_progress_at": null,
    "turns": 3,
    "children_running": null,
    "ctx": {

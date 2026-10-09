@@ -55,12 +55,14 @@ _ledger_dispatch() {
     --arg brief "${BRIEF:-}" --arg sha "$sha" --arg commit "${LEDGER_BRIEF_COMMIT:-}" \
     --arg account "${ACCOUNT:-}" --arg model "${MODEL:-}" --arg effort "${EFFORT:-}" \
     --arg vendor "${AGENT:-}" --arg sdd "${SDD:-}" --arg base "$base" \
+    --arg subagent_model "$(_subagent_model_receipt_value 2>/dev/null || true)" \
     --arg pane "$pane" --arg rundir "$rundir" --argjson delivered "$([ "$drc" = 0 ] && echo true || echo false)" \
     '{v:1, ts:$ts, lane:$lane, task:$task, run:$run, seq:$seq,
       brief:(if $brief=="" then null else $brief end),
       brief_sha:(if $sha=="" then null else $sha end),
       brief_commit:(if $commit=="" then null else $commit end),
       account:$account, model:$model, effort:$effort, vendor:$vendor, sdd:$sdd, base:$base,
+      subagent_model:$subagent_model,
       pane:$pane, rundir:$rundir, delivered:$delivered}' >> "$f" 2>/dev/null \
     || warn "ledger: could not append to $f; this dispatch is NOT recorded"
   return 0
@@ -84,10 +86,12 @@ _ledger_next() {  # $1 pane  $2 rundir  $3 task seq  $4 brief path ("" when the 
   # the line said "sonnet" for a pane that was opus (judgment day, registro-de-despachos).
   # Read from the run's `dispatch` file and env the way cmd_next and the reuse-route
   # refusals read them. Unreadable stays empty: no value beats the wrong one.
-  local MODEL EFFORT AGENT  # MUTATION-ANCHOR: 811-M07
+  local MODEL EFFORT AGENT SUBAGENT_MODEL  # MUTATION-ANCHOR: 811-M07
   MODEL="$(_next_dispatch_model "$2" 2>/dev/null || true)"
   EFFORT="$(_next_dispatch_effort "$2" 2>/dev/null || true)"
   AGENT="$(_run_env_value "$2" HW_EXECUTOR_VENDOR 2>/dev/null || true)"  # MUTATION-ANCHOR-END: 811-M07
+  # The pane's own subagent model, from its env; no line there means it inherits.
+  SUBAGENT_MODEL="$(_run_env_value "$2" CLAUDE_CODE_SUBAGENT_MODEL 2>/dev/null || true)"; SUBAGENT_MODEL="${SUBAGENT_MODEL:-inherit}"
   _ledger_commit_brief
   _ledger_dispatch "$1" 0 "$3" "$2"
 }
@@ -383,7 +387,7 @@ for lane in lanes:
                "run": last.get("run"), "ts": last.get("ts"), "done_at": at, "model": last.get("model"),
                "vendor": last.get("vendor"), "account": last.get("account"), "effort": last.get("effort"),
                "brief_sha": last.get("brief_sha"), "brief_commit": last.get("brief_commit"),
-               "pane": last.get("pane")}
+               "subagent_model": last.get("subagent_model"), "pane": last.get("pane")}
         if archived:
             row["archived"] = True
         out.append(row)
@@ -399,7 +403,8 @@ for lane in lanes:
                     "dispatches": len(hist), "run": last.get("run"), "ts": last.get("ts"), "done_at": at,
                     "model": last.get("model"), "vendor": last.get("vendor"), "account": last.get("account"),
                     "effort": last.get("effort"), "brief_sha": last.get("brief_sha"),
-                    "brief_commit": last.get("brief_commit"), "pane": last.get("pane")})
+                    "brief_commit": last.get("brief_commit"), "subagent_model": last.get("subagent_model"),
+                    "pane": last.get("pane")})
     if pending and path:
         try:
             with open(path, "a", encoding="utf-8") as fh:

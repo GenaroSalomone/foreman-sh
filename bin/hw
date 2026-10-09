@@ -577,14 +577,14 @@ cmd_handle() {
   return "$rc"
 }
 
-# `hw preflight --json -- <hw argv>` — what hw's own rules say about a dispatch,
-# without doing it. Read-only: it creates, writes and launches nothing, and it
-# never blocks on its own — `block` is only an account hw's resolution refuses.
+# `hw preflight --json -- <hw argv>` — what hw's own rules say about a dispatch, without doing it:
+# creates and launches nothing; writes only the tool-version cache (lib/hw/deps.sh), filled by
+# running `<tool> --version`. `block`: an account hw refuses, or a tool below its floor (dep-floor).
 # Prints the verdict cockpit/schema.json describes (`preflight`).
 #   account-override  an explicit --account other than the lane default
 #   cut-running       the release cut holds a suite slot (warn for any dispatch)
 cmd_preflight() {
-  local json=0 lane="" acct="" agent="" i a rules='[]' lvl=ok why
+  local json=0 lane="" acct="" agent="" sdd="" i a rules='[]' lvl=ok why dep
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -604,6 +604,7 @@ cmd_preflight() {
       case "${av[i]}" in
         --account) [ $((i + 1)) -lt ${#av[@]} ] && { ACCOUNT="${av[i+1]}"; ACCOUNT_SRC=chosen; }; i=$((i + 1)) ;;
         --agent)   [ $((i + 1)) -lt ${#av[@]} ] && AGENT="${av[i+1]}"; i=$((i + 1)) ;;
+        --sdd)     [ $((i + 1)) -lt ${#av[@]} ] && sdd="${av[i+1]}"; i=$((i + 1)) ;;
       esac
     done
     if [ "$ACCOUNT_SRC" = chosen ] && [ "$ACCOUNT" != "$def" ]; then
@@ -618,8 +619,28 @@ cmd_preflight() {
     if why="$(SG_WORK="${WORK:-}" sg_cut_holder)"; then
       rules="$(jq -c '. + [{id: "cut-running", level: "warn", msg: "a suite cut is running; the dispatch will queue behind it"}]' <<<"$rules")" || true  # MUTATION-ANCHOR: 800-M02
     fi
+    # dep-floor: a tool this dispatch needs is older than lib/hw/deps.conf allows. Only the
+    # tools the dispatch uses (`needs`), and only one that IS installed: a missing binary is
+    # reported where it is needed, as before. An unreadable version is a warn, never a block.
+    for dep in $(deps_names); do
+      deps_row "$dep" || continue
+      case "$DEPS_NEEDS" in
+        always|"vendor:$AGENT") ;;
+        sdd:gentle) [ "$sdd" = gentle ] || continue ;;
+        *) continue ;;
+      esac
+      if [ "$dep" = gentle-ai ]; then deps_status "$dep" "$(gentle_home_dir)/bin/gentle-ai" || true
+      else deps_status "$dep" || true; fi
+      case "$DEPS_STATE" in
+        below)   a=block ;;
+        unknown) a=warn ;;
+        *) continue ;;
+      esac
+      why="$(deps_message "$dep")"
+      rules="$(jq -c --arg l "$a" --arg m "${why:0:240}" '. + [{id: "dep-floor", level: $l, msg: $m}]' <<<"$rules")" || true  # MUTATION-ANCHOR: 800-M04
+    done
   fi
-  : # nothing is written, created or launched above or below  # MUTATION-ANCHOR: 800-M03
+  : # nothing is written, created or launched above or below, but the version cache  # MUTATION-ANCHOR: 800-M03
   lvl="$(jq -r 'map(.level) | if index("block") then "block" elif index("warn") then "warn" else "ok" end' <<<"$rules")" || true
   jq -nc --arg l "$lvl" --argjson r "$rules" '{schema: 1, level: $l, rules: $r}'
 }
@@ -693,6 +714,11 @@ HW_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 # beside it (the suite's fixtures). It never overrides a lib/ that is there.
 HW_LIB="$HW_BIN_DIR/../lib"
 [ -r "$HW_LIB/hw/reap.sh" ] || HW_LIB="${HW_LIB_DIR:-$HW_LIB}"
+# THE VERSION FLOORS (lib/hw/deps.conf) and the one check against them: gentle-ai's
+# pin below, and `hw preflight`'s dep-floor rule. No number of this kind lives in this file.
+# shellcheck source=../lib/hw/deps.sh
+[ -r "$HW_LIB/hw/deps.sh" ] || { printf 'hw: cannot load %s/hw/deps.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
+. "$HW_LIB/hw/deps.sh"
 # The project -> workspace-label table, shared with bin/brain so the two cannot
 # name the same space differently. See bin/project-spaces.sh.
 # shellcheck source=project-spaces.sh
@@ -716,10 +742,23 @@ case "${1:-}" in -V|--version) printf 'hw %s\n' "$(cli_version "$BRAIN")"; exit 
 
 # ── hw-core: the verbs that run as a Go binary (T0: receipt, log, handle, help; T1: worktrees and the table of status) ──
 # THE DEFAULT IS BASH, AND NOTHING BELOW RUNS UNLESS HW_IMPL (or HW_IMPL_<VERB>) IS
-# SET. `go` execs hw-core for a ported verb; `bash` is the path that has always run
+# SET — in the environment, or in the SWITCH FILE below. `go` execs hw-core for a ported verb; `bash` is the path that has always run
 # and is the rollback; `shadow` runs both, prints bash's answer and appends any
-# difference in stdout, stderr or exit status to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (HW_SHADOW_JSONL names another file). A hw-core older than core/'s sources is treated as not built. A hw-core that is
-# not built falls back to bash with ONE warning line. The contract hw-core keeps is
+# difference in stdout, stderr or exit status to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (HW_SHADOW_JSONL names another file); EVERY shadow call, equal or not, adds a line to
+# shadow.calls.tsv beside it, and `hw shadow` reads both (days, calls and diffs per verb: the clock of the 7-day gate).
+# A hw-core older than core/'s sources is treated as not built. A hw-core that is
+# not built falls back to bash with ONE warning line.
+#
+# THE SWITCH FILE puts shadow in every pane, hook and invoker without touching one: it is the default mode when the
+# environment names none. ${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-~/.config}/hw/impl}; a line `shadow` (or bash, go) is the
+# default for every ported verb, a line `<verb>=<mode>` is one verb's (the way back for a verb whose shadow costs too
+# much). Precedence: HW_IMPL_<VERB>, HW_IMPL, the file's `<verb>=`, the file's default, bash — and the bash re-run
+# inside a shadow sets HW_IMPL=bash, so it never meets the file. `hw shadow on|off` writes it. A hw-core not built or
+# stale, when the mode came from the file, warns ONCE per state (a hook calls hw every turn); the stamp is
+# ${XDG_STATE_HOME:-~/.local/state}/hw/warned. `hw shadow` says it every time it is asked.
+# `hw shadow` is deliberately NOT in `hw help`: the help of a ported verb is frozen bash text with a Go twin
+# (core/help/*.txt) and goldens (setup/tests/contract-hw), and a line only bash prints is a diff under shadow.
+# Its own usage: `hw shadow --help`. The contract hw-core keeps is
 # setup/contracts/hw.md; the bash of these verbs is frozen, a fix to one goes
 # to core/ (setup/decisions.md, «El núcleo de hw migra a Go»).
 #
@@ -727,14 +766,46 @@ case "${1:-}" in -V|--version) printf 'hw %s\n' "$(cli_version "$BRAIN")"; exit 
 # (cmd_status) and bin/hw prints the rest, so `_core_inline` runs it where cmd_status was called,
 # and the same call serves `cmd_worktrees --quiet` inside `hw status`. In `shadow`, a verb that
 # writes (`worktrees --migrate`) is never run twice: bash answers alone.
+# (_core_impl_for stays the FIRST function of the shim: setup/tests/823 cuts the shim out of this file from here on.)
 _core_impl_for() {  # <verb> → bash | go | shadow
   local up v
   up="$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
-  eval "v=\"\${HW_IMPL_$up:-\${HW_IMPL:-bash}}\""
-  case "$v" in
-    bash|go|shadow) printf '%s' "$v" ;;
+  v="$(_core_env_impl_for "$1")"
+  [ -n "$v" ] || v="$(_core_conf_mode "$up")"   # MUTATION-ANCHOR: 890-M01
+  case "${v:-bash}" in
+    bash|go|shadow) printf '%s' "${v:-bash}" ;;
     *) die "HW_IMPL=$v is not an implementation — the valid ones are bash, go and shadow" ;;
   esac
+}
+_core_warn_once() {  # <key> <message> — warn() the first time this key is seen on this machine; the stamp is the user's state dir
+  local f="${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/hw/warned"
+  if [ -r "$f" ] && grep -qxF -- "$1" "$f" 2>/dev/null; then return 0; fi
+  warn "$2"
+  { mkdir -p "${f%/*}" && printf '%s\n' "$1" >>"$f"; } 2>/dev/null || true
+}
+_core_impl_file() { printf '%s' "${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/hw/impl}"; }
+_core_conf_mode() {  # <VERB in capitals> — the mode the switch file names for it ("" when it names none)
+  local f line key def="" mine=""
+  f="$(_core_impl_file)"; [ -r "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"; line="${line//[[:space:]]/}"
+    case "$line" in
+      "") ;;
+      *=*) key="$(printf '%s' "${line%%=*}" | tr 'a-z-' 'A-Z_')"; [ "$key" != "$1" ] || mine="${line#*=}" ;;
+      *) def="$line" ;;
+    esac
+  done <"$f"
+  [ -n "$mine" ] || mine="$def"
+  case "$mine" in
+    ""|bash|go|shadow) printf '%s' "$mine" ;;
+    *) _core_warn_once "badfile:${f}:${mine}" "$f names «${mine}», which is not an implementation (bash, go or shadow), so the bash implementation runs" ;;
+  esac
+}
+_core_env_impl_for() {  # <verb> — what the ENVIRONMENT says for it ("" when it says nothing)
+  local up v
+  up="$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+  eval "v=\"\${HW_IMPL_$up:-\${HW_IMPL:-}}\""
+  printf '%s' "$v"
 }
 _core_find() {  # the hw-core binary, or nothing
   local c os arch ext=""
@@ -752,6 +823,10 @@ _core_stale() {  # <binary> — succeeds when a source in core/ is newer than it
   [ -d "$src" ] || return 1
   [ -n "$(find "$src" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$1" -print -quit 2>/dev/null)" ]
 }
+_core_shadow_calls() {  # the file of shadow calls: beside shadow.jsonl, whatever HW_SHADOW_JSONL names
+  local j="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/hw/shadow.jsonl}"
+  printf '%s' "${j%.jsonl}.calls.tsv"
+}
 _core_shadow_log() {  # <tmp dir> <rc bash> <rc go> <verb> <argv…> — appends the difference between b.* and g.*, if any
   local tmp="$1" rc_b="$2" rc_g="$3" log diffs="" s
   shift 3
@@ -759,8 +834,16 @@ _core_shadow_log() {  # <tmp dir> <rc bash> <rc go> <verb> <argv…> — appends
   # is not a difference in the answer, and logged it would keep shadow.jsonl from ever being empty on a terminal.
   # The comparison (and the line) read the text without its colour; what the user is shown keeps it.
   for s in b.out b.err g.out g.err; do LC_ALL=C sed $'s/\033\\[[0-9;]*m//g' "$tmp/$s" >"$tmp/$s.plain"; done
+  # a writer's shadow runs Go and then bash, a moment apart: a printed time that falls on two seconds is not a difference
+  if [ -n "${_shadow_writer:-}" ]; then
+    for s in b.out b.err g.out g.err; do
+      LC_ALL=C sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{4})/@AT@/g' "$tmp/$s.plain" >"$tmp/$s.plain2" && mv "$tmp/$s.plain2" "$tmp/$s.plain"
+    done
+  fi
   for s in out err; do cmp -s "$tmp/b.$s.plain" "$tmp/g.$s.plain" || diffs="$diffs std$s"; done
   [ "$rc_b" = "$rc_g" ] || diffs="$diffs status"
+  # one line per shadow call, equal or not: `hw shadow` counts days and calls from here, the differences from shadow.jsonl
+  { mkdir -p "$(dirname "$(_core_shadow_calls)")" && printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$(_core_shadow_calls)"; } 2>/dev/null || true   # MUTATION-ANCHOR: 890-M02
   [ -n "$diffs" ] || return 0
   # the line carries transcript text: it goes to the user's state dir, never into the brain tree
   log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
@@ -770,12 +853,16 @@ _core_shadow_log() {  # <tmp dir> <rc bash> <rc go> <verb> <argv…> — appends
       '{at: $at, verb: $verb, argv: $argv, differs: ($diffs | split(" ")), bash_rc: $bash_rc, go_rc: $go_rc,
         stdout: {bash: $bo[0:400], go: $go_[0:400]}, stderr: {bash: $be[0:400], go: $ge[0:400]}}' >>"$log"; } 2>/dev/null || true
 }
+_core_unset_impl() {  # `-u HW_IMPL_<VERB>` for every one set: the bash re-run must not meet a per-verb switch again
+  local _v
+  for _v in $(compgen -e | grep '^HW_IMPL_' || true); do printf -- '-u %s ' "$_v"; done
+}
 _core_shadow() {  # <core> <argv...> — runs both, prints bash's, exits with bash's status
   local core="$1" tmp rc_b rc_g
   shift
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-shadow.XXXXXX")" || { warn "hw-core shadow: no temporary directory; running the bash implementation"; return 0; }
   set +e
-  env -u HW_IMPL_RECEIPT -u HW_IMPL_LOG -u HW_IMPL_HANDLE -u HW_IMPL_HELP -u HW_IMPL_STATUS -u HW_IMPL_WORKTREES HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+  env $(_core_unset_impl) HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
   # bash has already written what the verb writes (the receipt's completion_marker); Go reads it and must not append it again
   HW_CORE_READONLY=1 "$core" "$@" >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
   set -e
@@ -786,13 +873,27 @@ _core_shadow() {  # <core> <argv...> — runs both, prints bash's, exits with ba
 }
 _core_warned=""
 _core_usable() {  # <verb> — sets _core_bin and succeeds when hw-core can answer it; warns ONCE when it cannot
+  local why="" src=environment
   _core_bin="$(_core_find)"
   if [ -z "$_core_bin" ]; then
-    [ -n "$_core_warned" ] || warn "hw-core is not built (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core builds it"
+    why=missing
   elif [ -z "${HW_CORE:-}" ] && _core_stale "$_core_bin"; then
-    [ -n "$_core_warned" ] || warn "hw-core is older than the sources in core/ (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core rebuilds it"
+    why="stale:$(stat -c %Y "$_core_bin" 2>/dev/null || stat -f %m "$_core_bin" 2>/dev/null)"
   else
     return 0
+  fi
+  [ -n "$(_core_env_impl_for "$1")" ] || src="$(_core_impl_file)"
+  if [ -n "$_core_warned" ]; then :
+  elif [ "$src" = environment ]; then
+    case "$why" in
+      missing) warn "hw-core is not built (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core builds it" ;;
+      *) warn "hw-core is older than the sources in core/ (HW_IMPL=$_core_mode), so the bash implementation runs — setup/build-core rebuilds it" ;;
+    esac
+  else  # the mode came from the switch file: every hook call would say it, so it is said once per state of the binary
+    case "$why" in
+      missing) _core_warn_once "core:missing" "hw-core is not built ($src asks for $_core_mode), so the bash implementation runs and no shadow accumulates — setup/build-core --native builds it (said once; \`hw shadow\` says it again)" ;;
+      *) _core_warn_once "core:$why" "hw-core is older than the sources in core/ ($src asks for $_core_mode), so the bash implementation runs and no shadow accumulates — setup/build-core --native rebuilds it (said once; \`hw shadow\` says it again)" ;;
+    esac
   fi
   _core_warned=1
   return 1
@@ -842,6 +943,73 @@ case "${1:-}" in
       export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
       if [ "$_core_mode" = go ]; then exec "$_core_bin" "$@"; fi
       _core_shadow "$_core_bin" "$@"
+    fi
+    ;;
+esac
+# ── hw-core, train T3: the marker writers (ruling, human-boundary, executor-turn-end, chaining-lease-*, outbox flush, output, stage) ──
+# Same switch as above. A WRITER in `shadow` is not run twice: hw-core runs FIRST with HW_CORE_READONLY=1 and
+# HW_CORE_PLAN, writes nothing and records what it would have written; bash then runs for real; and
+# `hw-core shadow-verify` compares that plan with the files bash left (the bytes, the volatile fields normalised).
+# Two verbs have an effect outside the run directory that cannot be compared (a message into a pane, a pane
+# closed): in `shadow` they run in bash alone. `ruling` and `outbox` are brainer verbs, so an executor goes to
+# bash, where the refusal text lives; `outbox list` is a read verb of another train.
+_core_shadow_writer() {  # <core> <argv...> — Go first, read-only; then bash; then the plan against the files
+  local _shadow_writer=1 core="$1" tmp rc_b rc_g plan diffs="" verdict log
+  shift
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-shadow.XXXXXX")" || { warn "hw-core shadow: no temporary directory; running the bash implementation"; return 0; }
+  plan="$tmp/plan"
+  set +e
+  # only `ruling … -` reads stdin: every other call runs on the caller's own, never read to EOF here (a pipe that
+  # stays open would hang a hook under shadow that returns at once under bash). Go does not read it either way.
+  local _a _dash=""
+  for _a in "$@"; do [ "$_a" != - ] || _dash=1; done
+  if [ -t 0 ]; then
+    HW_CORE_READONLY=1 HW_CORE_PLAN="$plan" "$core" "$@" >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
+    env $(_core_unset_impl) HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+  elif [ "$1" != ruling ] || [ -z "$_dash" ]; then
+    HW_CORE_READONLY=1 HW_CORE_PLAN="$plan" "$core" "$@" >"$tmp/g.out" 2>"$tmp/g.err" </dev/null; rc_g=$?
+    env $(_core_unset_impl) HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+  else
+    cat > "$tmp/stdin"
+    HW_CORE_READONLY=1 HW_CORE_PLAN="$plan" "$core" "$@" >"$tmp/g.out" 2>"$tmp/g.err" <"$tmp/stdin"; rc_g=$?
+    env $(_core_unset_impl) HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err" <"$tmp/stdin"; rc_b=$?
+  fi
+  verdict=""
+  if [ -f "$plan" ] && ! grep -q '"op":"delegated"' "$plan"; then
+    verdict="$("$core" shadow-verify "$plan" 2>&1)" || diffs="tree"
+  fi
+  set -e
+  if [ -f "$plan" ] && grep -q '"op":"delegated"' "$plan"; then :
+  else
+    _core_shadow_log "$tmp" "$rc_b" "$rc_g" "$@"
+    if [ -n "$diffs" ]; then
+      log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
+      { mkdir -p "$(dirname "$log")" && jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg verb "$1" --arg argv "$*" --arg tree "$verdict" \
+          '{at: $at, verb: $verb, argv: $argv, differs: ["tree"], tree: $tree[0:800]}' >>"$log"; } 2>/dev/null || true
+    fi
+  fi
+  cat "$tmp/b.out"; cat "$tmp/b.err" >&2
+  rm -rf "$tmp"
+  exit "$rc_b"
+}
+case "${1:-}" in
+  ruling|human-boundary|executor-turn-end|chaining-lease-start|chaining-lease-expire|outbox|output|stage)
+    _core_mode="$(_core_impl_for "$1")"
+    case "$1" in
+      ruling|outbox) { [ -z "${HW_TASK:-}" ] && [ -z "${HW_RUN:-}" ]; } || _core_mode=bash ;;
+    esac
+    [ "$1" != outbox ] || [ "${2:-}" = flush ] || _core_mode=bash
+    if [ "$_core_mode" = shadow ]; then
+      case "$1" in chaining-lease-expire|outbox) _core_mode=bash ;; esac   # a pane closed, a message sent: never twice
+    fi
+    if [ "$_core_mode" != bash ] && _core_usable "$1"; then
+      export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+      if [ "$_core_mode" = go ]; then
+        if [ "$1" = outbox ]; then exec "$_core_bin" outbox-flush "${@:3}"; fi
+        exec "$_core_bin" "$@"
+      fi
+      if [ "$1" = stage ]; then _core_shadow "$_core_bin" "$@"; fi
+      _core_shadow_writer "$_core_bin" "$@"
     fi
     ;;
 esac
@@ -1671,6 +1839,7 @@ base_env = {k: os.environ[k] for k in
              "AGENT_BROWSER_NAMESPACE", "HW_BROWSER_PROFILE",
              "CLAUDE_CONFIG_DIR",  # MUTATION-ANCHOR: 122-M01
              "CLAUDE_CODE_DISABLE_AUTO_MEMORY",  # MUTATION-ANCHOR: 07-AM01
+             "CLAUDE_CODE_SUBAGENT_MODEL",  # MUTATION-ANCHOR: 232-M01
              "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS",
              # --effort for opencode. hw exports these only when THIS dispatch
              # built an overlay, and unsets them otherwise — see
@@ -2171,6 +2340,17 @@ _export_hw_env() {
   else
     unset CLAUDE_CODE_DISABLE_AUTO_MEMORY
   fi
+  # THE MODEL THE EXECUTOR'S SUBAGENTS RUN ON, and the unset is as load-bearing
+  # as the export, for the account's reason: base_env copies this process, so a
+  # brainer that carries the variable must not hand it to an opencode or codex
+  # pane, and a lane that inherits must not pick up the brainer's own choice.
+  # Only CLAUDE_CODE_SUBAGENT_MODEL: the _FORCE variant would override an agent
+  # that pins its own `model:` (the judges, brain-explorer), and hw never sets it.
+  if _subagent_model_applies; then
+    CLAUDE_CODE_SUBAGENT_MODEL="$SUBAGENT_MODEL"; export CLAUDE_CODE_SUBAGENT_MODEL  # MUTATION-ANCHOR: 232-M02
+  else
+    unset CLAUDE_CODE_SUBAGENT_MODEL
+  fi
   ENGRAM_PROJECT="$(_engram_label "$PROJ")"
   # WHY THIS EXISTS. "Artifacts go in the work directory, never inside the
   # working tree" was self-contradictory on the repo lanes, because there
@@ -2569,6 +2749,10 @@ _hw_env() {
   fi
   # No auto-memory in a Claude executor; see _export_hw_env.
   [ "$AGENT" != claude ] || printf -- ' --env CLAUDE_CODE_DISABLE_AUTO_MEMORY=1'  # MUTATION-ANCHOR: 07-AM02
+  # The subagents' model, in the `--here` form; see _export_hw_env.
+  if _subagent_model_applies; then
+    printf -- ' --env CLAUDE_CODE_SUBAGENT_MODEL=%s' "$SUBAGENT_MODEL"  # MUTATION-ANCHOR: 232-M03
+  fi
   # THIS IS THE `opencode-auto` PARITY, and it is the whole of it.
   # bin/opencode-auto (versioned here; install.sh links it onto PATH) is
   # `export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; exec opencode --auto "$@"`.
@@ -2749,6 +2933,10 @@ _write_run_env() {
   if [ -n "${DISPATCH_TEXT:-}" ]; then
     printf '%s\n' "$DISPATCH_TEXT" > "$dir/dispatch" 2>/dev/null || true
   fi
+  # THE SUBAGENTS' MODEL, as a fact of this run. Written for every vendor, since
+  # "NOT APPLIED" and "inherit" are answers too: a receipt that is silent cannot
+  # tell a dispatch that never had the field from one that chose nothing.
+  _receipt_into "$dir" subagent_model "$(_subagent_model_receipt_value)" "$(_subagent_model_receipt_source)"  # MUTATION-ANCHOR: 232-M05
   # ONLY WHEN IT RESOLVED, because a receipt is a fact on disk and a blank one
   # would answer "what base was this judged against" with silence dressed as
   # an answer. A run with no review_base receipt is a run hw could not compute
@@ -2853,6 +3041,8 @@ values.update({
     # `hw revive` replays every key, so a revived claude executor keeps its
     # auto-memory off; absent for any other vendor (_export_hw_env unsets it).
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY", ""),  # MUTATION-ANCHOR: 07-AM04
+    # The subagents' model, so `hw revive` replays it and `hw next` can read it back.
+    "CLAUDE_CODE_SUBAGENT_MODEL": os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL", ""),  # MUTATION-ANCHOR: 232-M04
     "OPENCODE_CONFIG_DIR":     os.environ.get("OPENCODE_EXECUTOR_CONFIG", ""),
     # The opencode half of the brain guard; absent off a product lane.
     "OPENCODE_CONFIG":         os.environ.get("OPENCODE_CONFIG", ""),
@@ -3088,7 +3278,21 @@ for raw in lines[1:end]:
     if not value:
         continue
     if key not in known:
-        print("__unknown__\t%s" % key)
+        # THE WARNING'S WORDS COME FROM `known`, THE SET THAT DECIDES WHAT IS KNOWN: the key, its nearest known key
+        # (edit distance <= 2, "" when none is that close) and the whole list, \x1f-separated because a tab is IFS
+        # whitespace and would collapse an empty suggestion. A second list in the warning drifted (it lacked `review`).
+        def dist(a, b):
+            row = list(range(len(b) + 1))
+            for i, ca in enumerate(a, 1):
+                prev, row[0] = row[0], i
+                for j, cb in enumerate(b, 1):
+                    prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+            return row[-1]
+        near = min(sorted(known), key=lambda k: dist(key, k))
+        if dist(key, near) > 2:  # MUTATION-ANCHOR: 910-M02
+            near = ""
+        listed = " ".join(sorted(known))  # MUTATION-ANCHOR: 910-M01
+        print("__unknown__\t%s\x1f%s\x1f%s" % (key, near, listed))
         continue
     print("%s\t%s" % (key, value))
 PYEOF
@@ -4085,6 +4289,24 @@ _ensure_sdd_effective_for_contract() {
   _resolve_effective_sdd_mode "$SDD" "$surface" "$inherited"
 }
 
+# `<key>\x1f<nearest known key or empty>\x1f<known keys>`, as `_brief_declares` prints it. Still a warning, never a
+# refusal: a brief with a key hw does not know dispatches as before (the additive rule above).
+_warn_unknown_brief_key() {
+  local key near known
+  IFS=$'\037' read -r key near known <<<"$1"
+  warn "brief declares '$key', which hw does not check${near:+ — did you mean '$near'?}. Known keys: $known"
+}
+
+# Does `_brief_declares` output declare <key>? By the first column only: the `__unknown__` line carries the whole key
+# list, `kind` among them, so a substring match said every brief with a typo declared a kind.
+_brief_has_key() {  # $1 = decls, $2 = key
+  local line
+  while IFS= read -r line; do
+    [ "${line%%$'\t'*}" = "$2" ] && return 0  # MUTATION-ANCHOR: 910-M03
+  done <<<"$1"
+  return 1
+}
+
 _check_brief_contract() {
   local decls key val actual bad=0 required_agent_bad=0
   _load_brief_decls; decls="$BRIEF_DECLS"
@@ -4098,12 +4320,12 @@ _check_brief_contract() {
     _warn_brief_body_agents
     return 0
   fi
-  case "$decls" in *"kind"*) ;; *) [ -z "$inferred" ] || _check_task_kind "$inferred" inferred ;; esac
+  _brief_has_key "$decls" kind || { [ -z "$inferred" ] || _check_task_kind "$inferred" inferred; }
   while IFS="$(printf '\t')" read -r key val; do
     [ -n "$key" ] || continue
     case "$key" in
       __malformed__) die "the brief's frontmatter is malformed ($val). Fix it or remove the fence entirely — a half-parsed contract is worse than none." ;;
-      __unknown__)   warn "brief declares '$val', which hw does not check. Known keys: agent model sdd placement worktree database invoker requires requires-agents kind base decision delivery boundary deployed_check sandbox requested_by asked authorizes" ; continue ;;
+      __unknown__)   _warn_unknown_brief_key "$val" ; continue ;;
     esac
     if [ "$key" = requires ]; then _check_capabilities "$val"; continue; fi
     if [ "$key" = requires-agents ]; then
@@ -4974,7 +5196,7 @@ _apply_sdd() {
 #
 # REVERSIBLE: `rm -rf "$(hw gentle-home --path)"` leaves the machine as it was;
 # the mode then refuses to launch, naming the provisioning command.
-GENTLE_VERSION="4.0.0"
+deps_row gentle-ai && GENTLE_VERSION="$DEPS_MIN" || { printf 'hw: lib/hw/deps.conf has no gentle-ai row\n' >&2; exit 1; }
 GENTLE_REPO="Gentleman-Programming/gentle-ai"
 
 # The checksums published with the release (checksums.txt), pinned here so a
@@ -5648,6 +5870,45 @@ _resolve_account() {
   return 0
 }
 
+# ── the model the executor's subagents run on ───────────────────────────────
+#
+# Claude Code 2.1.294 reads CLAUDE_CODE_SUBAGENT_MODEL (found in the binary): the
+# model a subagent gets when its definition and its Task call name none, which
+# otherwise is the executor's own. The lane declares it (`subagent_model`),
+# `--subagent-model` overrides it, and `inherit` is Claude Code's own behaviour,
+# so it exports nothing. Only claude reads it; for opencode and codex the manifest
+# says NOT APPLIED, as it does for the account. Never the _FORCE variant: that
+# one overrides an agent's own `model:` and the judges would lose theirs.
+SUBAGENT_MODEL_LINE=""
+_valid_subagent_model() {  # $1 = value
+  case "$1" in
+    inherit|haiku|sonnet|opus|fable) return 0 ;;
+    claude-*) case "${1#claude-}" in ''|*[!a-z0-9.-]*) return 1 ;; esac; return 0 ;;
+  esac
+  return 1
+}
+_subagent_model_applies() {
+  [ "${AGENT:-}" = claude ] && [ -n "${SUBAGENT_MODEL:-}" ] && [ "$SUBAGENT_MODEL" != inherit ]  # MUTATION-ANCHOR: 232-M06
+}
+_resolve_subagent_model() {
+  local m="${SUBAGENT_MODEL:-inherit}" src="${SUBAGENT_MODEL_SRC:-default}"
+  if [ "${AGENT:-}" != claude ]; then
+    SUBAGENT_MODEL_LINE="$m  ($src) — NOT APPLIED: this executor is ${AGENT:-unknown}, and only Claude Code reads CLAUDE_CODE_SUBAGENT_MODEL. Its subagents run on whatever ${AGENT:-it} gives them."
+  elif [ "$m" = inherit ]; then
+    SUBAGENT_MODEL_LINE="inherit  ($src) — no CLAUDE_CODE_SUBAGENT_MODEL is set, and an inherited one is cleared: a subagent that names no model runs on the executor's"
+  else
+    SUBAGENT_MODEL_LINE="$m → CLAUDE_CODE_SUBAGENT_MODEL=$m  ($src) — a subagent that names no model runs on it; one that pins its own keeps it"
+  fi
+}
+_subagent_model_receipt_value() {
+  if [ "${AGENT:-}" != claude ]; then printf 'NOT APPLIED — %s does not read CLAUDE_CODE_SUBAGENT_MODEL (asked: %s)' "${AGENT:-unknown}" "${SUBAGENT_MODEL:-inherit}"
+  elif _subagent_model_applies; then printf '%s' "$SUBAGENT_MODEL"
+  else printf 'inherit'; fi
+}
+_subagent_model_receipt_source() {
+  printf 'subagent_model %s (%s) at dispatch; exported as CLAUDE_CODE_SUBAGENT_MODEL only for claude' "${SUBAGENT_MODEL:-inherit}" "${SUBAGENT_MODEL_SRC:-default}"
+}
+
 _resolve_effective_sdd_mode() {
   # SPLIT OUT of _validate_sdd_vendor_pair so the RESOLUTION (measured live
   # surface, falling back to an inherited launch record) can be asked WITHOUT
@@ -5997,6 +6258,23 @@ _reuse_account_field_line() {
     printf "the REUSED session's own: CLAUDE_CONFIG_DIR=%s (read from %s/env) — --account cannot change a live session" "$REUSE_ACCOUNT_CFG" "$(basename "$_REUSE_RUNDIR")"
   else
     printf "the REUSED session's own: no CLAUDE_CONFIG_DIR in %s/env, so it runs under the default account — --account cannot change a live session" "$(basename "$_REUSE_RUNDIR")"
+  fi
+}
+
+# The subagents' model of a live session, MEASURED from its run env: --subagent-model
+# cannot reach it. Reuses the account's measurement flag, so an env nobody opened is
+# "could not be measured" and never asserted as inherit.
+_reuse_subagent_model_field_line() {
+  local v
+  if [ "${REUSE_ACCOUNT_MEASURED:-0}" = 0 ]; then
+    printf "the REUSED session's own subagent model could not be measured — %s — --subagent-model cannot change a live session" "$(_reuse_account_absence_reason)"
+    return 0
+  fi
+  v="$(_run_env_value "$_REUSE_RUNDIR" CLAUDE_CODE_SUBAGENT_MODEL || true)"
+  if [ -n "$v" ]; then
+    printf "the REUSED session's own: CLAUDE_CODE_SUBAGENT_MODEL=%s (read from %s/env) — --subagent-model cannot change a live session" "$v" "$(basename "$_REUSE_RUNDIR")"
+  else
+    printf "the REUSED session's own: no CLAUDE_CODE_SUBAGENT_MODEL in %s/env, so its subagents inherit the executor's model — --subagent-model cannot change a live session" "$(basename "$_REUSE_RUNDIR")"
   fi
 }
 
@@ -11753,6 +12031,12 @@ done < <(_hw_run_dirs)
 [ -r "$HW_LIB/hw/briefs.sh" ] || { printf 'hw: cannot load %s/hw/briefs.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
 . "$HW_LIB/hw/briefs.sh"
 
+# `hw shadow` (the switch that puts shadow in every pane, and the clock of its 7-day gate) lives in
+# lib/hw/shadow.sh: _shadow_*, cmd_shadow.
+# shellcheck source=../lib/hw/shadow.sh
+[ -r "$HW_LIB/hw/shadow.sh" ] || { printf 'hw: cannot load %s/hw/shadow.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
+. "$HW_LIB/hw/shadow.sh"
+
 
 # "<worktree root>:<lane>" per line, for each product-repo lane in table order —
 # the roots `hw status` walks for worktrees outside $WORK.
@@ -11949,7 +12233,7 @@ if [ "$_HW_CALLER_EXECUTOR" = 1 ]; then
       [ "${HW_DONE_ALLOW_BRAIN_LEAK:-0}" != 1 ] \
         || _executor_refuse "done (HW_DONE_ALLOW_BRAIN_LEAK=1)" "does not use the operator's leak-check exit"
       ;;
-    -*|help|status|receipt|handle|preflight|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|wait|wait-one|wait-monitor|gentle-home) ;;
+    -*|help|status|receipt|handle|preflight|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|shadow|wait|wait-one|wait-monitor|gentle-home) ;;
     *)        # anything else is `hw <project> <task> …`, a dispatch
               _executor_refuse "$1 …" "does not dispatch executors" ;;
   esac
@@ -12058,6 +12342,7 @@ if [ "${1:-}" = stage ]; then shift; cmd_stage "$@"; exit 0; fi
 if [ "${1:-}" = worktrees ]; then shift; cmd_worktrees "$@"; exit 0; fi
 if [ "${1:-}" = reap ]; then shift; cmd_reap "$@"; exit 0; fi
 if [ "${1:-}" = ledger ]; then shift; cmd_ledger "$@"; exit 0; fi
+if [ "${1:-}" = shadow ]; then shift; cmd_shadow "$@"; exit 0; fi
 if [ "${1:-}" = briefs ]; then shift; cmd_briefs "$@"; exit 0; fi
 if [ "${1:-}" = reports ]; then
   shift
@@ -12213,6 +12498,13 @@ FLAGS
                        Required or warned per lane (projects.json).
     --effort <e>       low|medium|high|xhigh|max. claude and codex only —
                        opencode's interactive command has no such flag.
+    --subagent-model <m> inherit | haiku|sonnet|opus|fable | claude-*. The model
+                       a Claude executor's subagents run on when they name
+                       none (CLAUDE_CODE_SUBAGENT_MODEL). Lane default:
+                       `subagent_model` in projects.json, `inherit` when absent.
+                       An agent that pins its own `model:` keeps it. Claude
+                       Code only: opencode and codex are NOT APPLIED. A live
+                       pane keeps the one it launched with.
 USAGE
   local l db="" dev=""
   for l in $HW_LANES; do
@@ -12688,6 +12980,11 @@ MODEL_SRC=default; AGENT_EXPLICIT=0
 # nobody read, applied by `direnv allow`, announced nowhere.
 ACCOUNT="$(project_default_account "$PROJ" 2>/dev/null || printf 'default')"
 ACCOUNT_SRC="lane default for $PROJ" # MUTATION-ANCHOR: 136-M10b
+# THE SUBAGENTS' MODEL IS A LANE FACT TOO (`subagent_model`): the rule "haiku for
+# searches" lived in a CLAUDE.md nothing enforced, and a subagent inherits the
+# executor's model. `--subagent-model` overrides it; `inherit` changes nothing.
+SUBAGENT_MODEL="$(project_subagent_model "$PROJ" 2>/dev/null || printf 'inherit')"
+SUBAGENT_MODEL_SRC="lane default for $PROJ"
 PERMISSIONS_FLAG=""
 WANT_DB=1; BRIEF=""; HERE=0; EFFORT=""; AGENT_ARGS=""; SDD=""
 # OFF BY DEFAULT, the inverse shape of --no-db: a product lane's QA moved to
@@ -12723,6 +13020,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --agent)  _need_val "$@"; AGENT="$2"; AGENT_SRC=chosen; AGENT_EXPLICIT=1; shift 2 ;;
     --account) _need_val "$@"; ACCOUNT="$2"; ACCOUNT_SRC=chosen; shift 2 ;;
+    --subagent-model) _need_val "$@"
+      _valid_subagent_model "$2" || die "--subagent-model '$2' is not a model: inherit, an alias (haiku, sonnet, opus, fable) or a claude-* id. Nothing was built."
+      SUBAGENT_MODEL="$2"; SUBAGENT_MODEL_SRC=chosen; shift 2 ;;  # MUTATION-ANCHOR: 232-M07
     --permissions) _need_val "$@"; PERMISSIONS_FLAG="$2"; shift 2 ;;
     --brief)  _need_val "$@"; BRIEF="$2";  shift 2 ;;
     # A launch with no brief is a refusal unless it is asked for (_briefless_gate).
@@ -13351,6 +13651,7 @@ VERIFY_CMDS_EOF
   # exactly where a brainer should learn that the account it is about to launch
   # under cannot be verified.
   _resolve_account
+  _resolve_subagent_model
   local agent_line="$AGENT  ($AGENT_SRC)"
   if [ "$AGENT" = opencode ]; then
     if [ -n "${OPENCODE_PRIMARY_AGENT:-}" ]; then
@@ -13533,6 +13834,8 @@ VERIFY_CMDS_EOF
     # honest clause, the same shape `_reuse_model_field_line` already has.
     _reuse_measure_account
     ACCOUNT_LINE="$(_reuse_account_field_line)"
+    # The subagents' model is baked into the pane's environment like the account.
+    SUBAGENT_MODEL_LINE="$(_reuse_subagent_model_field_line)"
     # Tools are fixed at the session's launch like its account: whatever this
     # command resolved cannot reach the live pane.
     ARTIFACTS_LINE="the REUSED session's own, fixed at ITS launch — hw next cannot add or remove a tool"
@@ -13607,6 +13910,7 @@ dispatch $PROJ:$TASK  run=$run_label
   $effort_line
   agent       $agent_line
   account     $ACCOUNT_LINE
+  subagents   $SUBAGENT_MODEL_LINE
   permissions $PERMISSIONS_LINE
   artifacts   $ARTIFACTS_LINE$guard_line
   provider    $provider_line

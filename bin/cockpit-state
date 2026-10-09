@@ -27,8 +27,9 @@
 
 WHAT IT READS: `herdr pane list` (one RPC, ~7 ms with 40 panes), each executor's run
 directory (task, markers, hold files, queued rulings, receipt) and the suite gate's
-slot directory. NEVER a pane capture — `hw status` reads one per pane and took 25.5 s
-with 31 panes, which is why this exists. Read-only except its own file: written through
+slot directory. NEVER a pane capture per beat — `hw status` reads one per pane, serially, and took 25.5 s
+with 31 panes, which is why this exists. The one read it does make is the claude panes' statusline, cached, in
+parallel and bounded (see THE CONTEXT OF A CLAUDE CARD). Read-only except its own file: written through
 a tmp file and `os.replace` under flock, so a reader sees the old file or the new one,
 never half of either, and capped at 256 KiB (rows are dropped from the END, which is the
 lowest-ranked, and counted in totals.omitted).
@@ -41,6 +42,28 @@ marker. A token only fills in what the disk fact does not carry (the summary, th
 WHAT IT DOES NOT DECIDE: which buttons are valid. That is `bin/hw-actions`, the module
 `hw done`, `hw ruling` and `hw receipt` take their refusals from, so a button is false
 exactly where the verb would refuse and says the verb's own words.
+
+THE CONTEXT OF A CLAUDE CARD is the pane's own statusline (`Ctx: <tokens> | Ctx Used: <pct>%`), read with
+`herdr agent read <pane> --source visible` (the source `hw status` uses): the tokens and the percent of the window
+Claude Code really has. It is read at most every 10 s per pane (the cache file below), the panes due side by side,
+one bounded wait for all (2 s, up to 32 reads at once). `herdr pane list` stays the only RPC of a beat that has nothing due. The fallbacks
+are the turn-end token and the live transcript: they know the tokens and NOT the window, so the percent is null
+unless the model id names it (`[1m]`); a card then shows the tokens alone. No window is ever assumed.
+(Measured 2026-10-08: a 200k default shown as 100% on a 283.8k-token sonnet-5-5 whose statusline said 28%.)
+
+HOW LONG, AND WHETHER IT MOVES. Every row carries `dispatched_at` (the run's start: the first line of
+its receipt, else the dispatch file's mtime, else the env file's) and, for a WORKING row only,
+`turn_started_at` and `last_progress_at`. No adapter publishes the start of a turn, so it is derived
+from the tokens that exist: the previous turn's `turn_ended_at` (dispatched_at in a first turn), which
+overstates a turn that an idle gap preceded. `last_progress_at` is the newest of dispatched_at, the
+last commit of the worktree (its HEAD reflog: commit, merge, cherry-pick, revert), the newest file
+mtime in the worktree (not .git, .hw, node_modules or other caches) and, for claude, the mtime of the
+session transcript. The walk of a worktree costs 65-175 ms per 4.7k files (measured 2026-10-08; a cached answer is a dict lookup, 0.03 ms), so
+it runs at most once per 30-60 s per worktree (the TTL is jittered by path so forty worktrees do not
+expire on one beat) and its answer lives, with the statuslines', in <state file>.cache, shared by the heartbeat
+and the kicks, which are separate processes; `--stdout` reads it and writes nothing. The mark itself
+is the mod's: `rules.no_progress_after_ms` (NO_PROGRESS_MS, 30 min) is published so the threshold
+exists once.
 
 THE PILOT RECORDER. Every write also appends one line per NEW report, ask or challenge a row
 carries (`{"at","pane","task","kind"}`, `at` the envelope's own time) to <state dir>/cockpit-events.jsonl,
@@ -64,6 +87,7 @@ import re
 import subprocess
 import sys
 import time
+import zlib
 
 BIN = os.path.dirname(os.path.realpath(__file__))
 SCHEMA = 1
@@ -73,11 +97,19 @@ DEBOUNCE_S = 0.25
 ORDER = ["challenge", "ask", "blocked", "report", "working", "idle", "gone"]
 SUM_CHUNKS = ["sum"] + ["sum%d" % i for i in range(2, 8)]
 TOKEN_WIDTH = 80  # invoker-common.sh INVOKER_TOKEN_CHARS: herdr cuts a token value here
-# What `ctx` assumes about a model's window. MEASURED for the 200k default (probe P5:
-# 44424 tokens = statusline 44.4k = 22 %); a `[1m]` model id is the 1M window by name.
+# What `ctx` knows about a model's window: a `[1m]` model id is the 1M window by name; nothing else is assumed.
 # Any other window is UNESTABLISHED, so it is not guessed: see ctx_from_transcript.
-WINDOW_DEFAULT = 200_000
 WINDOW_1M = 1_000_000
+# The one threshold of the card's `no progress` mark, published as rules.no_progress_after_ms. The
+# environment variable exists for the tests and a probe, never for a person's setup.
+NO_PROGRESS_MS = 30 * 60 * 1000
+PROGRESS_TTL_S = 30           # a worktree is walked at most this often (plus up to as much again, by path)
+PROGRESS_MAX_FILES = 20_000   # a walk gives up here: the newest mtime so far is the answer
+PROGRESS_SKIP = {".git", ".hw", "node_modules", ".venv", "venv", "__pycache__", ".next", ".cache", ".pytest_cache", ".mypy_cache", ".gradle"}
+CACHE_SUFFIX = ".cache"   # <state file>.cache: one cache per brainer, so two writers never overwrite each other's entries
+STATUSLINE_TTL_S = 10         # a pane's statusline is read at most this often
+STATUSLINE_TIMEOUT_S = 2      # one bounded wait for all the panes, read side by side (hw status: HW_STATUS_CTX_TIMEOUT)
+COMMIT_REFLOG = ("commit", "merge", "cherry-pick", "revert")
 
 
 def _load(name):
@@ -253,6 +285,225 @@ def join_chunks(tokens, names):
     return out
 
 
+# ── the context a pane's statusline says ─────────────────────────────────────
+
+def statusline_parse(text):
+    """(tokens, percent|None) from the last statusline row of a pane screen (`Model: … | Ctx: <n> | Ctx Used:
+    <p>% | …`), or None when there is none. Claude Code's own account of its context, and what `hw status` reads
+    (lib/hw/status.sh pane_ctx_parse, kept in step by hand). The row is found by `Ctx:`, not by `Ctx Used:`: a
+    narrow pane cuts the footer to `Ctx: 237.5k | Ctx Use…`, so the percent is optional."""
+    rows = [l for l in (text or "").replace("\u00a0", " ").splitlines() if re.search(r"Ctx: *[0-9]+(\.[0-9]+)?[kKmM]? *\|", l)]
+    if not rows:
+        return None
+    m = re.search(r"Ctx: *([0-9.]+)([kKmM]?)", rows[-1])
+    u = re.search(r"Ctx Used: *([0-9.]+)", rows[-1])
+    if not m:
+        return None
+    mult = {"k": 1000, "m": 1000000}.get(m.group(2).lower(), 1)
+    try:
+        return int(float(m.group(1)) * mult), (float(u.group(1)) if u else None)  # MUTATION-ANCHOR: 922-M04
+    except ValueError:  # `Ctx: 1.2.3`: not a measurement
+        return None
+
+
+def statusline_read(pane_id, timeout):
+    """One bounded `herdr agent read <pane> --source visible`: the parsed statusline, None when the pane has none,
+    cannot be read or does not answer in time. The child gets its own process group so a hang is killed whole."""
+    cmd = os.environ.get("HW_COCKPIT_HERDR", "herdr")
+    try:
+        p = subprocess.Popen([cmd, "agent", "read", pane_id, "--source", "visible"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, errors="replace", start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, _ = p.communicate(timeout=timeout)  # MUTATION-ANCHOR: 922-M05
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, 9)
+        except OSError:
+            pass
+        try:
+            p.communicate(timeout=1)
+        except subprocess.SubprocessError:
+            pass
+        return None
+    return statusline_parse(out) if p.returncode == 0 else None
+
+
+def statuslines(pane_ids, now):
+    """{pane: (tokens, pct|None) | None}. Each pane is read once per STATUSLINE_TTL_S (shared by the writers through
+    the cache file, a miss included), the ones due side by side so the whole beat costs one timeout at worst."""
+    ttl = env_seconds("HW_COCKPIT_CTX_TTL_S", STATUSLINE_TTL_S) * 1000
+    timeout = env_seconds("HW_COCKPIT_CTX_TIMEOUT_S", STATUSLINE_TIMEOUT_S)
+    out, due = {}, []
+    for pid in sorted({p for p in pane_ids if p}):
+        key = "pane:" + pid
+        _CACHE_SEEN.add(key)
+        hit = _CACHE.get(key)
+        if hit and 0 <= now - hit[0] < ttl:  # MUTATION-ANCHOR: 922-M03
+            out[pid] = None if hit[1] is None else (int(hit[1]), hit[2])
+        else:
+            due.append(pid)
+    if due:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(32, len(due))) as ex:  # one timeout for the lot, not one per batch of 8
+            for pid, got in zip(due, ex.map(lambda x: statusline_read(x, timeout), due)):
+                out[pid] = got
+                _CACHE["pane:" + pid] = [now, None, None] if got is None else [now, got[0], got[1]]
+    return out
+
+
+# ── how long it has worked, and whether it moves ─────────────────────────────
+
+def env_seconds(name, default_s):
+    v = to_int(os.environ.get(name))
+    return default_s if v is None or v < 0 else v
+
+
+def no_progress_ms():
+    return env_seconds("HW_COCKPIT_NO_PROGRESS_S", NO_PROGRESS_MS // 1000) * 1000  # MUTATION-ANCHOR: 920-M02
+
+
+def dispatched_at_of(rundir):
+    """When the run began: the `at` of the first receipt line that has one, else the dispatch file's
+    mtime, else the env file's (hw writes all three at dispatch)."""
+    for line in (read_text(os.path.join(rundir, "receipt.jsonl")) or "").splitlines():
+        try:
+            at = iso_ms(json.loads(line).get("at"))
+        except (ValueError, AttributeError):
+            continue
+        if at is not None:
+            return at
+    for name in ("dispatch", "env"):
+        m = mtime_ms(os.path.join(rundir, name))
+        if m is not None:
+            return m
+    return now_ms()
+
+
+def gitdir_of(root):
+    """The git directory of a worktree: `.git` itself, or what a linked worktree's `.git` file points to."""
+    g = os.path.join(root, ".git")
+    if os.path.isdir(g):
+        return g
+    m = re.match(r"gitdir:\s*(.+)", read_text(g) or "")
+    if not m:
+        return None
+    d = m.group(1).strip()
+    return d if os.path.isabs(d) else os.path.normpath(os.path.join(root, d))
+
+
+def last_commit_ms(root):
+    """The time of the worktree's last commit (and merge, cherry-pick, revert), from the tail of its HEAD
+    reflog: no subprocess, no base to name. A checkout, a branch creation or a rebase's bookkeeping are not work."""
+    gd = gitdir_of(root)
+    if not gd:
+        return None
+    try:
+        with open(os.path.join(gd, "logs", "HEAD"), "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 16384))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        m = re.search(r"> (\d+) [+-]\d{4}\t(\S+)", line)
+        if m and m.group(2).rstrip(":") in COMMIT_REFLOG:  # MUTATION-ANCHOR: 920-M01
+            return int(m.group(1)) * 1000
+    return None
+
+
+def progress_ttl_ms(root):
+    base = env_seconds("HW_COCKPIT_PROGRESS_TTL_S", PROGRESS_TTL_S)
+    return 0 if base == 0 else (base + zlib.crc32(root.encode()) % base) * 1000
+
+
+def newest_mtime_ms(root, cache, now):
+    """The newest file mtime under `root` (not PROGRESS_SKIP, no symlinks), None when there is no file.
+    `cache` maps root -> [walked_at_ms, newest]: a root walked less than its TTL ago is not walked again."""
+    hit = cache.get(root)
+    if hit and 0 <= now - hit[0] < progress_ttl_ms(root):  # MUTATION-ANCHOR: 920-M03
+        return hit[1]
+    newest, seen, stack = None, 0, [root]
+    while stack and seen < PROGRESS_MAX_FILES:
+        try:
+            it = os.scandir(stack.pop())
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                try:
+                    if e.is_symlink():
+                        continue
+                    if e.is_dir(follow_symlinks=False):
+                        if e.name not in PROGRESS_SKIP:  # MUTATION-ANCHOR: 920-M04
+                            stack.append(e.path)
+                        continue
+                    m = int(e.stat(follow_symlinks=False).st_mtime * 1000)
+                except OSError:
+                    continue
+                seen += 1
+                if newest is None or m > newest:
+                    newest = m
+    cache[root] = [now, newest]
+    return newest
+
+
+_CACHE = {}       # worktree root -> [walked_at_ms, newest mtime or None], "pane:<id>" -> [read_at_ms, tokens, pct]; shared through the cache file
+_CACHE_SEEN = set()
+
+
+def cache_entry_ok(k, v):
+    num = lambda x: x is None or (isinstance(x, (int, float)) and not isinstance(x, bool))
+    if not isinstance(v, list) or not v or not isinstance(v[0], int):
+        return False
+    return (len(v) == 3 and all(num(x) for x in v[1:])) if k.startswith("pane:") else (len(v) == 2 and num(v[1]))
+
+
+def load_cache(path):
+    """Merge the cache file beside the state file into this process's: the newer walk of each root wins."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return
+    for k, v in (data.items() if isinstance(data, dict) else ()):
+        if cache_entry_ok(k, v):
+            if k not in _CACHE or v[0] > _CACHE[k][0]:
+                _CACHE[k] = v
+
+
+def save_cache(path):
+    """Write the entries this build used (the rest is dead weight), through a tmp file; never raises."""
+    try:
+        keep = {k: v for k, v in _CACHE.items() if k in _CACHE_SEEN}
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+            json.dump(keep, fh)
+        os.replace(tmp, path)  # MUTATION-ANCHOR: 920-M07
+    except OSError as e:
+        print("cockpit-state: could not save the cache: %s" % e, file=sys.stderr)
+
+
+def transcript_mtime_ms(rundir, env):
+    path = transcript_of(rundir, env)
+    return mtime_ms(path) if path else None
+
+
+def last_progress_of(rundir, env, harness, dispatched):
+    """The newest sign that the executor is working, never later than now. dispatched_at is the floor."""
+    root = os.path.dirname(os.path.dirname(rundir.rstrip("/")))  # <cwd>/.hw/<run>
+    now = now_ms()
+    _CACHE_SEEN.add(root)
+    signs = [dispatched, last_commit_ms(root), newest_mtime_ms(root, _CACHE, now)]
+    if harness == "claude":  # MUTATION-ANCHOR: 920-M06
+        try:
+            signs.append(transcript_mtime_ms(rundir, env))
+        except Exception:
+            pass  # a transcript nobody foresaw is no sign, not a failed row
+    return min(now, max(x for x in signs if x is not None))
+
+
 # ── the row ──────────────────────────────────────────────────────────────────
 
 def pending_rulings(rundir):
@@ -331,13 +582,72 @@ def report_of(rundir, tdir, tokens, blocked_waiting):
 
 def ctx_of(tokens):
     pct, toks = to_float(tokens.get("ctx_pct")), to_int(tokens.get("ctx_tokens"))
-    if pct is None or toks is None or not (0 <= pct <= 100):
+    if toks is None or toks < 0:
         return {"pct": None, "tokens": None, "source": None}
-    return {"pct": pct, "tokens": toks, "source": "turn-end"}
+    # `ctx_pct` is "null" when the hook's transcript names no window: the tokens stand, the percent is unknown
+    return {"pct": pct if pct is not None and 0 <= pct <= 100 else None, "tokens": toks, "source": "turn-end"}
 
 
-def build_row(pane, invoker, mods):
-    """One row, or None when this pane is not an executor of `invoker`."""
+# THE LIVE READ. A turn-end token only exists once a turn has ended, and an executor in its first
+# long turn (hours) has none, so its card said `ctx n/a` for exactly the time the number matters.
+# The transcript is on disk the whole time: resolved from facts the run already has, read with
+# ctx_from_transcript (the tail only) and cached by (mtime, size), so a beat over a transcript that
+# did not move costs one stat. The loop is one process, so the cache lives across beats.
+_LIVE = {}         # transcript path -> ((mtime_ns, size), ctx or None)
+_TRANSCRIPTS = {}  # (config dir, session id) -> transcript path
+CACHE_MAX = 256
+
+
+def transcript_of(rundir, env):
+    """The claude transcript of the run's session, None when it does not resolve.
+
+    Session id: the receipt's `session_id` (hw writes it after the brief lands). Directory:
+    `$CLAUDE_CONFIG_DIR` from the run env (the account travels there, default ~/.claude) +
+    `projects/<launch cwd, non-alphanumerics as "-">/<session>.jsonl`; when that name does not
+    exist, the session id is a uuid and the one match under projects/ is it."""
+    sid = receipt_value(rundir, "session_id")
+    if not isinstance(sid, str) or not re.fullmatch(r"[0-9A-Za-z-]{8,64}", sid):
+        return None
+    cfg = os.path.expanduser(env.get("CLAUDE_CONFIG_DIR") or "~/.claude")
+    key = (cfg, sid)
+    hit = _TRANSCRIPTS.get(key)
+    if hit and os.path.isfile(hit):
+        return hit
+    launch = os.path.dirname(os.path.dirname(rundir.rstrip("/")))  # <cwd>/.hw/<run>
+    found = None
+    for cwd in dict.fromkeys((launch, os.path.realpath(launch))):
+        cand = os.path.join(cfg, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd), sid + ".jsonl")
+        if os.path.isfile(cand):
+            found = cand
+            break
+    if not found:
+        found = next(iter(sorted(glob.glob(os.path.join(glob.escape(cfg), "projects", "*", sid + ".jsonl")))), None)
+    if found:
+        _TRANSCRIPTS[key] = found
+    return found
+
+
+def live_ctx(rundir, env):
+    """(ctx, transcript mtime in ms) of the run's session, (None, None) when it does not resolve or
+    holds no usage yet."""
+    path = transcript_of(rundir, env)
+    if not path:
+        return None, None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, None
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _LIVE.get(path)
+    if hit is None or hit[0] != sig:  # MUTATION-ANCHOR: 797-M26
+        if len(_LIVE) >= CACHE_MAX:
+            _LIVE.clear()
+        hit = _LIVE[path] = (sig, ctx_from_transcript(path))
+    return hit[1], int(st.st_mtime_ns // 1_000_000)
+
+
+def executor_run(pane, invoker, mods):
+    """(rundir, env) of the run this pane is an executor of for `invoker`, None when it is not one of its executors."""
     tokens = pane.get("tokens") or {}
     task, run = tokens.get("hw_task"), tokens.get("hw_run")
     if not task or not run:
@@ -348,6 +658,22 @@ def build_row(pane, invoker, mods):
     env = mods["runenv"].read(rundir, lenient=True) or {}
     if env.get("HW_INVOKER_PANE") != invoker:  # MUTATION-ANCHOR: 797-M03
         return None
+    return rundir, env
+
+
+def is_claude_executor(pane, invoker, mods):
+    found = executor_run(pane, invoker, mods)
+    return bool(found) and found[1].get("HW_EXECUTOR_VENDOR") == "claude"
+
+
+def build_row(pane, invoker, mods, sl=None):
+    """One row, or None when this pane is not an executor of `invoker`."""
+    found = executor_run(pane, invoker, mods)
+    if not found:
+        return None
+    rundir, env = found
+    tokens = pane.get("tokens") or {}
+    task, run = tokens.get("hw_task"), tokens.get("hw_run")
     project = tokens.get("hw_project") or env.get("HW_PROJECT") or "unknown"
     tdir = task_dir(rundir)
     harness = env.get("HW_EXECUTOR_VENDOR")
@@ -375,6 +701,28 @@ def build_row(pane, invoker, mods):
     else:
         attention, since = "idle", turn_at
 
+    ctx = ctx_of(tokens)
+    if attention == "working" and harness == "claude":  # MUTATION-ANCHOR: 797-M25
+        # The turn-end value stands when it is newer than the transcript; otherwise (no value
+        # yet, or the transcript moved since) the live one does.
+        try:
+            live, live_at = live_ctx(rundir, env)
+        except Exception:  # MUTATION-ANCHOR: 797-M28  # a transcript line of a shape nobody foresaw must not take the file down: the card keeps its turn-end value, or n/a
+            live, live_at = None, None
+        if live and (ctx["tokens"] is None or turn_at is None or live_at > turn_at):  # MUTATION-ANCHOR: 797-M27
+            ctx = {"pct": live["pct"], "tokens": live["tokens"], "source": "live"}
+    # THE SOURCE OF TRUTH is the pane's own statusline, which carries Claude Code's tokens and its percent of the
+    # window it really has. Everything above is the fallback: a transcript knows the tokens, never the window.
+    shown = (sl or {}).get(pane_id) if harness == "claude" else None
+    if shown:  # MUTATION-ANCHOR: 922-M01
+        ctx = {"pct": shown[1], "tokens": shown[0], "source": "statusline"}
+
+    dispatched = dispatched_at_of(rundir)
+    turn_started = progress = None
+    if attention == "working":
+        turn_started = max(turn_at, dispatched) if turn_at is not None else dispatched  # MUTATION-ANCHOR: 920-M05
+        progress = last_progress_of(rundir, env, harness, dispatched)  # MUTATION-ANCHOR: 920-M08
+
     try:
         facts = mods["actions"].facts_from_pane(pane, rundir)
         actions = mods["actions"].actions_for_row(facts)
@@ -388,7 +736,8 @@ def build_row(pane, invoker, mods):
         "task_n": task_seq(rundir), "vendor": harness or "unknown", "model": receipt_value(rundir, "model_running") or None,
         "effort": effort_of(rundir),
         "agent_status": status, "turn_state": turn_state, "turn_ended_at": turn_at,
-        "turns": to_int(tokens.get("turns")), "children_running": children, "ctx": ctx_of(tokens),
+        "dispatched_at": dispatched, "turn_started_at": turn_started, "last_progress_at": progress,
+        "turns": to_int(tokens.get("turns")), "children_running": children, "ctx": ctx,
         "rulings_pending": pending_rulings(rundir), "attention": attention, "attention_since": since,
         "report": report, "ask": ask, "actions": actions,
     }
@@ -440,8 +789,12 @@ def build_state(invoker, seq, interval_s, rev, now=None):
     rows = []
     if ok:
         seen = {}
+        now = now_ms()
+        # only this brainer's claude executors: another lane's panes are not read (and not cached) by this writer
+        claude_panes = [p for p in panes if p.get("agent") == "claude"]
+        sl = statuslines([p.get("pane_id") for p in claude_panes if is_claude_executor(p, invoker, mods)], now)  # MUTATION-ANCHOR: 922-M06
         for p in panes:
-            r = build_row(p, invoker, mods)
+            r = build_row(p, invoker, mods, sl)
             if r is None:
                 continue
             # one task, one row: a re-dispatch leaves its old pane around, the newest run wins
@@ -455,7 +808,7 @@ def build_state(invoker, seq, interval_s, rev, now=None):
              "writer": {"pid": os.getpid(), "hw_rev": rev, "seq": seq, "interval_s": interval_s},
              "invoker_pane": invoker,
              "herdr": {"ok": ok, "server_started_ms": None, "error": err},
-             "totals": totals_of(rows, omitted), "rules": {"cut": cut_state(work_root())}, "rows": rows}
+             "totals": totals_of(rows, omitted), "rules": {"cut": cut_state(work_root()), "no_progress_after_ms": no_progress_ms()}, "rows": rows}
     return fit(state)
 
 
@@ -598,6 +951,8 @@ def run_pilot(cdir):
 
 def write_once(invoker, path, interval_s, rev, to_stdout=False):
     if to_stdout:
+        if path:  # read what the writers cached; --stdout creates nothing
+            load_cache(path + CACHE_SUFFIX)
         print(serialize(build_state(invoker, 0, interval_s, rev)), end="")
         return 0
     if not path:
@@ -621,7 +976,11 @@ def write_once(invoker, path, interval_s, rev, to_stdout=False):
                 prev = int(json.load(fh)["writer"]["seq"])
         except (OSError, ValueError, KeyError, TypeError):
             prev = 0
+        cache_file = path + CACHE_SUFFIX  # MUTATION-ANCHOR: 922-M07
+        load_cache(cache_file)
+        _CACHE_SEEN.clear()
         body = serialize(build_state(invoker, prev + 1, interval_s, rev))
+        save_cache(cache_file)
         tmp = "%s.tmp.%d" % (path, os.getpid())
         # 0600: the rows carry report summaries, which are the brainer's to read and nobody else's
         with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:  # MUTATION-ANCHOR: 797-M20
@@ -727,9 +1086,9 @@ def ctx_from_transcript(path):
     """{"pct","tokens"} from the last main-thread assistant usage, or None.
 
     tokens = input + cache_read + cache_creation, the number the statusline shows
-    (MEASURED, probe P5). The window is 200k, or 1M when the model id says `[1m]`;
-    a model whose window this does not know reads as the 200k default — which can
-    OVERstate the percentage, never hide a nearly full context."""
+    (MEASURED, probe P5). The window is NOT assumed: a model id that says `[1m]` names a 1M window; any other
+    id names none, so the percent is null and the tokens stand alone. (It used to read every other model as
+    200k and showed 100% on a 283.8k-token sonnet-5-5 whose statusline said 28%, 2026-10-08.)"""
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -752,8 +1111,8 @@ def ctx_from_transcript(path):
         toks = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
         if toks <= 0:
             continue
-        window = WINDOW_1M if "[1m]" in str(msg.get("model", "")) else WINDOW_DEFAULT  # MUTATION-ANCHOR: 797-M15
-        return {"pct": round(min(100.0, toks * 100.0 / window), 1), "tokens": toks}
+        window = WINDOW_1M if "[1m]" in str(msg.get("model", "")) else None  # MUTATION-ANCHOR: 797-M15  # MUTATION-ANCHOR: 922-M02
+        return {"pct": None if window is None else round(min(100.0, toks * 100.0 / window), 1), "tokens": toks}
     return None
 
 

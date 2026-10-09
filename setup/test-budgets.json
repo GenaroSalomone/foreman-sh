@@ -299,7 +299,7 @@
     },
     "803-brain-loads-the-cockpit-when-it-can.sh": {
       "exit": 0,
-      "seconds": 25
+      "seconds": 39.5
     },
     "804-a-reopened-brainer-keeps-its-cockpit.sh": {
       "exit": 0,
@@ -341,6 +341,18 @@
       "exit": 0,
       "seconds": 0.67
     },
+    "920-cockpit-times-in-the-writer.sh": {
+      "exit": 0,
+      "seconds": 35.0
+    },
+    "921-cockpit-times-on-the-card.sh": {
+      "exit": 0,
+      "seconds": 20.0
+    },
+    "922-cockpit-ctx-from-the-statusline.sh": {
+      "exit": 0,
+      "seconds": 50.0
+    },
     "94-the-hook-measures-its-own-cost.sh": {
       "exit": 0,
       "seconds": 18.17
@@ -362,6 +374,6 @@
       "seconds": 8.15
     }
   },
-  "measured_at": "2026-10-08T03:58:58Z",
+  "measured_at": "2026-10-08T19:36:14Z",
   "touched_budget_seconds": 90
 }

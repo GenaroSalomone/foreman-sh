@@ -29,7 +29,8 @@
    "running": false,
    "since_ms": null,
    "holder": null
-  }
+  },
+  "no_progress_after_ms": 1800000
  },
  "rows": []
 }

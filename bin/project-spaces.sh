@@ -71,7 +71,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | (["product_repo","hw_aliases","brain_aliases","space","engram","vendor","model","account","artifacts","repoless",
         "checkout","checkout_var","base","base_ref_prefix","branch","worktree_root","worktree","ports",
         "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","qa_target","sdd_modes",
-        "model_floor","model_pins","requested_by","opencode_config_dir","suite_lock"]) as $fields
+        "model_floor","model_pins","subagent_model","requested_by","opencode_config_dir","suite_lock"]) as $fields
     | ({model_floor: ["tier","accepts"], deps: ["line","contention"], db: ["line","provisioned","no_worktree","no_db_inert"],
         devserver: ["start","line","off"], reap: ["copies","copies_from","max_worktrees","max_disk_pct","max_build_gb"]}) as $sub
     | ([$lanes | to_entries[] | .key as $l | .value | to_entries[] | select($sub[.key] != null) | .key as $f
@@ -97,6 +97,9 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | ([$lanes | to_entries[] | .key as $l | select(.value.model_pins != null) | .value.model_pins
         | if type == "object" and (to_entries | all(.key | IN("haiku", "sonnet", "opus", "fable")) and all(.value | type == "string" and test("^claude-[a-z0-9.-]+$")))
           then empty else "\($l).model_pins" end]) as $badpins
+    | ([$lanes | to_entries[] | .key as $l | select(.value.subagent_model != null)
+        | if (.value.subagent_model | type == "string" and test("^(inherit|haiku|sonnet|opus|fable|claude-[a-z0-9.-]+)$")) then empty else "\($l).subagent_model" end]) as $badsub
+    | if ($badsub | length) == 0 then . else error("subagent_model is inherit, a Claude alias (haiku, sonnet, opus, fable) or a claude-* id: \($badsub | join(", "))") end
     | if ($badpins | length) == 0 then . else error("model_pins maps an alias (haiku, sonnet, opus, fable) to a full claude-* id: \($badpins | join(", "))") end
     | if ($badfloor | length) == 0 then . else error("model_floor.tier is haiku, sonnet or opus, and accepts is a list of model ids: \($badfloor | join(", "))") end
     | if ($badmodes | length) == 0 then . else error("sdd_modes lists the modes a lane adds to speckit and none, and the only one is gentle: \($badmodes | join(", "))") end
@@ -131,6 +134,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
           emit($l; "model_floor"; $v.model_floor.tier // ""),
           emit($l; "model_floor_accepts"; ($v.model_floor.accepts // []) | join(" ")),
           emit($l; "model_pins"; ($v.model_pins // {}) | to_entries | map("\(.key)=\(.value)") | join(" ")),
+          emit($l; "subagent_model"; $v.subagent_model // "inherit"),
           emit($l; "requested_by"; $v.requested_by // ""),
           emit($l; "suite_lock"; $v.suite_lock // ""),
           emit($l; "account"; $v.account // "default"),
@@ -385,6 +389,16 @@ project_model_floor() {
 
 project_model_floor_accepts() {
   lane_get "$1" model_floor_accepts || true
+}
+
+# THE MODEL A CLAUDE EXECUTOR'S SUBAGENTS RUN ON when they name none: `inherit`
+# (Claude Code's own behaviour, the executor's model) or a model. hw hands it to
+# Claude Code as CLAUDE_CODE_SUBAGENT_MODEL, and to nothing else: opencode and
+# codex do not read it. Absent is `inherit`. An agent that pins its own `model:`
+# keeps it, because hw never sets the _FORCE variant (setup/decisions.md).
+project_subagent_model() {
+  local v; v="$(lane_get "$1" subagent_model)" || v=""
+  printf '%s' "${v:-inherit}"
 }
 
 # Whether a dispatch must cite the request it answers: required | warn | "".

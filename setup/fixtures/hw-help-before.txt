@@ -61,6 +61,13 @@ FLAGS
                        Required or warned per lane (projects.json).
     --effort <e>       low|medium|high|xhigh|max. claude and codex only —
                        opencode's interactive command has no such flag.
+    --subagent-model <m> inherit | haiku|sonnet|opus|fable | claude-*. The model
+                       a Claude executor's subagents run on when they name
+                       none (CLAUDE_CODE_SUBAGENT_MODEL). Lane default:
+                       `subagent_model` in projects.json, `inherit` when absent.
+                       An agent that pins its own `model:` keeps it. Claude
+                       Code only: opencode and codex are NOT APPLIED. A live
+                       pane keeps the one it launched with.
     --no-db            do not provision a database. Lanes that provision one:
                        none.
     --dev-server       also start the dev server of a lane where it is opt-in,

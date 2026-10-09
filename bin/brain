@@ -1487,10 +1487,20 @@ else
   [ -z "$RESUME" ] || agent_args+=(--resume "$RESUME")
   if [ "$NO_COCKPIT" = 0 ] && [ "${FOREMAN_COCKPIT:-1}" != 0 ]; then
     cockpit_dir="$(cd -P "$BRAIN_BIN/.." && pwd)/cockpit"
-    cockpit_floor=2.1.289
+    # The floor is the claude row of lib/hw/deps.conf (the one place the versions live).
+    # A tree without it cannot say what the floor is, so it opens without the cockpit.
+    cockpit_floor=""
+    _deps_lib="$BRAIN_BIN/../lib"; [ -r "$_deps_lib/hw/deps.sh" ] || _deps_lib="${HW_LIB_DIR:-$_deps_lib}"
+    if [ -r "$_deps_lib/hw/deps.sh" ]; then
+      # shellcheck source=../lib/hw/deps.sh
+      . "$_deps_lib/hw/deps.sh"
+      ! deps_row claude || cockpit_floor="$DEPS_MIN"
+    fi
     cockpit_ver="$(claude --version 2>/dev/null | head -1 | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+' || true)"
     if [ ! -f "$cockpit_dir/.claude-plugin/plugin.json" ]; then
       echo "brain: no cockpit mod at $cockpit_dir; running without it" >&2
+    elif [ -z "$cockpit_floor" ]; then
+      echo "brain: no version floor for the cockpit (lib/hw/deps.conf is missing); running without it" >&2
     elif [ -z "$cockpit_ver" ] || ! _version_at_least "$cockpit_ver" "$cockpit_floor"; then
       echo "brain: cockpit needs claude >= $cockpit_floor (found ${cockpit_ver:-none}); running without it" >&2
     else

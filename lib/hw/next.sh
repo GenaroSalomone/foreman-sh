@@ -513,7 +513,7 @@ cmd_next() {
   # `_receipt` inside that call is a no-op here: $WT/$HW_RUN are the FRESH-
   # launch route's globals and are unset on this route. $rundir is this route's
   # own equivalent, so the override is recorded into it directly instead.
-  [ -z "$STALE_HOOKS_ALLOWED_FILES" ] \
+  [ -z "$STALE_HOOKS_ALLOWED_FILES" ] || [ "${HW_CORE_READONLY:-}" = 1 ] \
     || _receipt_into "$rundir" stale_hooks_allowed "$STALE_HOOKS_ALLOWED_FILES" "--allow-stale-hooks (hw next)"
   prior_framework="$(_run_dispatch_framework "$rundir")"
   # A GENTLE PANE STAYS GENTLE. ODD is in its system prompt for the whole
@@ -814,6 +814,9 @@ cmd_next() {
   fi
 
   local send_rc=0  # MUTATION-ANCHOR: 05-M05
+  # pi: the baseline of what its adapter has recorded, to tell THIS message from the last one's.
+  local pi_base=0
+  [ "${INVOKER_SENDER_VENDOR:-}" != pi ] || pi_base="$(_pi_inputs_count "$rundir")"
   if [ "$route" = opencode ]; then
     "$HW_BIN_DIR/channel-send" --require processed --id "$(basename "$rundir"):t$nextseq" \
       "$route" "$target" "$endpoint" "$msg" >/dev/null || send_rc=$?
@@ -840,6 +843,23 @@ cmd_next() {
     rmdir "$rundir/t$nextseq" 2>/dev/null || true
     [ "$chaining_locked" = 0 ] || _chaining_lock_release
     die "delivery to $pane failed via $route (exit $send_rc). The task counter was NOT advanced, so the executor is still on task $seq and its next done-invoker still refers to the task it actually ran. The pane is untouched and still usable — a failed delivery is not a reason to close an executor; fix the transport and retry."  # MUTATION-ANCHOR: 71-M03
+  fi
+
+  # pi: a turn that opened is not a message that arrived. The adapter's record says whether THIS
+  # message (its sha256) entered the session, the same claim opencode's `processed` receipt makes.
+  # Said and recorded either way; never a rollback, because a message that is in the session and
+  # not yet recorded would be undone by it (opencode's exit 4 is the same case).
+  if [ "$send_rc" = 0 ] && [ "${INVOKER_SENDER_VENDOR:-}" = pi ]; then
+    local pi_got pi_rc=0
+    pi_got="$(_pi_processed "$rundir" "$msg" "$pi_base")" || pi_rc=$?
+    if [ "$pi_rc" = 0 ]; then
+      _receipt_into "$rundir" "brief_admitted_t$nextseq" "yes — pi processed it: the adapter saw a message with this task's sha256 ($pi_got match)" \
+        "setup/pi/hw-executor.ts input event -> $rundir/pi-inputs.jsonl vs the hw next message"
+    else
+      _receipt_into "$rundir" "brief_admitted_t$nextseq" "unproven — pi's adapter recorded ${pi_got#none } message(s), none with this task's sha256" \
+        "$rundir/pi-inputs.jsonl vs the hw next message"
+      warn "$pane opened a turn for task $nextseq, but pi's adapter recorded no message with its hash: it may not be in the session. Read it: herdr agent read $pane --source recent-unwrapped"
+    fi
   fi
 
   # Only now. The counter is the executor's contract with its own invokers, and

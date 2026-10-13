@@ -40,6 +40,12 @@
    "pane": "w1:p12",
    "run": "run-02",
    "task_n": 1,
+   "title": "Port the reaper to Go",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": "medium",
@@ -82,6 +88,12 @@
    "pane": "w1:p11",
    "run": "run-01",
    "task_n": 1,
+   "title": "Answer the challenge on the merge order",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -124,6 +136,12 @@
    "pane": "w1:p14",
    "run": "run-04",
    "task_n": 1,
+   "title": "Cockpit times on the card",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "pi",
    "model": null,
    "effort": null,
@@ -167,6 +185,12 @@
    "pane": "w1:p13",
    "run": "run-03",
    "task_n": 1,
+   "title": "Repair the flaky 870",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,

@@ -40,6 +40,12 @@
    "pane": "w1:p33",
    "run": "run-np-2",
    "task_n": 1,
+   "title": "Edge just under the threshold",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -82,6 +88,12 @@
    "pane": "w1:p34",
    "run": "run-np-3",
    "task_n": 1,
+   "title": "Edge just over the threshold",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -124,6 +136,12 @@
    "pane": "w1:p32",
    "run": "run-np-1",
    "task_n": 1,
+   "title": "A card that moves",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -166,6 +184,15 @@
    "pane": "w1:p31",
    "run": "run-np-0",
    "task_n": 1,
+   "title": "A card that stalled",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": {
+    "since": 1789999280000,
+    "what": "setup/test-hw (fast)"
+   },
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,

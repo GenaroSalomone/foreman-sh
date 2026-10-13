@@ -80,7 +80,7 @@
     },
     "row": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "project", "task", "pane", "run", "task_n", "vendor", "model", "effort", "agent_status", "turn_state", "turn_ended_at", "dispatched_at", "turn_started_at", "last_progress_at", "turns", "children_running", "ctx", "rulings_pending", "attention", "attention_since", "report", "ask", "actions"],
+      "required": ["id", "project", "task", "pane", "run", "task_n", "title", "commits", "gate", "vendor", "model", "effort", "agent_status", "turn_state", "turn_ended_at", "dispatched_at", "turn_started_at", "last_progress_at", "turns", "children_running", "ctx", "rulings_pending", "attention", "attention_since", "report", "ask", "actions"],
       "properties": {
         "id": { "type": "string", "description": "`<project>:<task>`. Unique in a file." },
         "project": { "type": "string" },
@@ -88,6 +88,35 @@
         "pane": { "type": "string", "description": "Executor pane id; the argument of the `ruling` verb." },
         "run": { "type": "string" },
         "task_n": { "type": "integer", "minimum": 1, "description": "1 for the first task of the session, +1 per `hw next`." },
+        "title": { "type": ["string", "null"], "maxLength": 120, "description": "The brief's title: the first `# ` line of the brief named on the run's dispatch manifest (`brief` line), read after the YAML frontmatter (whose `# ` lines are comments). null when the run has no brief file or the brief no title. The card's first line: `<task> · <title>`." },
+        "commits": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["count", "last_at"],
+              "properties": {
+                "count": { "type": "integer", "minimum": 0, "description": "Commits of the worktree's branch over its base (`git log <base>..HEAD`), the base being the `review_base` merge-base hw recorded at dispatch, else the manifest's `base`." },
+                "last_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }], "description": "The newest of those commits (committer time); null when count is 0." }
+              }
+            }
+          ],
+          "description": "null when the run's directory is no git worktree or its base does not resolve. Cached per worktree, recounted when its HEAD reflog moves (and every 30 s)."
+        },
+        "gate": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["since", "what"],
+              "properties": {
+                "since": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }] },
+                "what": { "type": "string", "maxLength": 120, "description": "The slot's `owner.cmd` (e.g. `setup/test-hw (fast)`), or `setup/test-hw` for a process found by its cwd." }
+              }
+            }
+          ],
+          "description": "The suite or gate running for this task: a live suite-gate slot (bin/suite-gate, pid and start time) whose owner.task is the task or whose owner.cmd is `hw done verification of <task>`; else a running `setup/test-hw` process whose cwd is inside the task's worktree (one `ps` and one `lsof`, cached 15 s). null when none."
+        },
         "vendor": { "type": "string", "minLength": 1, "description": "The harness as hw recorded it (claude, opencode, codex, pi, …): text as it is, not a closed list; `unknown` when the run recorded none." },
         "model": { "type": ["string", "null"] },
         "effort": { "type": ["string", "null"], "description": "The run's resolved effort, from the `effort=` line of its dispatch file; null when the run has none (or only the agent's own default). The card shows it beside the model, nothing when null." },
@@ -102,6 +131,22 @@
         "last_progress_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }], "description": "For a `working` row, the newest of: dispatched_at, the last commit of the executor's worktree (its HEAD reflog), the newest file mtime in that worktree (not `.git`, `.hw`, `node_modules` or other caches; cached 30-60 s), and the mtime of its transcript (claude only: an opencode or codex executor woken after an idle gap reads as stalled until its first commit or file write). null for a row that is not working." },
         "turns": { "type": ["integer", "null"], "minimum": 0 },
         "children_running": { "type": ["string", "null"], "description": "Free text from the adapter, e.g. `2 shell`; null when none." },
+        "subagents": {
+          "type": "array", "maxItems": 10,
+          "description": "The subagents of the executor's claude session of the last 24 h (claude only; [] for other vendors or none), running first then newest first. Optional: a writer older than the mod does not publish it and the mod reads it as []. state: `done` = the last line of its transcript is an assistant end_turn; `running` = not, and written within 10 min; `stale` = not, and silent for more than 10 min.",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["type", "description", "model", "state", "started_ms", "last_ms"],
+            "properties": {
+              "type": { "type": "string" },
+              "description": { "type": "string", "description": "Cut to 120 characters." },
+              "model": { "type": ["string", "null"] },
+              "state": { "enum": ["running", "done", "stale"] },
+              "started_ms": { "$ref": "#/$defs/ms" },
+              "last_ms": { "$ref": "#/$defs/ms" }
+            }
+          }
+        },
         "ctx": {
           "type": "object", "additionalProperties": false,
           "required": ["pct", "tokens", "source"],

@@ -26,6 +26,7 @@
 #   · killed_writer  kill -9 in the middle of a write leaves a whole file, and the next writer removes the tmp it left
 #   · debounce     15 events in 100 ms are at most 3 writes, and none is dropped
 #   · loop_dies_with_parent  --loop leaves when the shell that started it is gone
+#   · loop_reloads_its_code  --loop re-executes in place (same pid, lock kept) when its own file changes; a half-written file or an unchanged one does not
 #   · loop_binds_to_pane  the detached writer `bin/brain` starts: one per brainer, survives its
 #                  launching shell and a herdr outage, leaves when the brainer's pane does
 #   · ctx_from_transcript  44424 tokens (probe P5), the percent only when the model id names its window (`[1m]`), sidechains skipped
@@ -79,6 +80,8 @@ mutant_dir 797-M11; mutate_anchor 797-M11 "$MD/cockpit-state" 'if False:'; kill_
 mutant_dir 797-M17; mutate_anchor 797-M17 "$MD/cockpit-state" 'if False:'; kill_mutant 797-M17 loop_dies_with_parent "exited at once"
 mutant_dir 797-M18; mutate_anchor 797-M18 "$MD/cockpit-state" 'if False:'; kill_mutant 797-M18 loop_binds_to_pane "outlived its brainer's pane"
 mutant_dir 797-M19; mutate_anchor 797-M19 "$MD/cockpit-state" 'pass'; kill_mutant 797-M19 loop_binds_to_pane "second writer"
+mutant_dir 797-M29; mutate_anchor 797-M29 "$MD/cockpit-state" 'if sig is None:'; kill_mutant 797-M29 loop_reloads_its_code "unchanged file was re-executed"
+mutant_dir 797-M30; mutate_anchor 797-M30 "$MD/cockpit-state" 'raise OSError("no exec")'; kill_mutant 797-M30 loop_reloads_its_code "still publishes the old code"
 mutant_dir 797-M20; mutate_anchor 797-M20 "$MD/cockpit-state" 'with open(tmp, "w", encoding="utf-8") as fh:'; kill_mutant 797-M20 private_files "is mode 644"
 mutant_dir 797-M21; mutate_anchor 797-M21 "$MD/cockpit-state" 'except ZeroDivisionError as e:'; kill_mutant 797-M21 loop_survives_a_failed_write "died with its first failed write"
 mutant_dir 797-M22; mutate_anchor 797-M22 "$MD/cockpit-state" 'pass'; kill_mutant 797-M22 killed_writer "tmp files of killed writers survive"

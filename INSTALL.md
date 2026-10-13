@@ -27,6 +27,9 @@ lines for your shell profile: add them and open a new terminal.
   `herdr integration install claude`
 - [Claude Code](https://claude.com/claude-code), with its first run finished (below)
 - recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (the picker behind a bare `hw`)
+- optional: [Go](https://go.dev/dl) 1.22 or newer, which lets the installer build `hw-core`, the Go half
+  of `hw` (see [The Go core and the way back](#the-go-core-and-the-way-back)); without it `hw` runs in
+  bash, and `--check` does not list it as missing
 - for an OpenCode lane: [OpenCode](https://opencode.ai) 1.18.31 or newer, and herdr's OpenCode
   integration: `herdr integration install opencode` (run `opencode` once first,
   so its config directory exists)
@@ -53,7 +56,7 @@ only when nothing is left missing.
 | Package | Kind | Command it runs |
 |---|---|---|
 | herdr, jq (1.7 or newer), rg, fd, sd | required | `brew install herdr`, `brew install jq`, `brew install ripgrep`, `brew install fd`, `brew install sd` |
-| Claude Code | required | `brew install --cask claude-code` (macOS) |
+| Claude Code | required | `brew install --cask claude-code@latest` (macOS; see below) |
 | engram | recommended | `brew install gentleman-programming/tap/engram` |
 | fzf | recommended | `brew install fzf` |
 
@@ -62,6 +65,21 @@ run: `git` and `python3` (`xcode-select --install` on macOS, your distribution's
 packages on Linux), and Claude Code on Linux (https://claude.com/claude-code).
 Without Homebrew it installs nothing, names https://brew.sh and exits 1. On
 Linux the list also has Node (`brew install node`).
+
+Claude Code is the `claude-code@latest` cask on purpose: measured on a clean macOS
+VM, the `claude-code` cask (stable channel) was 2.1.287, below the 2.1.289 floor
+(`lib/hw/deps.conf`), so `install.sh` refused a machine `--with-recommended` had just
+set up. `claude update` does nothing for a Homebrew install (it prints a tip), so the update
+command `--check` and `hw preflight` print for Claude Code is detected from where the binary
+lives, not assumed: the `claude-code@latest` cask gets `brew upgrade --cask claude-code@latest`,
+the stable cask gets `brew uninstall --cask claude-code && brew install --cask claude-code@latest`,
+and any other install (the native installer) gets `claude update`. Measured on a clean macOS VM:
+the stable cask (2.1.287) refused by `--check` with the second command, which then
+installed 2.1.296 in 18 s.
+
+`foreman-sh init` offers Homebrew only for what Homebrew carries. If only `git` or `python3`
+is missing it names `xcode-select --install` (Apple's Command Line Tools) and sends you
+to nothing else.
 
 It installs packages and configures nothing. Claude Code's first run,
 `herdr integration install claude` and `engram setup claude-code` stay yours;
@@ -147,8 +165,12 @@ foreman-sh init --yes       # answers its questions yes
 ```
 
 It checks `git`, `jq`, `python3`, `herdr`, `claude`, `rg`, `fd` and `sd`: a missing
-one is named with its install command and the run stops, because `init` installs
-nothing (`--with-recommended`, above, does when you ask). It then offers herdr's
+one is named with its install command. With Homebrew on PATH `init` then asks
+whether to install what Homebrew carries (`--with-recommended`, above; `--yes`
+answers yes) and checks again in the same run, so a machine without `claude` needs
+one `init`, not `init`, `--with-recommended`, `init`. Without that answer, or if
+something is still missing, it stops having written nothing and prints one line to
+copy: `foreman-sh --with-recommended && foreman-sh init`. It then offers herdr's
 Claude integration and `engram setup claude-code` (it asks first, and `--yes` answers
 for you), builds `~/brain` with a `demo` lane over a toy repository at `~/code/toy`
 (`--lane NAME --repo PATH` for your own), copies a sample brief to
@@ -200,6 +222,10 @@ $EDITOR ~/brain/myapp/briefs/first-task.md    # write a brief
 hw myapp first-task --brief ~/brain/myapp/briefs/first-task.md --sdd none --no-report --dry-run
 hw myapp first-task --brief ~/brain/myapp/briefs/first-task.md --sdd none
 ```
+
+`brain` needs herdr's server up: start `herdr` once in a terminal first (measured on a
+clean VM with the headless `herdr server`; without one, `brain` refuses with
+`server_not_running`, naming `herdr`).
 
 The dry run carries `--no-report` because, outside a herdr pane that `brain` opened, `hw`
 exits 1 with `HW_INVOKER_PANE UNRESOLVED` (an executor launched there could not report
@@ -359,6 +385,8 @@ It is read-only and exits 0 whatever the level (a malformed call exits 1).
 | Where | What |
 |---|---|
 | `~/brain/bin`, `lib/hw`, `layouts`, `lanes/git-worktree.sh`, `setup/guards`, `cockpit` | the mechanism, copied from this checkout; refreshed on every run. `bin/hw` loads its modules from `lib/hw` (`reap`, `status`, `done`, `next`, `ledger`) and stops naming one that is missing |
+| `~/brain/core/dist/<os>-<arch>/hw-core` | only with Go 1.22 or newer on PATH and without `--no-core`: `hw`'s Go half, built from this checkout (see [The Go core and the way back](#the-go-core-and-the-way-back)) |
+| `~/.config/hw/impl` | the same condition, and only when the file does not exist: one word, `go` (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured) |
 | `~/brain/projects.json`, `guards.json` | your lanes and what the guards protect; created, then only added to |
 | `~/brain/<lane>/` | `CLAUDE.md`, `decisions.md`, `briefs/`, and `.claude/` with the read-only guard |
 | `~/brain/<lane>/.opencode-executor/` | an OpenCode lane only: the executor's guard plugin and its policy |
@@ -375,6 +403,37 @@ Nothing is written inside your repository. If something already exists and
 differs, like another brain's Stop hook, a lane with that name over a
 different repo, a foreign link in `~/.local/bin`, or a non-empty directory the
 installer did not make, it refuses and names it before writing anything.
+
+## The Go core and the way back
+
+`hw` has two halves: its bash implementation (`bin/hw` and `lib/hw`) and
+`hw-core`, a Go binary that runs the ported verbs. Both give the same answers;
+speed differs by verb (measured on one machine: `hw worktrees` about 0.5 s in Go against 1.6 s in bash, `hw help` about 0.14 s against 0.07 s). Go is optional.
+
+- **What is built.** When a Go toolchain 1.22 or newer is on PATH, the installer
+  builds `hw-core` with `setup/build-core --native` into
+  `~/brain/core/dist/<os>-<arch>/hw-core`, where `hw` looks for it. The build is
+  reproducible (the same bytes every run), so a second run writes nothing.
+- **The switch file.** The installer also writes `~/.config/hw/impl`
+  (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured) containing `go`, only when
+  that file does not exist. One that exists is never touched. With the file at
+  `go` and `hw-core` built, the ported verbs run in Go.
+- **The way back to bash.** `HW_IMPL=bash` switches every verb for that command or
+  shell; `HW_IMPL_<VERB>=bash` switches one verb. To make it permanent, edit or
+  remove the switch file. A `hw-core` that is missing, or older than the sources in
+  `core/`, makes `hw` fall back to bash with one warning.
+- **Without Go.** With no Go on PATH, or one older than 1.22, or with `--no-core`
+  (or `FOREMAN_SH_NO_CORE=1`), nothing is built and the installer exits 0; all but
+  the environment variable print one `NOTE` line. A `go` that does not answer `go version`
+  counts as unreadable, with its own `NOTE`. A `hw-core` an earlier install left is removed. No switch file is written and `hw` runs in bash: same
+  answers. `--check` never lists Go as missing. Install Go and run
+  the installer again to move the ported verbs to Go.
+- **Which one runs.** The ported verbs run in Go when `hw-core` is built and the
+  switch file says `go` (or `HW_IMPL` does); otherwise, and for any verb set to
+  `bash`, they run in bash.
+- **`--agent pi`.** A dispatch with `--agent pi` stays on bash and prints one line
+  saying so. The export carries the builders of git-worktree lanes only; a lane
+  hook of another name is sourced by bash.
 
 ## Windows
 
@@ -445,7 +504,8 @@ recall context when it is registered (see Memory above).
 
 ## Limits, stated
 
-- **Claude Code or OpenCode executors.** Codex lanes are not installed: nothing
+- **Claude Code or OpenCode executors.** pi is dispatched with `--agent pi`, not installed
+  by this script (`herdr integration install pi`; L3b). Codex lanes are not installed: nothing
   can prove a Codex executor end to end today, so `--vendor codex` is refused.
   The installer does not write `~/.codex/hooks.json` either, so a Codex session
   is unguarded until you register the Codex guard yourself (L3, L5).
@@ -474,7 +534,7 @@ recall context when it is registered (see Memory above).
   `./install.sh --check`, then `brain <lane>` *before* the command above (it
   names the waiting screen), then the command, then `hw <lane> probe --brief
   ~/brain/<lane>/briefs/probe.md --sdd none --model haiku`.
-- **The sandbox is macOS and Claude Code only.** `hw <lane> <task> --sandbox`
+- **The sandbox is macOS, and Claude Code or pi, only.** `hw <lane> <task> --sandbox`
   (or `sandbox: true` in a brief) runs an executor inside a Seatbelt profile;
   the installer sets nothing up for it, and it is refused elsewhere. What it
   confines and what it leaves open: `THREAT-MODEL.md` and `KNOWN-LIMITATIONS.md`

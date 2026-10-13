@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 import { classify, parse, type Model, type Row, type State } from './state'
 import { dispatchArgv, parseVerdict, type Verdict } from './rules'
 import { argvOf, VERBS, type Names } from './verbs'
-import { band, pane, ruleLine, type Acts, type Notes } from './view'
+import { band, pane, ruleLine, type Acts, type Notes, type Open } from './view'
 
 const PANE = 'cockpit'
 const TICK_MS = 1000
@@ -27,10 +27,12 @@ const S: {
   lastBucket: number
   busy: boolean
   notes: Notes
+  open: Open
   rule: Rule | null
 } = {
   loaded: null,
   notes: {},
+  open: new Set(),
   rule: null,
   sig: '',
   lastClass: '',
@@ -129,16 +131,21 @@ async function runVerb($: any, verb: string, id: string, names: Names, stdin?: s
   const argv = argvOf(verb, names)
   if (argv === null) return
   await recordAction($, names.pane ?? '', verb)
-  let note: { ok: boolean; text: string }
+  let note: { ok: boolean; text: string; verb: string }
   try {
     const out = await $.process.run(argv, stdin === undefined ? { timeoutMs: VERB_MS } : { stdin, timeoutMs: VERB_MS })
     const text = (out.exitCode === 0 ? out.stdout : `${out.stderr}${out.stdout}`).trim()
-    note = { ok: out.exitCode === 0, text: text === '' ? (out.exitCode === 0 ? `hw ${verb}: ok` : `hw ${verb}: exit ${out.exitCode}`) : text }
+    note = { verb, ok: out.exitCode === 0, text: text === '' ? (out.exitCode === 0 ? `hw ${verb}: ok` : `hw ${verb}: exit ${out.exitCode}`) : text }
   } catch (err) {
-    note = { ok: false, text: `hw ${verb} did not run: ${String((err as Error)?.message ?? err)}` }
+    note = { verb, ok: false, text: `hw ${verb} did not run: ${String((err as Error)?.message ?? err)}` }
   }
   S.notes[id] = note
   $.ui.toast(note.ok ? `hw ${verb} ${id}: done` : `hw ${verb} ${id}: failed`)
+  redraw($)
+}
+
+function dismiss($: any, id: string): void {
+  delete S.notes[id]
   redraw($)
 }
 
@@ -163,7 +170,12 @@ function acts($: any): Acts {
       }
       await runVerb($, 'done', r.id, namesOf(r))
     },
-    receipt: r => runVerb($, 'receipt', r.id, namesOf(r)),
+    receipt: async r => {
+      // receipt only reads: pressing it again over its own open note closes the note
+      if (S.notes[r.id]?.verb === 'receipt') return dismiss($, r.id)
+      await runVerb($, 'receipt', r.id, namesOf(r))
+    },
+    dismiss: async r => dismiss($, r.id),
     ruling: async (r, text) => {
       if (text.trim() === '') return
       await runVerb($, 'ruling', r.id, namesOf(r), text)
@@ -171,6 +183,11 @@ function acts($: any): Acts {
     reply: async (r, text) => {
       if (text.trim() === '' || r.ask === null || typeof r.ask.pending_reply !== 'string') return
       await runVerb($, r.ask.kind === 'challenge' ? 'challenge-reply' : 'reply', r.id, namesOf(r), text)
+    },
+    subagents: r => {
+      if (S.open.has(r.id)) S.open.delete(r.id)
+      else S.open.add(r.id)
+      redraw($)
     },
     verify: async r => {
       await $.prompt.fill({
@@ -206,6 +223,7 @@ async function tick($: any): Promise<void> {
     if (m.state !== null) {
       const ids = new Set(m.state.rows.map(r => r.id))
       for (const id of Object.keys(S.notes)) if (!ids.has(id)) delete S.notes[id]
+      for (const id of [...S.open]) if (!ids.has(id)) S.open.delete(id)
     }
     const bucket = Math.floor(now / RELATIVE_TICK_MS)
     if (changed || m.cls !== S.lastClass || bucket !== S.lastBucket) {
@@ -225,6 +243,7 @@ export const register: Register = on => {
   S.lastBucket = -1
   S.busy = false
   S.notes = {}
+  S.open = new Set()
   S.rule = null
 
   on('session.start', async ($, e, next) => {
@@ -267,6 +286,6 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { m, now } = await model($)
-    return pane($.ui.resolve(e), m, now, acts($), S.notes)
+    return pane($.ui.resolve(e), m, now, acts($), S.notes, S.open)
   })
 }

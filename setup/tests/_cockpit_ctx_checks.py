@@ -128,6 +128,91 @@ def falls_back_when_the_pane_cannot_be_read():
     assert ctx(s, "opencode") == EMPTY, "an opencode pane's screen is not a claude statusline: %s" % ctx(s, "opencode")
 
 
+# ── a pi executor: its own state file, never a statusline or a claude transcript ─────────────────────
+
+def pi_file(x, ctx=None, raw=None, age=None):
+    """`<rundir>/pi-runtime.json` as the pi extension writes it; `raw` writes text as it is, `age` seconds back as its mtime."""
+    path = os.path.join(x["rundir"], "pi-runtime.json")
+    body = raw if raw is not None else json.dumps({"session_file": "/abs/s.jsonl", "session_id": "s1", "provider": "opencode-go",
+                                                  "model": "deepseek-v4-pro", "thinking": "medium", "ctx": ctx, "turns": 1,
+                                                  "at": "2026-10-12T00:20:04.000Z"})
+    open(path, "w").write(body)
+    if age is not None:
+        os.utime(path, (time.time() - age, time.time() - age))
+    return path
+
+
+def pi_ctx_is_live():
+    """A working pi card shows pi-runtime.json while its first turn runs (it said `n/a`); the turn-end value stands when newer; an idle card ignores the file."""
+    w = cw.World(tmpdir())
+    now = time.time()
+    first = w.executor(task="first", vendor="pi", status="working", screen=line("999k", "99.0"))     # no turn end yet; a claude-looking screen is not read
+    pi_file(first, {"tokens": 7538, "window": 1000000, "pct": 0.7538})
+    fresh = w.executor(task="fresh", vendor="pi", status="working", tokens={"turn_state": "working", "turn_ended_at": cw.iso(now - 600),
+                                                                         "ctx_pct": "10.0", "ctx_tokens": "20000"})
+    pi_file(fresh, {"tokens": 80000, "window": 400000, "pct": 20})                                  # written after the turn end
+    newer = w.executor(task="newer", vendor="pi", status="working", tokens={"turn_state": "working", "turn_ended_at": cw.iso(now),
+                                                                         "ctx_pct": "30.0", "ctx_tokens": "60000"})
+    pi_file(newer, {"tokens": 90000, "window": 400000, "pct": 22.5}, age=600)                       # the turn end is newer than the file
+    idle = w.executor(task="idle", vendor="pi", status="idle")
+    pi_file(idle, {"tokens": 70000, "window": 400000, "pct": 17.5})
+    w.executor(task="nofile", vendor="pi", status="working")
+    w.publish()
+    s = state(w)
+    assert ctx(s, "first") == {"pct": 0.7538, "tokens": 7538, "source": "live"}, "pi-runtime.json must replace `ctx n/a`: %s" % ctx(s, "first")
+    assert ctx(s, "fresh") == {"pct": 20.0, "tokens": 80000, "source": "live"}, "a file newer than the turn end must win: %s" % ctx(s, "fresh")
+    assert ctx(s, "newer") == {"pct": 30.0, "tokens": 60000, "source": "turn-end"}, \
+        "the turn-end value newer than the file must stand: %s" % ctx(s, "newer")
+    assert ctx(s, "idle") == EMPTY, "an idle card does not read the live file: %s" % ctx(s, "idle")
+    assert ctx(s, "nofile") == EMPTY, "no file is n/a: %s" % ctx(s, "nofile")
+
+
+def pi_garbled_file_is_na():
+    """A file of any shape but the one pi writes is n/a on its card: no crash, no other card touched."""
+    w = cw.World(tmpdir())
+    bad = {"truncated": '{"ctx": {"tokens": 12', "empty": "", "list": "[1, 2]", "nan": "nope", "noctx": '{"turns": 1}',
+           "ctxlist": '{"ctx": [7538]}', "nulltokens": '{"ctx": {"tokens": null, "window": 1000000, "pct": null}}',
+           "strtokens": '{"ctx": {"tokens": "7538", "pct": 1}}', "negtokens": '{"ctx": {"tokens": -5, "pct": 1}}',
+           "booltokens": '{"ctx": {"tokens": true, "pct": 1}}'}
+    for name, raw in bad.items():
+        pi_file(w.executor(task=name, vendor="pi", status="working"), raw=raw)
+    good = w.executor(task="good", vendor="pi", status="working")
+    pi_file(good, {"tokens": 5000, "window": 100000, "pct": 5})
+    w.publish()
+    s = state(w)
+    for name in bad:
+        assert ctx(s, name) == EMPTY, "%s: a file with no usable tokens must be n/a: %s" % (name, ctx(s, name))
+    assert ctx(s, "good") == {"pct": 5.0, "tokens": 5000, "source": "live"}, "a garbled neighbour broke the good card: %s" % ctx(s, "good")
+
+
+def pi_tokens_stand_alone_without_a_percent():
+    """pct null, out of 0..100 or not a number: the tokens show and the percent is unknown, never clamped or guessed."""
+    w = cw.World(tmpdir())
+    cases = {"null": None, "over": 340, "under": -1, "text": "12", "flag": True, "edge0": 0, "edge100": 100}
+    for name, pct in cases.items():
+        pi_file(w.executor(task=name, vendor="pi", status="working"), {"tokens": 7538, "window": 1000000, "pct": pct})
+    w.publish()
+    s = state(w)
+    for name in ("null", "over", "under", "text", "flag"):
+        assert ctx(s, name) == {"pct": None, "tokens": 7538, "source": "live"}, "pct %r must leave the tokens alone: %s" % (cases[name], ctx(s, name))
+    assert ctx(s, "edge0") == {"pct": 0.0, "tokens": 7538, "source": "live"}, ctx(s, "edge0")
+    assert ctx(s, "edge100") == {"pct": 100.0, "tokens": 7538, "source": "live"}, ctx(s, "edge100")
+
+
+def pi_and_claude_sources_do_not_cross():
+    """pi-runtime.json is read for a pi run only, and a pi run never looks for a claude transcript."""
+    w = cw.World(tmpdir())
+    for v in ("claude", "opencode", "codex"):
+        pi_file(w.executor(task=v, vendor=v, status="working"), {"tokens": 7538, "window": 1000000, "pct": 0.7538})
+    p = w.executor(task="pi", vendor="pi", status="working")
+    transcript(w, p, "33333333-aaaa-bbbb-cccc-0000000000a1", 283800, "claude-opus-4-7[1m]")        # a session id and a claude transcript, no pi file
+    w.publish()
+    s = state(w)
+    for v in ("claude", "opencode", "codex"):
+        assert ctx(s, v) == EMPTY, "a %s run must not read pi-runtime.json: %s" % (v, ctx(s, v))
+    assert ctx(s, "pi") == EMPTY, "a pi run must not read a claude transcript: %s" % ctx(s, "pi")
+
+
 # ── what it costs ────────────────────────────────────────────────────────────
 
 def reads_are_cached():
@@ -183,11 +268,13 @@ def brainers_do_not_share_reads_or_cache():
 
 
 CHECKS = {f.__name__: f for f in (statusline_is_the_source, unknown_percent_is_tokens_only, no_window_is_assumed,
-                                  falls_back_when_the_pane_cannot_be_read, reads_are_cached, read_timeout_is_bounded, brainers_do_not_share_reads_or_cache)}
+                                  falls_back_when_the_pane_cannot_be_read, reads_are_cached, read_timeout_is_bounded, brainers_do_not_share_reads_or_cache,
+                                  pi_ctx_is_live, pi_garbled_file_is_na, pi_tokens_stand_alone_without_a_percent,
+                                  pi_and_claude_sources_do_not_cross)}
 
 if __name__ == "__main__":
     BIN = os.path.abspath(sys.argv[1])
-    names = sys.argv[2:] or list(CHECKS)
+    names = sys.argv[2:] or [n for n in CHECKS if not n.startswith("pi_")]  # the pi_ checks are subject 985's: `985` names them
     failed = 0
     for n in names:
         try:

@@ -5,21 +5,26 @@
 ```markdown
 You are blind Judge {A|B} in explicit Judgment Day mode.
 
-Target: {immutable target identity and exact paths}
+Target file: {absolute path of the frozen diff, `$HW_ARTIFACTS/jd-target-<round>.diff`} (sha256 {target sha256} is the target identity)
+Target paths: {every file the diff touches, one per line}
 Skills to load: {resolved SKILL.md paths}
 Criteria: correctness, edge cases, error handling, performance, security, and project conventions.
 
 Set `causal_disposition` to `introduced` when the candidate caused the defect (added it, worsened it, or made it newly reachable) and to `pre-existing` when it was already at the base; a pre-existing defect never blocks and is reported as info.
 
-Run one exhaustive read-only sweep. Do not edit, delegate, refute, or inspect unrelated scope. If scoped re-judging, read ONLY the frozen ledger and immutable fix delta; record any fix-caused defect with proof.
+Read the whole target file with Read, then open each target path as needed. You have no Bash: the target file IS the diff. Run one exhaustive read-only sweep. Do not edit, delegate, refute, or inspect unrelated scope. If scoped re-judging, read ONLY the frozen ledger and immutable fix delta; record any fix-caused defect with proof.
 
 Return one JSON object and no prose, using exactly this native result shape:
 
-{"findings":[{"location":"path:line or path:start-end","severity":"CRITICAL","claim":"observable incorrect behavior","evidence_class":"deterministic","causal_disposition":"introduced","proof_refs":["concrete proof"]}],"evidence":["what was inspected"]}
+{"findings":[{"location":"path:line or path:start-end","severity":"CRITICAL","claim":"observable incorrect behavior","evidence_class":"deterministic","causal_disposition":"introduced","proof_refs":["concrete proof"]}],"evidence":["what was inspected"],"reviewed":["path/a","path/b"]}
 
-This is a judgment-day judge result. Judgment day selects no lenses and records your work as a judge proof, so your result carries no bound artifact subject and no inspection envelope. The only allowed top-level fields are `findings` and `evidence`, and the only allowed finding fields are `location`, `severity`, `claim`, `evidence_class`, `causal_disposition`, and `proof_refs`. Never emit `summary`, `skill_resolution`, or any other unknown field. Keep orchestration metadata outside the native result JSON; `evidence` contains only genuine inspection evidence. Return `{"findings":[],"evidence":["what was inspected"]}` when clean, then terminate.
+This is a judgment-day judge result. Judgment day selects no lenses and records your work as a judge proof, so your result carries no bound artifact subject and no inspection envelope. `reviewed` lists every path of Target paths you actually inspected, copied exactly; a path you skipped is a path you did not review, so leave it out and say why in `evidence`. The only allowed top-level fields are `findings`, `evidence` and `reviewed`, and the only allowed finding fields are `location`, `severity`, `claim`, `evidence_class`, `causal_disposition`, and `proof_refs`. Never emit `summary`, `skill_resolution`, or any other unknown field. Keep orchestration metadata outside the native result JSON; `evidence` contains only genuine inspection evidence. Return `{"findings":[],"evidence":["what was inspected"],"reviewed":["path/a","path/b"]}` when clean, then terminate.
 ```
 
+
+## Coverage check (orchestrator)
+
+Before merging a judge result, diff its `reviewed` against the target's file list. A missing `reviewed`, or any target path absent from it, rejects the result: it is not clean and not counted. Relaunch that judge once with only the missing paths (target file unchanged). If paths are still missing, the verdict is `JUDGMENT: ESCALATED ⚠️`, cause `juez sin cobertura: <paths>`.
 
 ## Fix Actor Prompt
 

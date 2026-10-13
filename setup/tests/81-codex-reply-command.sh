@@ -220,7 +220,7 @@ PY
 # M01 — codex gets a native transport back in the classifier. The resolver
 # still hands it the herdr sentinel as endpoint, which is NON-EMPTY: the reply
 # command must therefore go native, which is the bug in its 2026-09-06 shape.
-mutate M01 '    ""|claude|codex) return 1 ;;' '    ""|claude) return 1 ;;'
+mutate M01 '    ""|claude|codex|pi) return 1 ;;' '    ""|claude|pi) return 1 ;;'
 rm -f "$HOLD"
 CMD="$(drive "$MUT" 'invoker_reply_command testrun:ask:1:reply answer '"$HOLD")"
 case "$CMD" in
@@ -231,8 +231,8 @@ esac
 # M02 — the fabricated socket endpoint comes back. The classifier still keeps
 # the reply on herdr, so this is caught where the address is handed out, not
 # where it is used: nothing may invent an address, used or not.
-mutate M02 '    claude|codex) INVOKER_SENDER_ENDPOINT="-" ;;' \
-  '    claude) INVOKER_SENDER_ENDPOINT="-" ;;
+mutate M02 '    claude|codex|pi) INVOKER_SENDER_ENDPOINT="-" ;;' \
+  '    claude|pi) INVOKER_SENDER_ENDPOINT="-" ;;
     codex) INVOKER_SENDER_ENDPOINT="$HOME/.codex/app-server-control/app-server-control.sock" ;;'
 OUT="$(drive "$MUT" 'invoker_resolve_sender wC:p9; printf "%s\n" "$INVOKER_SENDER_ENDPOINT"')"
 case "$OUT" in
@@ -252,7 +252,7 @@ case "$CMD" in
 esac
 
 # M04 — the basename guess comes back for a session-less codex pane.
-mutate M04 '    claude|codex) INVOKER_SENDER_ENDPOINT="-" ;;' \
+mutate M04 '    claude|codex|pi) INVOKER_SENDER_ENDPOINT="-" ;;' \
   '    codex)
       [ -n "$INVOKER_SENDER_SESSION" ] || INVOKER_SENDER_SESSION="$(printf "%s" "$info" | jq -r ".result.agent.cwd // empty | split(\"/\")[-1]" 2>/dev/null || true)"
       INVOKER_SENDER_ENDPOINT="-" ;;

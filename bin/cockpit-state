@@ -449,7 +449,9 @@ def newest_mtime_ms(root, cache, now):
     return newest
 
 
-_CACHE = {}       # worktree root -> [walked_at_ms, newest mtime or None], "pane:<id>" -> [read_at_ms, tokens, pct]; shared through the cache file
+_CACHE = {}       # worktree root -> [walked_at_ms, newest mtime or None], "pane:<id>" -> [read_at_ms, tokens, pct],
+                  # "commits:<root>" -> [counted_at_ms, reflog sig, count, last_at], "procs" -> [listed_at_ms, [[since, cwd]]];
+                  # shared through the cache file
 _CACHE_SEEN = set()
 
 
@@ -457,7 +459,14 @@ def cache_entry_ok(k, v):
     num = lambda x: x is None or (isinstance(x, (int, float)) and not isinstance(x, bool))
     if not isinstance(v, list) or not v or not isinstance(v[0], int):
         return False
-    return (len(v) == 3 and all(num(x) for x in v[1:])) if k.startswith("pane:") else (len(v) == 2 and num(v[1]))
+    if k.startswith("pane:"):
+        return len(v) == 3 and all(num(x) for x in v[1:])
+    if k.startswith("commits:"):
+        return len(v) == 4 and isinstance(v[1], str) and num(v[2]) and num(v[3])
+    if k == "procs":
+        return len(v) == 2 and isinstance(v[1], list) and all(
+            isinstance(x, list) and len(x) == 2 and num(x[0]) and isinstance(x[1], str) for x in v[1])
+    return len(v) == 2 and num(v[1])
 
 
 def load_cache(path):
@@ -502,6 +511,176 @@ def last_progress_of(rundir, env, harness, dispatched):
         except Exception:
             pass  # a transcript nobody foresaw is no sign, not a failed row
     return min(now, max(x for x in signs if x is not None))
+
+
+# ── what the task is, and how far it has come ──────────────────────────────
+
+TITLE_MAX = 120
+COMMITS_TTL_S = 30            # a branch whose HEAD reflog did not move is counted again at most this often
+PROCS_TTL_S = 15              # the `setup/test-hw` processes are listed at most this often, for every row
+GATE_CMD = "setup/test-hw"
+
+
+def dispatch_field(rundir, name):
+    """A `  <name>  <value>  (mark)` line of the run's dispatch manifest, its value alone; None when absent."""
+    for line in (read_text(os.path.join(rundir, "dispatch")) or "").splitlines():
+        m = re.match(r"\s*%s\s{2,}(\S+)" % re.escape(name), line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def brief_title(text):
+    """The brief's title: its first `# ` line, AFTER the YAML frontmatter (a `---` first line up to the next
+    `---`), whose `# ` lines are comments, not a title. None when there is none."""
+    lines = (text or "").splitlines()
+    i = 0
+    if lines and lines[0].strip() == "---":
+        for j in range(1, len(lines)):
+            if lines[j].strip() == "---":
+                i = j + 1  # MUTATION-ANCHOR: 970-M01
+                break
+    for line in lines[i:]:
+        if line.startswith("# "):
+            t = line[2:].strip()
+            if t:
+                return t[:TITLE_MAX]
+    return None
+
+
+def title_of(rundir):
+    """The title of the brief the run was dispatched with (the manifest's `brief` line), None without one."""
+    path = dispatch_field(rundir, "brief")
+    if not path or not os.path.isabs(path):
+        return None
+    return brief_title(read_text(path))
+
+
+def base_of(rundir):
+    """What the branch is measured against: the merge-base hw recorded at dispatch (`review_base`), else the
+    manifest's `base` name. A base that moved on since does not count its own commits as the task's."""
+    sha = receipt_value(rundir, "review_base")
+    if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{7,64}", sha):
+        return sha
+    return dispatch_field(rundir, "base")
+
+
+def commits_of(root, base, now):
+    """{"count", "last_at"} of the branch over its base: the commits `base..HEAD` and the newest one's time.
+    None when the worktree is no repository or the base does not resolve. Cached per worktree, keyed by the
+    HEAD reflog's size and mtime (a commit, reset or rebase moves it), at most every COMMITS_TTL_S otherwise."""
+    gd = gitdir_of(root)
+    if not gd or not base:
+        return None
+    try:
+        st = os.stat(os.path.join(gd, "logs", "HEAD"))
+        sig = "%d:%d:%s" % (st.st_mtime_ns, st.st_size, base)
+    except OSError:
+        sig = "none:" + base
+    key = "commits:" + root
+    _CACHE_SEEN.add(key)
+    hit = _CACHE.get(key)
+    if hit and hit[1] == sig and 0 <= now - hit[0] < env_seconds("HW_COCKPIT_COMMITS_TTL_S", COMMITS_TTL_S) * 1000:  # MUTATION-ANCHOR: 970-M04
+        return None if hit[2] is None else {"count": hit[2], "last_at": hit[3]}
+    count = last = None
+    try:
+        r = subprocess.run(["git", "-C", root, "log", "--format=%ct", "%s..HEAD" % base], capture_output=True,
+                           text=True, timeout=3)
+        if r.returncode == 0:
+            stamps = [to_int(x) for x in r.stdout.split()]
+            count = len(stamps)  # MUTATION-ANCHOR: 970-M02
+            last = stamps[0] * 1000 if stamps and stamps[0] is not None else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _CACHE[key] = [now, sig, count, last]
+    return None if count is None else {"count": count, "last_at": last}
+
+
+def slot_owners(work):
+    """The live holders of the suite gate's slots (bin/suite-gate): [{task, cmd, at}], liveness by pid AND start
+    time, as cut_state reads them."""
+    out = []
+    if not work:
+        return out
+    for slot in sorted(glob.glob(os.path.join(work, ".locks", "suite-gate", "slot.*"))):
+        pid = to_int(read_text(os.path.join(slot, "owner.pid")))
+        if not pid:
+            continue
+        try:
+            os.kill(pid, 0)
+            start = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                                   timeout=2).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if " ".join(start.split()) != " ".join((read_text(os.path.join(slot, "owner.start")) or "").split()):
+            continue
+        at = to_int(read_text(os.path.join(slot, "owner.at")))
+        out.append({"task": (read_text(os.path.join(slot, "owner.task")) or "").strip(),
+                    "cmd": (read_text(os.path.join(slot, "owner.cmd")) or "").strip(),
+                    "at": at * 1000 if at else None})
+    return out
+
+
+def etime_s(v):
+    """`ps -o etime` (`[[dd-]hh:]mm:ss`) in seconds, None when it is not that."""
+    m = re.fullmatch(r"(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)", (v or "").strip())
+    if not m:
+        return None
+    d, h, mi, s = (int(x) if x else 0 for x in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + s
+
+
+def gate_procs(now):
+    """[[since_ms, cwd]] of the running `setup/test-hw` processes (one `ps`, one `lsof` for their cwd), listed at
+    most every PROCS_TTL_S and shared through the cache file. A run that took no slot (the gate's ceiling, no
+    WORK) is still seen here."""
+    hit = _CACHE.get("procs")
+    _CACHE_SEEN.add("procs")
+    if hit and 0 <= now - hit[0] < env_seconds("HW_COCKPIT_PROCS_TTL_S", PROCS_TTL_S) * 1000:
+        return hit[1]
+    found = []
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,etime=,command="], capture_output=True, text=True, timeout=2)
+        pids = {}
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and re.search(r"(^|[\s/])" + re.escape(GATE_CMD) + r"(\s|$)", parts[2]):
+                el = etime_s(parts[1])
+                if el is not None and to_int(parts[0]):
+                    pids[parts[0]] = now - el * 1000
+        if pids:
+            l = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(sorted(pids))], capture_output=True,
+                               text=True, timeout=3)
+            pid = None
+            for line in l.stdout.splitlines():
+                if line.startswith("p"):
+                    pid = line[1:]
+                elif line.startswith("n") and pid in pids:
+                    found.append([pids[pid], line[1:]])
+    except (OSError, subprocess.SubprocessError):
+        found = []
+    _CACHE["procs"] = [now, found]
+    return found
+
+
+def gate_of(task, root, slots, procs):  # procs: a function, so the process list is made only when needed
+    """{"since", "what"} of the suite running for this task, None when none: a suite-gate slot whose owner is this
+    task (HW_TASK at sg_take, or `hw done verification of <task>`), else a `setup/test-hw` process whose cwd is
+    inside the task's worktree. The oldest one wins."""
+    hits = []
+    for s in slots:
+        if s["task"] == task or s["cmd"] == "hw done verification of %s" % task:  # MUTATION-ANCHOR: 970-M03
+            hits.append((s["at"] or 0, s["at"], s["cmd"] or "suite"))
+    if not hits:
+        real = os.path.realpath(root)
+        for since, cwd in procs():
+            c = os.path.realpath(cwd)
+            if c == real or c.startswith(real + os.sep):  # MUTATION-ANCHOR: 970-M05
+                hits.append((since, int(since), GATE_CMD))
+    if not hits:
+        return None
+    hits.sort(key=lambda h: h[0])
+    return {"since": hits[0][1], "what": hits[0][2][:TITLE_MAX]}
 
 
 # ── the row ──────────────────────────────────────────────────────────────────
@@ -646,6 +825,119 @@ def live_ctx(rundir, env):
     return hit[1], int(st.st_mtime_ns // 1_000_000)
 
 
+# THE LIVE READ OF A PI EXECUTOR. pi publishes its own account of its context in the run directory
+# (`<rundir>/pi-runtime.json`, rewritten atomically at every turn and message end by the pi extension),
+# so a pi card has no transcript to parse and no statusline to read: a pi pane's screen is not a claude
+# statusline, and the statusline reader above only ever looks at claude panes. Unlike a claude transcript,
+# the file carries the window pi MEASURED for the model, so its percent is allowed here. The file is
+# foreign input, read defensively: anything off its shape is "no ctx", never an exception.
+_PI_LIVE = {}  # file path -> ((mtime_ns, size), ctx or None)
+
+
+def pi_ctx_from_file(path):
+    """{pct, tokens} of a pi-runtime.json, None when it is missing, garbled or says no tokens."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    c = data.get("ctx") if isinstance(data, dict) else None
+    if not isinstance(c, dict):
+        return None
+    toks, pct = c.get("tokens"), c.get("pct")
+    if isinstance(toks, bool) or not isinstance(toks, int) or toks < 0:  # MUTATION-ANCHOR: 985-M04  # null right after a compaction: pi does not know yet
+        return None
+    # `pct` is already 0..100; a number outside it is not a percent of anything, so the tokens stand alone
+    ok = isinstance(pct, (int, float)) and not isinstance(pct, bool) and 0 <= pct <= 100  # MUTATION-ANCHOR: 985-M02
+    return {"pct": float(pct) if ok else None, "tokens": toks}
+
+
+def pi_live_ctx(rundir):
+    """(ctx, file mtime in ms) of the run's pi-runtime.json, (None, None) when there is no usable one."""
+    path = os.path.join(rundir, "pi-runtime.json")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, None
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _PI_LIVE.get(path)
+    if hit is None or hit[0] != sig:
+        if len(_PI_LIVE) >= CACHE_MAX:
+            _PI_LIVE.clear()
+        hit = _PI_LIVE[path] = (sig, pi_ctx_from_file(path))
+    return hit[1], int(st.st_mtime_ns // 1_000_000)
+
+
+# THE SUBAGENTS of a claude executor's session: `<transcript minus .jsonl>/subagents/agent-<id>.{meta.json,jsonl}`.
+# MEASURED 2026-10-09 on go-t5b (8 done, 1 running, matching Claude Code's own UI): a finished one ends on an
+# assistant line with stop_reason end_turn; one still going ends on tool_use/tool_result and was written lately.
+# Cost: a listdir, a stat each, and the LAST line only of a file that moved; cached by (mtime, size).
+SUBAGENT_STALE_MS = 10 * 60 * 1000   # no end_turn and no write for this long: stale, not running
+SUBAGENT_WINDOW_MS = 24 * 3600 * 1000
+SUBAGENT_MAX = 10
+SUBAGENT_TAIL = 256 * 1024
+_SUBS = {}   # jsonl path -> ((mtime_ns, size), ended, started_ms)
+
+
+def _subagent_facts(path, st):
+    """(ended, started_ms) of one subagent transcript: its first timestamp and whether its last line is an end_turn."""
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _SUBS.get(path)
+    if hit and hit[0] == sig:
+        return hit[1], hit[2]
+    ended, started = False, None
+    try:
+        with open(path, "rb") as fh:
+            first = fh.readline(65536).decode("utf-8", "replace")
+            fh.seek(max(0, st.st_size - SUBAGENT_TAIL))
+            lines = [l for l in fh.read().decode("utf-8", "replace").splitlines() if l.strip()]
+        try:
+            started = iso_ms((json.loads(first).get("timestamp") or "")[:19] + "Z")
+        except (ValueError, AttributeError):
+            started = None
+        last = lines[-1] if lines else ""
+        try:
+            o = json.loads(last)
+            ended = o.get("type") == "assistant" and (o.get("message") or {}).get("stop_reason") == "end_turn"  # MUTATION-ANCHOR: 925-M01
+        except ValueError:  # a last line bigger than the tail: its head is cut, its stop_reason is at the end
+            ended = bool(re.search(r'"stop_reason"\s*:\s*"end_turn"', last[-2048:]))
+    except OSError:
+        pass
+    if len(_SUBS) >= CACHE_MAX:
+        _SUBS.clear()
+    _SUBS[path] = (sig, ended, started)
+    return ended, started
+
+
+def subagents_of(transcript, now):
+    """The session's subagents of the last 24 h, running first, newest first, at most SUBAGENT_MAX; [] when none."""
+    base = transcript[:-len(".jsonl")] if transcript.endswith(".jsonl") else transcript
+    out = []
+    for path in glob.glob(os.path.join(glob.escape(base), "subagents", "agent-*.jsonl")):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        last = int(st.st_mtime_ns // 1_000_000)
+        if now - last > SUBAGENT_WINDOW_MS:
+            continue
+        ended, started = _subagent_facts(path, st)
+        meta = {}
+        try:
+            with open(path[:-len(".jsonl")] + ".meta.json", encoding="utf-8", errors="replace") as fh:
+                m = json.load(fh)
+            meta = m if isinstance(m, dict) else {}
+        except (OSError, ValueError):
+            pass
+        state = "done" if ended else ("stale" if now - last > SUBAGENT_STALE_MS else "running")  # MUTATION-ANCHOR: 925-M02
+        text = lambda k: meta.get(k) if isinstance(meta.get(k), str) else None
+        out.append({"type": (text("agentType") or "agent")[:60], "description": (text("description") or "")[:120],
+                    "model": text("model"), "state": state, "started_ms": started if started is not None else last,
+                    "last_ms": last})
+    out.sort(key=lambda x: (x["state"] != "running", -x["last_ms"]))
+    return out[:SUBAGENT_MAX]  # MUTATION-ANCHOR: 925-M03
+
+
 def executor_run(pane, invoker, mods):
     """(rundir, env) of the run this pane is an executor of for `invoker`, None when it is not one of its executors."""
     tokens = pane.get("tokens") or {}
@@ -666,7 +958,7 @@ def is_claude_executor(pane, invoker, mods):
     return bool(found) and found[1].get("HW_EXECUTOR_VENDOR") == "claude"
 
 
-def build_row(pane, invoker, mods, sl=None):
+def build_row(pane, invoker, mods, sl=None, suites=None):
     """One row, or None when this pane is not an executor of `invoker`."""
     found = executor_run(pane, invoker, mods)
     if not found:
@@ -711,11 +1003,27 @@ def build_row(pane, invoker, mods, sl=None):
             live, live_at = None, None
         if live and (ctx["tokens"] is None or turn_at is None or live_at > turn_at):  # MUTATION-ANCHOR: 797-M27
             ctx = {"pct": live["pct"], "tokens": live["tokens"], "source": "live"}
+    if attention == "working" and harness == "pi":  # MUTATION-ANCHOR: 985-M01
+        # Same rule as claude's live read: the turn-end value stands when it is newer than the file.
+        try:
+            live, live_at = pi_live_ctx(rundir)
+        except Exception:  # a file of a shape nobody foresaw is n/a on one card, not a failed row
+            live, live_at = None, None
+        if live and (ctx["tokens"] is None or turn_at is None or live_at > turn_at):  # MUTATION-ANCHOR: 985-M03
+            ctx = {"pct": live["pct"], "tokens": live["tokens"], "source": "live"}
     # THE SOURCE OF TRUTH is the pane's own statusline, which carries Claude Code's tokens and its percent of the
     # window it really has. Everything above is the fallback: a transcript knows the tokens, never the window.
     shown = (sl or {}).get(pane_id) if harness == "claude" else None
     if shown:  # MUTATION-ANCHOR: 922-M01
         ctx = {"pct": shown[1], "tokens": shown[0], "source": "statusline"}
+
+    subs = []
+    if harness == "claude":
+        try:
+            tr = transcript_of(rundir, env)
+            subs = subagents_of(tr, now_ms()) if tr else []
+        except Exception:  # a directory of a shape nobody foresaw is no subagents, not a failed row
+            subs = []
 
     dispatched = dispatched_at_of(rundir)
     turn_started = progress = None
@@ -731,13 +1039,21 @@ def build_row(pane, invoker, mods, sl=None):
         actions = {"verify": False, "ruling": False, "done": False, "receipt": False,
                    "why_not": {"verify": why, "ruling": why, "done": why, "receipt": why}}
 
+    root = os.path.dirname(os.path.dirname(rundir.rstrip("/")))  # <cwd>/.hw/<run>
+    suites = suites or {"slots": [], "procs": lambda: []}
+    gate = gate_of(task, root, suites["slots"], suites["procs"])
+    try:
+        commits = commits_of(root, base_of(rundir), now_ms())
+    except Exception:  # a repository of a shape nobody foresaw is no count, not a failed row
+        commits = None
+
     return {
         "id": "%s:%s" % (project, task), "project": project, "task": task, "pane": pane_id, "run": run,
-        "task_n": task_seq(rundir), "vendor": harness or "unknown", "model": receipt_value(rundir, "model_running") or None,
+        "task_n": task_seq(rundir), "title": title_of(rundir), "commits": commits, "gate": gate, "vendor": harness or "unknown", "model": receipt_value(rundir, "model_running") or None,
         "effort": effort_of(rundir),
         "agent_status": status, "turn_state": turn_state, "turn_ended_at": turn_at,
         "dispatched_at": dispatched, "turn_started_at": turn_started, "last_progress_at": progress,
-        "turns": to_int(tokens.get("turns")), "children_running": children, "ctx": ctx,
+        "turns": to_int(tokens.get("turns")), "children_running": children, "subagents": subs, "ctx": ctx,
         "rulings_pending": pending_rulings(rundir), "attention": attention, "attention_since": since,
         "report": report, "ask": ask, "actions": actions,
     }
@@ -793,8 +1109,15 @@ def build_state(invoker, seq, interval_s, rev, now=None):
         # only this brainer's claude executors: another lane's panes are not read (and not cached) by this writer
         claude_panes = [p for p in panes if p.get("agent") == "claude"]
         sl = statuslines([p.get("pane_id") for p in claude_panes if is_claude_executor(p, invoker, mods)], now)  # MUTATION-ANCHOR: 922-M06
+        slots, listed = slot_owners(work_root()), []
+
+        def procs():  # listed once per build, and only when a row has no slot to answer for it
+            if not listed:
+                listed.append(gate_procs(now))
+            return listed[0]
+        suites = {"slots": slots, "procs": procs}
         for p in panes:
-            r = build_row(p, invoker, mods, sl)
+            r = build_row(p, invoker, mods, sl, suites)
             if r is None:
                 continue
             # one task, one row: a re-dispatch leaves its old pane around, the newest run wins
@@ -1044,6 +1367,46 @@ def kick_run(invoker, path):
     return write_once(invoker, path, 5, hw_rev())
 
 
+def _self_sig():
+    """(mtime_ns, inode) of this very file: the writer is a long-lived process and its code changes under it."""
+    try:
+        st = os.stat(os.path.realpath(__file__))
+        return (st.st_mtime_ns, st.st_ino)
+    except OSError:
+        return None
+
+
+def reexec_if_changed(booted_sig, lock):
+    """When this file is not the one the process booted with, replace the process with the new code (same pid,
+    same arguments). The flock is released first: an exec'd process opens its own descriptor and would find
+    the old one taken. Anything that fails (a half-written file that does not compile, an exec error) returns
+    and the old code goes on; the next beat tries again."""
+    sig = _self_sig()
+    if sig is None or sig == booted_sig:  # MUTATION-ANCHOR: 797-M29
+        return
+    try:
+        with open(os.path.realpath(__file__), "rb") as fh:
+            compile(fh.read(), __file__, "exec")  # a file caught mid-write must not replace a working writer
+    except (OSError, SyntaxError, ValueError):
+        return
+    argv = list(getattr(sys, "orig_argv", None) or [sys.executable] + sys.argv)
+    if lock is not None:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        except OSError:
+            pass
+    print("cockpit-state: my code changed on disk, re-executing (pid %d)" % os.getpid(), file=sys.stderr, flush=True)
+    try:
+        os.execv(sys.executable, argv)  # MUTATION-ANCHOR: 797-M30
+    except OSError as e:
+        print("cockpit-state: re-exec failed: %s" % (str(e) or type(e).__name__), file=sys.stderr)
+    if lock is not None:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            pass
+
+
 def loop(invoker, path, every, bind_pane):
     """The heartbeat. Two lifetimes, never both:
 
@@ -1063,7 +1426,7 @@ def loop(invoker, path, every, bind_pane):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # MUTATION-ANCHOR: 797-M19
         except OSError:
             return 0
-    ppid, rev = os.getppid(), hw_rev()
+    ppid, rev, booted_sig = os.getppid(), hw_rev(), _self_sig()
     if not bind_pane and ppid == 1:  # MUTATION-ANCHOR: 797-M17
         return 0  # orphaned before it started (the shell that launched it already exited)
     while True:
@@ -1078,6 +1441,7 @@ def loop(invoker, path, every, bind_pane):
         if not bind_pane and os.getppid() != ppid:  # MUTATION-ANCHOR: 797-M11
             return 0  # the brainer's shell is gone: this writer dies with the pane
         time.sleep(every)
+        reexec_if_changed(booted_sig, lock)
 
 
 # ── ctx ──────────────────────────────────────────────────────────────────────

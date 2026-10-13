@@ -247,6 +247,10 @@ done
 set -- $tok
 [ "${1:-}" = handback_refused ] && [ -n "${2:-}" ] && [ -n "${3:-}" ] \
   || fail "650 the Stop hook did not publish turn_state=handback_refused with turn_ended_at and hw_run on $EXEC (got '$tok'): $(cat "$TMP/ev/stop-hook-1.out")"
+# the token is published before the hook prints its verdict: wait for the verdict, bounded, instead of reading the
+# capture in the window between the two 
+_end=$((SECONDS + 15))
+until grep -q '"decision":"block"' "$TMP/ev/stop-hook-1.out" 2>/dev/null || [ "$SECONDS" -ge "$_end" ]; do sleep 0.3; done
 grep -q '"decision":"block"' "$TMP/ev/stop-hook-1.out" \
   || fail "650 the Stop hook did not refuse the unreported turn: $(cat "$TMP/ev/stop-hook-1.out")"
 pass "650 the Stop hook refused the unreported turn and published turn_state=handback_refused on the live pane"

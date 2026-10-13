@@ -1,0 +1,34 @@
+FLAGS
+    --brief <path>     the file the executor is given. Without it, it gets a tab
+                       and nothing to do.
+    --sdd <mode>       speckit | none. REQUIRED where a framework is in play.
+                       `none` = deliberately outside the flow.
+    --agent <vendor>   claude | opencode | codex | pi. Defaults per lane; see above.
+    --model <m>        claude: an alias (opus, sonnet, haiku, fable) or claude-*.
+                       opencode: provider/model, e.g. openai/<model>.
+                       codex: a bare id, e.g. <model> (no provider/ prefix).
+                       A sonnet or haiku ORCHESTRATOR is refused before anything
+                       is built whenever an SDD mode is in force: the phase
+                       agents pin their own models, so --model sets only the
+                       judgment above them. Use --model opus, or --sdd none.
+    --model-why <s>    name the OPEN DECISION this task has to work out. The
+                       manifest suggests sonnet by default and opus only where
+                       one is declared, and prints the model beside the
+                       suggestion so a deviation is visible before you press
+                       enter. It never changes the model and never refuses:
+                       the axis is UNCERTAINTY, not importance, and `kind:
+                       audit` alone does not buy opus. The same declaration
+                       lives in a brief as `decision: <what is undecided>`;
+                       this flag wins over it.
+    --requested-by <s> the request this dispatch answers, in the asker's words.
+                       Same as `requested_by:` in a brief, and wins over it.
+                       Required or warned per lane (projects.json).
+    --effort <e>       low|medium|high|xhigh|max. claude and codex only —
+                       opencode's interactive command has no such flag.
+    --subagent-model <m> inherit | haiku|sonnet|opus|fable | claude-*. The model
+                       a Claude executor's subagents run on when they name
+                       none (CLAUDE_CODE_SUBAGENT_MODEL). Lane default:
+                       `subagent_model` in projects.json, `inherit` when absent.
+                       An agent that pins its own `model:` keeps it. Claude
+                       Code only: opencode and codex are NOT APPLIED. A live
+                       pane keeps the one it launched with.

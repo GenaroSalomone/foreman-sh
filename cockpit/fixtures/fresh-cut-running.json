@@ -40,6 +40,12 @@
    "pane": "w1:p11",
    "run": "run-01",
    "task_n": 1,
+   "title": "Answer the challenge on the merge order",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -89,6 +95,12 @@
    "pane": "w1:p12",
    "run": "run-02",
    "task_n": 1,
+   "title": "Port the reaper to Go",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,

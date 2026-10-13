@@ -109,6 +109,42 @@ test('receipt runs hw receipt for the row', async ($, on) => {
   expect((await texts(await drawPane($))).some(t => t === 'measured: 3 files')).toBe(true)
 })
 
+test('the [x] on a note closes it', async ($, on) => {
+  world(on, FIXTURES['fresh.json']!, { reply: { exitCode: 0, stdout: 'measured: 3 files', stderr: '' } })
+  const ui = await drawPane($)
+  await ui.press({ key: 'receipt:demo:task-01' })
+  await ui.unmount()
+  const open = await drawPane($)
+  expect((await texts(open)).some(t => t === 'measured: 3 files')).toBe(true)
+  await open.press({ key: 'close:demo:task-01' })
+  await open.unmount()
+  const closed = await drawPane($)
+  expect((await texts(closed)).some(t => t === 'measured: 3 files')).toBe(false)
+  expect(await keys(closed, 'Button')).not.toContain('close:demo:task-01')
+})
+
+test('receipt pressed over its own open note closes it and does not run hw again', async ($, on) => {
+  const w = world(on, FIXTURES['fresh.json']!, { reply: { exitCode: 0, stdout: 'measured: 3 files', stderr: '' } })
+  const ui = await drawPane($)
+  await ui.press({ key: 'receipt:demo:task-01' })
+  await ui.unmount()
+  const open = await drawPane($)
+  await open.press({ key: 'receipt:demo:task-01' })
+  expect(w.runs.length).toBe(1)
+  await open.unmount()
+  expect((await texts(await drawPane($))).some(t => t === 'measured: 3 files')).toBe(false)
+})
+
+test('receipt over a note left by another verb still runs hw', async ($, on) => {
+  const w = world(on, FIXTURES['fresh.json']!, { reply: { exitCode: 0, stdout: 'ok', stderr: '' } })
+  const ui = await drawPane($)
+  await ui.press({ key: 'done:demo:task-04' })
+  await ui.unmount()
+  const open = await drawPane($)
+  await open.press({ key: 'receipt:demo:task-04' })
+  expect(w.runs.map(r => r.argv[1])).toEqual(['done', 'receipt'])
+})
+
 // The pilot: a button press leaves `{at, pane, verb}` beside the state file, before the verb runs.
 const ACTIONS = '/state/cockpit-actions.jsonl'
 test('a button press is recorded for the pilot, and a failing verb is recorded too', async ($, on) => {
@@ -161,7 +197,7 @@ test('verify only pre-fills the prompt: no process, no turn', async ($, on) => {
   expect(w.runs.length).toBe(0)
 })
 
-test('the mod never decides: a false action draws hw’s reason, not a button', async ($, on) => {
+test('the mod never decides: a false action draws nothing, neither a button nor hw’s reason', async ($, on) => {
   world(on, FIXTURES['fresh.json']!)
   const ui = await drawPane($)
   const b = await keys(ui, 'Button')
@@ -169,8 +205,8 @@ test('the mod never decides: a false action draws hw’s reason, not a button', 
   expect(b).toContain('done:demo:task-04')
   expect(b).not.toContain('verify:demo:task-01')
   const t = await texts(ui)
-  expect(t).toContain('[done] task still working')
-  expect(t.some(x => x.startsWith('[ruling] pane is idle'))).toBe(true)
+  expect(t.some(x => /^\[(done|verify|receipt|ruling)\]/.test(x))).toBe(false)
+  expect(t.some(x => x.includes('task still working') || x.includes('pane is idle'))).toBe(false)
   expect(await keys(ui, 'Input')).toEqual(['reply:demo:task-01', 'reply:demo:task-02', 'ruling:demo:task-03', 'ruling:demo:task-05'])
 })
 
@@ -278,4 +314,46 @@ test('a quoted dispatch is checked with its words intact', async ($, on) => {
   const w = world(on, FIXTURES['fresh.json']!, { reply: { exitCode: 0, stdout: FIXTURES['preflight-ok.json']!, stderr: '' } })
   await $.tool.call({ tool: 'Bash', command: `hw demo task-a --why 'two words' --brief "b c.md"` })
   expect(w.runs[0]!.argv).toEqual(['hw', 'preflight', '--json', '--', 'demo', 'task-a', '--why', 'two words', '--brief', 'b c.md'])
+})
+
+// Subagents: a folded line on a card that has them, one line each when unfolded, state kept across redraws.
+const SUBS_LINE = (t: string) => t.includes('subagents:')
+test('a card with subagents starts folded and unfolds and folds on a press', async ($, on) => {
+  world(on, FIXTURES['subagents.json']!)
+  const ui = await drawPane($)
+  expect((await texts(ui)).filter(SUBS_LINE)).toEqual([])
+  expect(await keys(ui, 'Button')).toContain('subs-toggle:demo:task-01')
+  const label = async (u: any) => (await u.find({ type: 'Button', key: 'subs-toggle:demo:task-01' })).text
+  expect(await label(ui)).toBe('▸ subagents: 1 running · 1 done · 1 stale')
+  expect((await texts(ui)).filter(t => t.startsWith('↳'))).toEqual([])
+  await ui.press({ key: 'subs-toggle:demo:task-01' })
+  await ui.unmount()
+  const open = await drawPane($)
+  expect(await label(open)).toBe('▾ subagents: 1 running · 1 done · 1 stale')
+  expect((await texts(open)).filter(t => t.startsWith('↳'))).toEqual([
+    '↳ Explore · haiku · Find the cockpit writer · 1m',
+    '↳ general-purpose · sonnet · Audit the schema · done',
+    '↳ Plan · — · Plan the fold · stale 1h00m',
+  ])
+  await open.press({ key: 'subs-toggle:demo:task-01' })
+  await open.unmount()
+  const folded = await drawPane($)
+  expect(await label(folded)).toBe('▸ subagents: 1 running · 1 done · 1 stale')
+  expect((await texts(folded)).filter(t => t.startsWith('↳'))).toEqual([])
+})
+
+test('a state without the field draws fresh and no subagents line', async ($, on) => {
+  world(on, FIXTURES['fresh.json']!)
+  const ui = await drawPane($)
+  expect((await keys(ui, 'Button')).filter(k => k.startsWith('subs-toggle'))).toEqual([])
+  expect((await texts(ui)).filter(t => t.startsWith('↳'))).toEqual([])
+})
+
+test('a subagent with a state outside running/done/stale makes the file dead, not a guess', async ($, on) => {
+  const bad = FIXTURES['subagents.json']!.replace('"state": "stale"', '"state": "zombie"')
+  expect(bad).not.toBe(FIXTURES['subagents.json']!)
+  world(on, bad)
+  const ui = await drawPane($)
+  expect(await keys(ui, 'Button')).not.toContain('subs-toggle:demo:task-01')
+  expect((await texts(ui)).some(t => t.startsWith('NO STATE'))).toBe(true)
 })

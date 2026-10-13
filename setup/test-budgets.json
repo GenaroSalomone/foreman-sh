@@ -361,9 +361,33 @@
       "exit": 0,
       "seconds": 2.4
     },
+    "970-cockpit-card-knows-the-task.sh": {
+      "exit": 0,
+      "seconds": 10.0
+    },
+    "971-cockpit-card-shows-the-task.sh": {
+      "exit": 0,
+      "seconds": 20.0
+    },
     "98-wait-agent-requires-a-matching-event.sh": {
       "exit": 0,
       "seconds": 0.36
+    },
+    "980-pi-launch.sh": {
+      "exit": 0,
+      "seconds": 3.81
+    },
+    "981-pi-delivery-route.sh": {
+      "exit": 0,
+      "seconds": 0.62
+    },
+    "982-pi-turn-end.sh": {
+      "exit": 0,
+      "seconds": 0.56
+    },
+    "983-pi-write-guard.sh": {
+      "exit": 0,
+      "seconds": 0.38
     },
     "99-publish-requires-readable-tokens.sh": {
       "exit": 0,
@@ -372,8 +396,12 @@
     "99-unverified-publication-through-callers.sh": {
       "exit": 0,
       "seconds": 8.15
+    },
+    "993-el-instalador-construye-hw-core.sh": {
+      "exit": 0,
+      "seconds": 120.0
     }
   },
-  "measured_at": "2026-10-08T19:36:14Z",
+  "measured_at": "2026-10-13T13:01:34Z",
   "touched_budget_seconds": 90
 }

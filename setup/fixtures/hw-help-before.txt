@@ -39,7 +39,7 @@ FLAGS
                        and nothing to do.
     --sdd <mode>       speckit | none. REQUIRED where a framework is in play.
                        `none` = deliberately outside the flow.
-    --agent <vendor>   claude | opencode | codex. Defaults per lane; see above.
+    --agent <vendor>   claude | opencode | codex | pi. Defaults per lane; see above.
     --model <m>        claude: an alias (opus, sonnet, haiku, fable) or claude-*.
                        opencode: provider/model, e.g. openai/<model>.
                        codex: a bare id, e.g. <model> (no provider/ prefix).

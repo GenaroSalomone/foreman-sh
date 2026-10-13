@@ -1,0 +1,35 @@
+    --no-report         deliberately launch fire-and-forget: no report channel is
+                        resolved or provided; status still records and classifies it.
+    --report-to <pane>  deliberately route reports to a live non-executor pane
+                        other than this lane's brainer; recorded as chosen.
+    --keep-pane [time]  retain the pane under a bounded lease for `hw next`
+    --why <reason>      (default 4h, maximum 24h). Name who/what will re-task it.
+                        Each proved done-invoker report creates one next-task authority.
+                        A successful `hw next` consumes that authority; the next proved
+                        report re-arms a fresh task-bound lease. Expiry closes the pane.
+    --sandbox          run the executor inside a Seatbelt profile that confines
+                       its writes and cuts its control sockets; it reports
+                       through an outbox. Same as `sandbox: true` in a brief.
+                       macOS and Claude Code only; TCP stays open
+                       (THREAT-MODEL.md).
+    --dry-run          print the dispatch, create nothing.
+    --allow-stale-hooks launch even though the worktree's versioned hook settings
+                       (.claude/settings*.json, .codex/hooks.json, opencode.json)
+                       invoke a binary not on PATH — recorded in the receipt
+    --fresh            build a fresh executor even when a reusable one is live
+                       (contaminated context, another vendor/model, deliberate
+                       concurrent work — recorded in the manifest)
+    --no-reuse-check   legacy exact alias for --fresh
+
+BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
+    sandbox: true      same as --sandbox; `false` never turns a --sandbox off.
+    requires-agents: [primary:|subagent:]<name>[, …]
+                       agents the task cannot do without. hw refuses the
+                       dispatch when the executor cannot reach one from its
+                       work directory, instead of warning.
+    boundary: <what must never cross>
+                       a build is not accepted as done without
+                       $HW_ARTIFACTS/design-judgment.md naming it and ending
+                       JUDGMENT: APPROVED (Judgment Day's design mode).
+    decision: <what is undecided>   as --model-why.
+

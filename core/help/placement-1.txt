@@ -1,0 +1,8 @@
+PLACEMENT AND ISOLATION ARE TWO SEPARATE THINGS
+    --placement project-tab | legacy-space | here      WHERE the agent sits
+    --base <branch>                                    the branch the worktree is
+                                                       built on. Defaults per
+                                                       lane (below) and is
+                                                       printed in the manifest
+                                                       either way. A brief may
+                                                       declare it as `base:`.

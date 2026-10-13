@@ -535,6 +535,69 @@ def loop_binds_to_pane():
             os.kill(first, 9)
 
 
+def loop_reloads_its_code():
+    """The writer is a process of long life: when ITS OWN file changes on disk it re-executes in place (same pid,
+    same arguments, the loop lock handed over), so a field added to the contract does not wait for a hand restart.
+    A file caught half-written does not replace a working writer, and an unchanged file is never re-executed."""
+    import fcntl
+    w = cw.World(tmpdir())
+    w.executor(task="a", status="working")
+    w.panes.append({"pane_id": w.invoker, "agent_status": "idle", "cwd": w.tmp})
+    w.publish()
+    bd = os.path.join(w.tmp, "bin-copy")
+    os.makedirs(bd)
+    for f in ("cockpit-state", "runenv", "holdfacts", "hw-actions"):
+        shutil.copy(os.path.join(BIN, f), os.path.join(bd, f))
+    me, errp = os.path.join(bd, "cockpit-state"), os.path.join(w.tmp, "writer.err")
+    proc = subprocess.Popen([me, "--loop", "1", "--bind-pane", "--invoker", w.invoker], env=w.env(),
+                            stdout=subprocess.DEVNULL, stderr=open(errp, "w"))
+
+    def published():
+        try:
+            return json.load(open(w.state_path()))["writer"]
+        except (OSError, ValueError, KeyError):
+            return {}
+
+    def wait(pred, secs):
+        end = time.time() + secs
+        while time.time() < end:
+            if pred(published()):
+                return True
+            time.sleep(0.2)
+        return False
+
+    def reloads():
+        return open(errp).read().count("re-executing")
+
+    try:
+        assert wait(lambda x: x.get("pid") == proc.pid, 10), "the loop writer wrote nothing"
+        first = published()
+        time.sleep(2.5)
+        assert reloads() == 0, "an unchanged file was re-executed"                                              # 797-M29
+        src = open(me).read()
+        anchor = '"interval_s": interval_s}'
+        assert anchor in src
+        open(me, "w").write("def broken(:\n")  # caught mid-write
+        time.sleep(2.5)
+        assert proc.poll() is None and reloads() == 0, "a half-written file replaced the working writer"
+        assert published().get("seq", 0) > first["seq"], "the writer stopped beating on a half-written file"
+        open(me, "w").write(src.replace(anchor, '"interval_s": interval_s, "marker": "new"}'))
+        assert wait(lambda x: x.get("marker") == "new", 6), "the writer still publishes the old code 6 s after its file changed"   # 797-M30
+        assert proc.poll() is None and published().get("pid") == proc.pid, "the re-exec changed the pid"
+        assert reloads() == 1, "reloaded %d times for one change" % reloads()
+        lk = open(w.state_path() + ".loop.lock", "a")
+        try:
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            raise AssertionError("the re-executed writer does not hold the loop lock")
+        except OSError:
+            pass
+        finally:
+            lk.close()
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 def ctx_from_transcript():
     d = tmpdir()
     p = os.path.join(d, "t.jsonl")
@@ -687,7 +750,7 @@ def timing_40():
 
 
 CHECKS = {f.__name__: f for f in (classes, done_tokens_outlive_the_task, row_order, private_files, killed_writer, loop_survives_a_failed_write, herdr_down, rows_cap, size_cap, summary_rejoin, effort_published, strings_are_clean, atomic, debounce,
-                                  loop_dies_with_parent, loop_binds_to_pane, ctx_from_transcript, ctx_live, cut_rule, timing_40, kick_names_its_brainer)}
+                                  loop_dies_with_parent, loop_binds_to_pane, loop_reloads_its_code, ctx_from_transcript, ctx_live, cut_rule, timing_40, kick_names_its_brainer)}
 
 if __name__ == "__main__":
     BIN = os.path.abspath(sys.argv[1])

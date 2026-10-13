@@ -10,7 +10,14 @@
 # THE CLOCK. setup/attachments/migracion-hw.md §5a asks for 7 days of live shadow with shadow.jsonl empty. Per verb
 # that is: whole days since the later of its first shadow call and its last difference. A difference restarts it.
 # The calls come from shadow.calls.tsv (one line per shadow call, equal or not, written by the shim); the
-# differences from shadow.jsonl. Neither file is ever rewritten by this verb.
+# differences from shadow.jsonl (and shadow.jsonl.1, where it rotated to). Neither file is ever rewritten by this verb.
+#
+# WHAT A DIFFERENCE ENTRY CARRIES (bin/hw, _core_shadow_entry). Per stream (stdout, stderr): the first 400 characters of
+# each answer, and — for a stream that differs — `at`, the offset in bytes (from 0) of the first byte that is not the
+# same, `bash_len` / `go_len`, and `bash_ctx` / `go_ctx`: 300 bytes either side of `at` in each answer (`ctx_from` is
+# where the window starts). So `jq '.stdout|{at,bash_ctx,go_ctx}' ~/.local/state/hw/shadow.jsonl` shows what differs.
+# `retried` marks a difference that held on a second ask; `herdr_unrecorded` lists the herdr calls Go made that bash never did.
+# An entry is a few KB at most; past HW_SHADOW_MAX_BYTES (4 MiB) the log becomes shadow.jsonl.1 and a new one starts.
 #
 # NOT EVERY PORTED VERB IS SHADOWED. chaining-lease-expire (a pane closed) and outbox (a message sent) have an
 # effect outside the run directory, so `shadow` runs them in bash alone: they never accumulate, and the report
@@ -18,6 +25,10 @@
 
 _SHADOW_VERBS="receipt log handle help worktrees status ruling human-boundary executor-turn-end chaining-lease-start chaining-lease-expire outbox output stage"
 _SHADOW_BASH_ONLY="chaining-lease-expire outbox"
+# A DIFFERENCE THAT DID NOT REPEAT is not a difference of the gate, and is not hidden: bin/hw asks again whenever the two
+# runs differ (the world may have moved between them: a scratchpad worktree that existed for bash and not for Go), and
+# when the second pair is equal it files the first one in shadow.moved.jsonl beside shadow.jsonl. The report counts
+# them per verb after the gate text ("N moved"): a Go that differs only SOMETIMES shows up there as the same count growing.
 
 _shadow_core_state() {  # → "fresh <path>" | "stale <path>" | "missing"
   local b
@@ -40,10 +51,10 @@ _shadow_report() {
     stale*) printf 'hw-core   STALE — core/ has sources newer than %s: hw falls back to bash and NO shadow accumulates. `hw shadow on` rebuilds it (setup/build-core --native)\n' "${state#stale }" ;;
     *)      printf 'hw-core   MISSING — hw falls back to bash and NO shadow accumulates. `hw shadow on` builds it (setup/build-core --native)\n' ;;
   esac
-  printf 'calls     %s\ndiffs     %s\n\n' "$calls" "$jsonl"
-  python3 -I - "$calls" "$jsonl" "$_SHADOW_VERBS" "$_SHADOW_BASH_ONLY" <<'PY'
+  printf 'calls     %s\ndiffs     %s\nmoved     %s\n\n' "$calls" "$jsonl" "${jsonl%.jsonl}.moved.jsonl"
+  python3 -I - "$calls" "$jsonl" "$_SHADOW_VERBS" "$_SHADOW_BASH_ONLY" "${jsonl%.jsonl}.moved.jsonl" <<'PY'
 import sys, json, datetime as dt
-calls_f, jsonl_f, verbs, bash_only = sys.argv[1], sys.argv[2], sys.argv[3].split(), sys.argv[4].split()
+calls_f, jsonl_f, verbs, bash_only, moved_f = sys.argv[1], sys.argv[2], sys.argv[3].split(), sys.argv[4].split(), sys.argv[5]
 now = dt.datetime.now(dt.timezone.utc)
 
 def ts(s):
@@ -54,7 +65,7 @@ def ts(s):
 
 st = {}
 def row(v):
-    return st.setdefault(v, {"calls": 0, "days": set(), "first": None, "last": None, "diffs": 0, "ldiff": None})
+    return st.setdefault(v, {"calls": 0, "days": set(), "first": None, "last": None, "diffs": 0, "ldiff": None, "moved": 0})
 
 try:
     for line in open(calls_f, encoding="utf-8", errors="replace"):
@@ -67,20 +78,33 @@ try:
         r["last"] = t if r["last"] is None or t > r["last"] else r["last"]
 except OSError:
     pass
-try:
-    for line in open(jsonl_f, encoding="utf-8", errors="replace"):
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(d, dict) or not isinstance(d.get("verb"), str):
-            continue
-        t, r = ts(d.get("at", "")), row(d["verb"])
-        r["diffs"] += 1
-        if t is not None and (r["ldiff"] is None or t > r["ldiff"]):
-            r["ldiff"] = t
-except OSError:
-    pass
+for jf in (jsonl_f + ".1", jsonl_f):  # the rotated log first: the older entries
+    try:
+        for line in open(jf, encoding="utf-8", errors="replace"):
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(d, dict) or not isinstance(d.get("verb"), str):
+                continue
+            t, r = ts(d.get("at", "")), row(d["verb"])
+            r["diffs"] += 1
+            if t is not None and (r["ldiff"] is None or t > r["ldiff"]):
+                r["ldiff"] = t
+    except OSError:
+        pass
+
+for jf in (moved_f + ".1", moved_f):
+    try:
+        for line in open(jf, encoding="utf-8", errors="replace"):
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(d, dict) and isinstance(d.get("verb"), str):
+                row(d["verb"])["moved"] += 1
+    except OSError:
+        pass
 
 def day(t):
     return t.strftime("%Y-%m-%d") if t else "-"
@@ -100,7 +124,8 @@ for v in verbs + sorted(k for k in st if k not in verbs):
         why = "DIFF — the clock restarted at the last one"
     else:
         why = ""
-    gate = ("OK" if clean >= 7 else "%d more day%s" % (7 - clean, "" if 7 - clean == 1 else "s")) + (" · " + why if why else "")
+    gate = ("OK" if clean >= 7 else "%d more day%s" % (7 - clean, "" if 7 - clean == 1 else "s")) + (" · " + why if why else "") \
+        + (" · %d moved (differed once, not again: shadow.moved.jsonl)" % r["moved"] if r["moved"] else "")
     print("%-22s %6d %5d %-10s %5d %-10s %6d  %s" % (v, r["calls"], len(r["days"]), day(r["first"]), r["diffs"], day(r["ldiff"]), clean, gate))
 PY
 }
@@ -134,7 +159,7 @@ cmd_shadow() {
       info "shadow is on: $f → shadow; every ported verb in every pane runs bash and Go and logs to $(_core_shadow_calls)"
       info "read it with: hw shadow"
       ;;
-    -h|--help|help) printf 'usage: hw shadow [on|off]\n  (no argument)  the report: the switch, hw-core, and per verb the days, calls and diffs\n  on             write the switch file (shadow), building hw-core first when it is missing or stale\n  off            remove the switch file: bash again, the history kept\n' ;;
+    -h|--help|help) printf 'usage: hw shadow [on|off]\n  (no argument)  the report: the switch, hw-core, and per verb the days, calls and diffs\n  on             write the switch file (shadow), building hw-core first when it is missing or stale\n  off            remove the switch file: bash again, the history kept\n\nA difference is one line of ~/.local/state/hw/shadow.jsonl, and only when the two runs differ AGAIN on a second ask (a difference that does not repeat — the world moved between the runs — goes to shadow.moved.jsonl and the report counts it per verb). For each of stdout and stderr it carries the first 400\ncharacters of each answer and, for a stream that differs, "at" (the offset in bytes of the first different byte),\n"bash_len"/"go_len" and "bash_ctx"/"go_ctx" (300 bytes either side of it in each answer). Past 4 MiB the log\nbecomes shadow.jsonl.1. Read it with: jq -c ".stdout|{at,bash_ctx,go_ctx}" ~/.local/state/hw/shadow.jsonl\n' ;;
     *) die "unknown: hw shadow $sub (usage: hw shadow [on|off])" ;;
   esac
 }

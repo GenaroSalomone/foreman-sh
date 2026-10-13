@@ -1,0 +1,20 @@
+RECOVERY AND CLEANUP
+    hw revive <project> <task> [--run <id>] [--dry-run]
+                                    repeat a closed run's recorded cwd, env and
+                                    session resume in a new tab; refuses anything
+                                    not recorded (cwd gone, no session, no env)
+    hw unstick <pane>                deliberate OpenCode-only recovery for exact
+                                     blocked_reason=stuck + blocked_scope=root|child;
+                                     refuses live questions/permissions, then restarts
+                                     OpenCode in the same pane and verifies idle/working
+    hw reap [<project>] [--apply]   merge-clean worktrees, merged task branches AND loose work dirs, only where
+                                    provably safe; task outputs (.artifacts, qa-report) are archived to
+                                    $HW_ARCHIVE_ROOT/<lane>/<task>/ (default: archive/ beside the work dir) and
+                                    verified before removal, a provisioned DB is pg_dump'ed there, then dropped.
+                                    A brainer's SessionStart runs it in the background for its own lane.
+                                    Closes a --blocked executor left unanswered past
+                                    HW_BLOCKED_WAIT_HOURS (default 24).
+    hw sweep [--apply]              close tabs of runs that REPORTED, only hw's own
+    hw worktrees [<project>] [--migrate]
+                                    worktrees outside their repo's canonical root
+

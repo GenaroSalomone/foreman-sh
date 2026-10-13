@@ -1,0 +1,8 @@
+    --worktree  new | none                             whether it is ISOLATED
+
+                    --worktree new        --worktree none
+    project-tab     the default task      a browser audit / review
+    here            side-by-side+isolated --here (splits your pane)
+
+    --tab/--space/--here still work: --here IS --placement here --worktree none.
+

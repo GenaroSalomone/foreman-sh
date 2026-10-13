@@ -120,7 +120,7 @@ release candidate.
   `install.sh --with-recommended`.
 - **Impact:** the formula cannot depend on Claude Code, which is a cask, so
   Claude Code is one more step: `foreman-sh --with-recommended` or
-  `brew install --cask claude-code`. On Linux there is no native package. The
+  `brew install --cask claude-code@latest`. On Linux there is no native package. The
   piped installer is the way, and `--with-recommended` works only where
   Homebrew is on PATH. Without it, it names https://brew.sh and installs nothing.
   On macOS, `install.sh --check` does not name `rg`, `fd` and `sd`, which `hw`
@@ -129,10 +129,55 @@ release candidate.
   `brew audit --strict`, installs from a local tap with `--build-from-source`,
   its test assertions hold, and the installed `foreman-sh --check` runs. The
   dependencies were not reinstalled, so that run used `--ignore-dependencies`.
-  The published tap, a real `--with-recommended` run, and Linux with Homebrew
-  are `unverified`: the suite drives `--with-recommended` against a stub `brew`.
+  A real `--with-recommended` run and the published tap were measured on a clean macOS 26.6
+  VM (tart, no Homebrew, no Command Line Tools, empty HOME), through `init` in one run:
+  Homebrew + CLT 145 s and 367 s (two runs, network-bound), `brew install foreman-sh`
+  14-24 s, `init --yes` 49 s (claude cask, engram, fzf, integrations, brain, dry run),
+  a second `init` 2 s. That run found the `claude-code` cask below the version floor
+  (hence `claude-code@latest`). Measured later on the same image: `engram serve` starts inside
+  the VM and answers `/health` in 0.17 s (its own port 7437), and the TUI `herdr` attaches over
+  `ssh -t` (first paint 0.4 s; it needs a terminal that answers the TUI's queries: a bare
+  pty with no emulator draws nothing) and reattaches to the same session. Not measured: Claude
+  Code's login and first run (they need a person's credentials), Linux with Homebrew; the
+  suite also drives `--with-recommended` against a stub `brew`.
 - **Workaround:** the piped or cloned `install.sh`, as before; `--check` names
   every package with its install command.
+
+## The Go core
+
+### L16. The ported verbs run in Go; pi launches and everything not ported stay on bash
+- **Scope:** every `hw` verb, through the switch in `bin/hw`.
+- **Impact:**
+  - **What runs in Go.** `install.sh` builds `hw-core` when Go 1.22 or newer is on
+    PATH and writes `~/.config/hw/impl` as `go` when that file is absent (an
+    existing one is left as it is). The ported verbs then run in `hw-core`:
+    `receipt`, `log`, `handle`, `help`, `worktrees`, the table of `status`, the
+    read half of `reap`, `sweep` and `reports`, `review-range`, `review-delta`,
+    `preflight --json`, `outbox list`, the `wait` family, the marker writers
+    (`ruling`, `human-boundary`, `executor-turn-end`, `chaining-lease-start` and
+    `-expire`, `outbox flush`, `output`, `stage`) and the dispatch
+    (`hw <lane> <task> …`, its dry run and its launch), and the large writers: `done`,
+    `next`, `revive`, `preview`, `reap --apply` and `sweep --apply`. Anything else is bash.
+    An executor's own `hw` calls and `shadow` mode never run a writer in Go.
+    `HW_IMPL=bash` goes back for every verb, `HW_IMPL_<VERB>=bash` for one.
+  - **No Go, a Go older than 1.22, or `--no-core`:** nothing is built and `hw` runs
+    its bash implementation: the same answers. Speed differs by verb: measured here, `hw worktrees` takes about 0.5 s in Go and 1.6 s in bash, and `hw help` about 0.14 s in Go and 0.07 s in bash.
+  - **pi stays on bash.** `--agent pi` dispatches are not in `hw-core`; they run
+    the bash and say so on stderr.
+  - **Lane hooks.** The export carries the builders of git-worktree lanes only. A
+    lane hook of any other name is handed to bash by `hw-core`.
+  - **A missing or stale `hw-core`** (absent, or older than `core/`'s sources)
+    gives bash and one warning, never a failure.
+  - **Bash is not deleted.** It is the rollback and stays frozen: a fix to a
+    ported verb goes to `core/`, so the bash of a ported verb does not receive it.
+- **Evidence:** `measured`: the setup suite runs under both implementations, and
+  the golden contract compares stdout, stderr, exit status and the resulting tree
+  byte for byte; the binary is reproducible (the same sha256 on two builds).
+  `unverified`: any long live shadow on a user's machine (the maintainer's was
+  short, and no figure from it is given here), and Windows: `hw-core.exe` is built
+  by the same builder, but use on a real Windows machine is not measured (L1b).
+- **Workaround:** `HW_IMPL=bash`, or `--no-core` at install, to run the bash that
+  predates the core.
 
 ## Agents
 
@@ -152,6 +197,58 @@ The installer does not register the Codex guard: nothing writes
 add it to Codex's `PreToolUse` hook for the shell tool, a Codex session is
 unguarded. A Codex brainer of a lane whose repository is the brain itself, once
 it leaves the brain directory, is unguarded even with the hook registered.
+
+### L3b. pi is a dispatch target; its guard reads text, and `--sandbox` is what contains
+- **Scope:** `--agent pi`.
+- **Impact:**
+  - **The guards are string-level.** The write and secret-read guards read the
+    text of a tool call and decide which paths it *names*; a shell has more
+    spellings than any reader closes (a path assembled at run time, a program
+    that opens a secret without naming it). "The guard refused it" does not mean
+    "the secret cannot be read": what contains a pi executor is `--sandbox`,
+    which refuses reads of `~/.ssh`, `~/.config/gh` and `~/.docker` at the OS
+    level and nothing else. Run an executor that must not see a secret under
+    `--sandbox`, with the secret out of its reach on the host.
+  - **No account switch.** `CLAUDE_CONFIG_DIR` is Claude Code's: for pi the
+    manifest says `NOT APPLIED`.
+  - **Specialists only through `.pi/agents`.** pi-subagents reads
+    `~/.pi/agent/agents`, `~/.agents`, `<repo>/.pi/agents` and `<repo>/.agents`,
+    never `.claude/agents`, so a pi executor cannot delegate to a Claude
+    specialist; the brief's preamble says so. Where the lane's checkout tracks a
+    `.pi/agents` directory, `hw` passes it to pi-subagents
+    (`PI_SUBAGENT_EXTRA_AGENT_DIRS`) and the executor can delegate to those; a
+    specialist file that pins its own `model:` needs the call to pass the
+    executor's model.
+  - **In a product lane, pi is not at parity on skills.** Of the skills a Claude
+    executor loads, pi gets `judgment-day`, `agent-browser` when the brief says
+    `requires: browser`, and the checkout's `.claude/skills` (minus `speckit-*`)
+    as one directory; the user-level and plugin skills are not passed.
+  - **The bash guard in a product lane is string-level too.** It refuses a
+    command that names the main checkout or a sibling worktree, and leaves the
+    executor's own worktree open. A relative path that climbs out of the worktree
+    (`cd ../other && …`), a path built at run time, or a symlink inside the
+    worktree that points into the main checkout is not seen. `--sandbox` is what
+    contains it: under the profile the OS refuses every write outside the
+    worktree, its artifacts and the temporary directories.
+  - **`--sdd gentle` (and `speckit`) is refused for pi**, before anything is
+    built, with its reason: gentle's guard hook and its plugin skills are wired
+    into Claude Code only (L14), and nothing carries them to pi. pi runs
+    `--sdd none`.
+  - Everything else the V1 list named is closed (processed-proof delivery,
+    pi-subagents with the guard as a required child extension, model and thinking
+    readers, sandbox, the brain guard on product lanes, cockpit context tokens,
+    guard on every tool, explicit skills, turn-end session identity, model-error
+    fallback, startup screens). Residuals, none of them a missing mechanism:
+    under `--sandbox` herdr's socket is denied, so a sandboxed pi publishes no
+    `agent_session` through herdr; `--thinking off` runs `low` on
+    `deepseek-v4.1-flash` (pi clamps it, and hw reports the divergence); the
+    exact body the real opencode-go returns for a spent plan is `unverified`, and
+    there is no pre-dispatch usage gate (the cap is shared dollars: a spent plan
+    ends the run as `provider_quota`, and the fallback model is for model errors
+    only).
+- **Evidence:** `measured` live on pi 1.1.0, and by setup tests 980–989 with their
+  mutants.
+- **Workaround:** `--sdd none`, or Claude Code where a framework flow is needed.
 
 ### L4. OpenCode background subagents are experimental
 - **Scope:** OpenCode executors and brainers that spawn subagents in the
@@ -355,7 +452,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
 
 ## Sandbox
 
-### L11. `--sandbox` is macOS-only, opt-in, Claude Code only, and leaves TCP open
+### L11. `--sandbox` is macOS-only, opt-in, Claude Code and pi only, and leaves TCP open
 - **Scope:** `hw <lane> <task> --sandbox`, or `sandbox: true` in a brief — the
   Seatbelt profile around one executor (see `THREAT-MODEL.md`).
 - **Impact:**

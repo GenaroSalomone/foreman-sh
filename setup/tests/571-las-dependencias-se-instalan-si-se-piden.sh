@@ -55,7 +55,7 @@ shift; [ "\$1" = --cask ] && shift
 pkg="\$1"; echo "BREW-RAN \$pkg"
 [ -z "\${BREW_EATS:-}" ] || cat > /dev/null
 [ "\$pkg" != "\${BREW_FAIL:-}" ] || { echo "Error: \$pkg failed" >&2; exit 1; }
-case "\$pkg" in ripgrep) cmd=rg ;; claude-code) cmd=claude ;; */engram) cmd=engram ;; *) cmd="\$pkg" ;; esac
+case "\$pkg" in ripgrep) cmd=rg ;; claude-code@latest) cmd=claude ;; */engram) cmd=engram ;; *) cmd="\$pkg" ;; esac
 if [ "\$cmd" = jq ]; then printf '#!/bin/sh\necho jq-1.7.1\n' > "$GOT/jq"
 else printf '#!/bin/sh\nexit 0\n' > "$GOT/\$cmd"; fi
 chmod +x "$GOT/\$cmd"
@@ -80,7 +80,7 @@ reset
 run "$GOT:$BREWBIN:$NEWJQ:$SYS" --with-recommended
 [ "$rc" = 0 ] || fail "--with-recommended did not finish clean (rc=$rc): $out"
 want="install herdr
-install --cask claude-code
+install --cask claude-code@latest
 install ripgrep
 install fd
 install sd
@@ -90,7 +90,7 @@ got="$(grep '^install ' "$TMP/brew.log")"
 [ "$got" = "$want" ] || fail "brew was not called once per missing package, in order: got [$got]"
 pass "--with-recommended runs one brew install per missing package, required first, Claude Code as the cask, jq (present) left alone"
 order="$(printf '%s\n' "$out" | grep -E '^  \+ brew install |^BREW-RAN ' | sed -E 's/^  \+ brew install (--cask )?([^ ]+).*/CMD \2/; s/^BREW-RAN /RAN /')"
-expect="$(printf '%s\n' herdr claude-code ripgrep fd sd gentleman-programming/tap/engram fzf | while read -r p; do printf 'CMD %s\nRAN %s\n' "$p" "$p"; done)"
+expect="$(printf '%s\n' herdr claude-code@latest ripgrep fd sd gentleman-programming/tap/engram fzf | while read -r p; do printf 'CMD %s\nRAN %s\n' "$p" "$p"; done)"
 [ "$order" = "$expect" ] || fail "a command was not printed before brew ran it: $order"
 pass "each command is printed before brew runs it"
 rm -f "$TMP/brew.log"
@@ -111,7 +111,7 @@ reset; before="$(snapshot)"
 run "$GOT:$BREWBIN:$NEWJQ:$SYS" --with-recommended --check
 [ ! -f "$TMP/brew.log" ] || fail "--with-recommended --check called brew: $(cat "$TMP/brew.log")"
 [ "$before" = "$(snapshot)" ] || fail "--with-recommended --check wrote under HOME"
-for p in herdr "--cask claude-code" ripgrep fd sd gentleman-programming/tap/engram fzf; do
+for p in herdr "--cask claude-code@latest" ripgrep fd sd gentleman-programming/tap/engram fzf; do
   case "$out" in *"+ brew install $p "*) ;; *) fail "--with-recommended --check does not print 'brew install $p': $out" ;; esac
 done
 [ "$rc" = 1 ] || fail "--with-recommended --check with packages to install exited $rc, not 1"

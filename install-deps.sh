@@ -35,7 +35,7 @@ OS="$(uname -s)"
 # rg, fd and sd are required on macOS too: hw calls all three (bin/hw).
 row() { local IFS=$'\x1f'; printf '%s\n' "$*"; }
 deps() {
-  local claude_brew="--cask claude-code" claude_how=""
+  local claude_brew="--cask claude-code@latest" claude_how=""
   if [ "$OS" = Linux ]; then
     claude_brew=""; claude_how="https://claude.com/claude-code (the cask is macOS only)"
   fi
@@ -86,7 +86,7 @@ while IFS=$'\x1f' read -r -u 3 kind name cmd brew_args why how; do
   fi
   printf '  + brew install %s   # %s, %s\n' "$brew_args" "$name" "$kind"
   [ "$PLAN" = 0 ] || continue
-  # shellcheck disable=SC2086  # brew_args is a word list on purpose (--cask claude-code)
+  # shellcheck disable=SC2086  # brew_args is a word list on purpose (--cask claude-code@latest)
   if HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}" brew install $brew_args; then
     hash -r
     if present "$cmd"; then installed="$installed $name"

@@ -110,7 +110,8 @@ for c in index:
     if got != c["class"]: bad("index: %s is declared %s but its bytes classify %s" % (c["file"], c["class"], got))
     if n != c["rows_rendered"]: bad("index: %s draws %d rows, declared %d" % (c["file"], n, c["rows_rendered"]))
 
-NOT_VALID = {"dead-unparsable.txt", "dead-wrong-schema.json"}
+# fresh-older-writer.json is a writer one step behind the schema: invalid by design, the mod still draws it
+NOT_VALID = {"dead-unparsable.txt", "dead-wrong-schema.json", "fresh-older-writer.json"}
 for f in sorted(os.listdir(F)):
     p = os.path.join(F, f)
     if f == "index.json": continue
@@ -179,14 +180,23 @@ pat = re.compile(r"#\d{3,}|/Users/|@[A-Za-z0-9-]+\.[a-z]{2,}|\b(?:10|172\.16|192
 # committed; a generated, git-ignored file (cockpit/.claude-plugin/types/claude-code/
 # index.d.ts, which the main checkout carries and a clean worktree does not) is
 # not the contract, and its `/Users/` made this red in the checkout and green
-# in a worktree (measured 2026-10-08, the 0.3.12 train). A tree with no git
-# (an export) has no ignored files either, so there everything is the contract.
+# in a worktree (measured 2026-10-08, the 0.3.12 train). A tree with no git is
+# not always an export: the gate's source snapshot copies ignored files too, so
+# there a directory that ignores itself (a `.gitignore` of `*`, as the generated
+# types/ carries) is pruned; everything else is the contract.
 import subprocess
+def self_ignored(d):
+    try: return open(os.path.join(d, ".gitignore")).read().strip() == "*"
+    except OSError: return False
 def contract_files():
     r = subprocess.run(["git", "-C", C, "ls-files", "-z", "--full-name", "--", "."], capture_output=True)
     top = subprocess.run(["git", "-C", C, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if r.returncode != 0 or top.returncode != 0 or not r.stdout:
-        return [os.path.join(root, f) for root, _, fs in os.walk(C) for f in fs]
+        out = []
+        for root, dirs, fs in os.walk(C):
+            dirs[:] = [d for d in dirs if not self_ignored(os.path.join(root, d))]  # MUTATION-ANCHOR: 795-M09
+            out += [os.path.join(root, f) for f in fs]
+        return out
     return [os.path.join(top.stdout.strip(), n) for n in r.stdout.decode().split("\0") if n]  # MUTATION-ANCHOR: 852-M01
 for path in contract_files():
     if not os.path.isfile(path): continue

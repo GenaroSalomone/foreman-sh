@@ -40,6 +40,12 @@
    "pane": "w1:p44",
    "run": "run-34",
    "task_n": 1,
+   "title": "Demo task 34",
+   "commits": {
+    "count": 5,
+    "last_at": 1789989200000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -89,6 +95,12 @@
    "pane": "w1:p35",
    "run": "run-25",
    "task_n": 1,
+   "title": "Demo task 25",
+   "commits": {
+    "count": 5,
+    "last_at": 1789989200000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -138,6 +150,12 @@
    "pane": "w1:p26",
    "run": "run-16",
    "task_n": 1,
+   "title": "Demo task 16",
+   "commits": {
+    "count": 5,
+    "last_at": 1789989200000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -187,6 +205,9 @@
    "pane": "w1:p17",
    "run": "run-07",
    "task_n": 1,
+   "title": null,
+   "commits": null,
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -236,6 +257,12 @@
    "pane": "w1:p50",
    "run": "run-40",
    "task_n": 1,
+   "title": "Demo task 40",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -278,6 +305,12 @@
    "pane": "w1:p49",
    "run": "run-39",
    "task_n": 1,
+   "title": "Demo task 39",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -320,6 +353,12 @@
    "pane": "w1:p48",
    "run": "run-38",
    "task_n": 1,
+   "title": "Demo task 38",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -362,6 +401,12 @@
    "pane": "w1:p47",
    "run": "run-37",
    "task_n": 1,
+   "title": "Demo task 37",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -404,6 +449,12 @@
    "pane": "w1:p46",
    "run": "run-36",
    "task_n": 1,
+   "title": "Demo task 36",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -446,6 +497,12 @@
    "pane": "w1:p45",
    "run": "run-35",
    "task_n": 1,
+   "title": "Demo task 35",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -488,6 +545,12 @@
    "pane": "w1:p41",
    "run": "run-31",
    "task_n": 1,
+   "title": "Demo task 31",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -530,6 +593,12 @@
    "pane": "w1:p40",
    "run": "run-30",
    "task_n": 1,
+   "title": "Demo task 30",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -572,6 +641,12 @@
    "pane": "w1:p39",
    "run": "run-29",
    "task_n": 1,
+   "title": "Demo task 29",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -614,6 +689,12 @@
    "pane": "w1:p38",
    "run": "run-28",
    "task_n": 1,
+   "title": "Demo task 28",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -656,6 +737,12 @@
    "pane": "w1:p37",
    "run": "run-27",
    "task_n": 1,
+   "title": "Demo task 27",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -698,6 +785,12 @@
    "pane": "w1:p36",
    "run": "run-26",
    "task_n": 1,
+   "title": "Demo task 26",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -740,6 +833,12 @@
    "pane": "w1:p32",
    "run": "run-22",
    "task_n": 1,
+   "title": "Demo task 22",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -782,6 +881,12 @@
    "pane": "w1:p31",
    "run": "run-21",
    "task_n": 1,
+   "title": "Demo task 21",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -824,6 +929,12 @@
    "pane": "w1:p30",
    "run": "run-20",
    "task_n": 1,
+   "title": "Demo task 20",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -866,6 +977,12 @@
    "pane": "w1:p29",
    "run": "run-19",
    "task_n": 1,
+   "title": "Demo task 19",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -908,6 +1025,12 @@
    "pane": "w1:p28",
    "run": "run-18",
    "task_n": 1,
+   "title": "Demo task 18",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -950,6 +1073,12 @@
    "pane": "w1:p27",
    "run": "run-17",
    "task_n": 1,
+   "title": "Demo task 17",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -992,6 +1121,12 @@
    "pane": "w1:p23",
    "run": "run-13",
    "task_n": 1,
+   "title": "Demo task 13",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1034,6 +1169,12 @@
    "pane": "w1:p22",
    "run": "run-12",
    "task_n": 1,
+   "title": "Demo task 12",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1076,6 +1217,12 @@
    "pane": "w1:p21",
    "run": "run-11",
    "task_n": 1,
+   "title": "Demo task 11",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -1118,6 +1265,12 @@
    "pane": "w1:p20",
    "run": "run-10",
    "task_n": 1,
+   "title": "Demo task 10",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -1160,6 +1313,12 @@
    "pane": "w1:p19",
    "run": "run-09",
    "task_n": 1,
+   "title": "Demo task 09",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1202,6 +1361,12 @@
    "pane": "w1:p18",
    "run": "run-08",
    "task_n": 1,
+   "title": "Demo task 08",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1244,6 +1409,12 @@
    "pane": "w1:p14",
    "run": "run-04",
    "task_n": 1,
+   "title": "Cockpit times on the card",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1286,6 +1457,12 @@
    "pane": "w1:p13",
    "run": "run-03",
    "task_n": 1,
+   "title": "Repair the flaky 870",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -1328,6 +1505,12 @@
    "pane": "w1:p12",
    "run": "run-02",
    "task_n": 1,
+   "title": "Port the reaper to Go",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -1370,6 +1553,12 @@
    "pane": "w1:p11",
    "run": "run-01",
    "task_n": 1,
+   "title": "Answer the challenge on the merge order",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1412,6 +1601,12 @@
    "pane": "w1:p43",
    "run": "run-33",
    "task_n": 1,
+   "title": "Demo task 33",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1455,6 +1650,12 @@
    "pane": "w1:p42",
    "run": "run-32",
    "task_n": 1,
+   "title": "Demo task 32",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1498,6 +1699,12 @@
    "pane": "w1:p34",
    "run": "run-24",
    "task_n": 1,
+   "title": "Demo task 24",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -1541,6 +1748,12 @@
    "pane": "w1:p33",
    "run": "run-23",
    "task_n": 1,
+   "title": "Demo task 23",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -1584,6 +1797,12 @@
    "pane": "w1:p25",
    "run": "run-15",
    "task_n": 1,
+   "title": "Demo task 15",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -1627,6 +1846,12 @@
    "pane": "w1:p24",
    "run": "run-14",
    "task_n": 1,
+   "title": "Demo task 14",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -1670,6 +1895,12 @@
    "pane": "w1:p16",
    "run": "run-06",
    "task_n": 1,
+   "title": "Audit the brief template",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -1713,6 +1944,12 @@
    "pane": "w1:p15",
    "run": "run-05",
    "task_n": 1,
+   "title": "Go T4: verbos escritores",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,

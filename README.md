@@ -5,8 +5,8 @@
 [![CI](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml/badge.svg)](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-foreman-sh is a shell harness, built on [herdr](https://herdr.dev), that runs
-coding agents in two roles:
+foreman-sh is a harness, written in bash with a Go core and built on
+[herdr](https://herdr.dev), that runs coding agents in two roles:
 
 - a **brainer**, the planner, that reads your code, plans the work and writes
   briefs, but cannot touch your repository;
@@ -57,8 +57,9 @@ foreman-sh answers each one with a mechanism:
 
 ## Requirements
 
-- **macOS or Linux** (Debian/Ubuntu-class, bash 5). On Windows, use WSL2;
-  native Git Bash is covered by CI only ([details](INSTALL.md#windows)).
+- **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts). On
+  Windows, use WSL2; native Git Bash is covered by CI only
+  ([details](INSTALL.md#windows)).
 - **[herdr](https://herdr.dev)**, running, with its Claude Code integration:
   `herdr integration install claude`.
 - **[Claude Code](https://claude.com/claude-code)**, with its first run
@@ -68,6 +69,14 @@ foreman-sh answers each one with a mechanism:
   leaves them on ([INSTALL.md](INSTALL.md#permissions-skip-recommended-or-ask)).
 - `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`. On Linux, also
   Node 22.7 or newer.
+- Optional: **Go 1.22 or newer**. `install.sh` builds `hw`'s Go core with it,
+  and the ported verbs run there by default. Without Go nothing is built,
+  `install.sh` says so in one line, and `hw` runs its bash implementation, which
+  answers the same. `HW_IMPL=bash` (all verbs) or
+  `HW_IMPL_<VERB>=bash` (one verb) goes back to bash on purpose. `--agent pi`
+  dispatches stay on bash and print one line saying so: pi is not in the Go core
+  ([INSTALL.md](INSTALL.md#the-go-core-and-the-way-back),
+  [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) L16).
 
 On macOS, Homebrew installs all of these but Claude Code's first run (see the
 Quickstart).
@@ -90,6 +99,11 @@ two more tools are optional:
 - **[OpenCode](https://opencode.ai)** 1.18.31 or newer, with
   `herdr integration install opencode`, can run a lane's executors:
   `./install.sh … --vendor opencode`.
+- **pi**, measured against 1.1.0, with `herdr integration install pi`,
+  can run a task's executor: `hw <lane> <task> --agent pi --model <provider/id> --sdd none`.
+  In a `product_repo` lane it also guards the main checkout and sibling worktrees. The
+  installer does not set pi up, its guards are string-level, and it is not at parity
+  on user and plugin skills or on `--sdd gentle` (L3b).
 
 ## Quickstart
 
@@ -107,13 +121,18 @@ When it ends, it prints two `eval "$(…/brew shellenv)"` lines to add to your s
 
 ### Quick start: `foreman-sh init`
 
+(If only `git` or `python3` is missing, `init` names `xcode-select --install`, not Homebrew.)
+
 ```sh
 foreman-sh init             # checks what you have, builds ~/brain with a demo lane, ends with a dry-run dispatch
 foreman-sh init --dry-run   # the plan only; --yes answers its questions
 ```
 
-`init` installs nothing: a missing tool is named with its install command and it
-stops. Otherwise it builds `~/brain`, a `demo` lane on a toy repository, and a sample
+A missing tool is named with its install command. With Homebrew on PATH, `init` asks
+whether to install what it carries (`--yes` answers yes) and checks again in the same
+run; if you say no, or something is still missing, it stops having written nothing and
+prints one line to copy: `foreman-sh --with-recommended && foreman-sh init`.
+Otherwise it builds `~/brain`, a `demo` lane on a toy repository, and a sample
 brief, and proves them with `hw demo hello … --dry-run`. Claude Code's first run and
 your `PATH` stay yours; it names them. A second run changes nothing and says so. The
 rest of this section is the same path, one step at a time.
@@ -132,7 +151,7 @@ brain myapp                                                   # opens the braine
 
 `foreman-sh` is `install.sh`, packaged: it takes the same flags. Only the
 first and third lines are required. `--with-recommended` installs each missing
-package with its own `brew install` (Claude Code as the `claude-code` cask)
+package with its own `brew install` (Claude Code as the `claude-code@latest` cask: the stable `claude-code` one was below the version floor when measured)
 and prints the command before running it. Nothing is installed unless you ask
 for it this way. `foreman-sh --with-recommended --check` prints the commands
 without running them. Before your first `brain`, finish Claude Code's first run
@@ -187,6 +206,7 @@ git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh."
 git -C ~/code/toy add README.md && git -C ~/code/toy commit -m init
 ./install.sh --brain ~/brain --lane demo --repo ~/code/toy
 cp examples/demo/briefs/hello.md ~/brain/demo/briefs/
+herdr   # once, in a terminal: `brain` needs herdr's server (without it: server_not_running)
 brain demo
 ```
 
@@ -279,17 +299,31 @@ implied:
 
 ## The cockpit
 
-A brainer opened by `brain` runs with a cockpit mod: a card per executor with
-its harness, model and effort, its context use and its age, and a band above
-the prompt that totals them and names the one that needs you (an unanswered
-`ask-invoker`, say). `/cockpit` opens the full pane. A working executor's card also says how long it
-has been at it and how long its current turn has run (`working 3h12m · turn
-41m`), and a queued ruling says how old it is (`1 ruling queued 25m`). When a
-working executor has not moved for 30 minutes (no commit on its branch, no file
-changed in its worktree, no new line in its transcript) the card says `no
-progress 47m` and turns yellow, so a stuck run does not look like a busy one.
-The turn's start is the previous turn's end, so a turn that began after the
-executor sat idle is shown longer than it is. Each control runs a command
+A brainer opened by `brain` runs with a cockpit mod: a card per executor, and a
+band above the prompt that totals them and names the one that needs you (an
+unanswered `ask-invoker`, say). `/cockpit` opens the full pane. A card says how
+the task is going, top to bottom:
+
+```
+task-05 · Go T4: verbos escritores           ● working 3h12m · turn 41m
+claude · claude-sonnet-5-5 · high · ctx 41% ▰▰▱▱▱▱
+2 commits · last 37m ago · gate running 12m
+⚠ no progress 47m · 1 ruling queued 25m
+                                                   [ receipt ]
+```
+
+The task and its brief's title (the brief's first `# ` heading, after its
+frontmatter), with its state and how long it has held it; the harness, model,
+effort and context; the commits of its branch over the base it was dispatched
+on, how long ago the last one landed, and the suite running for it (its
+suite-gate slot, or a `setup/test-hw` running in its worktree). The `⚠` line
+appears only when something needs you: no progress, a queued ruling, an open
+ask or challenge, a blocked report. A working executor that has not moved for 30
+minutes (no commit on its branch, no file changed in its worktree, no new line
+in its transcript) says `no progress 47m` and turns yellow, so a stuck run does
+not look like a busy one. The turn's start is the previous turn's end, so a turn
+that began after the executor sat idle is shown longer than it is. The project
+is named beside the task only when the cards span more than one. Each control runs a command
 that already exists, so it does nothing the command itself would refuse:
 
 | Control | Runs |
@@ -300,7 +334,8 @@ that already exists, so it does nothing the command itself would refuse:
 | `reply` (a text box, on an open ask) | `channel-send`, back to the executor |
 | `verify` | Fills the prompt with a request to check the report against its evidence; runs no verb. |
 
-A control `hw` would refuse is shown with `hw`'s own reason. The band also shows
+A control `hw` would refuse is not drawn at all; its reason stays in the state file and in
+`hw receipt`, never on the card. The band also shows
 the verdict of `hw preflight` for the dispatch your brainer is about to run, and only
 displays it. The cockpit needs Claude Code 2.1.289 or newer: below that, `brain`
 says so and opens without it. Turn it off with `FOREMAN_COCKPIT=0` or
@@ -326,6 +361,10 @@ shebang: run `hw`, never the module. `install.sh` copies `lib/` into the brain,
 and `hw` stops with a message naming the module when one is missing. The
 cockpit is `cockpit/` (the mod) plus `bin/cockpit-state` and `bin/hw-actions`,
 which write the state it reads and decide which buttons are live.
+The Go half of `hw` is `core/` (one `main` package, standard library only),
+built by `setup/build-core`; `bin/hw` hands a ported verb to it when `hw-core` is
+built and the mode says `go`, and keeps the bash implementation as the way back.
+A fix to a ported verb goes to `core/`; the bash of that verb is frozen.
 
 ## Customizing a lane (`projects.json`)
 
@@ -411,7 +450,7 @@ plain text, one string, with no tokens expanded.
 
 | | Isolation | Guards the brainer | Agents | UI |
 |---|---|---|---|---|
-| **foreman-sh** | worktree and branch per task | yes | Claude Code, OpenCode, Codex (limited) | herdr panes |
+| **foreman-sh** | worktree and branch per task | yes | Claude Code, OpenCode, pi, Codex (limited) | herdr panes |
 | [claude-squad](https://github.com/smtg-ai/claude-squad) | tmux and worktree per agent | — | Claude Code, Codex, Gemini, Aider | TUI |
 | [Conductor](https://www.conductor.build) | isolated workspaces | — | Claude Code, Codex, Cursor | macOS app |
 | [uzi](https://github.com/devflowinc/uzi) | worktree per agent | — | Claude Code, Codex and others | CLI and tmux |

@@ -1,0 +1,34 @@
+hw — launch one executor per task, in its own tab, with its own worktree.
+
+SYNOPSIS
+    hw <project> <task> --brief <path> --sdd none [flags]
+    hw <command> [args]                hw help <topic>
+
+COMMANDS
+    brain <project>                    open the project's long-lived brainer
+        brain demo
+    hw <project> <task> --brief <path> --sdd none
+        launch an executor on a brief; --dry-run prints the dispatch and
+        builds nothing
+        hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none
+    hw <project> <task> --brief <path> --sdd none --worktree none --no-db
+        read-only work (an audit, a review): a tab, no branch, no database
+    hw status [<project>]              what is running, and what never closed
+        hw status demo
+    hw receipt <project> <task>        what was measured, next to what was dispatched
+        hw receipt demo hello
+    hw done <project> <task>           close the task's tab once its report is
+        hw done demo hello             accepted; removes no worktree, no branch
+
+HELP TOPICS                            hw help <topic>
+    dispatch     the launch form per lane, placement and isolation
+    flags        every launch flag
+    commands     the other commands: reports, next, wait, preview, ruling, ...
+    exit-codes   what each exit status means
+    recovery     revive, unstick, reap, sweep, worktrees
+    advanced     what only some brains use: accounts, model floors, secrets, suites
+    lanes        the fields of a lane in projects.json, and `brief_note`
+    all          every topic, in one page
+
+    -h, --help      this page            -V, --version   print the version
+    NO_COLOR=1 turns colour off; it is off too when the output is not a terminal.

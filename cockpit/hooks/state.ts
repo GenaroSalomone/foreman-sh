@@ -5,11 +5,23 @@ export const FRESH_MS = 15_000
 export const DEAD_MS = 60_000
 export const MAX_BYTES = 1_048_576
 
+export type Subagent = {
+  type: string
+  description: string
+  model: string | null
+  state: 'running' | 'done' | 'stale'
+  started_ms: number
+  last_ms: number
+}
+
 export type Row = {
   id: string
   project: string
   task: string
   pane: string
+  title: string | null
+  commits: { count: number; last_at: number | null } | null
+  gate: { since: number | null; what: string } | null
   vendor: string
   model: string | null
   effort?: string | null
@@ -19,6 +31,7 @@ export type Row = {
   turn_started_at: number | null
   last_progress_at: number | null
   children_running: string | null
+  subagents?: Subagent[]
   ctx: { pct: number | null; tokens: number | null; source: string | null }
   rulings_pending: { count: number; oldest_at: number | null }
   attention: string
@@ -63,6 +76,8 @@ export type Model = {
   why: string
 }
 
+const DEFAULT_NO_PROGRESS_MS = 30 * 60_000
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
@@ -76,10 +91,24 @@ function badRow(r: unknown, i: number): string | null {
   for (const k of ['id', 'project', 'task', 'pane', 'vendor', 'agent_status', 'attention']) {
     if (!isStr(r[k])) return `${at}.${k}`
   }
+  if (!nullOr(r.title, isStr)) return `${at}.title`
+  const cm = r.commits
+  if (cm !== null && (!isObj(cm) || !isInt(cm.count) || !nullOr(cm.last_at, isInt))) return `${at}.commits`
+  const g = r.gate
+  if (g !== null && (!isObj(g) || !isStr(g.what) || !nullOr(g.since, isInt))) return `${at}.gate`
   if (!nullOr(r.model, isStr)) return `${at}.model`
   if (r.effort !== undefined && !nullOr(r.effort, isStr)) return `${at}.effort`
   if (!nullOr(r.turn_state, isStr)) return `${at}.turn_state`
   if (!nullOr(r.children_running, isStr)) return `${at}.children_running`
+  // A writer older than the mod does not publish subagents: absent is empty, not an error.
+  if (r.subagents !== undefined) {
+    if (!Array.isArray(r.subagents)) return `${at}.subagents`
+    for (const sa of r.subagents) {
+      if (!isObj(sa) || !isStr(sa.type) || !isStr(sa.description) || !nullOr(sa.model, isStr) || !isInt(sa.started_ms) || !isInt(sa.last_ms) || !['running', 'done', 'stale'].includes(sa.state as string)) {
+        return `${at}.subagents`
+      }
+    }
+  }
   if (!nullOr(r.attention_since, isInt)) return `${at}.attention_since`
   if (!isInt(r.dispatched_at)) return `${at}.dispatched_at`
   if (!nullOr(r.turn_started_at, isInt)) return `${at}.turn_started_at`
@@ -137,7 +166,10 @@ export function parse(text: string, size: number): { state: State } | { error: s
   if (!isObj(cut) || typeof cut.running !== 'boolean' || !nullOr(cut.holder, isStr)) {
     return { error: 'rules.cut' }
   }
-  if (!isInt((v.rules as Record<string, unknown>).no_progress_after_ms)) return { error: 'rules.no_progress_after_ms' }
+  // A writer one step older than the mod does not publish the threshold yet: the default stands.
+  const rules = v.rules as Record<string, unknown>
+  if (rules.no_progress_after_ms === undefined) rules.no_progress_after_ms = DEFAULT_NO_PROGRESS_MS
+  else if (!isInt(rules.no_progress_after_ms)) return { error: 'rules.no_progress_after_ms' }
   if (!Array.isArray(v.rows)) return { error: 'rows' }
   for (let i = 0; i < v.rows.length; i++) {
     const bad = badRow(v.rows[i], i)

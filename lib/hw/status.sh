@@ -1153,7 +1153,7 @@ def status_report_tasks(tasks, ws_by_label, agents_by_task, panes_by_task, agent
                     notes.append(_n)
             _nr, _oldest = pending_rulings_of((newest or {}).get("dir"))
             if _nr:  # MUTATION-ANCHOR: 690-M02
-                _age = max(0, int(time.time() - _oldest)) if _oldest else 0
+                _age = max(0, int(status_now() - _oldest)) if _oldest else 0
                 _human = f"{_age}s" if _age < 120 else (f"{_age // 60} min" if _age < 7200 else f"{_age // 3600} h")
                 notes.append(f"{_nr} ruling{'s' if _nr != 1 else ''} queued, not delivered — oldest {_human} old; "
                              "it lands at the executor's next turn end")
@@ -1674,4 +1674,19 @@ cmd_status() {
   # THE ALWAYS-LOADED MEMORY INDEXES, same contract: read-only, one line, and
   # nothing at all when there is nothing to say (docs/brief-and-memory.md § Memory).
   _status_par_replay memory_audit
+}
+
+# A SUBAGENT THAT DECLARES A TOOL ITS SESSION DOES NOT HAVE STARTS WITHOUT IT, SILENTLY
+# (MEASURED 2026-10-09; bin/agent-tools-check says how and why). One line per lane
+# whose agents are broken, empty when none is. `hw status` runs it for every lane
+# (or the one asked for) and a dispatch for the lane it launches, WARNING only: a
+# broken specialist is not a reason to refuse an unrelated task. HW_AGENT_TOOLS=off
+# skips it (the test suite does, unless the subject is this check).
+_agent_tools_quiet() {  # [lane]
+  [ "${HW_AGENT_TOOLS:-on}" != off ] || return 0
+  [ -x "$HW_BIN_DIR/agent-tools-check" ] || return 0
+  local l l2 lane_args=()
+  [ -z "${1:-}" ] || lane_args=(--lane "$1")
+  l="$("$HW_BIN_DIR/agent-tools-check" --root "$BRAIN" --cached --oneline ${lane_args[@]+"${lane_args[@]}"} 2>/dev/null)" || [ $? = 3 ] || { warn "agent-tools-check no pudo verificar los agentes de ${1:-ninguna lane en particular} (¿claude?) — corré \`agent-tools-check\`"; return 0; }
+  [ -z "$l" ] || { printf '\n'; while IFS= read -r l2; do warn "$l2"; done <<<"$l"; }
 }

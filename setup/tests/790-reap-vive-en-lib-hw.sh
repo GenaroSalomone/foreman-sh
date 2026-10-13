@@ -45,7 +45,8 @@ out="$(HW_LIB_DIR="$ROOT/lib" "$TMP/copy/bin/hw" reap --help 2>&1)" || fail "790
 printf '%s' "$out" | rg -q 'usage: hw reap' || fail "790: HW_LIB_DIR run printed no usage — $out"
 pass "790: HW_LIB_DIR stands in for a lib/ that is not beside bin/"
 mkdir -p "$TMP/copy/lib/hw"; printf 'cmd_reap() { echo BESIDE-WINS; }\n' > "$TMP/copy/lib/hw/reap.sh"; : > "$TMP/copy/lib/hw/status.sh"; : > "$TMP/copy/lib/hw/done.sh"; : > "$TMP/copy/lib/hw/next.sh"; : > "$TMP/copy/lib/hw/ledger.sh"; : > "$TMP/copy/lib/hw/briefs.sh"; : > "$TMP/copy/lib/hw/shadow.sh"; cp "$ROOT/lib/hw/deps.sh" "$ROOT/lib/hw/deps.conf" "$TMP/copy/lib/hw/"
-out="$(HW_LIB_DIR="$ROOT/lib" "$TMP/copy/bin/hw" reap 2>&1)" || true
+# which lib/ module bash sources is a property of the bash source: under HW_IMPL=go hw-core answers `reap` and no module is read
+out="$(HW_IMPL=bash HW_LIB_DIR="$ROOT/lib" "$TMP/copy/bin/hw" reap 2>&1)" || true
 [ "$out" = BESIDE-WINS ] || fail "790: HW_LIB_DIR overrode the lib/ beside bin/ — $out"
 pass "790: the lib/ beside bin/ wins over HW_LIB_DIR"
 
@@ -131,6 +132,7 @@ out="$(env -u HW_TASK -u HW_RUN "$TMP/link/hw" next 2>&1 || true)"
 printf '%s' "$out" | rg -q 'usage: hw next <executor-pane>' || fail "790: hw next through a symlink printed no usage — $out"
 pass "790: hw next resolves lib/hw/next.sh through a symlink to bin/hw"
 mkdir -p "$TMP/nonext/bin" "$TMP/nonext/lib/hw"; cp -R "$ROOT/bin/." "$TMP/nonext/bin/"; cp "$MOD" "$SMOD" "$DMOD" "$TMP/nonext/lib/hw/"; cp "$ROOT"/lib/hw/deps.sh "$ROOT"/lib/hw/deps.conf "$TMP/nonext/lib/hw/"
-out="$(env -u HW_TASK -u HW_RUN "$TMP/nonext/bin/hw" next 2>&1)" && fail "790: hw ran with lib/hw/next.sh missing — $out"
+# bash loads its modules from lib/hw: the missing-module refusal is the bash source's, under HW_IMPL=go hw-core answers `next`
+out="$(env -u HW_TASK -u HW_RUN HW_IMPL=bash "$TMP/nonext/bin/hw" next 2>&1)" && fail "790: hw ran with lib/hw/next.sh missing — $out"
 printf '%s' "$out" | rg -q 'cannot load .*/hw/next\.sh' || fail "790: a missing next module did not say so — $out"
 pass "790: a lib/ without next.sh refuses loudly, naming the module"

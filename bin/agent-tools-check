@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""DOES EACH SUBAGENT REALLY HAVE THE TOOLS ITS `tools:` DECLARES?
+
+    agent-tools-check [--root BRAIN] [--home HOME] [--lane L]... [--cached]
+                      [--json | --oneline] [--all]
+
+A `tools:` line is free text and Claude Code never complains about a name that
+does not exist: the agent starts without it (MEASURED 2026-10-09). `mcp__plugin_engram_engram__*` named a plugin switched off on
+2026-09-21 and three specialists ran for weeks with no memory.
+
+The truth is not in a list kept here. It is what the session reports: for each
+agent file this runs `claude -p --agent <name> --output-format stream-json`
+from the directory (and account) the agent is used from, with the same engram
+proxy `--mcp-config` hw launches with, reads the `init` event's `tools` — the
+agent's REAL toolset — and kills the process before any model call (no tokens,
+1-3 s). Declared minus actual is what is broken, classified:
+
+  desconocida       the name is in no toolset of that session (typo, renamed)
+  plugin apagado    mcp__plugin_*: the plugin is not enabled on that account
+  MCP ausente       mcp__<server>__*: no tool of that server in the session
+  MCP no conectado  the server is configured but did not connect (warning)
+  inerte            Grep/Glob next to Bash: Claude Code drops them, Bash does
+                    the same job (warning)
+
+NOT a class, because it was measured false: "an MCP tool needs ToolSearch in
+tools:". A named MCP tool (deferred ones too) is callable without it.
+
+Scanned: every lane's product checkout (main checkout only, never .worktrees)
+and brain/<lane> `.claude/agents`, brain/_agents (probed under both accounts),
+and the account agent dirs. OpenCode agents (`.opencode/agent`) are read
+statically: a permission key `engram_<tool>` must be a tool the engram proxy
+serves, and a key naming the retired plugin is dead.
+
+Exit 0 clean (warnings do not count), 3 something broken, 1 unreadable (the
+oracle could not run for an agent: unverified is not clean).
+"""
+import argparse
+import concurrent.futures
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+BROKEN = ("desconocida", "plugin apagado", "MCP ausente")
+WARN = ("MCP no conectado", "inerte")
+CACHE_TTL = 900
+
+
+def frontmatter(path):
+    """-> (name, tools|None, tools_line, opencode_permission_keys[(line,key)])"""
+    try:
+        lines = open(path, encoding="utf-8").read().split("\n")
+    except OSError:
+        return None
+    if not lines or lines[0].strip() != "---":
+        return None
+    name, tools, tline, perms = None, None, 0, []
+    in_perm = False
+    for i, ln in enumerate(lines[1:], start=2):
+        if ln.strip() == "---":
+            break
+        m = re.match(r"^(name|tools):\s*(.*)$", ln)
+        if m:
+            in_perm = False
+            if m.group(1) == "name":
+                name = m.group(2).strip().strip("'\"")
+            else:
+                raw = m.group(2).strip()
+                tline = i
+                if raw.startswith("["):
+                    raw = raw.strip("[]")
+                tools = [t.strip().strip("'\"") for t in raw.split(",") if t.strip()]
+                if not raw:  # YAML list on the following lines
+                    tools = []
+                    for ln2 in lines[i:]:
+                        m2 = re.match(r"^\s+-\s*(\S+)", ln2)
+                        if not m2:
+                            break
+                        tools.append(m2.group(1).strip("'\""))
+            continue
+        if re.match(r"^permission:\s*$", ln):
+            in_perm = True
+            continue
+        if in_perm:
+            if re.match(r"^\S", ln):
+                in_perm = False
+                continue
+            m = re.match(r"^\s+['\"]?([A-Za-z0-9_*.-]+)['\"]?\s*:", ln)
+            if m:
+                perms.append((i, m.group(1)))
+    if name is None:
+        name = os.path.splitext(os.path.basename(path))[0]
+    return name, tools, tline, perms
+
+
+def enabled_plugins(config_dir):
+    try:
+        d = json.load(open(os.path.join(config_dir, "settings.json")))
+    except (OSError, ValueError):
+        return set()
+    return {k.split("@")[0] for k, v in (d.get("enabledPlugins") or {}).items() if v}
+
+
+class Oracle:
+    def __init__(self, claude, brain, home, cached):
+        self.claude, self.brain, self.home, self.cached = claude, brain, home, cached
+        self.cache_file = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache"),
+                                       "hw", "agent-tools-cache.json")
+        try:
+            self.cache = json.load(open(self.cache_file)) if cached else {}
+        except (OSError, ValueError):
+            self.cache = {}
+        self.mcp = None
+        self.sessions = {}
+        self.lock = threading.Lock()
+        self.tmp = tempfile.mkdtemp(prefix="agent-tools-check.")
+
+    def mcp_config(self):
+        with self.lock:
+            return self._mcp_config()
+
+    def _mcp_config(self):
+        if self.mcp is None:
+            path = os.path.join(self.tmp, "engram-mcp.json")
+            proxy = os.path.join(self.brain, "bin", "engram-label-proxy")
+            eng = shutil.which("engram") or "engram"
+            with open(path, "w") as f:
+                json.dump({"mcpServers": {"engram": {"command": proxy, "args":
+                          ["--label", "brain", "--", eng, "mcp", "--tools=agent"]}}}, f)
+            self.mcp = path
+        return self.mcp
+
+    def probe(self, agent, cwd, config_dir, stamp):
+        key = hashlib.sha1("\0".join((agent, cwd, config_dir, stamp)).encode()).hexdigest()
+        hit = self.cache.get(key)
+        if hit and time.time() - hit["t"] < CACHE_TTL:
+            return hit["r"]
+        r = self._run(agent, cwd, config_dir)
+        if r is not None:
+            self.cache[key] = {"t": time.time(), "r": r}
+        return r
+
+    def _run(self, agent, cwd, config_dir):
+        # A probe is a real session: it fires the directory's SessionStart hooks. It must
+        # not inherit the caller's pane (herdr would repoint it at this throwaway
+        # session) nor start lane housekeeping (a detached `hw reap --apply`).
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "HW_"))}
+        env.update(CLAUDE_CONFIG_DIR=config_dir, HW_HOUSEKEEPING="0", HW_AGENT_TOOLS="off")
+        cmd = [self.claude, "-p"] + (["--agent", agent] if agent else []) + [
+            "--no-session-persistence", "--mcp-config", self.mcp_config(), "--output-format", "stream-json", "--verbose", "ok"]
+        try:
+            p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 stdin=subprocess.DEVNULL, text=True)
+        except OSError:
+            return None
+        timer = None
+        try:
+            timer = threading.Timer(45, p.kill)
+            timer.start()
+            for ln in p.stdout:
+                try:
+                    j = json.loads(ln)
+                except ValueError:
+                    continue
+                if j.get("type") == "system" and j.get("subtype") == "init":
+                    return {"tools": j.get("tools") or [], "servers": j.get("mcp_servers") or []}
+            return None
+        finally:
+            if timer:
+                timer.cancel()
+            p.kill()
+            p.wait()
+
+    def session(self, cwd, config_dir):
+        """the whole session's toolset (no --agent): what the servers really serve"""
+        k = (cwd, config_dir)
+        if k not in self.sessions:
+            self.sessions[k] = self._run(None, cwd, config_dir) or {"tools": [], "servers": []}
+        return self.sessions[k]
+
+    def save(self):
+        if not self.cached:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            tmp = self.cache_file + ".%d" % os.getpid()
+            json.dump(self.cache, open(tmp, "w"))
+            os.replace(tmp, self.cache_file)
+        except OSError:
+            pass
+
+
+def classify(tool, declared, actual, servers, plugins, session_tools):
+    base = re.sub(r"\(.*\)$", "", tool)
+    names = set(actual)
+    if base in names or (base == "Agent" and "Task" in names) or (base == "Task" and "Agent" in names):  # MUTATION-ANCHOR: 193-M01
+        return None
+    if base.startswith("mcp__plugin_"):
+        rest = base[len("mcp__plugin_"):]
+        if not any(rest.startswith(p + "_") for p in plugins):  # MUTATION-ANCHOR: 193-M02
+            return "plugin apagado"
+        return "desconocida"
+    m = re.match(r"^mcp__([^_].*?)__", base)  # MUTATION-ANCHOR: 193-M03
+    if m:
+        srv = m.group(1)
+        if any(n.startswith("mcp__%s__" % srv) for n in names | set(session_tools)):
+            return "desconocida"
+        for s in servers:
+            if re.sub(r"[^A-Za-z0-9_-]", "_", s.get("name", "")) == srv:
+                return "MCP no conectado" if s.get("status") != "connected" else "MCP ausente"
+        return "MCP ausente"
+    if base in ("Grep", "Glob") and "Bash" in [re.sub(r"\(.*\)$", "", d) for d in declared]:  # MUTATION-ANCHOR: 193-M04
+        return "inerte"
+    return "desconocida"  # MUTATION-ANCHOR: 193-M05
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--root", default=os.environ.get("BRAIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    ap.add_argument("--home", default=os.path.expanduser("~"))
+    ap.add_argument("--lane", action="append", default=[])
+    ap.add_argument("--cached", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--oneline", action="store_true")
+    ap.add_argument("--all", action="store_true", help="also print warnings")
+    a = ap.parse_args()
+    brain, home = os.path.realpath(a.root), a.home
+    claude = os.environ.get("AGENT_TOOLS_CLAUDE") or shutil.which("claude") or "claude"
+    cfg = {"default": os.path.join(home, ".claude"), "personal": os.path.join(home, ".claude-personal")}
+    try:
+        lanes = json.load(open(os.path.join(brain, "projects.json")))["lanes"]
+    except (OSError, ValueError, KeyError):
+        print("agent-tools-check: cannot read %s/projects.json" % brain, file=sys.stderr)
+        return 1
+
+    # targets: (lane, file, realpath, cwd, account|None for "both accounts", stamp)
+    targets, seen = [], {}
+
+    def add(lane, path, cwd, accounts, kind="claude"):
+        rp = os.path.realpath(path)
+        for acc in accounts:
+            k = (rp, cwd, acc, kind)
+            if k in seen:
+                continue
+            seen[k] = 1
+            targets.append({"lane": lane, "file": path, "real": rp, "cwd": cwd, "account": acc, "kind": kind})
+
+    def md_files(d):
+        try:
+            return sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".md"))
+        except OSError:
+            return []
+
+    for lane, c in sorted(lanes.items()):
+        if a.lane and lane not in a.lane:
+            continue
+        acc = c.get("account") or "default"
+        acc = acc if acc in cfg else "default"
+        co = ""
+        var = c.get("checkout_var")
+        if var and os.environ.get(var):
+            co = os.environ[var]
+        elif c.get("checkout"):
+            co = c["checkout"].replace("{brain}", brain)
+            if co.startswith("~"):
+                co = home + co[1:]
+        if co and os.path.isdir(co):
+            for f in md_files(os.path.join(co, ".claude", "agents")):
+                add(lane, f, co, [acc])
+            for f in md_files(os.path.join(co, ".opencode", "agent")):
+                add(lane, f, co, [acc], "opencode")
+        d = os.path.join(brain, lane)
+        for f in md_files(os.path.join(d, ".claude", "agents")):
+            add(lane, f, d, [acc])
+    if not a.lane or "brain" in a.lane:
+        for f in md_files(os.path.join(brain, "_agents")):
+            add("brain", f, brain, ["default", "personal"])
+        for acc in ("default", "personal"):
+            for f in md_files(os.path.join(cfg[acc], "agents")):
+                add("brain", f, brain, [acc])
+
+    oracle = Oracle(claude, brain, home, a.cached)
+    engram_tools = set()
+    # a `_agents` file reached by name needs a project dir that holds it
+    stage = {}
+
+    def staged_cwd(t):
+        if os.path.dirname(t["real"]) != os.path.join(brain, "_agents"):
+            return t["cwd"]
+        d = stage.setdefault(t["real"], tempfile.mkdtemp(prefix="stage.", dir=oracle.tmp))
+        os.makedirs(os.path.join(d, ".claude", "agents"), exist_ok=True)
+        link = os.path.join(d, ".claude", "agents", os.path.basename(t["real"]))
+        try:
+            os.symlink(t["real"], link)
+        except FileExistsError:
+            pass
+        return d
+
+    def work(t):
+        fm = frontmatter(t["real"])
+        t["fm"] = fm
+        if t["kind"] != "claude" or fm is None or fm[1] is None:
+            t["res"] = None
+            return
+        cwd = staged_cwd(t)
+        cd = cfg[t["account"]]
+        try:
+            st = "%d:%d" % (os.stat(t["real"]).st_mtime_ns, os.stat(t["real"]).st_size)
+        except OSError:
+            st = ""
+        t["res"] = oracle.probe(fm[0], cwd, cd, st)
+        t["plugins"] = enabled_plugins(cd)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(work, targets))
+
+    rows, unreadable = [], []
+    for t in targets:
+        fm = t["fm"]
+        if fm is None:
+            continue
+        name, tools, tline, perms = fm
+        if t["kind"] == "opencode":
+            continue
+        if tools is None:
+            continue
+        if t["res"] is None:
+            unreadable.append(t)
+            continue
+        actual, servers = t["res"]["tools"], t["res"]["servers"]
+        engram_tools |= {n[len("mcp__engram__"):] for n in actual if n.startswith("mcp__engram__")}
+        for tool in tools:
+            miss = tool.startswith("mcp__") and re.sub(r"\(.*\)$", "", tool) not in actual
+            sess = oracle.session(staged_cwd(t), cfg[t["account"]]) if miss else {"tools": []}
+            cls = classify(tool, tools, actual, servers or sess.get("servers", []), t["plugins"], sess["tools"])
+            if cls:
+                rows.append({"lane": t["lane"], "path": t["file"], "line": tline, "agent": name, "tool": tool,
+                             "class": cls, "account": t["account"], "kind": "claude"})
+    for t in targets:  # OpenCode, static: needs the engram toolset the claude probes saw
+        if t["kind"] != "opencode" or not t["fm"]:
+            continue
+        for ln, key in t["fm"][3]:
+            cls = None
+            if "plugin" in key and "engram" in key:  # MUTATION-ANCHOR: 193-M07
+                cls = "plugin apagado"
+            elif key.startswith("engram_") and engram_tools and key[len("engram_"):] not in engram_tools \
+                    and "*" not in key:
+                cls = "desconocida"
+            if cls:
+                rows.append({"lane": t["lane"], "path": t["file"], "line": ln, "agent": t["fm"][0], "tool": key,
+                             "class": cls, "account": t["account"], "kind": "opencode"})
+    oracle.save()
+    shutil.rmtree(oracle.tmp, ignore_errors=True)
+
+    uniq, out = set(), []
+    for r in rows:
+        k = (r["path"], r["line"], r["tool"], r["class"])
+        if k not in uniq:
+            uniq.add(k)
+            out.append(r)
+    rows = out
+    broken = [r for r in rows if r["class"] in BROKEN]
+    shown = rows if a.all else broken
+    if a.json:
+        print(json.dumps({"findings": shown, "unverified": [t["file"] for t in unreadable]}, indent=1))
+    elif a.oneline:
+        by = {}
+        for r in broken:
+            by.setdefault(r["lane"], []).append(r)
+        for lane, rs in sorted(by.items()):
+            agents = sorted({r["agent"] for r in rs})
+            print("agentes con herramientas rotas en %s: %s — corré `agent-tools-check --lane %s`"
+                  % (lane, ", ".join(agents), lane))
+    else:
+        for r in shown:
+            print("%-5s %-18s %s:%d  %-20s %-44s %s%s" % (
+                "FAIL" if r["class"] in BROKEN else "warn", r["lane"], r["path"], r["line"], r["agent"],
+                r["tool"], r["class"], " [opencode]" if r["kind"] == "opencode" else ""))
+        for t in unreadable:
+            print("????  %-18s %s  sin verificar: `claude --agent` no devolvió init" % (t["lane"], t["file"]))
+        if not shown and not unreadable:
+            print("ok: %d agentes, todas las herramientas declaradas existen" % len({t["real"] for t in targets}))
+        warns = len(rows) - len(broken)
+        if warns and not a.all:
+            print("(%d advertencias: Grep/Glob inertes junto a Bash, o MCP sin conectar; --all las muestra)" % warns)
+    if broken:
+        return 3  # MUTATION-ANCHOR: 193-M06
+    return 1 if unreadable else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

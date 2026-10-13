@@ -40,6 +40,7 @@ PY
   # pair — so proving THIS mutation reaches planning also needs a real skill
   # on disk, under a fake HOME, or that other gate would refuse it too and
   # mask the mutant surviving.
+  pin_bash "$mut/hw"
   m01home="$TMP/m01home"; mkdir -p "$m01home/.claude/skills/speckit-example"
   out="$(env -u HW_INVOKER_PANE -u HW_CHAINING_ENABLED HOME="$m01home" "$mut/hw" setup codex-mut-opencode-speckit --agent opencode --model openai/gpt-5.6-terra --sdd speckit --no-report --no-brief --fresh --dry-run 2>&1 || true)"
   case "$out" in *"dispatch setup:"*"dry run — nothing created"*) pass "mutant killed: M01 without OpenCode Speckit refusal the fresh launch reaches planning" ;; *) fail "M01 survived or misfired: $out" ;; esac
@@ -278,6 +279,7 @@ new = '''  mode="$requested"
 assert s.count(old) == 1, s.count(old)
 open(p, "w", encoding="utf-8").write(s.replace(old, new))
 PY
+pin_bash "$mut/hw"
 printf '2\n' > "$handoff_run/task"; rm -rf "$handoff_run/t3"
 printf '  framework   none  (chosen)\n' > "$handoff_run/dispatch"
 : > "$handoff/send.log"

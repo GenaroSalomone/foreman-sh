@@ -1,0 +1,8 @@
+ENVIRONMENT
+    HW_INVOKER_PANE   the brainer's pane, where every executor reports. hw
+                      resolves it; export it only when hw cannot — a brainer
+                      whose pane is unlabelled and sitting outside its project
+                      directory matches none of the heuristics. An exported id
+                      is honoured FIRST and still checked: one that is not live,
+                      or that names an executor pane, is refused rather than
+                      handed to an executor as an address that goes nowhere.

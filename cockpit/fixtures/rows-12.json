@@ -40,6 +40,9 @@
    "pane": "w1:p17",
    "run": "run-07",
    "task_n": 1,
+   "title": null,
+   "commits": null,
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -89,6 +92,12 @@
    "pane": "w1:p22",
    "run": "run-12",
    "task_n": 1,
+   "title": "Demo task 12",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -131,6 +140,12 @@
    "pane": "w1:p21",
    "run": "run-11",
    "task_n": 1,
+   "title": "Demo task 11",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -173,6 +188,12 @@
    "pane": "w1:p20",
    "run": "run-10",
    "task_n": 1,
+   "title": "Demo task 10",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -215,6 +236,12 @@
    "pane": "w1:p19",
    "run": "run-09",
    "task_n": 1,
+   "title": "Demo task 09",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -257,6 +284,12 @@
    "pane": "w1:p18",
    "run": "run-08",
    "task_n": 1,
+   "title": "Demo task 08",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -299,6 +332,12 @@
    "pane": "w1:p14",
    "run": "run-04",
    "task_n": 1,
+   "title": "Cockpit times on the card",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -341,6 +380,12 @@
    "pane": "w1:p13",
    "run": "run-03",
    "task_n": 1,
+   "title": "Repair the flaky 870",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "codex",
    "model": "model-y",
    "effort": null,
@@ -383,6 +428,12 @@
    "pane": "w1:p12",
    "run": "run-02",
    "task_n": 1,
+   "title": "Port the reaper to Go",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -425,6 +476,12 @@
    "pane": "w1:p11",
    "run": "run-01",
    "task_n": 1,
+   "title": "Answer the challenge on the merge order",
+   "commits": {
+    "count": 2,
+    "last_at": 1789997780000
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,
@@ -467,6 +524,12 @@
    "pane": "w1:p16",
    "run": "run-06",
    "task_n": 1,
+   "title": "Audit the brief template",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "opencode",
    "model": "provider/model-x",
    "effort": null,
@@ -510,6 +573,12 @@
    "pane": "w1:p15",
    "run": "run-05",
    "task_n": 1,
+   "title": "Go T4: verbos escritores",
+   "commits": {
+    "count": 0,
+    "last_at": null
+   },
+   "gate": null,
    "vendor": "claude",
    "model": "claude-sonnet-5-5",
    "effort": null,

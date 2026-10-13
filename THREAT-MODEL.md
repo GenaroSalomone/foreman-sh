@@ -103,9 +103,9 @@ control sockets on macOS when asked for; its network and its reads stay open
 ## `--sandbox`: a kernel boundary for one executor (macOS, opt-in)
 
 `hw <lane> <task> --sandbox`, or `sandbox: true` in the brief's frontmatter,
-starts a Claude Code executor inside a Seatbelt (`sandbox-exec`) profile that
+starts a Claude Code or pi executor inside a Seatbelt (`sandbox-exec`) profile that
 `hw` generates for that dispatch. It is not the default: without it, nothing
-changes. It is refused off macOS and for any vendor but Claude Code, because
+changes. It is refused off macOS and for any vendor but Claude Code and pi, because
 those are the only conditions it was measured under.
 
 **What it stops, enforced by the kernel rather than by a hook reading the

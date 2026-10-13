@@ -1,0 +1,18 @@
+LANES (projects.json)
+    One entry per lane under `lanes`; the file is read once per process and a
+    wrong key or shape loads nothing. Full table, defaults and examples:
+    "Customizing a lane (`projects.json`)" in the README.
+
+    identity    space (required), engram, hw_aliases, brain_aliases, hint_aliases
+    agent       vendor, model, model_floor, model_pins, account, artifacts,
+                requested_by, sdd_modes, suite_lock, opencode_config_dir, brain_guard
+    repository  checkout, checkout_var, base, base_ref_prefix, branch,
+                worktree_root, worktree, build, repoless, product_repo, agents_from
+    resources   deps, db, devserver, ports
+    cleanup     reap, sweep
+    prompt      brief_note
+
+    brief_note  text hw appends to the preamble of every executor prompt of the
+                lane, `hw next` included: one rule for the lane, such as a pull
+                request template, instead of a line in every brief.
+        "brief_note": "Open every pull request with .github/pull_request_template.md."

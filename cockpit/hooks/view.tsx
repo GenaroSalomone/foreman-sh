@@ -1,7 +1,7 @@
 // Pure tree builders: a classified model in, an element tree out. The mod has
 // no logic about executors; hw's order and counts are drawn as they come.
 
-import type { Model, Row } from './state'
+import type { Model, Row, Subagent } from './state'
 
 type Els = { Box: any; Text: any; Button: any; Input: any }
 
@@ -9,12 +9,16 @@ type Els = { Box: any; Text: any; Button: any; Input: any }
 export type Acts = {
   done: (r: Row) => void
   receipt: (r: Row) => void
+  dismiss: (r: Row) => void
   verify: (r: Row) => void
   ruling: (r: Row, text: string) => void
   reply: (r: Row, text: string) => void
+  subagents: (r: Row) => void
 }
-// hw's last answer for a row, shown verbatim under its card until the row goes.
-export type Notes = Record<string, { ok: boolean; text: string }>
+// Which cards have their subagent list open, by row id. Absent = folded.
+export type Open = Set<string>
+// hw's last answer for a row, shown verbatim under its card until the row goes or its [x] is pressed.
+export type Notes = Record<string, { ok: boolean; text: string; verb: string }>
 
 const NOTE_MAX = 1500
 
@@ -43,14 +47,13 @@ export function dur(ms: number): string {
 }
 
 // Every string drawn goes through here: a control character or an escape sequence
-// (hw's why_not texts carry newlines) makes the engine refuse the whole tree.
+// (a report summary or a brief's title can carry one) makes the engine refuse the whole tree.
 const scrub = (text: string) =>
   text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/ {2,}/g, ' ').trim()
 const cut = (text: string, max: number) => {
   const t = scrub(text)
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`
 }
-const WHY_MAX = 200
 
 // The colour of the existing attention palette (an ask) that marks a card gone quiet.
 const STALL_COLOR = 'yellow'
@@ -145,62 +148,110 @@ function noProgress(r: Row, now: number, thresholdMs: number): number | null {
   return age > thresholdMs ? age : null
 }
 
-function RowCard({ els, r, now, dim, act, notes, thresholdMs }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; thresholdMs: number }) {
+// The status at the card's top right: the state and how long it has held it. A working card counts from its
+// dispatch (and says its turn); a reported one from its report; the others from hw's attention_since.
+function statusText(r: Row, now: number): string {
+  if (r.attention === 'working') {
+    return `● working ${dur(now - r.dispatched_at)}${r.turn_started_at === null ? '' : ` · turn ${dur(now - r.turn_started_at)}`}`
+  }
+  const label = r.attention === 'report' ? 'reported' : r.attention
+  const since = r.report !== null ? r.report.at : r.attention_since
+  return `● ${label}${since === null ? '' : ` ${dur(now - since)}`}`
+}
+
+// The folded line of a card's subagents, or null when it has none: `subagents: 1 running · 8 done`.
+export function subagentsSummary(subs: Subagent[]): string | null {
+  if (subs.length === 0) return null
+  const n = (s: string) => subs.filter(x => x.state === s).length
+  const parts = [[n('running'), 'running'], [n('done'), 'done'], [n('stale'), 'stale']].filter(([c]) => (c as number) > 0).map(([c, l]) => `${c} ${l}`)
+  return `subagents: ${parts.join(' · ')}`
+}
+
+// One subagent when unfolded: how long it has run (or how long it ran), `done`, or `stale`.
+export function subagentLine(x: Subagent, now: number): string {
+  const when = x.state === 'running' ? dur(now - x.started_ms) : x.state === 'done' ? 'done' : `stale ${dur(now - x.last_ms)}`
+  return cut(`↳ ${x.type} · ${x.model ?? '—'} · ${x.description} · ${when}`, 200)
+}
+
+// How far the task has come: its commits over its base, the suite running for it, the children its turn waits on.
+function progressText(r: Row, now: number): string | null {
+  const parts: string[] = []
+  if (r.commits !== null) {
+    parts.push(`${r.commits.count} commit${r.commits.count === 1 ? '' : 's'}`)
+    if (r.commits.last_at !== null) parts.push(`last ${dur(now - r.commits.last_at)} ago`)
+  }
+  if (r.gate !== null) parts.push(`gate running${r.gate.since === null ? '' : ` ${dur(now - r.gate.since)}`}`)
+  if (r.children_running !== null) parts.push(`children: ${r.children_running}`)
+  return parts.length === 0 ? null : cut(parts.join(' · '), 200)
+}
+
+// What needs the brainer, one reason each; empty when nothing does, and then the card has no such line.
+function attentionParts(r: Row, now: number, stalled: number | null): string[] {
+  const parts: string[] = []
+  if (stalled !== null) parts.push(`no progress ${dur(stalled)}`)
+  if (r.rulings_pending.count > 0) {
+    parts.push(`${r.rulings_pending.count} ruling${r.rulings_pending.count === 1 ? '' : 's'} queued${r.rulings_pending.oldest_at === null ? '' : ` ${dur(now - r.rulings_pending.oldest_at)}`}`)
+  }
+  if (r.ask !== null) parts.push(`${r.ask.kind} ${r.ask.seq} ${r.ask.state === 'delivered' ? 'unanswered' : 'undelivered'}`)
+  if (r.report !== null && r.report.status === 'blocked') parts.push(`blocked: ${cut(r.report.summary, SUMMARY_MAX)}`)
+  if (r.report !== null && r.report.state === 'undelivered') parts.push('report undelivered')
+  return parts
+}
+
+// The card, top to bottom: what the task is and how it stands; its model and context; how far it has come; what
+// needs the brainer (only when something does); the actions that would run. An action hw refuses is not drawn,
+// and neither is its reason: the reason stays in the state file and in `hw receipt`, never on the card.
+function RowCard({ els, r, now, dim, act, notes, open, thresholdMs, slug }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; open: Open; thresholdMs: number; slug: string }) {
   const { Box, Text, Button, Input } = els
   const badge = BADGE[r.attention] ?? { color: undefined, dim: true }
   const stalled = noProgress(r, now, thresholdMs)
   const color = dim || badge.dim ? undefined : stalled !== null ? STALL_COLOR : badge.color
-  const meta = [
-    cut(`${r.vendor || '—'} · ${r.model || '—'} · ${r.effort || '—'}`, 120),
-    ctxMeta(r),
-    r.agent_status === 'unknown' ? 'unknown' : null,
-    r.report !== null ? `reported ${span(now - r.report.at)} ago` : r.attention_since === null ? null : `${span(now - r.attention_since)}`,
-  ]
+  const meta = [cut(`${r.vendor || '—'} · ${r.model || '—'} · ${r.effort || '—'}`, 120), ctxMeta(r), r.agent_status === 'unknown' ? 'unknown' : null]
     .filter(x => x !== null)
     .join(' · ')
   const lines: unknown[] = []
   lines.push(
-    <Box key="head" gap={1}>
-      <Text key="id" bold dimColor={dim}>{cut(r.id, 120)}</Text>
-      <Text key="badge" bold={!dim && LOUD.has(r.attention)} dimColor={dim || badge.dim} color={color}>{`[${r.attention}]`}</Text>
+    <Box key="head" justifyContent="space-between" columnGap={2}>
+      <Text key="id" bold dimColor={dim}>{cut(r.title === null ? slug : `${slug} · ${r.title}`, 160)}</Text>
+      <Text key="badge" bold={!dim && LOUD.has(r.attention)} dimColor={dim || badge.dim} color={color}>{statusText(r, now)}</Text>
     </Box>,
   )
-  lines.push(
-    <Text key="meta" dimColor>{meta}</Text>,
-  )
-  if (r.report !== null) {
+  lines.push(<Text key="meta" dimColor>{meta}</Text>)
+  const progress = progressText(r, now)
+  if (progress !== null) lines.push(<Text key="progress" dimColor={dim}>{progress}</Text>)
+  if (r.report !== null && r.report.status !== 'blocked') {
     lines.push(
       <Text key="report" dimColor={dim}>
-        {`report ${r.report.status} (${r.report.state}): ${cut(r.report.summary, SUMMARY_MAX)}`}
+        {`report: ${cut(r.report.summary, SUMMARY_MAX)}`}
       </Text>,
     )
   }
-  if (r.ask !== null) {
+  const subs = r.subagents ?? []
+  const folded = subagentsSummary(subs)
+  if (folded !== null) {
+    const unfolded = open.has(r.id)
+    // The only line of the card that is a toggle; running ones keep the colour that already marks what runs.
     lines.push(
-      <Text key="ask" dimColor={dim}>
-        {`${r.ask.kind} ${r.ask.seq} (${r.ask.state})`}
-      </Text>,
-    )
-  }
-  if (r.attention === 'working') {
-    lines.push(
-      <Box key="times" gap={1}>
-        <Text key="worked" dimColor>{`working ${dur(now - r.dispatched_at)}${r.turn_started_at === null ? '' : ` · turn ${dur(now - r.turn_started_at)}`}`}</Text>
-        {stalled === null ? null : <Text key="stall" bold={!dim} color={dim ? undefined : STALL_COLOR}>{`no progress ${dur(stalled)}`}</Text>}
+      <Box key={`subs:${r.id}`}>
+        <Button key={`subs-toggle:${r.id}`} label={`${unfolded ? '▾' : '▸'} ${folded}`} onPress={() => act.subagents(r)} />
       </Box>,
     )
+    if (unfolded) {
+      for (let i = 0; i < subs.length; i++) {
+        lines.push(
+          <Text key={`sub:${r.id}:${i}`} dimColor={dim || subs[i].state !== 'running'} color={!dim && subs[i].state === 'running' ? 'green' : undefined}>
+            {subagentLine(subs[i], now)}
+          </Text>,
+        )
+      }
+    }
   }
-  if (r.children_running !== null) {
+  const attention = attentionParts(r, now, stalled)
+  if (attention.length > 0) {
+    const loud = r.attention === 'challenge' || r.attention === 'blocked'
     lines.push(
-      <Text key="children" dimColor>
-        {`children: ${r.children_running}`}
-      </Text>,
-    )
-  }
-  if (r.rulings_pending.count > 0) {
-    lines.push(
-      <Text key="rulings" dimColor={dim}>
-        {`${r.rulings_pending.count} ruling${r.rulings_pending.count === 1 ? '' : 's'} queued${r.rulings_pending.oldest_at === null ? '' : ` ${dur(now - r.rulings_pending.oldest_at)}`}`}
+      <Text key="attention" bold={!dim} color={dim ? undefined : loud ? 'red' : STALL_COLOR}>
+        {`⚠ ${attention.join(' · ')}`}
       </Text>,
     )
   }
@@ -214,39 +265,37 @@ function RowCard({ els, r, now, dim, act, notes, thresholdMs }: { els: Els; r: R
       <Input key={`reply:${r.id}`} label="reply " placeholder={`answer this ${r.ask.kind}`} submitLabel="send" onSubmit={(text: string) => act.reply(r, text)} />,
     )
   }
-  // The buttons. Which ones exist is hw's call, read from `actions`; a false one
-  // shows hw's own reason beneath the row. A stale state draws none.
+  // The actions. Which ones exist is hw's call, read from `actions`: a true one is
+  // drawn, a false one is not. A stale state draws none.
   const a = r.actions
   if (!dim) {
     const verbs: ['verify' | 'receipt' | 'done', (r: Row) => void][] = [['verify', act.verify], ['receipt', act.receipt], ['done', act.done]]
-    const refused = verbs.filter(([v]) => !a[v])
-    lines.push(
-      <Box key={`buttons:${r.id}`} gap={1}>
-        {verbs.filter(([v]) => a[v]).map(([v, run]) => <Button key={`${v}:${r.id}`} label={v} onPress={() => run(r)} />)}
-      </Box>,
-    )
-    for (const [v] of refused) {
-      lines.push(<Text key={`${v}:${r.id}`} dimColor>{cut(`[${v}] ${a.why_not?.[v] ?? 'not available'}`, WHY_MAX)}</Text>)
+    const buttons = verbs.filter(([v]) => a[v]).map(([v, run]) => <Button key={`${v}:${r.id}`} label={v} onPress={() => run(r)} />)
+    if (buttons.length > 0) {
+      lines.push(
+        <Box key={`buttons:${r.id}`} gap={1} justifyContent="flex-end">
+          {buttons}
+        </Box>,
+      )
     }
     lines.push(
       a.ruling ? (
         <Input key={`ruling:${r.id}`} label="ruling " placeholder="correction for this executor" submitLabel="queue" onSubmit={(text: string) => act.ruling(r, text)} />
-      ) : (
-        <Text key={`ruling:${r.id}`} dimColor>{cut(`[ruling] ${a.why_not?.ruling ?? 'not available'}`, WHY_MAX)}</Text>
-      ),
+      ) : null,
     )
   }
   const note = notes[r.id]
   if (note !== undefined) {
     lines.push(
-      <Text key={`note:${r.id}`} color={note.ok ? undefined : 'red'}>
-        {cut(note.text, NOTE_MAX)}
-      </Text>,
+      <Box key={`note:${r.id}`} gap={1}>
+        <Text color={note.ok ? undefined : 'red'}>{cut(note.text, NOTE_MAX)}</Text>
+        <Button key={`close:${r.id}`} label="x" onPress={() => act.dismiss(r)} />
+      </Box>,
     )
   }
   return (
     <Box key={rowKey(r)} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={dim || color === undefined} paddingX={1}>
-      {lines}
+      {lines.filter(l => l !== null)}
     </Box>
   )
 }
@@ -281,12 +330,14 @@ export function band(els: Els, m: Model, now: number, open: () => void) {
   )
 }
 
-export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes) {
+export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes, open: Open = new Set()) {
   const { Box, Text } = els
   const note = banner(m)
   // classify leaves `state` null for dead and herdr-down: there are no rows to draw.
   const rows = m.state?.rows ?? []
   const dim = m.cls === 'stale'
+  // The task's slug names the card; the project only when the rows span more than one.
+  const oneProject = new Set(rows.map(r => r.project)).size <= 1
   const t = m.state?.totals
   // hw's own counts as chips; unknown counts (herdr down) are said, not zeroed.
   const chips: [number | undefined, string, string | undefined][] = [
@@ -323,7 +374,7 @@ export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes) {
       {m.cls === 'fresh' && rows.length === 0 ? <Text key="empty" dimColor>no executors</Text> : null}
       {rows.length > 0 ? (
         <Box key="cards" flexDirection="column">
-          {rows.map(r => RowCard({ els, r, now, dim, act, notes, thresholdMs: m.state?.rules.no_progress_after_ms ?? Infinity }))}
+          {rows.map(r => RowCard({ els, r, now, dim, act, notes, open, thresholdMs: m.state?.rules.no_progress_after_ms ?? Infinity, slug: oneProject ? r.task : r.id }))}
         </Box>
       ) : null}
     </Box>

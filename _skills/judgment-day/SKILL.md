@@ -19,6 +19,8 @@ Load only when the user explicitly requests Judgment Day or equivalent dual/adve
 ## Hard Rules
 
 - Resolve matching project skills before starting and pass the same paths to both judges (`jd-judge-a`, `jd-judge-b`) and the fix actor (`jd-fix-agent`).
+- The target travels as a file. Freeze the full diff of the range (`git diff <base>..<head>`) in `$HW_ARTIFACTS/jd-target-<round>.diff` (outside hw: an orchestrator tmp file); its sha256 is the target identity. The judge prompt names that path and the touched-file list; judges read it with Read and have no Bash.
+- Coverage is mandatory. Every judge result carries `reviewed: [<every path of the target>]`. A result with `reviewed` missing or lacking any target path is rejected: it does not count as clean. Relaunch that judge once with the missing paths; findings the rejected result did report are kept in the ledger. Code mode only; in a scoped re-judgment the target is the fix delta's paths. If paths are still missing the verdict is `JUDGMENT: ESCALATED ⚠️` with cause «juez sin cobertura: <paths>», never APPROVED.
 - Build one complete immutable target, then launch two blind read-only judges in parallel with identical scope and criteria.
 - Each judge returns one neutral findings result and terminates. Wait for both; never accept a partial judgment.
 - Two-judge agreement is the corroboration mechanism; no third refuter is launched.

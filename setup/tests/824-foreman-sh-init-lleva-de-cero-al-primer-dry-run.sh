@@ -9,9 +9,12 @@
 # here, over stubs of herdr, claude, engram and brew in a HOME this run owns:
 #
 #   1. `--dry-run` prints the seven stages as a plan and changes nothing;
-#   2. a missing prerequisite is NAMED with its install command and the run
-#      stops before it writes anything — and nothing is installed (the brew stub
-#      is never called);
+#   2. a missing prerequisite is NAMED with its install command; init asks
+#      Homebrew for it in the same run when answered (--yes), never without an
+#      answer, and a stop is ONE copyable line (--with-recommended && init);
+#      one run takes a machine without herdr to the dry-run dispatch;
+#   2d. git and python3 are not Homebrew's (Command Line Tools): a machine missing ONLY git is told
+#      `xcode-select --install`, is not offered brew and is not sent to --with-recommended;
 #   3. without --yes and without a terminal, herdr's integration is asked for,
 #      not done: the run stops, names the command and writes no brain;
 #   4. `init --yes` builds the brain, the demo lane on a toy repository, the
@@ -26,7 +29,11 @@
 # this tree, and are killed by text only the mutated line produces:
 #   M01 the prerequisite check dropped — a missing herdr no longer stops the run;
 #   M02 the sample brief is written over what is there;
-#   M03 "nothing changed" is never concluded (the measured fingerprint is ignored).
+#   M03 "nothing changed" is never concluded (the measured fingerprint is ignored);
+#   M04 the in-run Homebrew offer dropped — a missing herdr stops the run again;
+#   M05 the Command Line Tools line dropped — a machine missing only git is not told xcode-select;
+#   M06 the copyable brew line printed for what Homebrew cannot install (only git missing);
+#   M07 the in-run Homebrew offer fired for what Homebrew cannot install (only git missing).
 #
 # Run alone:  bash setup/tests/824-foreman-sh-init-lleva-de-cero-al-primer-dry-run.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
@@ -60,7 +67,10 @@ exit 0
 STUB
 cat > "$STUBS/brew" <<'STUB'
 #!/usr/bin/env bash
-echo "brew $*" >> "$STUB_LOGS/brew-calls"; exit 0
+echo "brew $*" >> "$STUB_LOGS/brew-calls"
+# `brew install herdr` puts a herdr on PATH only where the test says so (STUB_BREW_BIN)
+[ "$1 $2" = "install herdr" ] && [ -n "${STUB_BREW_BIN:-}" ] && { mkdir -p "$STUB_BREW_BIN"; cp "$STUB_HERDR_SRC" "$STUB_BREW_BIN/herdr"; }
+exit 0
 STUB
 cat > "$STUBS/curl" <<'STUB'
 #!/usr/bin/env bash
@@ -79,6 +89,7 @@ done
 WORLD_PATH="$STUBS:$FARM"
 NOHERDR_PATH="$TMP/stubs-no-herdr:$FARM"
 mkdir -p "$TMP/stubs-no-herdr"; for _s in claude engram brew curl; do ln -s "$STUBS/$_s" "$TMP/stubs-no-herdr/$_s"; done
+export STUB_HERDR_SRC="$STUBS/herdr"
 export STUB_LOGS="$LOGS" SHELL=/bin/zsh HW_ENGRAM_URL="http://127.0.0.1:1"   # never the real engram
 export PATH="$WORLD_PATH"
 REAL_HOME="$(cd -P "$HOME" && pwd)"
@@ -109,15 +120,52 @@ case "$out" in *"git has no user.name"*) ;; *) fail "an empty HOME has no git id
 [ ! -e "$HOME/brain" ] && [ ! -e "$HOME/code/toy" ] || fail "init --dry-run created the brain or the toy repository"
 pass "--dry-run prints the seven stages as a plan, names the git identity, and changes nothing"
 
-# ── 2. a missing prerequisite is named, the run stops, nothing is installed ──
+# ── 2. a missing prerequisite is named; with Homebrew init offers the install in the same run ──
+# Answered yes (--yes) but the brew stub installs nothing: still missing, the run stops before writing,
+# and the message is ONE line to copy (--with-recommended && init), not two instructions.
 rc=0; out="$(PATH="$NOHERDR_PATH" init --yes)" || rc=$?
 [ "$rc" = 1 ] || fail "init with no herdr must exit 1 (got $rc): $out"
 case "$out" in *"MISSING herdr"*) ;; *) fail "the missing herdr is not named: $out" ;; esac
 case "$out" in *"brew install herdr"*|*"https://herdr.dev"*) ;; *) fail "the missing herdr is named without its install command: $out" ;; esac
 case "$out" in *"[2/7]"*) fail "the run went past the prerequisites with herdr missing: $out" ;; esac
+case "$out" in *"$ROOT/install.sh --with-recommended && "*" init"*|*"--with-recommended && ./install.sh init"*) ;; *) fail "the stop does not name ONE copyable line (--with-recommended && init): $out" ;; esac
 [ ! -e "$HOME/brain" ] && [ ! -e "$HOME/code/toy" ] || fail "init wrote a brain or a toy repository with a prerequisite missing"
-[ ! -e "$LOGS/brew-calls" ] || fail "init called brew: $(cat "$LOGS/brew-calls")"
-pass "a missing herdr is named with its install command, the run stops before writing, and brew is never called"
+rg -q 'brew install herdr' "$LOGS/brew-calls" 2>/dev/null || fail "init --yes did not run the Homebrew install in the same run: $(cat "$LOGS/brew-calls" 2>/dev/null)"
+pass "a missing herdr is named, init --yes tries Homebrew in the same run, and when it is still missing the stop is one copyable line and writes nothing"
+
+# 2b. no answer (no --yes, no terminal): Homebrew is NOT called, the one line is printed
+rm -f "$LOGS/brew-calls"
+rc=0; out="$(PATH="$NOHERDR_PATH" notty "$ROOT/install.sh" init | sed 's/\x1b\[[0-9;]*m//g')" || rc=$?
+[ "$rc" = 1 ] || fail "init with no herdr and no answer must exit 1 (got $rc): $out"
+[ ! -e "$LOGS/brew-calls" ] || fail "init called brew without being asked: $(cat "$LOGS/brew-calls")"
+case "$out" in *"--with-recommended && "*) ;; *) fail "no copyable line without an answer: $out" ;; esac
+pass "without an answer init installs nothing and prints one copyable line"
+
+# 2c. Homebrew does install herdr: ONE init run goes from missing herdr to the dry-run dispatch
+OLD_HOME="$HOME"; export HOME="$TMP/home-brew"; mkdir -p "$HOME"
+git config --global user.name t; git config --global user.email t@t
+rm -f "$LOGS/brew-calls" "$LOGS/herdr-install"
+rc=0; out="$(STUB_BREW_BIN="$TMP/brew-bin" PATH="$TMP/brew-bin:$NOHERDR_PATH" init --yes)" || rc=$?
+[ "$rc" = 0 ] || fail "one init --yes run must install herdr through Homebrew and finish (got $rc): $out"
+rg -q 'brew install herdr' "$LOGS/brew-calls" || fail "brew was not asked for herdr"
+case "$out" in *"ok    dry run: hw demo hello"*) ;; *) fail "the same run did not reach the dry-run dispatch: $out" ;; esac
+case "$out" in *"MISSING herdr"*"ok    herdr"*) ;; *) fail "herdr was not reported missing and then ok in the same run: $out" ;; esac
+export HOME="$OLD_HOME"; rm -f "$LOGS/herdr-install" "$LOGS/engram-setup" "$LOGS/brew-calls"
+pass "one init --yes run takes a machine without herdr through Homebrew to the dry-run dispatch"
+
+# 2d. only git is missing: Homebrew cannot install it (the Command Line Tools do). Measured on a clean
+# macOS VM 2026-10-11: init offered brew for it, which installs nothing, and printed a
+# `--with-recommended && init` line that cannot succeed. Now it names xcode-select and nothing else.
+NOGIT="$TMP/farm-nogit"; mkdir -p "$NOGIT"
+for _l in "$FARM"/*; do case "${_l##*/}" in git) ;; *) ln -s "$(readlink "$_l")" "$NOGIT/${_l##*/}" 2>/dev/null || true ;; esac; done
+rm -f "$LOGS/brew-calls"
+rc=0; out="$(PATH="$STUBS:$NOGIT" init --yes)" || rc=$?
+[ "$rc" = 1 ] || fail "2d: init with only git missing must exit 1 (got $rc): $out"
+case "$out" in *"MISSING git"*"Install: xcode-select --install"*) ;; *) fail "2d: the missing git is not named with xcode-select --install: $out" ;; esac
+case "$out" in *"Command Line Tools"*"xcode-select --install"*) ;; *) fail "2d: the stop does not say git comes from the Command Line Tools: $out" ;; esac
+[ ! -e "$LOGS/brew-calls" ] || fail "2d: init called brew for a prerequisite Homebrew cannot install: $(cat "$LOGS/brew-calls")"
+case "$out" in *"--with-recommended"*|*"Homebrew can install"*|*"prerequisites, again:"*) fail "2d: init sent a machine missing only git to Homebrew: $out" ;; esac
+pass "2d: a machine missing only git is told xcode-select --install, is not offered brew and gets no --with-recommended line"
 
 # ── 3. no --yes and no terminal: the integration is asked for, not done ─────
 rc=0; out="$(notty "$ROOT/install.sh" init | sed 's/\x1b\[[0-9;]*m//g')" || true
@@ -172,6 +220,25 @@ saw_mutant "M02 the sample brief overwritten on a re-run" "$(minit --yes)" "+   
 cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M03 "$MUT/init.sh" 'if false; then ok "x"'   # was: if [ "$before" = "$after" ]; then ok "… nothing changed"
 saw_mutant "M03 nothing-changed never concluded" "$(minit --yes)" "(links in " "init: done — 1 change(s)"
 
+# M04 — the in-run Homebrew offer dropped: the unmutated 2c run reached the dry-run dispatch
+cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M04 "$MUT/init.sh" 'if false; then'   # was: if [ "$MISSING" -gt 0 ] && type -P brew ... && [ "$DRY" = 0 ]; then
+saw_mutant "M04 the Homebrew offer dropped" "$(HOME="$TMP/home-brew-m" STUB_BREW_BIN="$TMP/brew-bin-m" PATH="$TMP/brew-bin-m:$NOHERDR_PATH" minit --yes)" "prerequisite(s) missing"
+
+# M05 — the Command Line Tools line dropped: the unmutated 2d run said "Command Line Tools"
+cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M05 "$MUT/init.sh" 'if false; then'   # was: if [ "$CLT_MISSING" -gt 0 ]; then
+# positive evidence, not absence: the run REACHED the stop (so the mutated line ran), and the hint is gone
+m5="$(PATH="$STUBS:$NOGIT" minit --yes || true)"
+case "$m5" in *"prerequisite(s) missing"*) case "$m5" in *"Command Line Tools"*) m5=CLT-LINE-STILL-THERE ;; *) m5=CLT-LINE-GONE ;; esac ;; *) m5=RUN-NEVER-REACHED-THE-STOP ;; esac
+saw_mutant "M05 the Command Line Tools line dropped" "$m5" "CLT-LINE-GONE"
+
+# M06 — the copyable brew line printed even when only git is missing: the unmutated 2d run had none
+cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M06 "$MUT/init.sh" '  if type -P brew >/dev/null 2>&1; then'   # was: if [ "$((MISSING - CLT_MISSING))" -gt 0 ] && type -P brew ...
+saw_mutant "M06 the brew line for what brew cannot install" "$(PATH="$STUBS:$NOGIT" minit --yes)" "--with-recommended &&"
+
+# M07 — the in-run offer fired by MISSING alone: the unmutated 2d run never asked
+cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M04 "$MUT/init.sh" 'if [ "$MISSING" -gt 0 ] && type -P brew >/dev/null 2>&1 && [ "$DRY" = 0 ]; then'   # was: [ "$((MISSING - CLT_MISSING))" -gt 0 ]
+saw_mutant "M07 the offer fired for what brew cannot install" "$(PATH="$STUBS:$NOGIT" minit --yes)" "prerequisites, again:"
+
 # ── 6. what the person edited is left alone; another lane needs its repository ─
 printf 'my own brief\n' > "$BRIEF"
 out="$(init --yes)" || true
@@ -187,4 +254,4 @@ rc=0; out="$(init --yes --lane myapp --repo "$HOME/myapp-repo")" || rc=$?
 case "$out" in *"dispatch myapp:hello"*) ;; *) fail "the sample brief does not dispatch on lane myapp: $out" ;; esac
 pass "a lane other than demo needs --repo, and with one it is built and its sample brief dispatches"
 
-printf 'coverage - 824: 6 live claims, 3 mutants (3 must be named)\n'
+printf 'coverage - 824: 10 live claims, 7 mutants (7 must be named)\n'

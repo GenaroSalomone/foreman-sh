@@ -105,9 +105,16 @@ over-size file read @@ hooks/register.tsx @@ if (size > MAX_BYTES) { @@ if (size
 file read on every tick @@ hooks/register.tsx @@ if (S.loaded !== null && next === S.sig) return false @@ 
 redraw on every tick @@ hooks/register.tsx @@ if (changed || m.cls !== S.lastClass || bucket !== S.lastBucket) { @@ if (true as boolean) {
 the work root of the pane is ignored @@ hooks/register.tsx @@ (await $.env.get('HW_COCKPIT_WORK')) || @@ 
+an older writer's missing threshold rejects the file @@ hooks/state.ts @@ if (rules.no_progress_after_ms === undefined) rules.no_progress_after_ms = DEFAULT_NO_PROGRESS_MS @@ if (rules.no_progress_after_ms === undefined) return { error: 'rules.no_progress_after_ms' }
 reply drawn without the field @@ hooks/view.tsx @@ typeof r.ask.pending_reply === 'string' @@ true
 reply drawn on a stale state @@ hooks/view.tsx @@ if (!dim && r.ask !== null @@ if (r.ask !== null
 reply drawn as dead text @@ hooks/view.tsx @@ <Input key={`reply:${r.id}`} label="reply " @@ <Text key={`reply:${r.id}`} label="reply "
+an absent subagents field rejects the file @@ hooks/state.ts @@ if (r.subagents !== undefined) { @@ if (true as boolean) {
+a subagent state outside the three is accepted @@ hooks/state.ts @@ ['running', 'done', 'stale'].includes(sa.state as string) @@ true
+the subagents toggle never opens @@ hooks/register.tsx @@ else S.open.add(r.id) @@ else S.open.delete(r.id)
+the subagents toggle never folds @@ hooks/register.tsx @@ if (S.open.has(r.id)) S.open.delete(r.id) @@ if (S.open.has(r.id)) S.open.add(r.id)
+subagents start unfolded @@ hooks/register.tsx @@ S.open = new Set() @@ S.open = new Set(['demo:task-01'])
+a card without subagents still draws the line @@ hooks/view.tsx @@ if (folded !== null) { @@ if (true as boolean) {
 M
 n=0
 while IFS= read -r line; do

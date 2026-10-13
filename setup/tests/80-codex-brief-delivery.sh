@@ -433,8 +433,8 @@ MUT_HW="$mut" python3 - <<'PY'
 import os
 p = os.environ["MUT_HW"]
 s = open(p, encoding="utf-8").read()
-old = '''    ""|claude|codex) return 1 ;;'''
-new = '''    ""|claude) return 1 ;;'''
+old = '''    ""|claude|codex|pi) return 1 ;;'''
+new = '''    ""|claude|pi) return 1 ;;'''
 assert s.count(old) == 1, s.count(old)
 open(p, "w", encoding="utf-8").write(s.replace(old, new))
 PY

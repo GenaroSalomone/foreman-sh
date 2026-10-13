@@ -1,0 +1,9 @@
+
+  Add --dry-run to any of them first. It builds nothing and prints the whole
+  dispatch, each field marked (chosen) or (default).
+
+  READ-ONLY WORK — a browser audit, a review, anything that only looks:
+    hw <project> <task> --brief <path> --sdd none --worktree none --no-db
+        Full tab, no branch, no dependency install, no database. A judgment task
+        does not need a checkout.
+

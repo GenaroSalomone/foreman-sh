@@ -8,6 +8,18 @@
    "rows_rendered": 7
   },
   {
+   "file": "fresh-older-writer.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 7
+  },
+  {
+   "file": "subagents.json",
+   "now_ms": 1790000000000,
+   "class": "fresh",
+   "rows_rendered": 7
+  },
+  {
    "file": "fresh-empty.json",
    "now_ms": 1790000000000,
    "class": "fresh",

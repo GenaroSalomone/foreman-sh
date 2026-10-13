@@ -2,7 +2,7 @@
 #
 # hw — one herdr space per task, each on its own git worktree.
 #
-#   hw <project> <task> [--agent claude|opencode|codex]
+#   hw <project> <task> [--agent claude|opencode|codex|pi]
 #   hw done <project> <task>
 #
 # DESIGN: hw WRAPS each repo's existing worktree tooling, it does not replace it.
@@ -746,6 +746,9 @@ case "${1:-}" in -V|--version) printf 'hw %s\n' "$(cli_version "$BRAIN")"; exit 
 # and is the rollback; `shadow` runs both, prints bash's answer and appends any
 # difference in stdout, stderr or exit status to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (HW_SHADOW_JSONL names another file); EVERY shadow call, equal or not, adds a line to
 # shadow.calls.tsv beside it, and `hw shadow` reads both (days, calls and diffs per verb: the clock of the 7-day gate).
+# The two runs of a shadow see the same herdr (the first asker reaches the real one, every later asker is replayed
+# its answer) and the same HW_ST_NOW (`_core_shadow_penv`); and when they still differ they run once more, a pair
+# that is equal the second time being filed in shadow.moved.jsonl, not in shadow.jsonl (`_core_shadow_settle`).
 # A hw-core older than core/'s sources is treated as not built. A hw-core that is
 # not built falls back to bash with ONE warning line.
 #
@@ -827,44 +830,184 @@ _core_shadow_calls() {  # the file of shadow calls: beside shadow.jsonl, whateve
   local j="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/hw/shadow.jsonl}"
   printf '%s' "${j%.jsonl}.calls.tsv"
 }
-_core_shadow_log() {  # <tmp dir> <rc bash> <rc go> <verb> <argv…> — appends the difference between b.* and g.*, if any
-  local tmp="$1" rc_b="$2" rc_g="$3" log diffs="" s
-  shift 3
+_core_shadow_entry() {  # <log> <tmp dir> <rc bash> <rc go> <diffs> <verb> <argv…> — appends the line of one difference
+  # Besides the 400-character prefix of each answer, a stream that DIFFERS carries WHERE: `at` is the offset (bytes,
+  # from 0) of the first byte that is not the same, `bash_len`/`go_len` the sizes, and `bash_ctx`/`go_ctx` the 300
+  # bytes before and after it in each answer (`ctx_from` is the offset the window starts at). Without it a difference
+  # past the prefix reads as two identical texts. A line is bounded (about 2 KB per stream); the log is bounded
+  # too: past HW_SHADOW_MAX_BYTES (4 MiB) it becomes shadow.jsonl.1, and `hw shadow` reads both.
+  python3 -I - "$@" <<'PY'
+import sys, os, json, datetime as dt
+log, tmp, rc_b, rc_g, diffs, verb, argv = sys.argv[1:8]
+W = 300
+def rd(n):
+    try:
+        return open(os.path.join(tmp, n), "rb").read()
+    except OSError:
+        return b""
+def txt(b):
+    return b.decode("utf-8", "replace")
+def ctx(b, g, at):
+    lo = max(0, at - W)
+    return {"ctx_from": lo, "bash_ctx": txt(b[lo:at + W]), "go_ctx": txt(g[lo:at + W])}
+def stream(s):
+    b, g = rd("b.%s.plain" % s), rd("g.%s.plain" % s)
+    d = {"bash": txt(b)[:400], "go": txt(g)[:400]}
+    if b != g:
+        at = next((i for i in range(min(len(b), len(g))) if b[i] != g[i]), min(len(b), len(g)))
+        d.update({"at": at, "bash_len": len(b), "go_len": len(g)})
+        d.update(ctx(b, g, at))  # MUTATION-ANCHOR: 950-M01
+    return d
+miss = sorted(set(rd("herdr-rec/miss").decode("utf-8", "replace").split("\n")) - {""})[:10]
+rec = {
+    "at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "verb": verb, "argv": argv,
+    "differs": diffs.split(), "bash_rc": int(rc_b), "go_rc": int(rc_g),
+    "stdout": stream("out"), "stderr": stream("err")}
+if miss:
+    rec["herdr_unrecorded"] = miss
+if os.environ.get("_SH_RETRIED"):
+    rec["retried"] = True  # it differed the first time too, and differs again
+line = json.dumps(rec, ensure_ascii=False)
+try:
+    cap = int(os.environ.get("HW_SHADOW_MAX_BYTES", "") or 4 * 1024 * 1024)
+except ValueError:
+    cap = 4 * 1024 * 1024
+try:
+    if os.path.getsize(log) > cap:
+        os.replace(log, log + ".1")
+except OSError:
+    pass
+with open(log, "a", encoding="utf-8") as f:
+    f.write(line + "\n")
+PY
+}
+_core_shadow_penv() {  # <tmp dir> <bash|go> — sets _sh_penv, the environment of ONE of the two runs of a shadow
+  # THE TWO RUNS SEE THE SAME HERDR AND THE SAME CLOCK. A shadow runs bash and then Go, a few seconds apart, and a pane
+  # that changes state in between (`held by … (claude, done)` against `(claude, working)`, `setup:brainer done` against
+  # `working`) was logged as a difference in 16 of 199 live `hw status` calls: neither side was wrong, they asked at two
+  # instants. So both runs get a `herdr` that answers each argv ONCE — the first asker (bash) reaches the real one, every
+  # later asker (its own repeats, and then Go) is replayed what it said — and the same HW_ST_NOW. Nothing is normalised
+  # out of the comparison: a Go that misreads `idle` still differs (setup/tests/951, 952); the clock is one reading per pair (954, 955). A call Go makes that bash never
+  # did reaches the real herdr and is listed in the entry as herdr_unrecorded. Without herdr on PATH only the clock is set.
+  local real w="$1/herdr-bin" rec="$1/herdr-rec"
+  _sh_penv=(HW_SHADOW_HERDR_PHASE="$2" HW_ST_NOW="${_sh_now:-${HW_ST_NOW:-$(date +%s)}}")
+  real="$(command -v herdr 2>/dev/null)" || return 0  # MUTATION-ANCHOR: 951-M01
+  if [ ! -x "$w/herdr" ]; then
+    mkdir -p "$w" "$rec" || return 0
+    {
+      printf '#!/bin/sh\nREC=%q\nREAL=%q\n' "$rec" "$real"
+      cat <<'SH'
+k="$(printf '%s\n' "$#" "$@" | cksum | tr -d ' ')"
+r="$REC/$k"
+if [ -f "$r.rc" ]; then cat "$r.out"; cat "$r.err" >&2; exit "$(cat "$r.rc")"; fi
+[ "${HW_SHADOW_HERDR_PHASE:-}" != go ] || printf '%s\n' "$*" >>"$REC/miss"
+"$REAL" "$@" >"$r.out.$$" 2>"$r.err.$$" &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f "$r".out.$$ "$r".err.$$; exit 143' TERM INT HUP
+wait $pid; rc=$?
+trap - TERM INT HUP
+mv "$r.out.$$" "$r.out" && mv "$r.err.$$" "$r.err" && printf '%s' "$rc" >"$r.rc.$$" && mv "$r.rc.$$" "$r.rc"
+cat "$r.out"; cat "$r.err" >&2; exit "$rc"
+SH
+    } >"$w/herdr" && chmod +x "$w/herdr" || return 0
+  fi
+  _sh_penv=(PATH="$w:$PATH" "${_sh_penv[@]}")
+}
+_core_shadow_compare() {  # <tmp dir> <rc bash> <rc go> — compares b.* with g.*: sets _sh_diffs ("stdout stderr status", or empty)
+  local tmp="$1" rc_b="$2" rc_g="$3" s
+  _sh_diffs=""
   # bash coloured what it printed when hw was started on a terminal, and Go, redirected to a file, did not: that
   # is not a difference in the answer, and logged it would keep shadow.jsonl from ever being empty on a terminal.
   # The comparison (and the line) read the text without its colour; what the user is shown keeps it.
-  for s in b.out b.err g.out g.err; do LC_ALL=C sed $'s/\033\\[[0-9;]*m//g' "$tmp/$s" >"$tmp/$s.plain"; done
+  for s in b.out b.err g.out g.err; do LC_ALL=C sed $'s/\033\\[[0-9;]*m//g' "$tmp/$s" >"$tmp/$s.plain"; done   # MUTATION-ANCHOR: 952-M01
   # a writer's shadow runs Go and then bash, a moment apart: a printed time that falls on two seconds is not a difference
   if [ -n "${_shadow_writer:-}" ]; then
     for s in b.out b.err g.out g.err; do
       LC_ALL=C sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{4})/@AT@/g' "$tmp/$s.plain" >"$tmp/$s.plain2" && mv "$tmp/$s.plain2" "$tmp/$s.plain"
     done
   fi
-  for s in out err; do cmp -s "$tmp/b.$s.plain" "$tmp/g.$s.plain" || diffs="$diffs std$s"; done
-  [ "$rc_b" = "$rc_g" ] || diffs="$diffs status"
+  if [ -n "${_shadow_dispatch:-}" ]; then
+    for s in b.out b.err g.out g.err; do
+      LC_ALL=C sed -E -e 's/run=[0-9]{8}-[0-9]{6}-[0-9]+/run=@RUN@/g' -e 's/--port [0-9]+/--port @PORT@/g' -e 's/127\.0\.0\.1:[0-9]+/127.0.0.1:@PORT@/g' -e '/\/hw: line [0-9]+: \[: .*: integer expression expected$/d' -e 's#(/hw: line )[0-9]+:#\1@N@:#g' "$tmp/$s.plain" >"$tmp/$s.plain2" && mv "$tmp/$s.plain2" "$tmp/$s.plain"
+    done
+  fi
+  for s in out err; do cmp -s "$tmp/b.$s.plain" "$tmp/g.$s.plain" || _sh_diffs="$_sh_diffs std$s"; done
+  [ "$rc_b" = "$rc_g" ] || _sh_diffs="$_sh_diffs status"
+  _sh_diffs="${_sh_diffs# }"
+}
+_core_shadow_idempotent() {  # succeeds when the verb being shadowed may be run twice with the same effect: it only reads the world
+  # `reap` keeps a cache of its survey (the second run prints "cached" where the first measured), `receipt` appends a marker, the
+  # T2 readers (sweep, reports, preflight…) were frozen as "once per call" in setup/tests/872: they are NOT asked again. The ones
+  # that are: the two verbs whose differences were measured to be the world moving (status, worktrees), and the pure ones.
+  case " status worktrees help log handle " in *" ${_sh_verb:-${_sh_argv[0]:-}} "*) return 0 ;; esac
+  return 1
+}
+_core_shadow_settle() {  # <pair fn> <tmp dir> <rc bash> <rc go> — runs the two implementations; on a difference, ONCE MORE
+  # THE WORLD MAY HAVE MOVED BETWEEN THE TWO RUNS. Measured 2026-10-08: `hw worktrees --quiet` logged one difference in
+  # 199 calls, and what differed was a scratchpad worktree (`wt-vfp`) that existed when bash listed the worktrees and was
+  # gone when Go did; bash and Go agree on the world as it is now. A discrete event like that cannot be pinned to one
+  # instant the way herdr's answers are (_core_shadow_penv), so a difference is asked again: both run a second time, on
+  # fresh herdr answers. Equal the second time — the first was the world moving, or a nondeterministic Go: it is NOT a
+  # difference of the gate, and it is not hidden either — it is kept, with its window, in shadow.moved.jsonl, and `hw
+  # shadow` counts it per verb. Different the second time, as it was the first: that is the difference, logged (the
+  # second pair's, with "retried"). A deterministic Go bug differs both times, so it is never softened.
+  local pair="$1" tmp="$2" try=1
+  _sh_retried="" ; _sh_moved=""
+  while :; do
+    rm -rf "$tmp/herdr-rec"; mkdir -p "$tmp/herdr-rec" 2>/dev/null || true
+    _sh_now="${HW_ST_NOW:-$(date +%s)}"   # ONE instant for the pair: a `hw status` takes seconds, and a clock read per run is the difference it was meant to remove   # MUTATION-ANCHOR: 955-M01
+    "$pair"
+    _core_shadow_compare "$tmp" "$rc_b" "$rc_g"
+    if [ -z "$_sh_diffs" ] || [ "$try" = 2 ] || ! _core_shadow_idempotent; then break; fi   # MUTATION-ANCHOR: 953-M01
+    mkdir -p "$tmp/first/herdr-rec"
+    cp "$tmp"/b.out.plain "$tmp"/b.err.plain "$tmp"/g.out.plain "$tmp"/g.err.plain "$tmp/first/" 2>/dev/null || true
+    cp "$tmp/herdr-rec/miss" "$tmp/first/herdr-rec/" 2>/dev/null || true
+    _sh_first_diffs="$_sh_diffs"; _sh_first_rcb="$rc_b"; _sh_first_rcg="$rc_g"
+    try=2
+  done
+  if [ "$try" = 2 ]; then
+    if [ -z "$_sh_diffs" ]; then _sh_moved=1; else _sh_retried=1; fi
+  fi
+}
+_core_shadow_log() {  # <tmp dir> <rc bash> <rc go> <verb> <argv…> — appends the difference between b.* and g.*, if any
+  local tmp="$1" rc_b="$2" rc_g="$3" log diffs mlog
+  shift 3
+  _core_shadow_compare "$tmp" "$rc_b" "$rc_g"
+  diffs="$_sh_diffs"
   # one line per shadow call, equal or not: `hw shadow` counts days and calls from here, the differences from shadow.jsonl
   { mkdir -p "$(dirname "$(_core_shadow_calls)")" && printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$(_core_shadow_calls)"; } 2>/dev/null || true   # MUTATION-ANCHOR: 890-M02
+  log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
+  if [ -n "${_sh_moved:-}" ]; then  # equal on the second ask: the first difference is kept apart, not counted against the gate
+    mlog="${log%.jsonl}.moved.jsonl"
+    { mkdir -p "$(dirname "$mlog")" && _core_shadow_entry "$mlog" "$tmp/first" "$_sh_first_rcb" "$_sh_first_rcg" "$_sh_first_diffs" "$1" "$*"; } 2>/dev/null || true
+    return 0
+  fi
   [ -n "$diffs" ] || return 0
   # the line carries transcript text: it goes to the user's state dir, never into the brain tree
-  log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
-  { mkdir -p "$(dirname "$log")" && jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg verb "$1" --arg argv "$*" \
-      --arg diffs "${diffs# }" --argjson bash_rc "$rc_b" --argjson go_rc "$rc_g" \
-      --rawfile bo "$tmp/b.out.plain" --rawfile go_ "$tmp/g.out.plain" --rawfile be "$tmp/b.err.plain" --rawfile ge "$tmp/g.err.plain" \
-      '{at: $at, verb: $verb, argv: $argv, differs: ($diffs | split(" ")), bash_rc: $bash_rc, go_rc: $go_rc,
-        stdout: {bash: $bo[0:400], go: $go_[0:400]}, stderr: {bash: $be[0:400], go: $ge[0:400]}}' >>"$log"; } 2>/dev/null || true
+  { mkdir -p "$(dirname "$log")" && _SH_RETRIED="${_sh_retried:-}" _core_shadow_entry "$log" "$tmp" "$rc_b" "$rc_g" "$diffs" "$1" "$*"; } 2>/dev/null || true
 }
 _core_unset_impl() {  # `-u HW_IMPL_<VERB>` for every one set: the bash re-run must not meet a per-verb switch again
   local _v
   for _v in $(compgen -e | grep '^HW_IMPL_' || true); do printf -- '-u %s ' "$_v"; done
 }
+_core_shadow_pair() {  # the two runs of _core_shadow (its $tmp, $core and _sh_argv); sets rc_b and rc_g in the caller's scope
+  _core_shadow_penv "$tmp" bash
+  if [ -n "${_shadow_dispatch:-}" ]; then
+    env $(_core_unset_impl) ${_sh_penv[@]+"${_sh_penv[@]}"} HW_IMPL=bash "$0" "${_sh_argv[@]:1}" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?   # the argv of the dispatch, not the word hw-core is told
+  else
+    env $(_core_unset_impl) ${_sh_penv[@]+"${_sh_penv[@]}"} HW_IMPL=bash "$0" ${_sh_argv[@]+"${_sh_argv[@]}"} >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+  fi
+  # bash has already written what the verb writes (the receipt's completion_marker); Go reads it and must not append it again
+  _core_shadow_penv "$tmp" go
+  env ${_sh_penv[@]+"${_sh_penv[@]}"} HW_CORE_READONLY=1 "$core" ${_sh_argv[@]+"${_sh_argv[@]}"} >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
+}
 _core_shadow() {  # <core> <argv...> — runs both, prints bash's, exits with bash's status
   local core="$1" tmp rc_b rc_g
   shift
+  _sh_argv=("$@")
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-shadow.XXXXXX")" || { warn "hw-core shadow: no temporary directory; running the bash implementation"; return 0; }
   set +e
-  env $(_core_unset_impl) HW_IMPL=bash "$0" "$@" >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
-  # bash has already written what the verb writes (the receipt's completion_marker); Go reads it and must not append it again
-  HW_CORE_READONLY=1 "$core" "$@" >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
+  _core_shadow_settle _core_shadow_pair "$tmp"
   set -e
   _core_shadow_log "$tmp" "$rc_b" "$rc_g" "$@"
   cat "$tmp/b.out"; cat "$tmp/b.err" >&2
@@ -902,6 +1045,12 @@ _core_usable() {  # <verb> — sets _core_bin and succeeds when hw-core can answ
 # the table of `hw status`, and the audit that `hw status` runs as `hw worktrees --quiet`. The environment
 # carries what the bash had in variables (HW_STATUS_PROJECT, _ALL, _ORPHANS_JSON). The function is what ran
 # before hw-core existed, and what runs when hw-core is off, missing or older than its sources.
+_core_inline_pair() {  # the two runs of _core_inline (its $tmp); sets rc_b and rc_g in the caller's scope
+  _core_shadow_penv "$tmp" bash
+  ( set -e; [ "${#_sh_penv[@]}" -eq 0 ] || export "${_sh_penv[@]}"; "$_sh_fn" ${_sh_argv[@]+"${_sh_argv[@]}"} ) >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
+  _core_shadow_penv "$tmp" go
+  env ${_sh_penv[@]+"${_sh_penv[@]}"} HW_CORE_READONLY=1 "$_core_bin" "$_sh_verb" ${_sh_argv[@]+"${_sh_argv[@]}"} >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
+}
 _core_inline() {
   local verb="$1" fn="$2" tmp rc_b rc_g a
   shift 2
@@ -919,8 +1068,8 @@ _core_inline() {
     # when the function runs alone, so a command that fails ends bash's answer with ITS status, not 0. Not
     # `( … ) || rc_b=$?`: a list's left side runs with -e ignored, subshell and all, and `false; echo` would go on.
     set +e
-    ( set -e; "$fn" "$@" ) >"$tmp/b.out" 2>"$tmp/b.err"; rc_b=$?
-    HW_CORE_READONLY=1 "$_core_bin" "$verb" "$@" >"$tmp/g.out" 2>"$tmp/g.err"; rc_g=$?
+    _sh_argv=("$@"); _sh_verb="$verb"; _sh_fn="$fn"
+    _core_shadow_settle _core_inline_pair "$tmp"
     set -e
     _core_shadow_log "$tmp" "$rc_b" "$rc_g" "$verb" "$@"
     cat "$tmp/b.out"; cat "$tmp/b.err" >&2
@@ -1013,7 +1162,56 @@ case "${1:-}" in
     fi
     ;;
 esac
+# T2: the read verbs that depend on T1. Only the READ half of a verb goes to hw-core: `reap` and `sweep` without
+# --apply, `reports --no-repair`, `outbox list`; `wait`, `wait-one` and `wait-monitor` read, and `wait` only asks herdr for
+# a tab. Under `shadow` a wait that is not a --dry-run is answered by bash alone: running it twice would wait twice.
+_core_t2_call() {  # <argv…> — succeeds when hw-core answers THIS call of a T2 verb
+  local x
+  case "$1" in
+    review-range|review-delta|preflight|wait|wait-one|wait-monitor) return 0 ;;
+    # the executor gate (below, in bash) refuses `outbox` to an executor and `--apply` in ANY position of sweep/reap:
+    # hw-core has no gate of its own, so a call the gate would refuse never reaches it
+    outbox) [ "${2:-}" != flush ] && [ -z "${HW_TASK:-}" ] && [ -z "${HW_RUN:-}" ]; return ;;
+    reports) for x in "$@"; do [ "$x" != --no-repair ] || return 0; done; return 1 ;;
+    sweep|reap) for x in "$@"; do case "$x" in --apply|-h|--help) return 1 ;; esac; done; return 0 ;;
+  esac
+  return 1
+}
+case "${1:-}" in
+  review-range|review-delta|preflight|outbox|reports|sweep|reap|wait|wait-one|wait-monitor)
+    if _core_t2_call "$@"; then
+      _core_mode="$(_core_impl_for "$1")"
+      if [ "$_core_mode" = shadow ]; then
+        case "$1" in wait|wait-one|wait-monitor) _core_mode=bash; for _core_a in "$@"; do [ "$_core_a" != --dry-run ] || _core_mode=shadow; done ;; esac
+      fi
+      if [ "$_core_mode" != bash ] && _core_usable "$1"; then
+        export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+        if [ "$_core_mode" = go ]; then exec "$_core_bin" "$@"; fi
+        _core_shadow "$_core_bin" "$@"
+      fi
+    fi
+    ;;
+esac
 lane_config_load "$BRAIN" || die "the lane table did not load, so no lane is known — fix $BRAIN/projects.json (the reason is above)"
+# ── hw-core, train T4: the large writers (done, next, revive, preview, reap --apply, sweep --apply) ──
+# Same switch as above. A writer that touches git, herdr and a database is NEVER run twice: under `shadow`
+# bash answers alone (the contract run holds Go to bash on fixture copies, with every call recorded). An
+# executor goes to bash, where `_executor_refuse` words the refusal. `reap` and `sweep` without --apply are
+# reads of another train (T2) and stay with whatever answers them.
+case "${1:-}" in
+  done|next|revive|preview|reap|sweep)
+    _core_mode="$(_core_impl_for "$1")"
+    { [ -z "${HW_TASK:-}" ] && [ -z "${HW_RUN:-}" ]; } || _core_mode=bash
+    case "$1" in
+      reap|sweep) case " $* " in *" --apply "*) ;; *) _core_mode=bash ;; esac ;;
+    esac
+    [ "$_core_mode" != shadow ] || _core_mode=bash
+    if [ "$_core_mode" = go ] && _core_usable "$1"; then
+      export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+      exec "$_core_bin" "$@"
+    fi
+    ;;
+esac
 
 # herdr-rpc reaches the API-only RPCs the CLI does not expose: `layout.apply`
 # (P5, one round trip for a whole task space) and `events.subscribe` (P3, the
@@ -1104,6 +1302,16 @@ _executor_live_children() {
 # no `ctx_*` tokens, so its row reads `ctx n/a` instead of a guess. Never fails.
 _executor_ctx_json() {
   local tp
+  # pi knows its own window and its own count (ctx.getContextUsage(), the numbers its footer
+  # shows), so the adapter hands them over in the payload: a MEASURED percent, no transcript to
+  # parse and no window to assume. `ctx_pct` is "null" when pi does not know the tokens yet
+  # (right after a compaction), and then no ctx is published rather than a guess.
+  if [ "${HW_EXECUTOR_VENDOR:-}" = pi ] && [ -n "${HW_TURN_END_PAYLOAD:-}" ]; then
+    printf '%s' "$HW_TURN_END_PAYLOAD" | jq -c '.ctx // empty
+      | select((.tokens | type) == "number")
+      | {pct: (if (.pct | type) == "number" then .pct else null end), tokens: .tokens}' 2>/dev/null || true  # MUTATION-ANCHOR: 986-M09
+    return 0
+  fi
   [ "${HW_EXECUTOR_VENDOR:-claude}" = claude ] && [ -n "${HW_TURN_END_PAYLOAD:-}" ] || return 0
   tp="$(printf '%s' "$HW_TURN_END_PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
   [ -n "$tp" ] && [ -x "$HW_BIN_DIR/cockpit-state" ] || return 0
@@ -1385,12 +1593,35 @@ _engram_renew_session() {
   return 0
 }
 
+# IS THIS TURN END THE REGISTERED EXECUTOR'S? Claude's Stop hook compares the payload's session
+# with the one hw recorded at launch (hw-stop-hook.sh, guard 6) so a child session that inherited
+# HW_RUN cannot report, or be handed back, the parent's task. pi's adapter names its session in
+# the payload (the session file, which is what herdr publishes as agent_session and hw records as
+# `session_id`); a pi-subagents child is a session of the same process and carries the same
+# environment, so it must not be judged as the executor. ONLY A REGISTERED SESSION NARROWS IT,
+# for the Stop hook's reason: a receipt with no session id keeps the old behaviour, because
+# silencing every such run would trade a rare misfire for a common silent stop.
+# Returns 0 when the payload names ANOTHER session than the registered one.
+_pi_turn_end_foreign() {
+  local state_dir="$1" registered payload
+  [ "${HW_EXECUTOR_VENDOR:-}" = pi ] && [ -n "${HW_TURN_END_PAYLOAD:-}" ] || return 1
+  payload="$(printf '%s' "$HW_TURN_END_PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  [ -n "$payload" ] || return 1
+  registered="$(jq -r 'select(.key=="session_id") | .value' "$state_dir/receipt.jsonl" 2>/dev/null | tail -1)" || true
+  case "$registered" in ""|none*) return 1 ;; esac
+  [ "$payload" = "$registered" ] && return 1
+  [ "${payload##*/}" = "${registered##*/}" ] && return 1
+  return 0  # MUTATION-ANCHOR: 986-M10
+}
+
 cmd_executor_turn_end() {
   local hook_json=0 state_dir turns=0 hold="" hold_intent="" boundary="" reason marker children=""
   [ "${1:-}" != --hook-json ] || { hook_json=1; shift; }
   [ $# -eq 0 ] || die "usage: hw executor-turn-end [--hook-json]"
   [ -n "${HW_TASK:-}" ] && state_dir="$(_executor_state_dir)" || return 0
   mkdir -p "$state_dir" 2>/dev/null || return 0
+  # A child session's turn end is not the executor's: no count, no handback, no ruling.
+  if _pi_turn_end_foreign "$state_dir"; then return 0; fi
   _engram_renew_session "$state_dir"
   # `done` beside `reopened` is a run `hw revive` brought back: its old report
   # stands, and this session owes a new one, so the turn is judged like any
@@ -1846,7 +2077,10 @@ base_env = {k: os.environ[k] for k in
              # _export_opencode_overlay — so a brainer's own value never rides in.
              "OPENCODE_CONFIG_CONTENT",  # MUTATION-ANCHOR: 199-M01
              "HW_OPENCODE_EFFORT", "HW_OPENCODE_EFFORT_AGENT",
-             "OPENCODE_CONFIG")
+             "OPENCODE_CONFIG",
+             # pi's guard halves and roster fallback — see _export_hw_env.
+             "HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR",
+             "PI_SUBAGENT_EXTRA_AGENT_DIRS")
             if os.environ.get(k)}
 # Keyed on the lane's own declaration, not on OPENCODE_CONFIG_DIR: an inherited
 # one must not reach a pane whose lane never named it.
@@ -2036,6 +2270,46 @@ _codex_startup_ready() {
   return 0
 }
 
+# pi's startup screens, read off the pane before it is called ready. MEASURED against pi 1.1.0's
+# own source (dist/cli/startup-ui.js, project-trust.js, migrations.js, main.js): the screens that take
+# stdin before the TUI do exist, though a launch with `-na` and no deprecated dirs shows none.
+#   "Press any key to continue"      the deprecated-extension-dir warning: informational, any key
+#                                    dismisses it, so it is answered (enter) like codex's trust-dir.
+#   "Trust project folder?"          project trust: a PERMISSION decision nobody here may make
+#                                    (it lets project extensions execute): named, never answered.
+#   "cwd from session file does not exist"   a resume into a moved directory: Continue/Cancel
+#                                    changes where the session works: named, never answered.
+#   "Welcome to pi, the minimal coding agent"   first-time setup (theme, analytics opt-in): named.
+# And one that is not a dialog but blocks the work all the same: "No API key for" / "/login ...".
+# The text it matches is pi's, so a rewording makes this blind rather than wrong: the probe in
+# setup/tests/987 pins the strings against a pane screen it builds.
+_pi_startup_dialog() {  # stdin: the screen -> prints "<name>" (empty = nothing in the way)
+  local screen; screen="$(cat)"
+  case "$screen" in
+    *"Trust project folder?"*)                        printf 'project-trust' ;;
+    *"cwd from session file does not exist"*)         printf 'missing-session-cwd' ;;
+    *"Welcome to pi, the minimal coding agent"*)      printf 'first-time-setup' ;;
+    *"Press any key to continue"*)                    printf 'press-any-key' ;;
+    *"No API key for"*|*"re-authenticate"*)           printf 'login' ;;
+  esac
+}
+_pi_startup_ready() {
+  local target="$1" screen dialog
+  screen="$(herdr agent read "$target" --source detection --lines 80 2>/dev/null || true)"
+  dialog="$(printf '%s' "$screen" | _pi_startup_dialog)"
+  case "$dialog" in
+    "") return 0 ;;
+    press-any-key)
+      info "pi opened on a deprecation notice (\"Press any key to continue\") — answering enter, which changes nothing"
+      herdr agent send-keys "$target" enter >/dev/null 2>&1 || return 1
+      sleep 2
+      return 0 ;;
+    *)
+      printf 'pi is waiting on a startup screen (%s) that only a person may answer: clear it on %s, then re-deliver\n' "$dialog" "$target" >&2
+      return 1 ;;
+  esac
+}
+
 # Claude Code's first-run screens, read off the pane before it is called ready
 # or given up on. MEASURED 2026-09-24 on a new macOS user: "Try the new
 # fullscreen renderer?" held the executor's stdin, herdr never reported
@@ -2082,19 +2356,29 @@ _claude_start_failure_screen() {
 # carries done-invoker/ask-invoker out of it, and why each piece is shaped the
 # way it is. What hw owns is the refusal and the arming.
 #
-# CLAUDE ONLY, because it is the only vendor measured under the profile
-# (executor-isolation-arch and setup/e2e-sandbox). OpenCode and Codex keep state in
-# places the profile would have to open — ~/.cache/opencode holds the plugins
-# other sessions execute — and nobody has measured what they break.
+# CLAUDE AND PI ONLY, because they are the vendors measured under the profile
+# (claude: executor-isolation-arch and setup/e2e-sandbox; pi 1.1.0: setup/tests/984).
+# pi's state is one session directory per workdir plus three lock directories, so
+# the profile opens only those. OpenCode and Codex keep state in places the
+# profile would have to open — ~/.cache/opencode holds the plugins other
+# sessions execute — and nobody has measured what they break.
 _check_sandbox() {
   SANDBOX_LINE=""
   [ "${SANDBOX:-0}" = 1 ] || return 0
   local why
   # The vendor first: it does not depend on the machine, so it is said on every
   # platform (on Linux the platform refusal used to hide it).
-  [ "$AGENT" = claude ] || die "--sandbox refused: it is measured for claude only, and this dispatch runs $AGENT. Dispatch with --agent claude, or without --sandbox. NOTHING was built."
+  case "$AGENT" in claude|pi) ;; *) die "--sandbox refused: it is measured for claude and pi only, and this dispatch runs $AGENT. Dispatch with --agent claude or --agent pi, or without --sandbox. NOTHING was built." ;; esac  # MUTATION-ANCHOR: 984-M04
   why="$("$HW_BIN_DIR/hw-sandbox" supported 2>&1)" || die "--sandbox refused: $why NOTHING was built."  # MUTATION-ANCHOR: 321-M01
   SANDBOX_LINE="on ($SANDBOX_SRC) — Seatbelt hard profile: writes only in the workdir, artifacts, TMPDIR and the agent's own state; no unix sockets (herdr, docker, ssh-agent); ~/.ssh, ~/.config/gh, ~/.docker unreadable. Reports leave through the outbox broker. TCP is NOT confined."
+  # pi's own state differs, so the line says it: one session dir for this workdir
+  # and three lock dirs, and nothing else under ~/.pi/agent (extensions/,
+  # mcp.json, settings.json, auth.json stay read-only). Measured 2026-10-11 in a
+  # herdr pane: herdr's pi integration cannot reach herdr's socket from inside, so
+  # herdr never gets `agent_session` for it (an unsandboxed pi does) — a revive
+  # cannot find the session by it — while working/idle is still seen from the
+  # terminal, so `agent prompt --wait --until working` still proves a delivery.
+  [ "$AGENT" != pi ] || SANDBOX_LINE="on ($SANDBOX_SRC) — Seatbelt hard profile: writes only in the workdir, artifacts, TMPDIR and pi's session dir for this workdir (+ the settings/auth/models lock dirs); ~/.pi/agent/{extensions,mcp.json,settings.json,auth.json} stay read-only; no unix sockets (herdr, docker, ssh-agent), so herdr's pi integration publishes no agent_session from inside; ~/.ssh, ~/.config/gh, ~/.docker unreadable. Reports leave through the outbox broker. TCP is NOT confined."
 }
 
 # herdr starts an agent by typing its executable into the pane's shell, and a
@@ -2133,6 +2417,7 @@ _agent_start_sandboxed() {
 
 _agent_start() {
   local pane="$1" name="$2" kind="$3" out probe tries=0 registered=0
+  [ "$kind" != pi ] || _pi_project_skills_prepare || return 1  # MUTATION-ANCHOR: 991-M11
   if [ "${SANDBOX:-0}" = 1 ] && [ "${_SANDBOX_ARMED:-}" != "$pane" ]; then
     _agent_start_sandboxed "$@"; return
   fi
@@ -2150,6 +2435,7 @@ _agent_start() {
       fi
       [ "$kind" != codex ] || _codex_startup_ready "$pane" || return 1
       [ "$kind" != claude ] || _claude_startup_ready "$pane" || return 1
+      [ "$kind" != pi ] || _pi_startup_ready "$pane" || return 1
       if printf '%s' "$probe" | jq -e '
            .result.agent as $a | $a.interactive_ready == true and
            (["idle", "done"] | index($a.agent_status) != null)
@@ -2174,6 +2460,8 @@ _agent_start() {
       # Same for Claude: ready can be reported with the renderer offer still
       # on screen, and the brief would land in the dialog.
       [ "$kind" != claude ] || _claude_startup_ready "$pane" || return 1
+      # pi's pane reports ready while a startup screen can still own stdin.
+      [ "$kind" != pi ] || _pi_startup_ready "$pane" || return 1  # MUTATION-ANCHOR: 986-M11
       return 0
     fi
     case "$out" in
@@ -2327,6 +2615,23 @@ _export_hw_env() {
     OPENCODE_CONFIG="$(_brain_guard_opencode_config)"; export OPENCODE_CONFIG
   else
     unset OPENCODE_CONFIG
+  fi
+  # pi's HALVES of the guard and the roster travel as environment, because pi's children
+  # (pi-subagents sessions) share it and an extension's flags would not reach them: the
+  # inverse (brain) guard on a product lane, the kind's model-error fallback and the model that was
+  # asked (what the receipt compares), and where pi-subagents lives. Same load-bearing unset
+  # as the account's: base_env copies this process.
+  if [ "$AGENT" = pi ]; then
+    if _brain_guard_on; then HW_PI_BRAIN_GUARD=1; export HW_PI_BRAIN_GUARD; else unset HW_PI_BRAIN_GUARD; fi
+    HW_PI_FALLBACK_MODEL="$(_pi_fallback_model)"
+    if [ -n "$HW_PI_FALLBACK_MODEL" ]; then HW_PI_FALLBACK_THINKING="$PI_FALLBACK_THINKING"; export HW_PI_FALLBACK_MODEL HW_PI_FALLBACK_THINKING; else unset HW_PI_FALLBACK_MODEL HW_PI_FALLBACK_THINKING; fi
+    HW_PI_ASKED_MODEL="${MODEL:-}"
+    if [ -n "$HW_PI_ASKED_MODEL" ]; then export HW_PI_ASKED_MODEL; else unset HW_PI_ASKED_MODEL; fi
+    HW_PI_SUBAGENTS_DIR="$(_pi_subagents_dir)"; export HW_PI_SUBAGENTS_DIR  # MUTATION-ANCHOR: 986-M02
+    PI_SUBAGENT_EXTRA_AGENT_DIRS="$(_pi_extra_agent_dir "$1")"
+    if [ -n "$PI_SUBAGENT_EXTRA_AGENT_DIRS" ]; then export PI_SUBAGENT_EXTRA_AGENT_DIRS; else unset PI_SUBAGENT_EXTRA_AGENT_DIRS; fi
+  else
+    unset HW_PI_BRAIN_GUARD HW_PI_FALLBACK_MODEL HW_PI_FALLBACK_THINKING HW_PI_ASKED_MODEL HW_PI_SUBAGENTS_DIR PI_SUBAGENT_EXTRA_AGENT_DIRS
   fi
   # NO AUTO-MEMORY IN AN EXECUTOR. Claude Code loads the whole MEMORY.md of the
   # git root's auto-memory into every session, and every lane under brain shares
@@ -2777,6 +3082,14 @@ _hw_env() {
   if [ "$AGENT" = opencode ] && _brain_guard_on; then
     printf -- ' --env OPENCODE_CONFIG=%s' "$(_brain_guard_opencode_config)"
   fi
+  # pi's guard halves and roster fallback; see _export_hw_env.
+  if [ "$AGENT" = pi ]; then
+    ! _brain_guard_on || printf -- ' --env HW_PI_BRAIN_GUARD=1'  # MUTATION-ANCHOR: 986-M03
+    [ -z "$(_pi_fallback_model)" ] || printf -- ' --env HW_PI_FALLBACK_MODEL=%s --env HW_PI_FALLBACK_THINKING=%s' "$(_pi_fallback_model)" "$PI_FALLBACK_THINKING"
+    [ -z "${MODEL:-}" ] || printf -- ' --env HW_PI_ASKED_MODEL=%s' "$MODEL"
+    printf -- ' --env HW_PI_SUBAGENTS_DIR=%s' "$(_pi_subagents_dir)"
+    [ -z "$(_pi_extra_agent_dir "$1")" ] || printf -- ' --env PI_SUBAGENT_EXTRA_AGENT_DIRS=%s' "$(_pi_extra_agent_dir "$1")"
+  fi
   # Without this, engram derives its label from the working directory and every
   # single task invents a new one: `leadgogo-inventory` (4 obs) and
   # `optivon-announcement-audio` (2) were both created that way, in labels the
@@ -3053,6 +3366,14 @@ values.update({
     "OPENCODE_CONFIG_CONTENT":  os.environ.get("OPENCODE_CONFIG_CONTENT", ""),
     "HW_OPENCODE_EFFORT":       os.environ.get("HW_OPENCODE_EFFORT", ""),
     "HW_OPENCODE_EFFORT_AGENT": os.environ.get("HW_OPENCODE_EFFORT_AGENT", ""),
+    # pi's guard halves and roster fallback: `hw revive` replays every key, so a revived pi
+    # executor is guarded and falls back exactly as its first launch did.
+    "HW_PI_BRAIN_GUARD":        os.environ.get("HW_PI_BRAIN_GUARD", ""),
+    "HW_PI_FALLBACK_MODEL":     os.environ.get("HW_PI_FALLBACK_MODEL", ""),
+    "HW_PI_FALLBACK_THINKING":  os.environ.get("HW_PI_FALLBACK_THINKING", ""),
+    "HW_PI_ASKED_MODEL":        os.environ.get("HW_PI_ASKED_MODEL", ""),
+    "HW_PI_SUBAGENTS_DIR":      os.environ.get("HW_PI_SUBAGENTS_DIR", ""),
+    "PI_SUBAGENT_EXTRA_AGENT_DIRS": os.environ.get("PI_SUBAGENT_EXTRA_AGENT_DIRS", ""),
 })
 # In both modes now, and empty when hw is not running inside a pane at all —
 # which is the only case that genuinely has no brainer to name. See _hw_env.
@@ -3573,6 +3894,8 @@ _refuse_if_stale_hooks() {  # $1 = worktree dir, $2 = main checkout (for the rem
 # loud, before the launch, costs nothing and is the part that was missing.
 _check_capabilities() {
   local want rest="$1" bad=""
+  # Remembered for what the dispatch decides from it later: pi's skill set (_pi_skill_args).
+  BRIEF_REQUIRES="$1"
   while [ -n "$rest" ]; do
     want="${rest%%,*}"
     case "$rest" in *,*) rest="${rest#*,}" ;; *) rest="" ;; esac
@@ -3583,8 +3906,11 @@ _check_capabilities() {
         [ "$AGENT" = claude ] || bad="$bad $want(needs claude; $AGENT reaches a browser only through agent-browser, which is a CLI and not the same instrument)" ;;
       subagents)
         # Claude Code has subagents natively (the Agent tool); the env flag is
-        # opencode's. The warning stays for the vendor that has neither (codex).
-        [ "$AGENT" = opencode ] || [ "$AGENT" = claude ] || bad="$bad $want(hw enables OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS only for opencode, and $AGENT has no subagent tool hw can name)" ;;  # MUTATION-ANCHOR: 781-M07
+        # opencode's; pi gets pi-subagents loaded explicitly (_pi_extension_args),
+        # and hw-executor.ts makes the write guard a REQUIRED child extension, so
+        # its children are guarded too. The warning stays for the vendor that has
+        # none (codex) and for a pi whose pi-subagents is not installed.
+        [ "$AGENT" = opencode ] || [ "$AGENT" = claude ] || { [ "$AGENT" = pi ] && _pi_subagents_ready; } || bad="$bad $want(hw enables OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS only for opencode, pi needs pi-subagents installed under $(_pi_subagents_dir) with its required-child-extension API, and $AGENT has no subagent tool hw can name)" ;;  # MUTATION-ANCHOR: 781-M07
       repo)
         [ "${WANT_WT:-1}" = 1 ] || bad="$bad $want(this dispatch has --worktree none, so there is no checkout)" ;;
       database)
@@ -4516,6 +4842,44 @@ EOF
 # A RE-TASK carries it too: `hw next --brief` runs the same validation and
 # delivers the same block (_next_authorization). `_check_requested` still does not.
 AUTHORIZES=""
+# A brief with NO authorizes: whose text plainly needs remote access. MEASURED
+# (a product lane, 2026-10-12): four briefs cited the operator's request in
+# requested_by: and carried no authorizes:, so no AUTHORIZATION block reached the
+# executors, three blocked on the remote-operation rule and the brainer asked
+# the operator again. A citation authorizes nothing by itself. hw warns, never
+# refuses: prose cannot prove the operation is remote. Word-bounded and
+# case-insensitive, the frontmatter excluded (requested_by: quotes the request).
+AUTHORIZES_MARKER=""
+_brief_remote_marker() {  # prints the first remote-access marker the brief's body names, or nothing
+  [ -n "${BRIEF:-}" ] && [ -r "${BRIEF:-}" ] || return 0
+  # The generic markers live here; the ones that name this machine's hosts and
+  # tools are read from setup/remote-markers.txt, which the export leaves out.
+  python3 - "$BRIEF" "$HW_BIN_DIR/../setup/remote-markers.txt" <<'PY' 2>/dev/null || true
+import re, sys
+words = ["ops-investigator", "prod", "producción", "produccion", "production", "ssh", "VPS"]
+try:
+    words += [w for w in (l.split("#")[0].strip() for l in open(sys.argv[2], encoding="utf-8")) if w]
+except OSError:
+    pass
+lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+if lines and lines[0].strip() == "---":
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            lines = lines[i + 1:]
+            break
+pat = r"(?<!\w)(" + "|".join(re.escape(w) for w in words) + r")(?!\w)"
+m = re.search(pat, "\n".join(lines), re.IGNORECASE)
+if m:
+    print(m.group(1))
+PY
+}
+_warn_authorizes_missing() {
+  AUTHORIZES_MARKER="$(_brief_remote_marker)"
+  [ -n "$AUTHORIZES_MARKER" ] || return 0
+  warn "the brief names '$AUTHORIZES_MARKER' but carries no authorizes: entry, so no AUTHORIZATION block reaches the executor."
+  warn "the request cited in requested_by: does not authorize anything by itself. If it covers the operation, add \`authorizes: <destination> :: <operation> :: <handle|none>\`; otherwise the executor will block and ask."
+  warn "hw is NOT refusing this launch."
+}
 _auth_trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
 _check_authorizes() {
   local decls key val dest op handle rest n=0 missing="" _h
@@ -4537,7 +4901,8 @@ _check_authorizes() {
   done <<EOF
 $decls
 EOF
-  [ "$n" -gt 0 ] || return 0
+  AUTHORIZES_MARKER=""
+  [ "$n" -gt 0 ] || { _warn_authorizes_missing; return 0; }
   [ -n "$REQUESTED_BY" ] || die "the brief carries authorizes: but cites no request (requested_by:). An authorization nobody asked for is not delivered. NOTHING was built. Add \`requested_by: <who, when, and the request in their words>\` (or pass --requested-by)."
   if [ "$CHECK_HANDLES" = 1 ] && _keychain_available; then
     while IFS= read -r _h; do
@@ -4557,7 +4922,7 @@ EOF
 
 # The manifest's `authorizes` field.
 _authorizes_line() {
-  if [ -z "$AUTHORIZES" ]; then printf 'none'; return 0; fi
+  if [ -z "$AUTHORIZES" ]; then printf 'none%s' "${AUTHORIZES_MARKER:+ — but the brief names $AUTHORIZES_MARKER}"; return 0; fi
   printf '%s' "$AUTHORIZES" | awk 'BEGIN{ORS=""} {printf "%s[%s]", (NR>1?"; ":""), $0}'
 }
 
@@ -4608,6 +4973,7 @@ _requested_line() {
 # (_validate_sdd_model_pair), so there the inherited default stays and the
 # collision is reported, not resolved here (setup/decisions.md).
 _apply_model_default() {
+  [ -z "$MODEL" ] && [ "$AGENT" = pi ] && [ -z "${_REUSE_PANE:-}" ] && { _apply_pi_model_default; return 0; }
   [ -z "$MODEL" ] && [ "$AGENT" = claude ] && [ -z "${_REUSE_PANE:-}" ] || return 0
   [ -z "$(project_model_floor "$PROJ")" ] || return 0
   # A lane that declares a model keeps its own say even when --agent
@@ -4619,6 +4985,50 @@ _apply_model_default() {
     design) MODEL=opus;   MODEL_SRC="default; kind design" ;;  # MUTATION-ANCHOR: 231-M01
     *)      MODEL=sonnet; MODEL_SRC="default; kind ${kind:-none}" ;;  # MUTATION-ANCHOR: 231-M02
   esac
+}
+
+# THE pi ROSTER (opencode-go): the operator's approval of 2026-10-11, as ruled by the brainer after
+# the roster evaluation (no kimi, by the operator's order). Thinking is `off` for explore and `low` for the rest,
+# never `high` by default; glm-5.3 (medium) is a manual escalation through an explicit --model.
+#   explore / mechanical / probes  deepseek-v4.1-flash  off     fallback glm-5.3-flash   low
+#   review                         glm-5.3-flash         low     fallback deepseek-v4-pro low
+#   build, default                 deepseek-v4-pro       low     fallback glm-5.3-flash   low
+#   design / audit                 deepseek-v4-pro       low     fallback glm-5.3-flash   low
+# THE FALLBACK IS FOR A MODEL ERROR, NOT FOR A SPENT QUOTA: opencode-go's cap is shared DOLLARS for the whole
+# key (one rolling/weekly/monthly figure), so another Go model draws from the same cupo and a switch on a
+# quota error would only spend it faster. setup/pi/hw-executor.ts switches on a terminal non-quota, non-auth
+# error of the turn and writes the switch in the receipt; on a quota error it switches nothing and says so.
+# (The ruling gave design/audit no fallback of its own: glm-5.3-flash is the cheapest reliable second lane.)
+PI_MODEL_DESIGN="opencode-go/deepseek-v4-pro"
+PI_MODEL_BUILD="opencode-go/deepseek-v4-pro"
+PI_MODEL_REVIEW="opencode-go/glm-5.3-flash"
+PI_MODEL_CHEAP="opencode-go/deepseek-v4.1-flash"
+PI_FALLBACK_FLASH="opencode-go/glm-5.3-flash"
+PI_FALLBACK_PRO="opencode-go/deepseek-v4-pro"
+PI_FALLBACK_THINKING="low"
+_apply_pi_model_default() {
+  # No lane pins a pi model; a lane's own pin is its vendor's id, cleared above
+  # for an explicit --agent pi, so the roster always decides here.
+  local kind; kind="$(_brief_kind_for_close)"
+  case "$kind" in
+    design|audit) MODEL="$PI_MODEL_DESIGN" ;;
+    review)       MODEL="$PI_MODEL_REVIEW" ;;
+    explore)      MODEL="$PI_MODEL_CHEAP" ;;
+    *)            MODEL="$PI_MODEL_BUILD" ;;
+  esac
+  MODEL_SRC="default; pi roster, kind ${kind:-none}"
+}
+# The model a pi executor of this dispatch falls to on a MODEL error; empty when
+# there is none (the model already is the fallback). Decided by the KIND, also
+# for an explicit --model: the operator picks the primary, the roster keeps the way out.
+_pi_fallback_model() {
+  local fb
+  case "$(_brief_kind_for_close || true)" in
+    review) fb="$PI_FALLBACK_PRO" ;;
+    *)      fb="$PI_FALLBACK_FLASH" ;;
+  esac
+  [ "$fb" != "${MODEL:-}" ] || return 0
+  printf '%s' "$fb"
 }
 
 MODEL_FLOOR_LINE=""; BELOW_FLOOR_WHY=""
@@ -4876,6 +5286,12 @@ _engram_proxy_args() {
     codex)
       AGENT_ARGS="${AGENT_ARGS:+$AGENT_ARGS }-c mcp_servers.engram.command=\"$proxy\" -c mcp_servers.engram.args=[\"--label\",\"$label\",\"--\",\"$eng\",\"mcp\",\"--tools=agent\"]"
       ENGRAM_PROXY_LINE="-c mcp_servers.engram.*" ;;
+    pi)
+      # pi gives a ~/.pi/agent/mcp.json server precedence over a registered one
+      # of the same name, so the proxy cannot replace `engram`: setup/pi/hw-executor.ts
+      # registers it as `hw_engram` (label from ENGRAM_PROJECT) and refuses raw
+      # mcp__engram__* calls in tool_call.
+      ENGRAM_PROXY_LINE="pi extension hw_engram (setup/pi/hw-executor.ts; raw mcp__engram__* refused)" ;;
   esac
   return 0
 }
@@ -4926,6 +5342,159 @@ _artifacts_args() {
     AGENT_ARGS="$AGENT_ARGS --disallowedTools $HW_ARTIFACT_TOOLS"
     ARTIFACTS_LINE="DENIED — --disallowedTools $HW_ARTIFACT_TOOLS ($v)"
   fi
+}
+
+# AN EXPLICIT EXTENSION SET, NOTHING DISCOVERED (docs/pi-vendor.md). `-ne`
+# drops every user package — an ask-user-question tool nobody answers in an
+# unattended pane, a second engram client that skips the label proxy — and the
+# built-ins, which come back one by one. `-na` ignores project-local .pi/ files,
+# so no trust dialog can hold the pane before the brief. Policy, not identity:
+# a fresh launch and `hw revive` both append it (the resume records only the
+# session). Prints the words; dies (in the caller's subshell) when it cannot.
+#
+# pi-subagents is part of the set, by its entry file: `-ne` would drop it with the rest, and
+# a pi executor with no subagent tool is not at parity with the claude one. It is loaded
+# BEFORE hw's adapter, and the adapter registers itself as a REQUIRED CHILD EXTENSION
+# for every runner (pi-subagents' own host API), so a subagent's bash/edit/write go through the
+# same guard as the executor's. Not installed: the set goes without it and `requires: subagents`
+# says so (_check_capabilities).
+_pi_agent_dir() { printf '%s' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; }
+_pi_subagents_dir() { printf '%s/npm/node_modules/pi-subagents' "$(_pi_agent_dir)"; }
+# pi-subagents is loaded only when the guard CAN travel with its children: the entry point AND the
+# required-child-extension API that hw-executor.ts registers itself through. An install without that
+# API would give a subagent tool whose children run unguarded, so it is not loaded at all.
+_pi_subagents_ready() {
+  [ -r "$(_pi_subagents_dir)/index.js" ] && [ -r "$(_pi_subagents_dir)/src/api/required-child-extensions.js" ]
+}
+# THE LANE'S OWN pi AGENTS, REACHED THROUGH pi-subagents' ENV HOOK. MEASURED 2026-10-12 (second pi parity task;
+# pi 1.1.0, pi-subagents 0.77.0, scratch repo with a tracked `.pi/agents`): under hw's `-na` the project is
+# untrusted, so a `subagent` call for a project agent dies `Unknown agent: ops-worker` ("Consulted
+# agent-definition directories: builtin, user" — no project one; `action: list` still names them, execution
+# does not). `-a` would trust the whole project and load its `.pi/settings.json` packages, so it is not an
+# option. `PI_SUBAGENT_EXTRA_AGENT_DIRS` (pi-subagents' own launcher hook, PATH-style) adds read-only user-scope
+# directories: pointed at the worktree's `.pi/agents`, the same call found the agent and ran it. A lane
+# tracks `.pi/agents` (its 8 specialists, generated from `.claude/agents`); a lane whose checkout has none
+# gets nothing here.
+_pi_extra_agent_dir() {  # $1 = the work dir -> "<dir>/.pi/agents" when the lane's checkout tracks one
+  local co
+  _lane_is_product_repo "${PROJ:-}" 2>/dev/null || return 0  # MUTATION-ANCHOR: 991-M04
+  co="$(_lane_main_checkout "$PROJ")" || return 0
+  [ -d "$co/.pi/agents" ] || return 0
+  case "$1" in ""|*[[:space:]:]*) return 0 ;; esac
+  printf '%s/.pi/agents' "$1"
+}
+_pi_extension_args() {
+  local pi_ext pi_herdr="$(_pi_agent_dir)/extensions/herdr-agent-state.ts" pi_sub
+  pi_ext="$_brain_root/setup/pi/hw-executor.ts"
+  pi_sub="$(_pi_subagents_dir)/index.js"
+  case "$pi_ext$pi_herdr$pi_sub" in
+    *[[:space:]]*) die "pi's extension paths cannot travel as one word each: $pi_ext, $pi_herdr, $pi_sub" ;;
+  esac
+  [ -r "$pi_ext" ] || die "hw's pi adapter is not on disk at $pi_ext — a pi executor is not launched without its write guard and turn-end hook. NOTHING was built."
+  local sub_args=""
+  if _pi_subagents_ready; then sub_args=" -e $pi_sub"
+  elif [ "${DISPATCH_DRY:-0}" = 1 ] || [ -z "${_PI_SUBAGENTS_WARNED:-}" ]; then
+    if [ -r "$pi_sub" ]; then
+      warn "pi-subagents ($pi_sub) has no src/api/required-child-extensions.js: its children could not carry the write guard, so it is NOT loaded and this pi executor has no subagent tool. Update it with: pi install npm:pi-subagents"
+    else
+      warn "pi-subagents is not installed ($pi_sub): this pi executor has no subagent tool. Install it with: pi install npm:pi-subagents"
+    fi
+    _PI_SUBAGENTS_WARNED=1
+  fi
+  if [ -r "$pi_herdr" ]; then
+    printf -- '-ne -na -e builtin:mcp -e builtin:codemode -e builtin:tool-search -e %s%s -e %s --exclude-tools mcp__engram__*' "$pi_herdr" "$sub_args" "$pi_ext"  # MUTATION-ANCHOR: 986-M14 (raw engram hidden from the model; docs/pi-vendor.md)
+  elif [ "${DISPATCH_DRY:-0}" = 1 ]; then
+    warn "herdr's pi integration is not installed ($pi_herdr): a launch would refuse. Install it with: herdr integration install pi"
+    printf -- '-ne -na -e builtin:mcp -e builtin:codemode -e builtin:tool-search%s -e %s --exclude-tools mcp__engram__*' "$sub_args" "$pi_ext"
+  else
+    die "herdr's pi integration is not installed ($pi_herdr), so the pane would never report working/idle and no delivery could be proved. Install it with: herdr integration install pi. NOTHING was built."
+  fi
+}
+
+# THE SKILLS A pi EXECUTOR LOADS ARE THE ONES hw DECIDES, not whatever sits in
+# ~/.pi/agent/skills (`-ns` turns discovery off; `--skill` names each one). A claude executor
+# loads the user's skills and its directory's; hw's decision for pi is the part of them the
+# toolchain's own protocol needs: judgment-day (the closing of every code task runs it) and,
+# when the brief declares `requires: browser`, agent-browser (pi's only browser instrument).
+# A skill that is not on disk is not named: pi would print an error for a path that is not there.
+_pi_skill_dir() {  # <name> -> the first directory holding <name>/SKILL.md
+  local n="$1" d
+  for d in "$HOME/.claude/skills" "$HOME/.agents/skills" "$_brain_root/setup/.claude/skills"; do
+    [ -r "$d/$n/SKILL.md" ] && { printf '%s/%s' "$d" "$n"; return 0; }
+  done
+  return 1
+}
+# A product lane's OWN skills. A Claude executor in a product lane loads the worktree's `.claude/skills` (24 there:
+# testing, qa, prod-backup, impeccable, next-*, …); `-ns` leaves a pi executor with none of them, because pi
+# discovers a project's skills only through its `.pi/settings.json`, which `-na` (hw's no-trust-dialog flag)
+# ignores. MEASURED 2026-10-12 (second pi parity task). Named one by one, from the lane's checkout: the worktree
+# does not exist yet when the arguments are built, and a relative path would be wrong on `hw revive`.
+# NOT carried: speckit-* (the framework's entries — a pi executor runs --sdd none) and agent-browser (hw
+# decides that one from the brief, below, so it is never named twice).
+_pi_project_skills() {  # one "<name> <dir>" line per project skill, for a product-repo lane
+  local co d s n
+  _lane_is_product_repo "${PROJ:-}" 2>/dev/null || return 0  # MUTATION-ANCHOR: 991-M03
+  co="$(_lane_main_checkout "$PROJ")" || return 0
+  d="$co/.claude/skills"
+  [ -d "$d" ] || return 0
+  for s in "$d"/*/; do
+    n="$(basename "$s")"
+    case "$n" in speckit-*|agent-browser) continue ;; esac
+    [ -r "$s/SKILL.md" ] || continue
+    case "$s" in *[[:space:]]*) warn "pi project skill '$n' lives at a path with whitespace ($s): it cannot travel as one word, skipped" >&2; continue ;; esac
+    printf '%s %s\n' "$n" "${s%/}"
+  done
+}
+_pi_decided_skills() {  # one "<name> <dir>" line per skill hw decides from the brief (judgment-day, agent-browser)
+  # The brief is read HERE, not from BRIEF_REQUIRES: the argument list is built before the contract
+  # check sets it, so a launch would carry no agent-browser while the manifest (built after) listed it.
+  local names="judgment-day" n d req
+  req="$(_brief_declares "${BRIEF:-}" 2>/dev/null | awk -F'\t' '$1=="requires"{print $2}')"
+  case ",${req// /}," in *browser*) names="$names agent-browser" ;; esac
+  for n in $names; do
+    d="$(_pi_skill_dir "$n")" || { warn "pi skill '$n' is not on disk (looked in ~/.claude/skills, ~/.agents/skills, $_brain_root/setup/.claude/skills): this executor goes without it" >&2; continue; }
+    case "$d" in *[[:space:]]*) warn "pi skill '$n' lives at a path with whitespace ($d): it cannot travel as one word, skipped" >&2; continue ;; esac
+    printf '%s %s\n' "$n" "$d"
+  done
+}
+_pi_skills() {  # one "<name> <dir>" line per skill this dispatch carries: the decided ones, then the lane's own
+  _pi_decided_skills
+  _pi_project_skills
+}
+# THE LAUNCH LINE HAS A CEILING. herdr's `agent start` TYPES `<agent> <args>` into the pane's shell, and a tty reads
+# a line of at most 1024 bytes (macOS MAX_CANON): the rest is dropped. MEASURED 2026-10-12 (live proof of the pi parity
+# task): a product-lane pi executor with 13 `--skill <absolute path>` arguments was typed only up to the middle of the
+# eleventh path, pi never ran, and hw reported "pi did NOT start". The skills hw DECIDES (judgment-day, agent-browser) are at most two paths; a
+# product lane's own skills are as many as its repo tracks, so they travel as ONE argument: a directory of symlinks, one
+# per skill. MEASURED: `pi --skill <dir>` loads every skill under it, symlinks followed. The directory is named by the
+# hash of its contents, outside every repo (`$HOME/.local/share/hw/pi-skills/<hash>`), is created at launch
+# (`_pi_project_skills_prepare`, never by a dry run) and is shared by every run with the same skill set.
+_pi_project_skill_dir() {  # prints the directory for this dispatch's project skills; nothing is created
+  local lines key
+  lines="$(_pi_project_skills 2>/dev/null)"
+  [ -n "$lines" ] || return 1
+  key="$(printf '%s\n' "$lines" | shasum -a 256 | cut -c1-16)"
+  printf '%s/pi-skills/%s' "${HW_PI_SKILLS_ROOT:-$HOME/.local/share/hw}" "$key"
+}
+_pi_project_skills_prepare() {  # creates that directory and its symlinks; 0 also when there are no project skills
+  local dir n d
+  dir="$(_pi_project_skill_dir)" || return 0
+  mkdir -p "$dir" || { warn "pi project skills: cannot create $dir" >&2; return 1; }
+  while read -r n d; do
+    [ -n "$d" ] || continue
+    [ -L "$dir/$n" ] && [ "$(readlink "$dir/$n")" = "$d" ] && continue
+    # `-n`: never follow an existing link into the skill's own directory — a second launch preparing the same set at the
+    # same moment would otherwise create `<checkout>/.claude/skills/<n>/<n>` inside the product repo (Judgment Day
+    # round 2, both judges). `-f` replaces a stale link in one step; a link is never `rm -rf`'d.
+    ln -sfn "$d" "$dir/$n" || { warn "pi project skills: cannot link $d into $dir" >&2; return 1; }  # MUTATION-ANCHOR: 991-M12
+  done < <(_pi_project_skills)
+  return 0
+}
+_pi_skill_args() {
+  local n d out="" pdir
+  while read -r n d; do [ -z "$d" ] || out="$out --skill $d"; done < <(_pi_decided_skills)
+  if pdir="$(_pi_project_skill_dir)"; then out="$out --skill $pdir"; fi  # MUTATION-ANCHOR: 991-M10
+  printf -- '-ns%s' "$out"  # MUTATION-ANCHOR: 986-M01
 }
 
 _build_agent_args() {
@@ -5114,6 +5683,44 @@ _build_agent_args() {
           *) die "codex --effort must be one of: low medium high xhigh max ultra (got: $EFFORT)" ;;
         esac
       fi
+      ;;
+    pi)
+      # pi has NO permission prompts to skip or keep: its tools run unasked, and
+      # the only gate is an extension's `tool_call` veto — which is where hw's
+      # write guard lives (setup/pi/hw-executor.ts). So `ask` cannot be honoured.
+      [ "${PERMISSIONS:-skip}" = skip ] \
+        || die "--permissions ask cannot be honoured on pi: pi has no permission prompts, only the tool_call veto hw's guard already uses. Drop --permissions ask, or use --agent claude."
+      if [ -n "$MODEL" ]; then
+        case "$MODEL" in
+          -*|*' '*|*$'\t'*|*$'\n'*|*'*'*|*'?'*|*'['*)
+            die "hw cannot safely pass this pi model as one literal argument (got: $MODEL)" ;;
+          */*) AGENT_ARGS="$AGENT_ARGS --model $MODEL" ;;
+          *)   die "pi needs provider/model, e.g. opencode-go/deepseek-v4-pro (got: $MODEL). List them with: pi --list-models opencode-go" ;;
+        esac
+      fi
+      # THINKING BY KIND when --effort is not given (the operator's ruling of
+      # 2026-10-11: quota is spent on thinking): explore (mechanical, probes)
+      # off, everything else low. Never high/xhigh/max by default. Shown in the manifest's effort line as a default.
+      # A fresh launch only: a reused pane keeps its own, and a defaulted
+      # EFFORT would read as a requested one that a live session cannot honour.
+      if [ -z "$EFFORT" ] && [ -z "${_REUSE_PANE:-}" ]; then
+        case "$(_brief_kind_for_close)" in
+          explore)      EFFORT=off ;;
+          *)            EFFORT=low ;;
+        esac
+        PI_EFFORT_SRC="default; pi roster, kind $(_brief_kind_for_close || true)"
+      fi
+      case "$EFFORT" in
+        "") ;;
+        off|minimal|low|medium|high|xhigh|max) AGENT_ARGS="$AGENT_ARGS --thinking $EFFORT" ;;
+        *) die "pi --effort must be one of: off minimal low medium high xhigh max (got: $EFFORT)" ;;
+      esac
+      # TWO STEPS, NOT ONE ASSIGNMENT: an assignment's status is that of its LAST command substitution, so
+      # `A="$(extension_args) $(skill_args)" || exit 1` tested skill_args (always 0) and a `die` inside
+      # extension_args (no adapter, no herdr integration) only ended its own subshell — the launch went on
+      # with no write guard and no turn-end hook (Judgment Day, 2026-10-11).
+      PI_EXT_ARGS="$(_pi_extension_args)" || exit 1  # MUTATION-ANCHOR: 986-M13
+      AGENT_ARGS="$AGENT_ARGS $PI_EXT_ARGS $(_pi_skill_args)"
       ;;
   esac
   AGENT_ARGS="${AGENT_ARGS# }"
@@ -5643,6 +6250,15 @@ _validate_sdd_gentle() {
     *" gentle "*) ;;
     *) die "--sdd must be speckit or none (got: gentle)" ;;
   esac
+  # pi's reason is NOT "no per-launch system prompt": pi has `--append-system-prompt`. MEASURED 2026-10-12
+  # (second pi parity task; gentle home 4.0.0): the mode is the ODD block PLUS a PreToolUse Bash hook
+  # (`--settings guard-settings.json` -> deny-gentle-real-home.py, which keeps the run off the real home)
+  # PLUS two skills from a Claude plugin dir. hw wires none of the last two into pi, and no pi run of ODD
+  # has been observed: a prompt block without its guard is not the mode. UNESTABLISHED: whether a pi port
+  # (block via --append-system-prompt, skills via --skill, the guard in the adapter's tool_call) would hold.
+  if [ "$AGENT" = pi ]; then  # MUTATION-ANCHOR: 991-M01
+    die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code. pi can take the ODD block (--append-system-prompt), but hw wires neither of its other two parts into pi: the guard hook that keeps the run off the real home (guard-settings.json, a Claude --settings file) and the two skills (a Claude plugin dir), and no pi run of ODD has been observed. pi runs ${PROJ:-this lane} with --sdd none. Nothing was built. Use --sdd none, or --agent claude for gentle."
+  fi
   [ "$AGENT" = claude ] \
     || die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code, because ODD enters the executor's system prompt through Claude's --append-system-prompt-file and $AGENT has no per-launch equivalent here. Nothing was built. Add --agent claude."
   [ "$HERE" != 1 ] \
@@ -5942,7 +6558,16 @@ _validate_sdd_vendor_pair() {  # MUTATION-ANCHOR: 164-M05
   vendor="$1"; requested="$2"; surface="$3"; inherited="${4:-}"
   _resolve_effective_sdd_mode "$requested" "$surface" "$inherited"
   case "$vendor:$SDD_EFFECTIVE_MODE" in
-    codex:""|codex:none|opencode:""|opencode:none|claude:*) return 0 ;;
+    codex:""|codex:none|opencode:""|opencode:none|pi:""|pi:none|claude:*) return 0 ;;
+    pi:*)
+      # pi is none-mode only (setup/briefs/pi-vendor-v1.md, V1): no Spec Kit or
+      # gentle entry exists for it, the same posture codex started from.
+      # In a lane whose checkout carries speckit-* skills (a product lane) an UNTYPED --sdd resolves to speckit
+      # from the disk (_resolve_effective_sdd_mode): say so, or the refusal names a flag nobody passed.
+      local sdd_why=""
+      [ -n "$requested" ] || sdd_why=" (not typed: resolved from the speckit-* skills on disk in $surface)"  # MUTATION-ANCHOR: 991-M02
+      die "pi framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd $SDD_EFFECTIVE_MODE${sdd_why} has no pi entry (pi runs --sdd none only). Nothing was built. Use --sdd none, or --agent claude for a framework flow."
+      ;;
     codex:speckit)
       die "Codex framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd $SDD_EFFECTIVE_MODE requires a demonstrated native entry and completed flow, but that capability is unverified. Nothing was built. Use --sdd none for direct delivery, or validate Codex framework execution before re-dispatching."
       ;;
@@ -6344,6 +6969,71 @@ _specialist_agents() {
     | sort | tr '\n' ' ' | sd ' $' '' || true
 }
 
+# ── a pi executor does not delegate to .claude/agents; it follows the procedure inline ──
+#
+# MEASURED 2026-10-12 (setup/briefs/pi-ro-paridad.md; pi 1.1.0, pi-subagents 0.77.0): pi-subagents
+# discovers agents in ~/.pi/agent/agents, ~/.agents, <repo>/.pi/agents and <repo>/.agents — never
+# `.claude/agents`. So the list `_specialist_agents` reads from disk is true of a Claude or OpenCode
+# executor and FALSE of a pi one: it was told to "delegate rather than doing it inline" to agents it
+# cannot run. Nothing is written into the product repo (its `.pi/agents` or `.agents`), and
+# `~/.pi/agent/agents` is global to every lane, so the specialist whose job is a PROCEDURE —
+# ops-investigator, read-only prod lookups — travels as TEXT: the brainer's copy of its definition
+# (`<brain>/<lane>/.claude/agents/ops-investigator.md`, the file the mirror ledger tracks), read at
+# dispatch so it cannot drift, minus its frontmatter, plus what changes under pi.
+#
+# READS GLOBALS like _brief_preamble: BRAIN, PROJ.
+_pi_ops_procedure_file() {
+  local f="${BRAIN:-}/${PROJ:-}/.claude/agents/ops-investigator.md"
+  [ -n "${PROJ:-}" ] && [ -f "$f" ] && printf '%s' "$f"
+  return 0
+}
+
+# Which of the specialists (`.claude/agents`) pi CAN delegate to: the ones this worktree also tracks as a pi
+# agent (`.pi/agents/<name>.md`, what a lane may generate from `.claude/agents`) AND that hw has made reachable
+# (pi-subagents loaded, PI_SUBAGENT_EXTRA_AGENT_DIRS pointing at that directory — see _pi_extra_agent_dir).
+_pi_delegable_agents() {  # $1 = work dir, $2 = the specialists on disk -> the delegable ones, space-separated
+  local dir="$1" n out=""
+  [ -n "$dir" ] && [ -n "$(_pi_extra_agent_dir "$dir")" ] && _pi_subagents_ready || return 0  # MUTATION-ANCHOR: 991-M05
+  for n in $2; do [ -f "$dir/.pi/agents/$n.md" ] && out="$out $n"; done
+  printf '%s' "${out# }"
+}
+
+_pi_specialist_note() {  # $1 = the specialists on disk (may be empty)
+  local list="$1" proc deleg rest="" n model
+  proc="$(_pi_ops_procedure_file)"
+  deleg="$(_pi_delegable_agents "${HW_WORKDIR:-}" "$list")"
+  for n in $list; do case " $deleg " in *" $n "*) ;; *) rest="$rest $n" ;; esac; done
+  rest="${rest# }"
+  model="${HW_PI_ASKED_MODEL:-${MODEL:-}}"
+  if [ -n "$deleg" ]; then
+    printf 'This executor is pi. The specialist subagents of this lane (%s) are Claude Code agents, and pi-subagents does\nnot read `.claude/agents`. DELEGABLE: %s — this repo tracks a pi copy of each in `.pi/agents`, and hw has pointed\npi-subagents at this worktree'"'"'s. Call the `subagent` tool with agent "<name>" and ALWAYS pass `model: "%s"`:\ntheir files pin an openai-codex model this machine'"'"'s login cannot refresh (measured: a 401 and a failed mission),\nso a call without `model` fails. Your guards travel with each child (a child'"'"'s write into a protected tree or read of\na secret path is refused like yours). Remote access is still NOT granted by delegating: ops-worker reaches remote hosts over\nssh, and runs only what your brief authorizes (destination and operation, quoted from the operator\nwith its requested_by line); otherwise stay local and report it blocked.' \
+      "$list" "$deleg" "${model:-the opencode-go model you run on}"
+    if [ -n "$rest" ]; then
+      printf '\nNOT delegable (only in `.claude/agents`): %s — do their job inline with your own tools, or report it blocked.' "$rest"
+    fi
+  else
+    printf 'This executor is pi. The specialist subagents of this lane%s are Claude Code agents, and pi-subagents does\nnot discover `.claude/agents`: you CANNOT delegate to them, so do not try, and do not report one of them\nmissing as a blocker. If one of their jobs is yours, do it inline with your own tools, or report it blocked.' \
+      "${list:+ ($list)}"
+  fi
+  [ -n "$proc" ] || return 0  # MUTATION-ANCHOR: 989-M08
+  printf '\n\nops-investigator (read-only operations lookups) is the one whose job is a\nprocedure, so its definition is below and you follow it yourself, inline. Your tools are pi'"'"'s\n(bash, read, grep, find, the hw_engram memory tools), not the Claude tool list its header names.\n\n--- ops-investigator: procedure (from %s) ---\n' "$proc"
+  awk 'NR==1 && $0=="---" { fm=1; next } fm && $0=="---" { fm=0; next } !fm' "$proc"  # MUTATION-ANCHOR: 989-M09
+  printf '%s\n' '--- end of the ops-investigator procedure ---
+
+WHAT CHANGES FOR YOU UNDER pi (these override the procedure above where they differ):
+- REMOTE ACCESS IS NOT GRANTED BY THIS PROCEDURE. ssh, scp, cloud CLIs and API calls to a host run only when your
+  brief names the destination and the operation (an authorization quoted from the operator, with its requested_by
+  line). Where it does not, stay local, report it blocked and do not probe the destination. Do not discover or reuse
+  an ambient ssh agent, ControlMaster socket or authenticated session.
+- Secrets: a read guard refuses your read, grep and bash any path under ~/.ssh, any .env* file, *.db, *.credentials,
+  *.pem, *.key and secrets/. `ssh -i ~/.ssh/<key>` is allowed (the key is used, not read); under --sandbox ~/.ssh is
+  unreadable to the OS, so ssh cannot load its key at all. A refused read is a blocker to report, never a thing to
+  route around: a step that sources an .env file is unavailable to you, say so.
+- Memory: your tools are mcp__hw_engram__mem_search / mem_get_observation / mem_save, not mcp__engram__*.'
+  local extra="${BRAIN:-}/${PROJ:-}/pi-ops-overrides.md"
+  if [ -f "$extra" ]; then printf '\n'; cat "$extra"; fi
+}
+
 # ── what closes a CODE task: Judgment Day over the branch, then the report ──
 #
 # THE FLOW IS brainer → executor → Spec Kit (optional) →
@@ -6679,7 +7369,11 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
     preamble="$(printf '%s\n\nYour engram session is %s, registered by hw under %s for this work\ndirectory. Pass session_id: %s with project: %s on every mem_save; without\nit, engram may file the save into manual-save-%s, which it can refuse.\ndone-invoker checks it: a done report must name at least one observation as\n#<id>, and that id must exist under %s, or the report is refused.' \
       "$preamble" "$HW_ENGRAM_SESSION" "${ENGRAM_PROJECT:-brain}" "$HW_ENGRAM_SESSION" "${ENGRAM_PROJECT:-brain}" "${ENGRAM_PROJECT:-brain}" "${ENGRAM_PROJECT:-brain}")"
   fi
-  if [ -n "$specialists" ]; then
+  # A pi executor cannot delegate to .claude/agents (see _pi_specialist_note): it is told so, and handed the
+  # ops-investigator procedure to follow itself.
+  if [ "${HW_EXECUTOR_VENDOR:-${AGENT:-}}" = pi ] && { [ -n "$specialists" ] || [ -n "$(_pi_ops_procedure_file)" ]; }; then  # MUTATION-ANCHOR: 989-M07
+    preamble="$(printf '%s\n\n%s' "$preamble" "$(_pi_specialist_note "$specialists")")"
+  elif [ -n "$specialists" ]; then
     preamble="$(printf '%s\n\nSpecialist subagents available here: %s. If one of them is the job, delegate\nrather than doing it inline — they carry the access and the conventions for it,\nand reconstructing those in your own session is how a mechanism gets improvised.' "$preamble" "$specialists")"
   else
     # SAY SO WHEN THERE ARE NONE. An empty list used to omit the line, and an
@@ -7075,9 +7769,81 @@ _send_brief() {
 # devices, not a transport detail. Deliberately NOT taken here.
 _vendor_has_native_transport() {
   case "${1:-}" in
-    ""|claude|codex) return 1 ;;
+    ""|claude|codex|pi) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+# THE `processed` PROOF OF A pi BRIEF. opencode proves it with a channel-send receipt (a
+# completed assistant response parented to the message); pi has no endpoint to ask, but its
+# adapter (setup/pi/hw-executor.ts) sees every message that reaches the session and writes
+# the sha256 of each to <run>/pi-inputs.jsonl. So the proof is the same claim, read from the
+# receiver's own side: a message with THIS brief's hash entered pi's conversation — not that
+# herdr typed something and a turn happened to open (the claude level, and what pi had).
+# Exact bytes first; the normalised form second (MEASURED: pi's editor expands every TAB to four spaces and
+# nothing else of a herdr paste; CRLF and trailing newlines are the other usual drift), and the receipt says
+# which one matched, because a terminal that cuts a long paste would match neither.
+_pi_inputs_file() { printf '%s/pi-inputs.jsonl' "${1:-$WT/.hw/$HW_RUN}"; }
+_pi_inputs_count() { local f; f="$(_pi_inputs_file "${1:-}")"; [ -r "$f" ] && wc -l < "$f" | tr -d ' ' || printf 0; }
+_pi_normalized_sha() {  # <text> -> sha256 of the text the way the adapter normalises it
+  printf '%s' "$1" | python3 -c '
+import hashlib, re, sys
+t = sys.stdin.buffer.read().decode("utf-8", "replace")
+t = re.sub(r"\r\n?", "\n", t)
+t = t.replace("\t", "    ")
+t = re.sub(r"\n+$", "", t)
+print(hashlib.sha256(t.encode()).hexdigest())'
+}
+# <rundir> <text> <baseline line count> -> prints "exact", "normalized" or "none <seen>" and
+# returns 0 only for a match; polls HW_PI_PROCESSED_WAIT_MS.
+_pi_processed() {
+  local rundir="$1" text="$2" base="$3" f exact norm waited=0 budget="${HW_PI_PROCESSED_WAIT_MS:-20000}" r seen=0
+  f="$(_pi_inputs_file "$rundir")"
+  exact="$(printf '%s' "$text" | shasum -a 256 | cut -d' ' -f1)"
+  norm="$(_pi_normalized_sha "$text")"
+  while :; do
+    if [ -r "$f" ]; then
+      # MUTATION-ANCHOR: 986-M07
+      r="$(tail -n +"$((base + 1))" "$f" | jq -rs --arg e "$exact" --arg n "$norm" '
+            [ .[] | select(.source == "interactive") ] as $in
+            | if any($in[]; .sha256 == $e) then "exact"
+              elif any($in[]; .normalized_sha256 == $n) then "normalized"
+              else "none \($in | length)" end' 2>/dev/null || printf 'none 0')" || true
+      # MUTATION-ANCHOR-END: 986-M07
+      case "$r" in exact|normalized) printf '%s' "$r"; return 0 ;; esac
+      seen="${r#none }"
+    fi
+    [ "$waited" -ge "$budget" ] && break
+    sleep 1; waited=$((waited + 1000))
+  done
+  printf 'none %s' "${seen:-0}"
+  return 1
+}
+# The brief of a fresh launch, after herdr proved a turn opened: it is `processed` only when
+# the adapter saw THIS text. Returns 1 (and says why) when it did not.
+_pi_admit() {
+  local pane="$1" how="$2" bytes="$3" base="${4:-0}" got rc=0
+  got="$(_pi_processed "$WT/.hw/$HW_RUN" "$BRIEF_TEXT" "$base")" || rc=$?
+  if [ "$rc" = 0 ]; then
+    _receipt brief_admitted "yes — pi processed it: the adapter saw a message with the brief's sha256 ($got match; $how)" \
+      "setup/pi/hw-executor.ts input event -> $WT/.hw/$HW_RUN/pi-inputs.jsonl vs brief_sha256"
+    _receipt brief_delivery_id "${HW_RUN:-norun}:brief" "the id hw gives the brief's delivery on every vendor; for pi it is matched by hash, pi has no endpoint to key it on"
+    ok "brief IN THE CONVERSATION on $pane ($bytes bytes, from $BRIEF) — pi receipt: processed ($got sha256 match)"
+    return 0
+  fi
+  case "$got" in
+    "none 0")
+      _receipt brief_admitted "no — a turn opened but pi's adapter recorded no message within $(( ${HW_PI_PROCESSED_WAIT_MS:-20000} / 1000 ))s" \
+        "$WT/.hw/$HW_RUN/pi-inputs.jsonl is empty or absent after delivery"
+      warn "a turn opened on $pane, but pi's adapter (setup/pi/hw-executor.ts) recorded no message: it may not be loaded, and then the write guard is not running either" ;;
+    *)
+      _receipt brief_admitted "no — pi's adapter saw ${got#none } message(s), none with the brief's sha256" \
+        "$WT/.hw/$HW_RUN/pi-inputs.jsonl vs brief_sha256"
+      warn "pi received something on $pane that is NOT the brief the way hw sent it (the terminal may have cut or altered the paste)" ;;
+  esac
+  warn "THE BRIEF IS NOT PROVEN IN $pane's CONTEXT. Read what it holds: herdr agent read $pane --source recent-unwrapped"
+  _brief_undelivered "$pane" herdr "$pane" -
+  return 1
 }
 
 _resolve_strong_sender() {
@@ -7180,6 +7946,21 @@ _deliver_brief() {
         "  $HW_BIN_DIR/channel-send herdr $pane - \"\$(cat $BRIEF)\"" "$C_0"
       return 1
     fi
+  fi
+
+  # pi: the same second look as codex's, immediately before anything is typed. A dialog that
+  # rendered after _agent_start's single read would swallow the brief, and these wait for a person.
+  if [ "$pane_vendor" = pi ]; then
+    local pi_dialog
+    pi_dialog="$(herdr agent read "$pane" --source detection --lines 80 2>/dev/null | _pi_startup_dialog)" || true
+    case "$pi_dialog" in ""|press-any-key) ;; *)
+      warn "pi is holding a startup screen on $pane ($pi_dialog): NOTHING was typed — the brief would have landed in it and been lost"
+      _receipt brief_admitted "no — pi was holding $pi_dialog at delivery time, nothing typed" \
+        "herdr agent read $pane --source detection, read immediately before delivery"
+      warn "THE BRIEF IS NOT IN $pane's CONTEXT, and re-sending it is NOT the fix: these screens wait for a PERSON. Clear it on that pane first, then re-deliver:"
+      printf '  %s%s%s\n' "$C_DIM" "  $HW_BIN_DIR/channel-send herdr $pane - \"\$(cat $BRIEF)\"" "$C_0"
+      return 1 ;;
+    esac
   fi
 
   _next_load_invoker_lib
@@ -7299,11 +8080,17 @@ _deliver_brief() {
 
   # herdr route. --wait --until working turns "the text was typed" into "a turn
   # opened", which is the only claim worth printing.
+  local pi_base=0
+  [ "$pane_vendor" != pi ] || pi_base="$(_pi_inputs_count)"
   if out="$(herdr agent prompt "$pane" "$BRIEF_TEXT" \
               --wait --until working --timeout "${HW_TURN_WAIT_MS:-45000}" 2>&1)"; then
     if [ "$pane_vendor" = codex ]; then
       _codex_admit "$pane" "a turn opened" "$bytes" && return 0
       _codex_unproven "$pane"
+      return 1
+    fi
+    if [ "$pane_vendor" = pi ]; then  # MUTATION-ANCHOR: 986-M08
+      _pi_admit "$pane" "a turn opened" "$bytes" "$pi_base" && return 0
       return 1
     fi
     ok "brief IN THE CONVERSATION on $pane ($bytes bytes, from $BRIEF) — a turn opened"
@@ -7344,6 +8131,10 @@ _deliver_brief() {
       if [ "$pane_vendor" = codex ]; then
         _codex_admit "$pane" "replay over $r_route returned exit $r_rc" "$bytes" && return 0
         _codex_unproven "$pane" "${codex_unproven_reason:-replay outcome could not be established}"
+        return 1
+      fi
+      if [ "$pane_vendor" = pi ] && [ "$r_rc" = 0 ] && _turn_opened "$pane"; then
+        _pi_admit "$pane" "replayed once over $r_route" "$bytes" "$pi_base" && return 0
         return 1
       fi
       if [ "$r_rc" = 0 ] && _turn_opened "$pane"; then
@@ -7843,6 +8634,7 @@ _receipt_session() {
     claude)   resume="cd $WT && claude --resume $sid" ;;
     opencode) resume="cd $WT && opencode --session $sid   # read-only: opencode export $sid" ;;
     codex)    resume="cd $WT && codex resume $sid" ;;
+    pi)       resume="cd $WT && pi --session $sid" ;;
     *)        resume="unknown vendor '${vendor:-}' — no resume command is claimed for it" ;;
   esac
   _receipt session_resume "$resume" \
@@ -7882,7 +8674,7 @@ _receipt_session() {
 #   nothing asked             recorded, nothing to compare
 _receipt_model() {
   local pane="${1:-}" drc="${2:-0}" waited=0 budget="${HW_MODEL_WAIT_MS:-30000}"
-  local sid asked running="" why="" cfg f verdict tmp src=""
+  local sid asked running="" why="" cfg f verdict tmp src="" pi_thinking=""
   [ -n "${WT:-}" ] && [ -n "${HW_RUN:-}" ] || return 0
   [ "$drc" = 0 ] || budget=0
   asked="${MODEL_PINNED:-${MODEL:-}}"
@@ -7890,17 +8682,26 @@ _receipt_model() {
   # A vendor with no reader (codex) is not a fault: nothing was measured and
   # nothing is claimed, so it neither warns nor spoils the launch verdict.
   case "${AGENT:-}" in
-    claude|opencode) : ;;
+    claude|opencode|pi) : ;;
     *)
       _receipt model_running "n/a — hw has no model reader for vendor ${AGENT:-unknown}" "_receipt_model: no reader for this vendor"
       _receipt model_verdict "n/a — nothing measured for vendor ${AGENT:-unknown}; asked: ${asked:-<agent default>}" "_receipt_model: no reader for this vendor"
       return 0 ;;
   esac
+  # pi publishes its own record (setup/pi/hw-executor.ts), so no session id is needed to read it.
+  # (not `${sid:-pi}`: under --sandbox the receipt holds "none — … published no agent_session", non-empty, and the
+  # adapter's own record is read all the same)
+  [ "${AGENT:-}" != pi ] || sid=pi
   case "$sid" in
     ''|none*) why="no session id was recorded, so there is no session to read the model from" ;;
     *)
       while :; do
         case "${AGENT:-}" in
+          pi)
+            f="$WT/.hw/$HW_RUN/pi-runtime.json"
+            running="$(jq -r '.model_ref // empty' "$f" 2>/dev/null || true)"  # MUTATION-ANCHOR: 986-M05
+            pi_thinking="$(jq -r '.thinking // empty' "$f" 2>/dev/null || true)"
+            src="the model_ref in $f, published by setup/pi/hw-executor.ts from the session's own ctx.model" ;;
           claude)
             cfg="${ACCOUNT_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
             f=""
@@ -7951,7 +8752,29 @@ _receipt_model() {
   case "$verdict" in
     DIVERGENCE*) warn "DIVERGENCE  model: ${verdict#DIVERGENCE — }" ;;
   esac
+  [ "${AGENT:-}" != pi ] || _receipt_pi_thinking "$pi_thinking"
   return 0
+}
+
+# THE THINKING THAT RUNS, for pi: the extension publishes the level the session really has, and pi
+# CLAMPS a level the model does not support (measured 2026-10-11: --thinking off on
+# opencode-go/deepseek-v4.1-flash runs `low`). So `--thinking off` is a request, not a fact, and
+# the quota a probe was meant to spare is spent anyway: said here, not discovered on the bill.
+_receipt_pi_thinking() {
+  local got="$1" asked="${EFFORT:-}" verdict
+  local src="the thinking in $WT/.hw/$HW_RUN/pi-runtime.json, from pi.getThinkingLevel() in the session"
+  if [ -z "$got" ]; then
+    _receipt thinking_running "none — pi-runtime.json carried no thinking level" "$src"
+    _receipt thinking_verdict "UNESTABLISHED — the thinking level that runs could not be read; asked: ${asked:-<pi default>}" "$src"
+    warn "UNESTABLISHED  thinking: could not read the level this pi executor runs — asked ${asked:-<pi default>}"
+    return 0
+  fi
+  _receipt thinking_running "$got" "$src"
+  if [ -z "$asked" ]; then verdict="recorded — no --thinking was given, so pi's default ran"
+  elif [ "$got" = "$asked" ]; then verdict="match — asked $asked, running $got"
+  else verdict="DIVERGENCE — asked thinking $asked, the session runs $got (pi clamps a level the model does not support)"; fi  # MUTATION-ANCHOR: 986-M06
+  _receipt thinking_verdict "$verdict" "compared EFFORT with thinking_running"
+  case "$verdict" in DIVERGENCE*) warn "DIVERGENCE  thinking: ${verdict#DIVERGENCE — }" ;; esac
 }
 
 # INTENDED vs MEASURED, printed at the end of a launch. Divergence here is not a
@@ -7986,6 +8809,11 @@ _receipt_verdict() {
   case "$m" in
     DIVERGENCE*)   warn "DIVERGENCE  model: ${m#DIVERGENCE — }"; diverged=1 ;;
     UNESTABLISHED*) warn "UNESTABLISHED  model: ${m#UNESTABLISHED — }"; unestablished=1 ;;
+  esac
+  m="$(_receipt_get thinking_verdict || true)"
+  case "$m" in
+    DIVERGENCE*)    warn "DIVERGENCE  thinking: ${m#DIVERGENCE — }"; diverged=1 ;;
+    UNESTABLISHED*) warn "UNESTABLISHED  thinking: ${m#UNESTABLISHED — }"; unestablished=1 ;;
   esac
   # the effort: an opencode --effort is a claim until the live config says so
   if [ "$AGENT" = opencode ] && [ -n "${EFFORT:-}" ]; then
@@ -8350,8 +9178,8 @@ cmd_revive() {
   [ -n "$resume" ] \
     || _revive_die "run $(basename "$rundir") recorded no session_resume — its executor published no session id in time (see the session_id receipt line, if any), so the conversation is not addressable and hw will not guess at it by title. 58 of setup's 143 receipts are in this state; this is one of them."
   case "$vendor" in
-    claude|opencode|codex) ;;
-    *) _revive_die "session_vendor is '${vendor:-absent}', not one of claude|opencode|codex — no agent kind is claimed for it" ;;
+    claude|opencode|codex|pi) ;;
+    *) _revive_die "session_vendor is '${vendor:-absent}', not one of claude|opencode|codex|pi — no agent kind is claimed for it" ;;
   esac
   # Revival bypasses the normal launch router, so replay the recorded framework
   # contract before it can create a tab or start the recorded vendor.
@@ -8497,6 +9325,15 @@ cmd_revive() {
   # for the whole token, not a substring of some other flag.
   # The engram proxy is policy too, for codex as for claude below: its resume
   # records `resume <sid>` only, and `codex resume` takes -c.
+  # pi's guard, turn-end hook and engram proxy are its extensions: policy,
+  # appended exactly as a fresh launch does (_pi_extension_args).
+  if [ "$vendor" = pi ]; then
+    case " $AGENT_ARGS " in
+      *" -e $_brain_root/setup/pi/hw-executor.ts "*) ;;
+      *) PI_EXT_ARGS="$(_pi_extension_args)" || _revive_die "could not build pi's extension set"
+         AGENT_ARGS="$AGENT_ARGS $PI_EXT_ARGS $(_pi_skill_args)" ;;
+    esac
+  fi
   if [ "$vendor" = codex ] && [ "$PERMISSIONS" = ask ]; then
     case " $AGENT_ARGS " in *" -a "*) ;; *) AGENT_ARGS="$AGENT_ARGS -a on-request" ;; esac
   fi
@@ -9215,7 +10052,7 @@ _blocked_seconds_left() {  # <marker>
   local since now left
   since="$(_blocked_field "$1" since)"
   case "$since" in ''|*[!0-9]*) since="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s)" ;; esac
-  now="$(date +%s)"
+  now="${HW_ST_NOW:-}"; case "$now" in ''|*[!0-9]*) now="$(date +%s)" ;; esac   # the shadow's ONE clock per pair, setup/tests/960 # MUTATION-ANCHOR: 960-M01
   left=$(( since + $(_blocked_wait_hours) * 3600 - now ))
   [ "$left" -gt 0 ] || left=0
   printf '%s' "$left"
@@ -12283,7 +13120,7 @@ if [ "$1" = status ]; then
   _status_par_start release _release_quiet
   _status_par_start gate _gate_quiet
   _status_par_start outbox _outbox_quiet "$HW_STATUS_PROJECT"
-  _status_par_start worktrees _core_inline worktrees cmd_worktrees --quiet
+  _status_par_start worktrees _core_inline worktrees cmd_worktrees --quiet; _status_par_start agent_tools _agent_tools_quiet "$HW_STATUS_PROJECT"
   if [ -z "$HW_STATUS_PROJECT" ]; then
     _status_par_start tabs _tabs_quiet
     _status_par_start hygiene _hygiene_quiet
@@ -12295,7 +13132,7 @@ if [ "$1" = status ]; then
   [ -z "$_orph_tmp" ] || rm -f "$_orph_tmp"
   _status_par_replay release
   _status_par_replay gate
-  _status_par_replay outbox
+  _status_par_replay outbox; _status_par_replay agent_tools
   if [ -z "$HW_STATUS_PROJECT" ]; then
     _status_par_replay worktrees; _status_par_replay tabs; _status_par_replay hygiene; _status_par_replay rules; _status_par_replay decisions  # MUTATION-ANCHOR: 827-M02
   else
@@ -12476,7 +13313,7 @@ FLAGS
                        and nothing to do.
     --sdd <mode>       speckit | none. REQUIRED where a framework is in play.
                        `none` = deliberately outside the flow.
-    --agent <vendor>   claude | opencode | codex. Defaults per lane; see above.
+    --agent <vendor>   claude | opencode | codex | pi. Defaults per lane; see above.
     --model <m>        claude: an alias (opus, sonnet, haiku, fable) or claude-*.
                        opencode: provider/model, e.g. openai/<model>.
                        codex: a bare id, e.g. <model> (no provider/ prefix).
@@ -12959,6 +13796,80 @@ if [ "$1" = done ]; then
   cmd_done "$(_canon_project "$_dp")" "$_dt"; exit 0
 fi
 
+# ── hw-core, train T5: the dispatch (`hw <lane> <task> …`): its DRY RUN (T5a) and its LAUNCH (T5b) ──
+# Same switch as above (HW_IMPL, HW_IMPL_DISPATCH). `go` execs hw-core with `dispatch <argv>`, the launch included:
+# hw-core decides what the argv is (a `--dry-run` that is only an option's value is a launch, and parseFlags knows).
+# A dry run in `shadow`: bash answers for real (it writes the route forecast) and hw-core runs read-only after it;
+# the run id and the port opencode is told differ between two processes by construction, and a shell error names
+# the line of bin/hw it came from, so the comparison reads them as @RUN@, @PORT@ and @N@, and leaves out bash's own
+# `[: …: integer expression expected` (the contract's golden does too: contract-hw/world.sh), which hw-core does
+# not reproduce (_core_shadow_log). A LAUNCH in `shadow` is a writer, like T3's: hw-core runs FIRST with
+# HW_CORE_READONLY=1 and HW_CORE_PLAN=<file> (its reads of herdr and git are real, its mutating calls are recorded,
+# not made, and answered with the synthetic replies of the launch code), bash then launches for real, and
+# `hw-core shadow-verify --launch <plan>` compares the planned files with what bash left. Bash's stdout and stderr
+# are NOT captured (the launch is long and the user watches it) and so are not compared: the verdict is the status
+# and the files; the calls hw-core planned are not compared either (bash's are not observable), and the entry
+# says so (`"calls":"not compared"`, beside `differs`, never in it). A `--dry-run` argv in shadow stays the
+# output comparison of the dry run, even when the word is only an option's value (then bash launches, hw-core
+# plans nothing it should: a difference may be logged, nothing is done twice).
+_core_shadow_launch() {  # <core> <argv…> — Go read-only with a plan, then bash for real, then the plan against the files
+  local core="$1" tmp rc_b rc_g plan diffs="" verdict="" log
+  shift
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-shadow.XXXXXX")" || { warn "hw-core shadow: no temporary directory; running the bash implementation"; return 0; }
+  plan="$tmp/plan"
+  set +e
+  HW_CORE_READONLY=1 HW_CORE_PLAN="$plan" "$core" dispatch "$@" >"$tmp/g.out" 2>"$tmp/g.err" </dev/null; rc_g=$?
+  env $(_core_unset_impl) HW_IMPL=bash "$0" "$@"; rc_b=$?
+  [ -f "$plan" ] && { verdict="$(HW_SHADOW_BASH_RC="$rc_b" "$core" shadow-verify --launch "$plan" 2>&1)" || diffs="tree"; }
+  # A Go leg that is read-only cannot know a mutating call failed (herdr, git, the database): it goes on and succeeds where bash stopped.
+  # That direction is the leg's blindness, not a difference; Go failing where bash succeeded, or a different failure, is.
+  [ "$rc_b" = "$rc_g" ] || { [ "$rc_g" = 0 ] && [ "$rc_b" != 0 ]; } || diffs="status${diffs:+ $diffs}"
+  log="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-$HOME/.local/state}/hw/shadow.jsonl}"
+  { mkdir -p "$(dirname "$(_core_shadow_calls)")" && printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" dispatch >>"$(_core_shadow_calls)"; } 2>/dev/null || true
+  if [ -n "$diffs" ]; then
+    for s in b.out b.err g.out g.err; do : >"$tmp/$s.plain"; done
+    { mkdir -p "$(dirname "$log")" && jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg argv "dispatch $*" --arg tree "$verdict" \
+        --arg rb "$rc_b" --arg rg "$rc_g" --arg d "$diffs" \
+        '{at: $at, verb: "dispatch", argv: $argv, differs: ($d | split(" ")), calls: "not compared", bash_rc: ($rb | tonumber), go_rc: ($rg | tonumber), tree: $tree[0:800]}' >>"$log"; } 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+  exit "$rc_b"
+}
+# pi is a vendor of the bash implementation only: hw-core does not know it, and its answer for it would read as the
+# real one. A dispatch that names it stays on bash under every HW_IMPL, and SAYS so on stderr (one line, never stdout: a
+# dry run's stdout is the manifest). No lane's default vendor is pi (projects.json), so the argv is where pi is named; if
+# a lane ever defaults to it, hw-core refuses it loudly (core/t5.go: "--agent pi is not ported to hw-core yet").
+_core_pi_argv=0
+case " $* " in *" --agent pi "*|*" --agent=pi "*) _core_pi_argv=1 ;; esac
+_core_pi_stays_on_bash() {  # <mode> — the stated line of the fallback; the caller then goes on in bash
+  printf '  %s·%s hw: --agent pi is not in hw-core, so this dispatch runs on the bash implementation (HW_IMPL=%s)\n' "${C_DIM:-}" "${C_0:-}" "$1" >&2
+}
+case " $* " in
+  *" --dry-run "*)
+    _core_mode="$(_core_impl_for dispatch)"
+    if [ "$_core_mode" != bash ] && _core_usable dispatch; then
+      if [ "$_core_pi_argv" = 1 ]; then _core_pi_stays_on_bash "$_core_mode"; else
+      export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+      if [ "$_core_mode" = go ]; then exec "$_core_bin" dispatch "$@"; fi
+      _shadow_dispatch=1 _core_shadow "$_core_bin" dispatch "$@"
+      fi
+    fi
+    ;;
+  *)
+    case "${1:-}" in -*|"") ;; *)
+      if [ $# -ge 2 ]; then
+        _core_mode="$(_core_impl_for dispatch)"
+        if [ "$_core_mode" != bash ] && _core_usable dispatch; then
+          if [ "$_core_pi_argv" = 1 ]; then _core_pi_stays_on_bash "$_core_mode"; else
+          export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+          if [ "$_core_mode" = go ]; then exec "$_core_bin" dispatch "$@"; fi
+          _core_shadow_launch "$_core_bin" "$@"
+          fi
+        fi
+      fi ;;
+    esac
+    ;;
+esac
 _need_val "$@"   # guarded above too, but state it where the shift happens
 PROJ="$(_canon_project "$1")"; TASK="$2"; shift 2
 # THE LANE'S OWN DEFAULT, NOT `claude` EVERYWHERE. project_default_kind() has
@@ -13149,7 +14060,7 @@ if [ "$HERE" = 1 ] && [ "$TAB_EXPLICIT" = 1 ]; then
   die "--here and --tab are two different placements: --here splits your pane and drops the worktree, --tab gives the task its own tab and keeps it. Pick one."
 fi
 [ "$HERE" != 1 ] || TAB=0
-case "$AGENT" in claude|opencode|codex) ;; *) die "--agent must be claude, opencode or codex (got: $AGENT)" ;; esac
+case "$AGENT" in claude|opencode|codex|pi) ;; *) die "--agent must be claude, opencode, codex or pi (got: $AGENT)" ;; esac
 case "$SDD" in
   ""|speckit|none) ;;
   gentle) _validate_sdd_gentle ;;
@@ -13207,6 +14118,7 @@ _brain_guard_check
 _brain_guard_args
 _engram_proxy_args
 _artifacts_args
+_agent_tools_quiet "$PROJ" >&2
 # BEFORE _check_task and before anything is built. A contradiction between the
 # brief and the flags must cost nothing to discover.
 _check_brief_contract
@@ -13559,7 +14471,7 @@ VERIFY_CMDS_EOF
   if [ -n "$MODEL" ];  then mark="${MODEL_SRC:-chosen}"; else mark="inherited"; fi
   local model_line="model=${MODEL:-<agent default>}  ($mark)$(_model_suggestion_note)"  # MUTATION-ANCHOR: 159-M01
   [ -z "${MODEL_PINNED:-}" ] || model_line="$model_line  — the lane pins the alias $MODEL to $MODEL_PINNED (projects.json model_pins), so the CLI gets --model $MODEL_PINNED"
-  if [ -n "$EFFORT" ]; then mark="chosen"; else mark="inherited"; fi
+  if [ -n "${PI_EFFORT_SRC:-}" ]; then mark="$PI_EFFORT_SRC"; elif [ -n "$EFFORT" ]; then mark="chosen"; else mark="inherited"; fi
   local effort_line="effort=${EFFORT:-<agent default>}  ($mark)"
   # HOW IT REACHES THE VENDOR, spelled out per vendor rather than left to be
   # inferred from AGENT_ARGS. claude and codex carry it as a CLI flag, already
@@ -13739,6 +14651,7 @@ VERIFY_CMDS_EOF
     claude:ask)    PERMISSIONS_LINE="ask  ($PERMISSIONS_SRC) — no skip flag; the executor WAITS on every permission dialog, and nothing answers it in an unattended pane" ;;
     opencode:ask)  PERMISSIONS_LINE="ask  ($PERMISSIONS_SRC) — no --auto; a prompt is reported blocked reason=permission, and a person has to answer it" ;;
     codex:ask)     PERMISSIONS_LINE="ask  ($PERMISSIONS_SRC) — -a on-request; the executor WAITS on an approval nobody answers in an unattended pane" ;;
+    pi:skip)       PERMISSIONS_LINE="skip  ($PERMISSIONS_SRC) — pi has no permission prompts; hw's write guard is the tool_call veto in setup/pi/hw-executor.ts" ;;
   esac
   local provider_line
   case "$AGENT" in
@@ -13885,6 +14798,40 @@ VERIFY_CMDS_EOF
     DESIGN_LINE="judged before code — boundary: $(_brief_boundary | cut -c1-96)  (done-invoker refuses done without an APPROVED design-judgment.md)"
   fi
 
+  # pi's own fields, only for pi: every other vendor's manifest stays byte-identical.
+  local PI_LINES=""
+  if [ "$AGENT" = pi ]; then
+    local pi_fb pi_sk pi_sub
+    pi_fb="$(_pi_fallback_model)"
+    pi_sk="$(_pi_skills 2>/dev/null | cut -d' ' -f1 | paste -sd, - | sed 's/,/, /g')"
+    if _pi_subagents_ready; then
+      pi_sub="pi-subagents loaded (-e $(_pi_subagents_dir)/index.js); the write guard is a REQUIRED child extension, so a subagent is guarded like its parent"
+    else
+      pi_sub="NOT LOADED — pi-subagents is not installed under $(_pi_subagents_dir), or lacks src/api/required-child-extensions.js, so a child could not carry the write guard (pi install npm:pi-subagents)"
+    fi
+    local pi_spec pi_proc pi_co pi_list pi_deleg
+    pi_proc="$(_pi_ops_procedure_file)"
+    # A dry run has no worktree yet: the lane's checkout is the stand-in for what the worktree will carry.
+    pi_co="$(_lane_main_checkout "${PROJ:-}" 2>/dev/null || true)"; pi_co="${pi_co:-${dir:-}}"
+    pi_list="$(_specialist_agents "$pi_co")"
+    pi_deleg="$(_pi_delegable_agents "$pi_co" "$pi_list")"
+    if [ -n "$pi_deleg" ]; then
+      pi_spec="DELEGABLE through pi-subagents: $pi_deleg (the worktree's tracked .pi/agents, reached by PI_SUBAGENT_EXTRA_AGENT_DIRS because -na leaves the project untrusted; every call must pass model, their files pin openai-codex); any other .claude/agents specialist is not delegable, and the preamble says so"
+    else
+      pi_spec="the lane's .claude/agents are NOT delegable: pi-subagents does not discover them, and the preamble says so"
+    fi
+    if [ -n "$pi_proc" ]; then
+      pi_spec="$pi_spec; the ops-investigator procedure is injected inline (from ${pi_proc/#$HOME/~})"
+    else
+      pi_spec="$pi_spec; no ops-investigator procedure in this lane's brain directory, so none is injected"
+    fi
+    PI_LINES="
+  pi fallback  ${pi_fb:-none (the model already is the roster fallback)}${pi_fb:+  (HW_PI_FALLBACK_MODEL, thinking $PI_FALLBACK_THINKING: a terminal MODEL error switches to it by itself and writes the switch in the receipt; a spent QUOTA does not — the cap is shared dollars)}
+  pi skills    ${pi_sk:-none}  (-ns: discovery off; only what hw decides, not ~/.pi/agent/skills)
+  pi subagents $pi_sub
+  pi specialists $pi_spec"
+  fi
+
   # Off the setup lane only, so a setup dispatch reads exactly as it did.
   local guard_line=""
   if _brain_guard_applies && ! _brain_guard_present; then
@@ -13895,6 +14842,7 @@ VERIFY_CMDS_EOF
     case "$AGENT" in
       claude)   guard_line="--plugin-dir $(_brain_guard_claude_plugin)  $why" ;;
       opencode) guard_line="OPENCODE_CONFIG=$(_brain_guard_opencode_config)  $why" ;;
+      pi)       guard_line="HW_PI_BRAIN_GUARD=1 (setup/pi/hw-executor.ts asks $(_brain_guard_dir)/deny_brain_writes.py in tool_call)  $why" ;;  # MUTATION-ANCHOR: 986-M04
       *)        guard_line="NOT APPLIED — $AGENT loads none, so nothing stops this executor writing in brain" ;;
     esac
     guard_line="
@@ -13910,7 +14858,7 @@ dispatch $PROJ:$TASK  run=$run_label
   $effort_line
   agent       $agent_line
   account     $ACCOUNT_LINE
-  subagents   $SUBAGENT_MODEL_LINE
+  subagents   $SUBAGENT_MODEL_LINE${PI_LINES}
   permissions $PERMISSIONS_LINE
   artifacts   $ARTIFACTS_LINE$guard_line
   provider    $provider_line

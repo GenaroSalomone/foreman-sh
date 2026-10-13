@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The card says how long an executor has worked and marks one that stopped moving
 #
-# cockpit/hooks/view.tsx draws, on a WORKING card, `working 3h12m · turn 41m`; when the card's
+# cockpit/hooks/view.tsx draws, on a WORKING card, `● working 3h12m · turn 41m`; when the card's
 # last_progress_at is older than rules.no_progress_after_ms (the writer's one constant, read from the
-# file) it adds `no progress 47m` in the attention colour and colours the card's border; and a queued
-# ruling says how old it is (`1 ruling queued 25m`). The tests are in cockpit/hooks/register.test.ts
+# file) its attention line says `no progress 47m` in the attention colour and the card's border takes it;
+# and a queued ruling says how old it is (`1 ruling queued 25m`). The card's layout is 971's. The tests are in cockpit/hooks/register.test.ts
 # and run with 801's `claude plugin test`; this subject proves they are not decoration: each mutant of
 # the mod below must turn red THE TEST THAT NAMES ITS RULE (a mutant that only trips the 40-row
 # timing test, which is a load-dependent budget, is not a kill).
@@ -29,7 +29,7 @@ run_tests() { ( cd "$1" && claude plugin test . ) >"$2" 2>&1; }
 cat > "$TMP/mutants" <<'M'
 threshold ignored (any age is no progress) @@ hooks/view.tsx @@ return age > thresholdMs ? age : null @@ return age > 0 ? age : null @@ whose last progress is older than hw
 threshold copied into the mod instead of read from the file @@ hooks/view.tsx @@ thresholdMs: m.state?.rules.no_progress_after_ms ?? Infinity @@ thresholdMs: 1_800_000 @@ the threshold is the one in the file
-a stalled card keeps the plain colour @@ hooks/view.tsx @@ color={dim ? undefined : STALL_COLOR} @@ color={undefined} @@ drawn in the attention colour
+a stalled card keeps the plain colour @@ hooks/view.tsx @@ color={dim ? undefined : loud ? 'red' : STALL_COLOR} @@ color={undefined} @@ drawn in the attention colour
 a stalled card keeps its border @@ hooks/view.tsx @@ stalled !== null ? STALL_COLOR : badge.color @@ badge.color @@ drawn in the attention colour
 a card with no progress time is marked @@ hooks/view.tsx @@ r.last_progress_at === null) return null @@ false) return null @@ with no progress time is not marked
 the ruling's age is lost @@ hooks/view.tsx @@ r.rulings_pending.oldest_at === null ? '' : @@ true ? '' : @@ a queued ruling says how old

@@ -1,0 +1,75 @@
+OTHER COMMANDS
+    hw                              interactive brief picker
+    hw status                       what is running, and what never closed
+    hw receipt <project> <task>     what was MEASURED, next to what was dispatched
+    hw log <project> <task>         what was asked, ruled and reported, from disk
+    hw outbox [<project>]           reports that never reached a brainer, waiting on disk
+    hw outbox flush [<project>] --to <pane>
+                                    redeliver them to that brainer pane (`brain <lane>`
+                                    does it on open; an uncertain one is never resent)
+    hw reports [<project>]           one line per task: which reports are on disk
+    hw reports <project> <task>      the report text for one task
+    hw reports <project> --full      the report text for every task in the lane
+    hw cockpit-state [--once|--loop N]
+                                    write the file the brainer's cockpit panel reads
+                                    (`brain` keeps it fresh; the invokers refresh it on events)
+    hw output tree <path>...        executor declaration of repository-tree output
+    hw output none | outside <ref>  executor declaration of no-tree / external output
+    hw stage                        brainer check: which executor declared each staged path
+    hw train add <project> <task>   merge the task's branch into train-<project>; only a
+                                    setup/test-budgets.json conflict is resolved, any other
+                                    is named with the task that should resolve it
+    hw train status <project>       the tasks the train carries over the base
+    hw train push <project>         full suite (setup/verify-for-push) on the train, then
+                                    advance the base keeping uncommitted edits in the
+                                    checkout; prints the remote pushes, does not run them
+    hw done <project> <task> [--drop-db] [--force]
+        Refuses a pane it cannot establish is free: a task that never reported,
+        a pane WORKING right now, or turns that ended in it after its report
+        and hw did not dispatch. --force is the only exit. A pane that only has
+        not finished the turn that SENT its report is waited for (up to
+        HW_DONE_TURN_WAIT seconds, default 60), then closed. The `hw revive`
+        command prints BEFORE the close, not after it. After the close it reaps
+        its own task exactly as `hw reap --apply` would: merged, clean and
+        unoccupied, its outputs archived and its database dumped first.
+    hw done <project> <task> --keep-preview [<duration>] --why "<who still reads it>"
+        Releases the AGENT and keeps the preview: tab, dev server, ports and
+        database survive, under a lease that expires (default 4h, max 24h).
+        For the gap between "implementation finished" and "the audit or the
+        human has looked at it" — the gap that otherwise costs a whole idle
+        executor per preview.
+
+    hw preview                          what is being held, by whom, until when
+    hw preview release <project> <task> end a lease early
+                                    close the tab, free the DB and ports.
+                                    Removes no worktree and deletes no branch.
+    hw ruling <pane> "<correction>" [--dry-run]
+        Queue a correction for an executor that is STILL WORKING. Every
+        queued one (up to 5 undelivered) is delivered at that executor's next
+        turn end, in the order sent -- nothing is stopped, no
+        session is killed, and you do not wait. This is the third exit
+        `channel-send --ruling` refuses into; `hw done` is NOT one, and using it
+        for a correction costs the executor its whole session context.
+        For a receiver already idle or done, channel-send --ruling delivers now.
+        An executor that reported --blocked is KEPT waiting: a ruling to it
+        RESUMES that same task in the same session (sent now) and it reports
+        again with its own done-invoker.
+
+    hw next <pane> [--force] [--dry-run] [--sdd <mode>] [--run <id>] "<task>" | --brief <path>
+        --run <id>: the run `hw revive` brought back, when it is not the newest
+        under the pane's .hw. A revived run that reported takes task N+1 with its
+        own done-invoker (no --retask); a reported run NOT revived is refused,
+        naming `hw revive`. Without --run nothing changes.
+        Flags may appear before or after the task text. Without --sdd the
+        effective live worktree surface is measured and incompatible vendor/mode
+        pairs are refused before task creation or delivery. The launch record is
+        only a fallback when that measurement yields no mode, not authoritative.
+        --dry-run checks compatibility too, without changing the surface.
+                                     hand the NEXT task to an executor already alive
+    hw wait <pane> [pane ...] [--timeout-ms <ms>] [--dry-run]
+                                    launch concurrent witness-backed waits in a separate
+                                    unfocused monitor tab, then return immediately so the
+                                    brainer remains reachable. One target finishing never
+                                    drops the others. --dry-run witnesses each target once
+                                    and creates no tab.
+

@@ -144,7 +144,7 @@ unset _v 2>/dev/null || true
 # HW_IMPL (and HW_CORE, the binary it routes to, and HW_SHADOW_JSONL, where shadow writes) ARE INPUTS THIS DIRECTORY OWNS, since the Go pilot (core/): `HW_IMPL=go|shadow
 # bash setup/test-hw` runs the whole suite through hw-core for the verbs it has (bin/hw's
 # shim). Unset it and the answer is bash's, which is the default and the rollback.
-_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING HW_IMPL HW_CORE HW_SHADOW_JSONL "  # MUTATION-ANCHOR: 54-M02
+_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING HW_IMPL HW_CORE HW_SHADOW_JSONL HW_TEST_TMPROOT "  # MUTATION-ANCHOR: 54-M02
 for _v in ${!HW_@}; do  # MUTATION-ANCHOR: 54-M01
   case "$_HW_TEST_INPUTS" in *" $_v "*) continue ;; esac
   unset "$_v" 2>/dev/null || true
@@ -155,6 +155,9 @@ unset _v _HW_TEST_INPUTS 2>/dev/null || true
 # 09 passes ENGRAM_PROJECT explicitly where it needs one, and 13 asserts about
 # the namespace by reading hw's output rather than its own environment.
 unset ENGRAM_PROJECT AGENT_BROWSER_NAMESPACE 2>/dev/null || true  # MUTATION-ANCHOR: 54-M03
+# install.sh builds hw-core, and the suite's HOME is empty: a cold Go cache, a minute per installer run. The suite's
+# installs build nothing; 993 holds the build, the switch file and the way back, and unsets this.
+export FOREMAN_SH_NO_CORE=1
 
 # AND THE HERDR ADDRESS FAMILY — THE FOURTH INSTANCE, AND THE FIRST ONE THAT
 # MUTATED SOMETHING OUTSIDE THIS SUITE.
@@ -257,7 +260,23 @@ LIVE_ROOT="${TEST_HW_LIVE_ROOT:-$ROOT}"
 # bin/hw (or just the one file, as every mutant does) has no lib/ beside it, so
 # the suite names this checkout's: the fallback hw reads only when none is there.
 export HW_LIB_DIR="$ROOT/lib"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/hw-test.XXXXXX")"
+# THE FIXTURES LIVE WHERE macOS DOES NOT CLEAN. com.apple.bsd.dirhelper runs daily at 03:35 and deletes, under the user's
+# /var/folders/*/*/T, every file whose atime/mtime is more than 3 days old — whatever its ctime. The contract worlds
+# back-date their files on purpose (`touch -t 2020…`, the runs of 2026-10-05), so a run that crossed 03:35 lost them under its
+# feet: measured 2026-10-09, two full runs of 870 red in the same window with the build output's old file gone from every
+# world after it, and a probe file dated 2020 in $TMPDIR deleted by one run of /usr/libexec/dirhelper. setup/tests/961.
+# NOT /private/tmp: 320's kernel arms need a TMP the sandbox profile does not already open (it skips under /private/tmp and /tmp).
+_tmp_root="${TMPDIR:-/tmp}"
+if [ "$(uname -s)" = Darwin ]; then
+  case "$(cd -P "$_tmp_root" 2>/dev/null && pwd)" in
+    /private/var/folders/*/T|/private/var/folders/*/T/*)
+      _safe="${HW_TEST_TMPROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-test-$(id -u)}"
+      if mkdir -p "$_safe" 2>/dev/null && chmod 700 "$_safe" 2>/dev/null && [ -w "$_safe" ]; then _tmp_root="$_safe"; export TMPDIR="$_safe"; fi   # MUTATION-ANCHOR: 961-M01
+      unset _safe ;;
+  esac
+fi
+TMP="$(mktemp -d "$_tmp_root/hw-test.XXXXXX")"
+unset _tmp_root
 trap 'rm -rf "$TMP"' EXIT
 # HW_CORE IS A SEAM, like HW_LIB_DIR above: a subject that runs hw from a COPY of bin/ has no
 # core/dist beside it, and with HW_IMPL=go|shadow the shim would warn that hw-core is not built. When the
@@ -330,6 +349,9 @@ export HW_ENGRAM_WAIT=0
 # a SessionStart driven here would run `hw status` and detach a real
 # `hw reap --apply`. 640 turns it back on, against its own fixture.
 export HW_HOUSEKEEPING=0
+# NO SUBJECT RUNS bin/agent-tools-check FROM hw status/dispatch: it launches `claude --agent`
+# against the real lanes. 193 turns it back on, against its own fixture and a stub claude.
+export HW_AGENT_TOOLS=off
 
 # ── A HOME THAT IS NOT THIS MACHINE'S ──────────────────────────────────────
 #
@@ -705,6 +727,72 @@ expect_absent() {
   case "$out" in *"$pat"*) fail "$label — '$pat' should NOT appear" ;; *) pass "$label" ;; esac
 }
 
+# herdr_recorder <logfile>
+#
+# THE SOCKET A NATIVE VERB PUBLISHES TO. bash reaches herdr through the `herdr-rpc` beside bin/hw, which a
+# subject replaces with a stub that logs its argv; hw-core speaks to $HERDR_SOCKET_PATH itself, so that stub
+# never runs under HW_IMPL=go and the log stays empty. A subject that reads what a verb published points
+# HERDR_SOCKET_PATH at $HR_SOCK instead: both implementations reach it (the real herdr-rpc dials the same
+# socket), and <logfile> gets one line per call, the call's params — what the stub logged as "$3". Bound in
+# its own short directory: AF_UNIX paths are capped near 104 bytes and $TMP is a long /var/folders path.
+HR_PID=""; HR_DIR=""; HR_SOCK=""
+herdr_recorder() {
+  local log="$1" waited=0
+  HR_DIR="$(mktemp -d /tmp/hw-rec.XXXXXX)"; HR_SOCK="$HR_DIR/s"; : > "$log"
+  cat > "$HR_DIR/rec.py" <<'PYREC'
+import json, os, socket, sys, threading
+sys.path.insert(0, os.environ["HW_TEST_PYLIB"])
+from _herdr_endpoint import listen
+
+sock_path, log_path = sys.argv[1], sys.argv[2]
+srv = listen(sock_path, 64)
+lock = threading.Lock()
+
+def serve(conn):
+    f = conn.makefile("r", encoding="utf-8", newline="\n")
+    for raw in f:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            req = json.loads(raw)
+        except ValueError:
+            continue
+        with lock:
+            with open(log_path, "a", encoding="utf-8") as lg:
+                lg.write(json.dumps(req.get("params"), separators=(",", ":")) + "\n")
+        try:
+            conn.sendall((json.dumps({"id": req.get("id"), "result": {}}) + "\n").encode("utf-8"))
+        except OSError:
+            break
+    conn.close()
+
+while True:
+    c, _ = srv.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+PYREC
+  HW_TEST_PYLIB="$ROOT/setup/tests" python3 "$HR_DIR/rec.py" "$HR_SOCK" "$log" >/dev/null 2>&1 &
+  HR_PID=$!
+  disown %% 2>/dev/null || true
+  while [ ! -e "$HR_SOCK" ]; do
+    waited=$((waited + 1))
+    [ "$waited" -le 100 ] || fail "herdr_recorder: the socket never bound at $HR_SOCK — every claim read from $log would pass on silence"
+    sleep 0.1
+  done
+  trap 'kill "$HR_PID" 2>/dev/null || true; rm -rf "$HR_DIR" "$TMP"' EXIT
+}
+
+# pin_bash <hw-copy> — the shim of a mutated COPY answers on bash, whatever HW_IMPL the suite runs under. For a
+# subject that builds the copy first and mutates a module under lib/ afterwards, where mutate_anchor cannot tell
+# which shim the module belongs to. Idempotent; only the copy is pinned.
+pin_bash() {
+  local f="$1" t
+  grep -q 'mutant of the bash source' "$f" 2>/dev/null && return 0
+  t="$(mktemp "${TMPDIR:-/tmp}/pin.XXXXXX")"
+  { head -n 1 "$f"; printf 'export HW_IMPL=bash  # mutate_anchor: this copy is a mutant of the bash source\n'; tail -n +2 "$f"; } > "$t"
+  cat "$t" > "$f"; rm -f "$t"
+}
+
 # mutate_anchor <id> <file> <replacement>
 #
 # A MUTANT IS ANCHORED ON A MARKER THE SOURCE DECLARES, NEVER ON ITS PROSE.
@@ -722,8 +810,8 @@ expect_absent() {
 mutate_anchor() {
   local id="$1" file="$2" repl="$3"
   [ $# -eq 3 ] || fail "mutate_anchor <id> <file> <replacement>"
-  python3 - "$id" "$file" "$repl" <<'PYANCHOR' || fail "mutate_anchor $id: anchor not applied in $file"
-import pathlib, re, sys
+  MUTANT_KEEPS_IMPL="${MUTANT_KEEPS_IMPL:-}" MUTANT_SUITE_ROOT="$ROOT" python3 - "$id" "$file" "$repl" <<'PYANCHOR' || fail "mutate_anchor $id: anchor not applied in $file"
+import os, pathlib, re, sys
 anchor_id, path, repl = sys.argv[1:4]
 p = pathlib.Path(path)
 lines = p.read_text().split("\n")
@@ -741,7 +829,45 @@ if ends:
     j = ends[0]
 indent = re.match(r"\s*", lines[i]).group(0)
 lines[i:j + 1] = [indent + r if r else r for r in repl.split("\n")]
+# A MUTANT OF THE BASH SOURCE RUNS ON BASH. Under HW_IMPL=go|shadow the verb is answered by hw-core, so the
+# mutated line never runs and the mutant is VACUOUS or SURVIVES for a reason that is no defect of the test.
+# The shim that decides is bin/hw, so it is the shim of the mutated copy that is pinned to HW_IMPL=bash (and
+# whatever it execs inherits it): the file itself when it is the shim, else the `hw` beside it (a helper in
+# bin/) or in, or beside, the root of the lib/ it sits under (a module in lib/hw/). Only the mutated copy is pinned; the
+# subject's own checks keep running under the HW_IMPL of the suite. A subject whose mutants are of the shim or of
+# the shadow itself sets MUTANT_KEEPS_IMPL=1 (890, 950-953, 955, 960, 842): the HW_IMPL it passes is the claim.
+pin = "export HW_IMPL=bash  # mutate_anchor: this copy is a mutant of the bash source"
+def pin_shell(target):
+    if os.path.islink(target) or not os.path.isfile(target):
+        return
+    t = pathlib.Path(target)
+    tl = t.read_text().split("\n")
+    if pin in tl:
+        return
+    if tl and tl[0].startswith("#!"):
+        if not re.search(r"\b(ba)?sh\b", tl[0]):
+            return
+        tl.insert(1, pin)
+    elif target.endswith(".sh"):
+        tl.insert(0, pin)
+    else:
+        return
+    t.write_text("\n".join(tl))
 p.write_text("\n".join(lines))
+if os.environ.get("MUTANT_KEEPS_IMPL"):
+    sys.exit(0)  # a subject whose mutants are of the shim or shadow itself: the HW_IMPL it passes IS the claim
+pin_shell(path)
+d = os.path.dirname(os.path.abspath(path))
+cands = [os.path.join(d, "hw")]
+if "/lib/" in os.path.abspath(path):
+    root = os.path.abspath(path).split("/lib/")[0]
+    cands += [root + "/bin/hw", root + "/hw"]
+# A copy made BESIDE the real shim (780: bin/hw.m780.*) shares its `hw`: that one is the suite's own source and
+# is never written. The mutated copy itself was pinned above; a sibling is pinned only when it is another copy.
+src_root = os.path.realpath(os.environ.get("MUTANT_SUITE_ROOT") or "/nonexistent") + "/"
+for c in cands:
+    if os.path.basename(path) != "hw" and not os.path.realpath(c).startswith(src_root):
+        pin_shell(c)
 PYANCHOR
 }
 

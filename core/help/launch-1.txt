@@ -1,0 +1,9 @@
+hw — launch one executor per task, in its own tab, with its own worktree.
+
+LAUNCH
+    hw <project> <task> --brief <path> [flags]
+
+  The lanes differ, so the copy-pasteable form differs. These are complete
+  commands, not templates with parts left out — one per lane in projects.json,
+  with each default that differs from claude and a `task/<task>` branch:
+

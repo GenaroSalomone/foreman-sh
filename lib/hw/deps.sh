@@ -73,6 +73,31 @@ _deps_stat_key() {
   stat -Lc '%Y-%s' "$1" 2>/dev/null || stat -Lf '%m-%z' "$1" 2>/dev/null
 }
 
+# <path>: the path with every symlink followed (bash 3.2 has no readlink -f).
+_deps_realpath() {
+  local p="$1" l d n=0
+  while [ -L "$p" ] && [ "$n" -lt 20 ]; do
+    l="$(readlink "$p")"
+    case "$l" in /*) p="$l" ;; *) p="$(dirname "$p")/$l" ;; esac
+    n=$((n + 1))
+  done
+  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" || { printf '%s' "$p"; return 0; }
+  printf '%s/%s' "$d" "$(basename "$p")"
+}
+
+# <name> <binary>: the update command depends on HOW the tool was installed, so it is detected from the
+# binary, not assumed. Only claude has two answers: `claude update` is the native installer's own command
+# and does nothing for a Homebrew install (measured: 1.3 s, prints a tip), where the cask is the way.
+# The stable cask (`claude-code`) trails the floor (2.1.287 < 2.1.289 when measured), so it is replaced.
+# Any other path keeps the manifest's command.
+_deps_update_for() {
+  [ "$1" = claude ] || return 0
+  case "$(_deps_realpath "$2")" in
+    */Caskroom/claude-code@latest/*) DEPS_UPDATE="brew upgrade --cask claude-code@latest" ;;
+    */Caskroom/claude-code/*)        DEPS_UPDATE="brew uninstall --cask claude-code && brew install --cask claude-code@latest" ;;
+  esac
+}
+
 # <name> [<binary>]: sets DEPS_VERSION and DEPS_STATE, and returns 0 only for ok.
 #   absent   the binary is not there (no PATH entry, no such file); not a violation
 #   unknown  the binary answered and no version could be read from the answer
@@ -86,6 +111,7 @@ deps_status() {
   cmd0="$1"; shift
   [ -n "$bin" ] || bin="$(type -P "$cmd0" 2>/dev/null || true)"
   if [ -z "$bin" ] || [ ! -x "$bin" ]; then DEPS_STATE=absent; return 1; fi
+  _deps_update_for "$name" "$bin"   # MUTATION-ANCHOR: 900-M06
   tab="$(printf '\t')"
   key="$(_deps_stat_key "$bin" || true)"
   cdir="${XDG_CACHE_HOME:-${HOME:-/nonexistent}/.cache}/hw/deps"

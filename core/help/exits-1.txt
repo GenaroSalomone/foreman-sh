@@ -1,0 +1,30 @@
+EXIT STATUS
+    0   the thing was done. For `hw next` that means the task was DELIVERED and
+        the counter advanced; for a launch, that the launch request completed.
+        Vendor runtime readiness may remain unestablished; read the receipt.
+    1   every refusal, without exception. hw has exactly one failure code, and
+        every refusal it prints comes from one `die`. So a caller may branch on the
+        status alone: a gate that would not open, a container with no agent
+        left in it, an agent that did not start and an unreachable pane are all
+        1, and none of them is ever reported as success.
+    Two usage exits are not refusals: `hw` alone with no terminal to draw its
+    picker on prints the usage and exits 2; `hw <one word>` prints it and exits 64.
+
+    `hw wait` additionally reports VERDICTS, which are not refusals — the wait
+    ran, and these say what it found about the TARGET. 1 still means hw refused
+    (bad argument, unknown pane, missing cross-check library) and never that the
+    executor is in some state. The numbers match state-witness.sh's own, so the
+    toolchain has one number space:
+    2   the budget was spent and the pane never reached idle/done. The ordinary
+        timeout, and what an `unknown` cross-check costs: nothing extra.
+    5   SETTLED — proved unable to change. A larger budget buys nothing.
+    6   AWAITING-HUMAN — its own endpoint confirms an outstanding prompt.
+    7   ENDED AND NEVER REPORTED — turn_state=ended_unreported together with
+        done_state=undelivered. No wait is started: the report exists, it did
+        not arrive, and the turn that would have retried it is over.
+    8   HAND-BACK REFUSED — the executor ended a turn with no report, no
+        delivered ask/challenge outstanding, and no named one-shot human boundary.
+    3/4 herdr-rpc transport: could not connect / rpc error. Facts about herdr,
+        not about the executor.
+
+

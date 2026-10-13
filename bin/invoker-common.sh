@@ -1000,7 +1000,7 @@ invoker_deliver() {
 # executor; this is the same answer in the other direction.
 invoker_vendor_has_native_transport() {
   case "${1:-}" in
-    ""|claude|codex) return 1 ;;
+    ""|claude|codex|pi) return 1 ;;
     *) return 0 ;;
   esac
 }
@@ -1056,7 +1056,8 @@ invoker_resolve_sender() {
     # DOES publish (codex's own UserPromptSubmit hook writes it) is real and is
     # kept above, so receipts can name the thread. The endpoint is the herdr
     # sentinel, as for claude: nothing here may invent an address.
-    claude|codex) INVOKER_SENDER_ENDPOINT="-" ;;
+    # pi: herdr is its route too (docs/pi-vendor.md) — no address is invented.
+    claude|codex|pi) INVOKER_SENDER_ENDPOINT="-" ;;
   esac
   # Explicit, so no future branch can make "could not resolve an endpoint" into
   # a non-zero exit that kills the caller. Not resolving is a normal outcome:

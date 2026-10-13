@@ -586,6 +586,56 @@ PY
   return 0
 }
 
+# THE QUESTION CLAUDE ASKS ON /exit WHEN IT HAS BACKGROUND WORK (see the wait after /exit). Positive evidence
+# only: herdr says `blocked` AND the pane's screen carries the prompt's title or its Enter/Esc confirmation.
+# A `blocked` with nothing recognisable on the screen is NOT guessed at, and a screen that merely quotes the
+# prompt (scrollback) while the agent is not `blocked` is not the prompt.
+brain_exit_confirmation() {   # $1 = pane, $2 = the `agent get` reply just read; 0 = the confirmation is up
+  local screen
+  screen="$(herdr agent read "$1" --source detection --lines 40 2>/dev/null || true)"
+  # `blocked` FIRST, for every match: the detection screen is the pane's scrollback too, so a conversation that
+  # quotes the prompt's words (this very one does) must not read as the prompt while claude is still exiting.
+  printf '%s' "${2:-}" | jq -e '.result.agent.agent_status == "blocked"' >/dev/null 2>&1 || return 1  # MUTATION-ANCHOR: 893-M01
+  case "$screen" in
+    *"Background work is running"*|*"will stop when you exit"*) return 0 ;;
+    *"Enter to confirm"*"Esc to cancel"*) return 0 ;;
+  esac
+  return 1
+}
+
+# THE PANE BRAIN IS RUNNING IN IS NOT A PANE IT CAN TYPE INTO. MEASURED 2026-10-13: `brain setup --resume <id>` run in
+# the setup brainer's own pane after its claude had /exit'ed printed "is a bare shell — starting the claude
+# brainer in it", and then the lines it types (`export HW_COCKPIT_WORK=…`, `unset CLAUDE_CODE_CHILD_SESSION; …`,
+# `herdr agent start`'s own command) arrived as TYPED INPUT, because brain itself holds that pane's foreground:
+# nothing started and the person pressed ^C. So when the target is this pane (herdr gives every pane its own
+# HERDR_PANE_ID) and nothing runs in it, brain does not type: it sets the environment in-process and EXECS claude
+# (INPROC=1, below), which is the launch `herdr agent start` would have typed, minus the typing. Where it cannot
+# — no terminal on all three descriptors (a detached arm, a pipe), a non-claude brainer, or a shell standing in
+# another directory (exec cannot move its parent's cwd) — it refuses with one copyable line and sends nothing.
+INPROC=0
+brain_own_pane_gate() {   # $1 = the pane about to receive the brainer, known to hold no agent
+  # THE DETACHED `--reset --await-idle` ARM carries the pane's HERDR_PANE_ID but is no foreground holder (setsid, no
+  # terminal): the pane's shell is idle under it, so typing works there, as it always did.
+  [ -z "$AWAIT_PANE" ] || return 0   # MUTATION-ANCHOR: 893-M02
+  [ -n "${HERDR_PANE_ID:-}" ] && [ "$HERDR_PANE_ID" = "${1:-}" ] || return 0   # MUTATION-ANCHOR: 892-M01
+  local why="" cmd="brain $proj"
+  [ -z "$RESUME" ] || cmd="$cmd --resume $RESUME"
+  if [ "$kind" != claude ]; then why="only a claude brainer is started in place"
+  elif ! { [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; }; then why="this shell has no terminal on stdin/stdout/stderr to hand to claude"
+  else
+    case "${verdict:-}" in
+      mismatch*) why="its shell stands in ${pane_cwd:-<unknown>}, not $dir, and starting in place cannot move it" ;;
+    esac
+  fi
+  if [ -n "$why" ]; then
+    printf 'brain: %s is the pane brain is running in, and brain does not type into its own pane (%s).\n' "$1" "$why" >&2
+    printf 'brain: Nothing was sent and nothing was restarted. Run this from ANOTHER pane: %s\n' "$cmd" >&2
+    exit 1
+  fi
+  INPROC=1
+  echo "brain: $1 is this very pane — starting the $kind brainer in-process (exec), not by typing into it." >&2
+}
+
 brain_agent_get() {   # $1 = pane; prints whichever stream carried the body
   local err out
   err="$TMPDIR_BRAIN/herdr-agent-get.$$"
@@ -1168,12 +1218,32 @@ PY
           if printf '%s' "$agent_reply" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
             gone=1; break
           fi
+          # CLAUDE ASKS BEFORE IT EXITS WHEN IT HAS BACKGROUND WORK, and a pane sitting on that question is
+          # `blocked`, not gone. MEASURED 2026-10-13 (setup brainer, rc=75 three times): "Background work is
+          # running / The following will stop when you exit: … 1. Exit and stop tasks 2. Move to background
+          # and exit 3. Stay". Waiting out 15s on it only ended in "NOT proved agent-free" with that prompt
+          # still up. Answering it is not ours: option 1 kills the person's tasks, option 2 detaches them from
+          # a session about to be replaced. So it is CANCELLED (Esc = stay, the agent is untouched) and the pane
+          # is skipped with the reason. One look, no retry: this exits, it does not loop.
+          # MUTATION-ANCHOR: 891-M01
+          if brain_exit_confirmation "$pane" "$agent_reply"; then
+            herdr pane send-keys "$pane" escape >/dev/null 2>&1 || true
+            sleep 2
+            trap - EXIT   # nothing was stopped: a refusal (rc 1, a skip for `brain relaunch`), not the 75 of a pane left empty
+            printf 'brain: %s asked to confirm /exit — it has background work that exit would stop or detach.\n' "$pane" >&2
+            printf 'brain: Esc was sent (stay): the agent is still there, now %s. Nothing was restarted.\n' \
+              "$(brain_agent_get "$pane" | jq -r '.result.agent.agent_status // "unreadable"' 2>/dev/null || printf unreadable)" >&2
+            printf 'brain: %s has background tasks — relaunch would kill them; stop or finish them in that pane, then relaunch.\n' "$pane" >&2
+            exit 1
+          fi
+          # MUTATION-ANCHOR-END: 891-M01
         done
         [ "$gone" = 1 ] || {
           echo "brain: 15s after /exit, $pane has NOT been proved agent-free — herdr either still reports an agent there or could not be asked. brain will NOT start a second one over it. Look at that pane." >&2
           exit 1
         }
       else
+        brain_own_pane_gate "$pane"
         echo "brain: $pane is a bare shell (no agent) — starting the $kind brainer in it." >&2
       fi
 
@@ -1233,6 +1303,7 @@ PY
       # path demands after `/exit` — so starting the brainer there is the repair
       # the person asked for by typing `brain`. A pane in the wrong cwd is NOT
       # taken this road: it keeps the refusal below, and its --reset.
+      brain_own_pane_gate "$pane"
       echo "brain: $pane is a bare shell — the $proj brainer's agent has exited. Starting a new one in the same pane." >&2
       RESET_PANE="$pane"
       RESET_TAB="$tab"
@@ -1336,7 +1407,9 @@ brain_pane_config_dir() {   # <pane> — prints the pane shell's CLAUDE_CONFIG_D
   rm -f "$f.tmp"
   return 1
 }
-if [ -n "$IN_PANE" ]; then
+if [ -n "$IN_PANE" ] && [ "$INPROC" = 1 ]; then
+  brain_acct_dir="${CLAUDE_CONFIG_DIR:-}"   # this shell IS the pane's: its own variable, not one typed into it
+elif [ -n "$IN_PANE" ]; then
   brain_acct_dir="$(brain_pane_config_dir "$IN_PANE")" || {
     brain_acct_dir=""
     echo "brain: could not read $IN_PANE's CLAUDE_CONFIG_DIR; its folder-trust and first-run checks used the default account." >&2
@@ -1382,8 +1455,12 @@ if [ "$RESET" = 1 ] || [ "${REVIVE:-0}" = 1 ]; then
   # no work root, so the mod said "writer down (no state path)" with the writer healthy. The pane is
   # at its shell prompt here, so the variable goes into that shell and claude inherits it.
   if [ "$kind" = claude ] && [ -n "${WORK:-}" ]; then
-    herdr pane run "$pane" "export HW_COCKPIT_WORK=$(printf '%q' "$WORK")" >/dev/null 2>&1 \
-      || echo "brain: could not give $pane HW_COCKPIT_WORK; the cockpit mod may not find its state file there." >&2
+    if [ "$INPROC" = 1 ]; then
+      export HW_COCKPIT_WORK="$WORK"  # MUTATION-ANCHOR: 892-M02
+    else
+      herdr pane run "$pane" "export HW_COCKPIT_WORK=$(printf '%q' "$WORK")" >/dev/null 2>&1 \
+        || echo "brain: could not give $pane HW_COCKPIT_WORK; the cockpit mod may not find its state file there." >&2
+    fi
   fi
   # THE ACCOUNT TOO, FOR THE SAME REASON. A pane herdr restored after a machine restart is a bare shell
   # WITHOUT the CLAUDE_CONFIG_DIR it was created with (measured 2026-10-08), so `claude --resume` looked
@@ -1391,7 +1468,10 @@ if [ "$RESET" = 1 ] || [ "${REVIVE:-0}" = 1 ]; then
   # account_flag is the lane's default, resolved and parity-verified above (empty under `relaunch`, which
   # keeps the pane's own account, and for the default account); exported unconditionally because a pane
   # that already has it makes the export a no-op, and reading it first costs a round trip per reset.
-  if [ "$kind" = claude ] && [ -n "$account_flag" ]; then
+  if [ "$kind" = claude ] && [ -n "$account_flag" ] && [ "$INPROC" = 1 ]; then
+    export CLAUDE_CONFIG_DIR="$brain_acct_dir"
+    echo "brain: $pane runs under account CLAUDE_CONFIG_DIR=$brain_acct_dir (the lane's default)" >&2
+  elif [ "$kind" = claude ] && [ -n "$account_flag" ]; then
     herdr pane run "$pane" "export CLAUDE_CONFIG_DIR=$(printf '%q' "$brain_acct_dir")" >/dev/null 2>&1 \
       && echo "brain: $pane runs under account CLAUDE_CONFIG_DIR=$brain_acct_dir (the lane's default)" >&2 \
       || { echo "brain: could not give $pane CLAUDE_CONFIG_DIR=$brain_acct_dir; refusing to start the brainer under another account." >&2; exit 1; }
@@ -1445,7 +1525,11 @@ hw_permissions_resolve "" || { echo "brain: $PERMISSIONS_ERR" >&2; exit 1; }
 [ "$PERMISSIONS" = skip ] || echo "brain: permissions: ask ($PERMISSIONS_SRC) — the brainer will stop on permission prompts; answer them in its pane." >&2
 tries=0
 agent_args=()
-[ "$kind" != claude ] || claude_session_env_prep "$pane"  # MUTATION-ANCHOR: 810-M01
+if [ "$kind" != claude ]; then :
+elif [ "$INPROC" = 1 ]; then   # the same two settings claude_session_env_prep types, set where they take effect
+  unset CLAUDE_CODE_CHILD_SESSION; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1  # MUTATION-ANCHOR: 892-M03
+else claude_session_env_prep "$pane"  # MUTATION-ANCHOR: 810-M01
+fi
 if [ "$kind" = opencode ]; then
   opencode_port="$(_free_port)"
   agent_args=(-- --port "$opencode_port")
@@ -1507,6 +1591,23 @@ else
       agent_args+=(--plugin-dir "$cockpit_dir")
     fi
   fi
+fi
+# IN THIS PANE: no `agent start` (it types the command into the shell brain is holding). The writer and the
+# outbox flush are detached first — they outlive the exec, as they outlive brain in the typed path — and claude
+# replaces brain with the arguments `agent start` would have passed (agent_args is `-- <claude args>`; herdr
+# detects the agent by its process, which is what `agent start`'s own success test reads).
+if [ "$INPROC" = 1 ]; then
+  herdr tab focus "$tab" >/dev/null 2>&1 || true
+  _brain_cockpit_writer "$kind" "$pane"
+  ( for _w in $(seq 1 60); do
+      brain_agent_get "$pane" | jq -e '.result.agent.interactive_ready == true or .result.agent.agent_status != null' >/dev/null 2>&1 && break
+      sleep 1
+    done
+    _brain_flush_outbox "$proj" "$pane" ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  echo "resuming ${RESUME:-a new conversation} in $space / $tab_label (pane $pane, $kind) — exec in this pane — cwd $dir" >&2
+  cd "$dir" || exit 1
+  exec claude "${agent_args[@]:1}"   # MUTATION-ANCHOR: 892-M04
 fi
 while [ "$tries" -lt 15 ]; do
   # `${a[@]+"${a[@]}"}`, NOT `"${a[@]}"`. macOS ships bash 3.2 and under `set -u`

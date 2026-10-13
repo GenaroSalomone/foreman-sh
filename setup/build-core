@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# build-core — hw-core for the five targets, from one machine, reproducibly.
+#
+#     setup/build-core                  all five targets into core/dist/<os>-<arch>/, plus SHA256SUMS
+#     setup/build-core --native         only this machine's target
+#     setup/build-core --verify         build everything a second time elsewhere and require the same sha256
+#     setup/build-core --time           also print how long each target took to build
+#     setup/build-core --out <dir>      write there instead of core/dist (a new or empty directory, or one a
+#                                       previous build-core made; anything else is refused, never emptied)
+#
+# The targets: darwin arm64 and amd64, linux amd64 and arm64, windows amd64 (hw-core.exe).
+# Nothing on the building machine is needed beyond the Go toolchain: CGO_ENABLED=0 and the standard
+# library only, so no linker, no C compiler, and no host for the other four systems.
+#
+# REPRODUCIBLE MEANS THE SAME BYTES: -trimpath (no build path in the binary), -buildvcs=false (no
+# commit stamp), an empty build id and stripped symbols (-ldflags "-s -w -buildid="), GOFLAGS cleared,
+# GOTOOLCHAIN=local (the toolchain is the one installed, never one downloaded mid-build), and the
+# sources read from core/ only. `--verify` proves it on this machine; `SHA256SUMS` carries it to others.
+set -euo pipefail
+
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd -P "$HERE/.." && pwd)"
+SRC="$ROOT/core"
+OUT="$SRC/dist"
+NATIVE=0; VERIFY=0; TIME=0; OUT_GIVEN=0
+MARK=.build-core   # what marks a directory as one build-core made, and so may rebuild
+TARGETS="darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --native) NATIVE=1; shift ;;
+    --verify) VERIFY=1; shift ;;
+    --time)   TIME=1; shift ;;
+    --out)    [ $# -ge 2 ] || { echo "build-core: --out needs a directory" >&2; exit 64; }; OUT="$2"; OUT_GIVEN=1; shift 2 ;;
+    -h|--help) sed -n '2,/^set -/{/^set -/!p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "build-core: unknown argument $1 (see --help)" >&2; exit 64 ;;
+  esac
+done
+command -v go >/dev/null 2>&1 || { echo "build-core: no go toolchain on PATH" >&2; exit 1; }
+
+if [ "$NATIVE" = 1 ]; then
+  TARGETS="$(go env GOOS)/$(go env GOARCH)"
+fi
+
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+
+# build_all <out dir>: every target, then SHA256SUMS in that directory.
+build_all() {
+  local out="$1" t os arch ext dest start end
+  # only what this script creates is removed: the target directories and SHA256SUMS, never the directory itself
+  for t in $TARGETS; do rm -rf "${out:?}/${t%/*}-${t#*/}"; done
+  rm -f "$out/SHA256SUMS"; mkdir -p "$out"; : > "$out/$MARK"
+  for t in $TARGETS; do
+    os="${t%/*}"; arch="${t#*/}"; ext=""; [ "$os" != windows ] || ext=".exe"
+    dest="$out/$os-$arch/hw-core$ext"
+    mkdir -p "$(dirname "$dest")"
+    start="$(date +%s)"
+    ( cd "$SRC" && env -u GOFLAGS CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" GOTOOLCHAIN=local GOWORK=off \
+        go build -trimpath -buildvcs=false -ldflags "-s -w -buildid=" -o "$dest" . )
+    end="$(date +%s)"
+    [ "$TIME" = 0 ] || printf 'build-core: %-14s %3ss  %s bytes\n' "$os/$arch" "$((end - start))" "$(wc -c < "$dest" | tr -d ' ')"
+  done
+  # only what THIS run built: a target directory left by an earlier, wider build is not named
+  local -a built=()
+  for t in $TARGETS; do ext=""; [ "${t%/*}" != windows ] || ext=".exe"; built+=("${t%/*}-${t#*/}/hw-core$ext"); done
+  ( cd "$out" && sha256 -- "${built[@]}" | sed 's|  \*\{0,1\}|  |' | LC_ALL=C sort -k2 > SHA256SUMS )
+}
+
+if [ "$OUT_GIVEN" = 1 ] && [ -e "$OUT" ] && [ ! -e "$OUT/$MARK" ]; then
+  { [ -d "$OUT" ] && [ -z "$(ls -A "$OUT")" ]; } || { echo "build-core: --out $OUT exists and build-core did not make it; refusing to write there (name a new or empty directory)" >&2; exit 64; }
+fi
+build_all "$OUT"
+printf 'build-core: %s target(s) in %s\n' "$(printf '%s\n' $TARGETS | wc -l | tr -d ' ')" "$OUT"
+cat "$OUT/SHA256SUMS"
+
+if [ "$VERIFY" = 1 ]; then
+  other="$(mktemp -d "${TMPDIR:-/tmp}/hw-core-verify.XXXXXX")"
+  trap 'rm -rf "$other"' EXIT
+  # a second build from a COPY of the sources, in another directory: the build path must not matter
+  cp -R "$SRC" "$other/core"; SRC="$other/core"; rm -rf "$SRC/dist"
+  build_all "$other/out"
+  if cmp -s "$OUT/SHA256SUMS" "$other/out/SHA256SUMS"; then
+    echo "build-core: reproducible — a second build from a copy at another path gave the same sha256 for every target"
+  else
+    echo "build-core: NOT reproducible:" >&2
+    diff "$OUT/SHA256SUMS" "$other/out/SHA256SUMS" >&2 || true
+    exit 1
+  fi
+fi

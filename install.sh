@@ -22,6 +22,12 @@
 #   <bin-dir>/               symlinks hw, brain, done-invoker, ask-invoker,
 #                            channel-send, decisions → <brain>/bin/ (and
 #                            opencode-auto, when the run installs an OpenCode lane)
+#   <brain>/core/dist/<os>-<arch>/hw-core
+#                            hw's Go half, built here with setup/build-core when a Go toolchain
+#                            (1.22 or newer) is on PATH; the ported verbs run in it by default.
+#                            Without Go nothing is built and hw runs its bash implementation
+#   <config>/hw/impl         `go`, only when it does not exist: the switch file that makes the
+#                            ported verbs run in Go (HW_IMPL=bash, or HW_IMPL_<VERB>=bash, goes back)
 #   <claude-config>/settings.json
 #                            ONE entry merged in: the Stop hook
 #                            `bash '<brain>/bin/hw-stop-hook.sh' stop`
@@ -86,7 +92,7 @@ case "${OSTYPE:-}" in msys*|cygwin*) . "$(dirname "$(readlink -f "${BASH_SOURCE[
 
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_REC=0 PERMISSIONS_OPT=""
-UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0
+UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0 NO_CORE="${FOREMAN_SH_NO_CORE:-0}" NO_CORE_ASKED=0
 ORIG_ARGS=("$@")
 OPERATOR="" MIN_MODEL="" REQ_BY=""   # "" = not given; --min-model / --requested-by "none" = given, none
 BIN_DIR_OUT="${HOME}/.local/bin"
@@ -150,6 +156,8 @@ usage: install.sh init [--brain DIR] [--lane NAME] [--repo PATH] [--yes] [--dry-
   --with-recommended  install what is missing, required and recommended, with Homebrew, one
                   package at a time, each command printed before it runs; alone, it installs
                   only that. With --check it prints the commands and runs none
+  --no-core       do not build hw-core (the Go half of hw): every verb runs its bash implementation.
+                  Also FOREMAN_SH_NO_CORE=1. Without a Go toolchain (1.22 or newer) it is not built either
   --check         verify everything in one pass, list the fixes in the order they must be
                   done and end with one "Next step"; write nothing
   init            from a fresh install to a first dispatch, in one command: checks the prerequisites
@@ -198,6 +206,7 @@ while [ $# -gt 0 ]; do
     --check)   CHECK=1; shift ;;
     --with-judgment-day) WITH_JD=1; shift ;;
     --with-recommended) WITH_REC=1; shift ;;
+    --no-core) NO_CORE=1; NO_CORE_ASKED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -V|--version) printf 'install.sh %s\n' "$(install_version)"; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
@@ -586,7 +595,7 @@ jd_report() {
 
 # ── --check's closing: every fix, in the order it must be done, and ONE next step ──
 print_next_steps() {
-  local n=0 first="" line cmd replay a
+  local n=0 first="" line cmd replay a have_lane=""
   step() { n=$((n + 1)); printf '  %s. %s\n' "$n" "$1"; [ -n "$first" ] || first="$2"; }
   printf '\nfixes, in the order they must be done (each needs the ones above it)\n'
   if [ -n "$FIX_TOOLS" ] && [ "$WITH_REC" = 0 ] && type -P brew >/dev/null 2>&1; then
@@ -616,11 +625,17 @@ FIXES
     step "install, lane $LANE: $replay" "$replay"
   else
     cmd="$INSTALL_CMD --brain $BRAIN_DIR --lane <name> --repo <path>"
-    step "a lane for one of your repositories: $cmd" "$cmd"
+    # A brain that already has a lane (`init` made `demo`) is not told to make one: measured on a
+    # clean macOS VM, --check after init still proposed a lane. The way to add another is a note.
+    have_lane="$(jq -r '.lanes // {} | to_entries[] | select(.value.checkout) | .key' "${BRAIN:-$BRAIN_DIR}/projects.json" 2>/dev/null | head -1 || true)"
+    if [ -z "$have_lane" ]; then step "a lane for one of your repositories: $cmd" "$cmd"; fi   # MUTATION-ANCHOR: 226-M01
   fi
   # After the lane's install: the links it makes live in that directory.
   if [ -n "${PATH_FIX:-}" ]; then
     step "PATH: add it to your shell profile (~/.zshrc or ~/.bashrc), open a new terminal, then restart herdr so its panes inherit it: $PATH_FIX" "$PATH_FIX"
+  fi
+  if [ -z "$LANE" ] && [ -n "${have_lane:-}" ]; then
+    step "open the brainer of lane $have_lane: brain $have_lane   (another repository later: $cmd)" "brain $have_lane"
   fi
   # Optional, so after the lane: it is never the next step while a lane is still to be made.
   if [ "$WITH_JD" = 0 ] && { [ "$JD_STATE" = off ] || [ "$JD_STATE" = partial ]; }; then
@@ -690,6 +705,18 @@ need herdr   "every brainer and executor is a herdr pane" "https://herdr.dev"
 need claude  "the agent runtime"                     "https://claude.com/claude-code"
 if type -P herdr >/dev/null 2>&1; then floor herdr 0; fi
 if type -P claude >/dev/null 2>&1; then floor claude 0; fi
+# hw-core, the Go half of hw, is optional: the ported verbs run in it when it is built and in bash (the same
+# answers) when it is not. Built here when a Go toolchain of 1.22 or newer is on PATH.
+CORE_BUILD=0
+if [ "$NO_CORE" = 1 ]; then [ "$NO_CORE_ASKED" = 0 ] || say "NOTE  hw-core is not built (--no-core): hw runs its bash implementation"
+elif [ ! -f "$SRC/setup/build-core" ] || [ ! -d "$SRC/core" ]; then :
+elif ! type -P go >/dev/null 2>&1; then
+  say "NOTE  no Go toolchain on PATH: hw-core is not built and hw runs its bash implementation (the same answers). Install Go 1.22 or newer (https://go.dev/dl) and run this again to move the ported verbs to Go"
+else
+  _gov="$(go version 2>/dev/null | sed -n 's/^go version go\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')" || _gov=""   # MUTATION-ANCHOR: 993-M07
+  if [ -n "$_gov" ] && [ "$(printf '1.22\n%s\n' "$_gov" | sort -V | head -n 1)" = 1.22 ]; then ok "go $_gov (builds hw-core)"; CORE_BUILD=1   # MUTATION-ANCHOR: 993-M02
+  else say "NOTE  Go ${_gov:-of an unreadable version} is older than 1.22: hw-core is not built and hw runs its bash implementation. Update Go (https://go.dev/dl) and run this again"; fi
+fi
 # Linux needs four more that macOS setups carry already: hw and its scripts
 # call sd, fd and rg, and the OpenCode guard plugin is an ES module run by Node.
 if [ "$(uname -s)" = Linux ]; then
@@ -1131,6 +1158,52 @@ sync_dir "$SRC/layouts" "$BRAIN/layouts"
 # The cockpit mod: `brain` loads it from here with --plugin-dir, so it is mirrored
 # like bin/ (the installer owns it). A tree that carries no cockpit has none.
 [ ! -d "$SRC/cockpit" ] || { mkdir -p "$BRAIN/cockpit"; sync_dir "$SRC/cockpit" "$BRAIN/cockpit"; }
+# hw-core: built from this checkout's core/ with the builder that makes the release's own binaries (reproducible, so a
+# second run writes nothing), into core/dist/ — not bin/, which the mirror above owns and empties of anything else. hw
+# finds it there. The switch file is the user's: written only when absent, so a choice already made stays.
+# A run that does NOT leave a fresh hw-core removes the one an earlier install left: bin/hw cannot tell it is old (an
+# installed brain has no core/ sources to compare it with), so it would keep running a Go of another release against
+# this release's bin/hw and lib/hw while this installer said that hw runs bash.
+drop_core() {  # <why>
+  [ -d "$BRAIN/core/dist" ] || return 0
+  rm -rf "$BRAIN/core/dist"; rmdir "$BRAIN/core" 2>/dev/null || true
+  chg "core/dist — the hw-core of an earlier install is removed ($1): hw runs its bash implementation"
+}
+put_core() {  # <src> <dst> — a new file in place of the old one, never a write INTO it: macOS keeps a binary's code
+  # signature per file, and an executable rewritten in place is killed the next time it runs
+  if cmp -s "$1" "$2"; then ok "${2#"$BRAIN"/}"
+  else cp -p "$1" "$2.new.$$"; mv -f "$2.new.$$" "$2"; chg "${2#"$BRAIN"/}"; fi   # MUTATION-ANCHOR: 993-M05
+}
+if [ "$CORE_BUILD" = 1 ]; then
+  _cb="$(mktemp -d "${TMPDIR:-/tmp}/hw-core-build.XXXXXX")"
+  # the directory bin/hw looks in: the same os-arch spelling as its _core_find
+  _hos="$(uname -s | tr 'A-Z' 'a-z')"; _har="$(uname -m)"
+  case "$_hos" in mingw*|msys*|cygwin*) _hos=windows ;; esac
+  case "$_har" in x86_64) _har=amd64 ;; aarch64) _har=arm64 ;; esac
+  if ! "$SRC/setup/build-core" --native --out "$_cb/out" >"$_cb/log" 2>&1; then
+    say "WARN  hw-core did not build, so hw runs its bash implementation. The builder said:"
+    tail -n 12 "$_cb/log" | sed 's/^/          /'
+    drop_core "its build failed"
+  elif [ ! -d "$_cb/out/$_hos-$_har" ]; then   # MUTATION-ANCHOR: 993-M06
+    say "WARN  your Go builds for $(ls "$_cb/out" | grep -v SHA256SUMS | tr '\n' ' ')but this shell reports $_hos-$_har, where hw looks for hw-core, so hw-core is not installed and hw runs its bash implementation. Use a Go for this machine's architecture"
+    drop_core "the Go toolchain builds for another architecture"
+  else
+    for _d in "$_cb"/out/*/; do
+      _t="$BRAIN/core/dist/$(basename "$_d")"; mkdir -p "$_t"
+      for _f in "$_d"*; do put_core "$_f" "$_t/$(basename "$_f")"; done
+    done
+    _implf="${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/hw/impl}"
+    if [ -e "$_implf" ]; then ok "$_implf is yours and stays as it is (it says which verbs run in Go; HW_IMPL=bash overrides it)"   # MUTATION-ANCHOR: 993-M01
+    else
+      mkdir -p "$(dirname "$_implf")"
+      printf '# written by install.sh: the ported verbs run in Go. `bash` here, HW_IMPL=bash or HW_IMPL_<VERB>=bash goes back\ngo\n' > "$_implf"   # MUTATION-ANCHOR: 993-M03
+      chg "$_implf — the ported verbs run in Go (HW_IMPL=bash, or HW_IMPL_<VERB>=bash, goes back to bash)"
+    fi
+  fi
+  rm -rf "$_cb"
+else
+  drop_core "this run builds none"   # MUTATION-ANCHOR: 993-M04
+fi
 put "$SRC/lanes/git-worktree.sh" "$BRAIN/lanes/git-worktree.sh"
 for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py deny-gentle-real-home.py specialist_roster.py lane_housekeeping.py; do  # MUTATION-ANCHOR: 819-M01
   put "$SRC/setup/guards/$g" "$BRAIN/setup/guards/$g"

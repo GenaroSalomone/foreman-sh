@@ -10,8 +10,10 @@
 # `foreman-sh`), never on its own initiative. In order:
 #   1. prerequisites     git, jq 1.7+, python3, herdr, claude, rg, fd, sd (and a shell
 #                        it was measured with). A missing one is NAMED with its install
-#                        command and the run stops; nothing is ever installed here
-#                        (`foreman-sh --with-recommended` is the asked-for way).
+#                        command. With Homebrew present init ASKS (--yes answers) to run
+#                        `--with-recommended` right there and checks again; without the
+#                        answer, or if something is still missing, the run stops with one
+#                        copyable line (`foreman-sh --with-recommended && foreman-sh init`)
 #   2. Claude account    the welcome, login and Bypass Permissions warning: yours, named
 #   3. herdr + engram    herdr's Claude integration (needed to install) and `engram setup
 #                        claude-code` (recommended) — each ASKED, or done under --yes;
@@ -50,7 +52,8 @@ usage: init.sh [--brain DIR] [--lane NAME] [--repo PATH] [--bin-dir DIR] [--yes]
   --dry-run      print the plan and change nothing
   -h, --help     this text
 
-Nothing is installed: a missing tool is named with its install command and the run stops.
+A missing tool is named with its install command; Homebrew's are installed only if you answer yes
+(--yes does), through `--with-recommended`, otherwise the run stops with one line to copy.
 EOF
 }
 die() { printf 'init: %s\n' "$*" >&2; exit "${2:-1}"; }
@@ -106,7 +109,7 @@ case "$SRC/" in "$BRAIN/"*) die "--brain $BRAIN is (or contains) the checkout in
 [ "$DRY" = 1 ] || printf 'foreman-sh init — brain %s, lane %s\n' "$BRAIN" "$LANE"
 
 # ── 1. prerequisites ────────────────────────────────────────────────────────
-stage 1/7 "prerequisites (nothing is installed here: a missing one is named with its command)"
+stage 1/7 "prerequisites (a missing one is named with its command; Homebrew's are installed only if you say yes)"
 OS="$(uname -s)"
 if [ "$OS" = Linux ]; then
   ROWS="git|worktrees and branches|apt install git
@@ -124,26 +127,45 @@ else
 python3|the guards and the JSON merges|xcode-select --install
 jq|hw reads projects.json with it (1.7 or newer)|brew install jq
 herdr|every brainer and executor is a herdr pane|brew install herdr
-claude|the agent runtime|brew install --cask claude-code
+claude|the agent runtime|brew install --cask claude-code@latest
 rg|hw and the guards search with it|brew install ripgrep
 fd|hw finds files with it|brew install fd
 sd|hw edits files with it|brew install sd"
 fi
-MISSING=0
-while IFS='|' read -r cmd why how; do
-  if ! type -P "$cmd" >/dev/null 2>&1; then
-    printf '  MISSING %s — %s. Install: %s\n' "$cmd" "$why" "$how"; MISSING=$((MISSING + 1)); continue
-  fi
-  if [ "$cmd" = jq ]; then
-    v="$(jq --version 2>/dev/null | sed -E 's/^jq-([0-9]+)\.([0-9]+).*/\1 \2/')"
-    if [ "${v% *}" -gt 1 ] 2>/dev/null || { [ "${v% *}" -eq 1 ] 2>/dev/null && [ "${v#* }" -ge 7 ] 2>/dev/null; }; then ok "jq ${v% *}.${v#* } (>= 1.7)"
-    else printf '  MISSING jq >= 1.7 — found %s. Install: %s\n' "$(jq --version 2>/dev/null)" "$how"; MISSING=$((MISSING + 1)); fi
-    continue
-  fi
-  ok "$cmd"
-done <<EOF
+check_tools() {
+  MISSING=0 CLT_MISSING=0   # CLT_MISSING: the missing ones Homebrew does not carry (Command Line Tools do)
+  local cmd why how v
+  while IFS='|' read -r cmd why how; do
+    if ! type -P "$cmd" >/dev/null 2>&1; then
+      printf '  MISSING %s — %s. Install: %s\n' "$cmd" "$why" "$how"; MISSING=$((MISSING + 1))
+      case "$how" in xcode-select*) CLT_MISSING=$((CLT_MISSING + 1)) ;; esac
+      continue
+    fi
+    if [ "$cmd" = jq ]; then
+      v="$(jq --version 2>/dev/null | sed -E 's/^jq-([0-9]+)\.([0-9]+).*/\1 \2/')"
+      if [ "${v% *}" -gt 1 ] 2>/dev/null || { [ "${v% *}" -eq 1 ] 2>/dev/null && [ "${v#* }" -ge 7 ] 2>/dev/null; }; then ok "jq ${v% *}.${v#* } (>= 1.7)"
+      else printf '  MISSING jq >= 1.7 — found %s. Install: %s\n' "$(jq --version 2>/dev/null)" "$how"; MISSING=$((MISSING + 1)); fi
+      continue
+    fi
+    ok "$cmd"
+  done <<EOF2
 $ROWS
-EOF
+EOF2
+}
+check_tools
+# What Homebrew carries is OFFERED in this same run (asked first; --yes answers it): the person is
+# not sent to `--with-recommended` and back to `init` (measured: 5 commands, one of them a failure).
+# Only what Homebrew can install counts: git and python3 come with the Command Line Tools, so a machine
+# missing only those is not offered brew (it would install nothing and fail the run it was offered in).
+if [ "$((MISSING - CLT_MISSING))" -gt 0 ] && type -P brew >/dev/null 2>&1 && [ "$DRY" = 0 ]; then   # MUTATION-ANCHOR: 824-M04
+  if confirm "install what Homebrew carries, one \`brew install\` each, printed before it runs (${FRONT} --with-recommended)?"; then
+    printf '\n'
+    bash "$SRC/install.sh" --with-recommended </dev/null || true
+    hash -r
+    printf '\n  prerequisites, again:\n'
+    check_tools
+  fi
+fi
 case "${SHELL##*/}" in
   bash|zsh) ok "shell ${SHELL##*/}" ;;
   *) warn "your login shell is '${SHELL:-unset}': foreman-sh is measured with zsh and bash (chsh -s /bin/zsh switches); hw itself runs under bash either way" ;;
@@ -153,8 +175,11 @@ if [ -z "$(git config --global --get user.name 2>/dev/null)" ] || [ -z "$(git co
   yours "git identity: git config --global user.name 'Your Name' && git config --global user.email you@example.com"
 fi
 if [ "$MISSING" -gt 0 ]; then   # MUTATION-ANCHOR: 824-M01
-  if type -P brew >/dev/null 2>&1; then
-    printf '\n  Homebrew can install what it carries, one `brew install` each, printed before it runs: %s --with-recommended\n' "$FRONT"
+  if [ "$CLT_MISSING" -gt 0 ]; then   # MUTATION-ANCHOR: 824-M05
+    printf '\n  git and python3 are Apple'"'"'s Command Line Tools, not Homebrew'"'"'s: xcode-select --install (a dialog; wait for it to finish)\n'
+  fi
+  if [ "$((MISSING - CLT_MISSING))" -gt 0 ] && type -P brew >/dev/null 2>&1; then   # MUTATION-ANCHOR: 824-M06
+    printf '\n  Homebrew can install what it carries; then init again, in one line you can copy:\n    %s --with-recommended && %s\n' "$FRONT" "$INIT_CMD"
   fi
   printf '\ninit: %d prerequisite(s) missing — nothing was written. Install them (commands above) and run `%s` again.\n' "$MISSING" "$INIT_CMD" >&2
   exit 1

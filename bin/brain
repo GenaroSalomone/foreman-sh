@@ -155,8 +155,70 @@ except OSError:
 PYLANE
 }
 
+# A CONVERSATION EXISTS WHEN ITS TRANSCRIPT DOES. MEASURED 2026-10-13, `brain relaunch --all`: the inbox brainer had
+# been opened minutes before and never received a message, so claude had written no transcript for its session
+# (herdr still reports an id for it). Relaunch sent /exit and then `claude --resume 97734d8c-…`, which answered «No
+# conversation found with session ID» and left a bare shell (rc=75). The pane's own account is not readable while claude
+# runs in it (its shell is not at a prompt), and a transcript's file name is its session id (a UUID, unique across
+# accounts), so every account this machine has is searched: the caller's CLAUDE_CONFIG_DIR, ~/.claude, ~/.claude-*.
+# Prints the transcript found; 1 = none. An id that is not a UUID (claude also resumes by title) is not judged here.
+brain_session_transcript() {   # <session id>
+  local d f
+  [[ "${1:-}" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || { printf 'not-a-uuid'; return 0; }
+  for d in "${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude" "$HOME"/.claude-*; do
+    [ -n "$d" ] || continue
+    for f in "$d"/projects/*/"$1".jsonl; do
+      [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+    done
+  done
+  return 1
+}
+
+# WHAT IS TYPED IN CLAUDE'S INPUT BOX, and /exit typed after it is not a command. MEASURED 2026-10-13, `brain relaunch
+# --all`, one lane's pane (rc=75, «NOT been proved agent-free»): the brainer's input held an unsent «para crear una la»;
+# send-text appended «/exit» to it, Enter SUBMITTED «para crear una la/exit» as a message, claude answered it
+# («Tu mensaje llegó cortado») and never exited. herdr reported the pane `done` all along. So the box is read before
+# any key: a draft refuses the replacement (clearing it is the person's, not ours — it is their words). The empty box's
+# placeholder («Try "…"») is dim; only text that is not dim is a draft. Prints the draft (empty: none); 1 = the
+# screen could not be read, which is not evidence of an empty box. A screen with no input box on it is not a draft either.
+brain_input_draft() {   # <pane>
+  local screen
+  screen="$(herdr agent read "$1" --source visible --lines 30 --format ansi 2>/dev/null)" || return 1
+  printf '%s' "$screen" | python3 -I -c '
+import re, sys
+CSI = r"(\x1b\[[0-9;?]*[A-Za-z])"
+# the input box is the `❯` line directly under a rule of ─; an earlier message of the person also starts with `❯`
+src = sys.stdin.read().split("\n")
+plain = [re.sub(CSI, "", l).strip() for l in src]
+lines = [src[i] for i in range(1, len(src)) if "❯" in plain[i] and plain[i - 1].startswith("──")]
+if not lines:
+    sys.exit(0)
+dim, out = False, []
+for tok in re.split(CSI, lines[-1]):
+    m = re.fullmatch(r"\x1b\[([0-9;?]*)([A-Za-z])", tok)
+    if m:
+        if m.group(2) == "m":
+            # 38/48/58 take 5;n or 2;r;g;b: those numbers are a colour, not attributes (a `2` there is not dim)
+            prms, k = m.group(1).split(";"), 0
+            while k < len(prms):
+                prm = prms[k]
+                # MUTATION-ANCHOR: 894-M02
+                if prm in ("38", "48", "58"):
+                    k += 3 if k + 1 < len(prms) and prms[k + 1] == "5" else 5
+                    continue
+                # MUTATION-ANCHOR-END: 894-M02
+                if prm in ("", "0", "22"): dim = False
+                elif prm == "2": dim = True
+                k += 1
+        continue
+    if not dim: out.append(tok)
+s = "".join(out)
+print(s[s.find("❯") + 1:].replace("\xa0", " ").strip())
+'
+}
+
 brain_relaunch() {   # brain relaunch [--all | <lane|pane>...] [--dry-run]
-  local all=0 dry=0 targets=() a lane json rc=0 n=0 fails=0 pane cwd sid st out up
+  local all=0 dry=0 targets=() a lane json rc=0 n=0 fails=0 pane cwd sid st out up conv mod
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -198,8 +260,12 @@ brain_relaunch() {   # brain relaunch [--all | <lane|pane>...] [--dry-run]
       idle|done) ;;
       *) printf 'skipped %s (%s): %s — a turn may be in flight, and a relaunch would cut it\n' "$pane" "$lane" "${st:-no status}"; continue ;;
     esac
+    # NOTHING SAVED, NOTHING TO RESUME: brain starts a new conversation in the pane then (see brain_session_transcript).
+    conv=1; brain_session_transcript "$sid" >/dev/null || conv=0
     if [ "$dry" = 1 ]; then
-      printf 'would relaunch %s (%s) resuming %s\n' "$pane" "$lane" "$sid"; continue
+      if [ "$conv" = 1 ]; then printf 'would relaunch %s (%s) resuming %s\n' "$pane" "$lane" "$sid"
+      else printf 'would relaunch %s (%s) as a NEW conversation: %s has no transcript, so there is nothing to resume\n' "$pane" "$lane" "$sid"; fi
+      continue
     fi
     out="$("$BRAIN_BIN/brain" "$lane" --resume "$sid" --in-pane "$pane" 2>&1)" || rc=$?
     if [ "$rc" = 75 ]; then
@@ -223,13 +289,13 @@ brain_relaunch() {   # brain relaunch [--all | <lane|pane>...] [--dry-run]
       sleep 1
     done
     [ "$up" = 1 ] || {
-      # `claude --resume` of a session that never had a turn finds no conversation and exits; the pane is
-      # then a bare shell. Nothing was lost (there was nothing), and `brain <lane>` opens a fresh one there.
-      printf 'FAILED %s (%s): claude did not come up resuming %s (a session with no turn yet has no conversation to resume) — the pane is a bare shell; `brain %s` starts a new brainer in it\n' "$pane" "$lane" "$sid" "$lane"
+      printf 'FAILED %s (%s): claude did not come up in the pane (%s) — the pane is a bare shell; `brain %s` starts a new brainer in it\n' "$pane" "$lane" \
+        "$([ "$conv" = 1 ] && printf 'resuming %s' "$sid" || printf 'a new conversation')" "$lane"
       fails=$((fails + 1)); continue
     }
-    printf 'relaunched %s (%s) resuming %s%s\n' "$pane" "$lane" "$sid" \
-      "$(printf '%s' "$out" | grep -Eo 'cockpit needs claude >= [0-9.]+ \(found [^)]*\)' | head -1 | sed 's/^/ — without the mod: /')"
+    mod="$(printf '%s' "$out" | grep -Eo 'cockpit needs claude >= [0-9.]+ \(found [^)]*\)' | head -1 | sed 's/^/ — without the mod: /' || true)"
+    if [ "$conv" = 1 ]; then printf 'relaunched %s (%s) resuming %s%s\n' "$pane" "$lane" "$sid" "$mod"
+    else printf 'relaunched %s (%s) as a NEW conversation — %s has no transcript (it never had a turn), so there was nothing to resume%s\n' "$pane" "$lane" "$sid" "$mod"; fi
   done < <(printf '%s' "$json" | jq -r '.result.panes[] | select(.label == "brain" and .agent == "claude")
       | [.pane_id, (.cwd // ""), (.agent_session.value // ""), (.agent_status // "")] | join("|")')
   [ "$n" -gt 0 ] || echo "brain relaunch: no open claude brainer matched."
@@ -320,6 +386,17 @@ done
 # environment, HERDR_PANE_ID and all, so `--self` would be satisfied there too
 # and it would arm a third process instead of doing the work.
 [ "$SELF" = 0 ] || [ -z "$AWAIT_PANE" ] || { echo "--self and --await-idle are the two halves of one reset, not one call" >&2; exit 64; }
+
+# A SESSION WITH NO TRANSCRIPT HAS NO CONVERSATION: `claude --resume` of it answers «No conversation found» and leaves a
+# bare shell (measured 2026-10-13, see brain_session_transcript). Decided here, before any key is sent, for `brain
+# <lane> --resume` and `brain relaunch` alike: the pane's agent is still replaced, by a NEW conversation, and the output says so.
+NO_CONVERSATION=0
+if [ -n "$RESUME" ]; then
+  # MUTATION-ANCHOR: 896-M01
+  brain_session_transcript "$RESUME" >/dev/null || NO_CONVERSATION=1
+  # MUTATION-ANCHOR-END: 896-M01
+  [ "$NO_CONVERSATION" = 0 ] || echo "brain: session $RESUME has no transcript under any account on this machine (it never had a turn), so there is no conversation to resume — starting a NEW one in the same pane." >&2
+fi
 
 dir="$BRAIN/$proj"
 [ -f "$dir/CLAUDE.md" ] || { echo "no brainer at $dir" >&2; exit 1; }
@@ -1190,6 +1267,21 @@ PY
         exit 1
       fi
       # MUTATION-ANCHOR-END: 137-M06
+      # A DRAFT IN THE INPUT BOX TURNS /exit INTO TEXT (see brain_input_draft): refused before any key is sent.
+      if [ -n "$pane_agent" ] && [ "$kind" = claude ]; then
+        # MUTATION-ANCHOR: 894-M01
+        draft="$(brain_input_draft "$pane")" || {
+          printf 'brain: the input box of %s could not be read, so whether it holds an unsent draft is UNKNOWN —\n' "$pane" >&2
+          printf 'brain: /exit would be appended to it. Nothing was sent and nothing was restarted.\n' >&2
+          exit 1
+        }
+        if [ -n "$draft" ]; then
+          printf 'brain: %s has an unsent draft in its input box («%s») and /exit typed after it would be SUBMITTED with it as one message, not run.\n' "$pane" "$(printf '%s' "$draft" | cut -c1-60)" >&2
+          printf 'brain: send or clear that draft in the pane, then relaunch. Nothing was sent and nothing was restarted.\n' >&2
+          exit 1
+        fi
+        # MUTATION-ANCHOR-END: 894-M01
+      fi
       if [ -n "$pane_agent" ]; then
         echo "brain: replacing the $pane_agent in $pane — the space, tab, pane and cwd all stay." >&2
         herdr pane send-text "$pane" '/exit' >/dev/null 2>&1 \
@@ -1568,7 +1660,7 @@ else
   # script's own physical path (the installed tree has cockpit/ beside bin/). Only
   # claude, only at or above the version that has mods, never when opted out; below
   # the floor it is one line and the brainer opens without it. An opt-out says nothing.
-  [ -z "$RESUME" ] || agent_args+=(--resume "$RESUME")
+  [ -z "$RESUME" ] || [ "$NO_CONVERSATION" = 1 ] || agent_args+=(--resume "$RESUME")
   if [ "$NO_COCKPIT" = 0 ] && [ "${FOREMAN_COCKPIT:-1}" != 0 ]; then
     cockpit_dir="$(cd -P "$BRAIN_BIN/.." && pwd)/cockpit"
     # The floor is the claude row of lib/hw/deps.conf (the one place the versions live).
@@ -1605,7 +1697,7 @@ if [ "$INPROC" = 1 ]; then
     done
     _brain_flush_outbox "$proj" "$pane" ) </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
-  echo "resuming ${RESUME:-a new conversation} in $space / $tab_label (pane $pane, $kind) — exec in this pane — cwd $dir" >&2
+  echo "$([ "$NO_CONVERSATION" = 1 ] && printf 'starting a new conversation (%s had no transcript)' "$RESUME" || printf 'resuming %s' "${RESUME:-a new conversation}") in $space / $tab_label (pane $pane, $kind) — exec in this pane — cwd $dir" >&2
   cd "$dir" || exit 1
   exec claude "${agent_args[@]:1}"   # MUTATION-ANCHOR: 892-M04
 fi
@@ -1655,11 +1747,14 @@ fi
 # A RESUME THAT DID NOT START IS NOT "resumed". The agent it replaced is gone, the conversation is intact on
 # disk, and the pane is a bare shell: say so and fail, instead of the success line below and exit 0.
 if [ "${START_FAILED:-0}" = 1 ] && [ -n "$RESUME" ]; then
+  [ "$NO_CONVERSATION" = 0 ] || { echo "FAILED starting a new conversation in $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — the pane is a bare shell; \`brain $proj\` starts a brainer in it" >&2; exit 75; }
   echo "FAILED resuming $RESUME in $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — the pane is a bare shell; the conversation is untouched, and \`brain $proj --resume $RESUME\` retries" >&2
   exit 75
 fi
 if [ "${REVIVE:-0}" = 1 ]; then
   echo "restarted $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, new conversation, the old one had already exited — cwd $dir"
+elif [ "$NO_CONVERSATION" = 1 ] && [ "$RESET" = 1 ]; then
+  echo "restarted $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, NEW conversation: $RESUME has no transcript (it never had a turn), so there was nothing to resume — cwd $dir"
 elif [ -n "$RESUME" ] && [ "$RESET" = 1 ]; then
   echo "resumed $space / $tab_label ($ws tab ${tab:-?}, pane $pane, $kind) — same pane, conversation $RESUME — cwd $dir"
 elif [ "$RESET" = 1 ]; then

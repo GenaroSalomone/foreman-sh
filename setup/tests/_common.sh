@@ -293,6 +293,33 @@ if [ -n "${HW_IMPL:-}" ] && [ "$HW_IMPL" != bash ] && [ -z "${HW_CORE:-}" ]; the
   if [ -n "$_core" ]; then export HW_CORE="$_core"; else printf 'runner: HW_IMPL=%s but there is no hw-core to hand over (no go toolchain, or no contract-hw/ in this suite) — the shim will fall back to bash with its warning\n' "$HW_IMPL" >&2; fi
   unset _core
 fi
+# copy_tracked_tree <src> <dst> — a release ships the TRACKED tree, so a fixture that stands for a
+# release (or for a published repository) copies that and nothing else. The checkout's untracked
+# load (lane evidence, snapshots, .claude/.opencode caches, build output) was ~440 MB in the main
+# checkout against ~73 MB in a task worktree, copied again by every subject that took the whole
+# root: 680 ran 323s there against a 281s ceiling (setup/tests/680, 480, 481).
+# The bytes are the working tree's, so a tracked-but-modified file is kept as it stands and a
+# tracked-but-deleted one is left out. The list: the runner's own `git ls-files` for $ROOT under
+# test-hw (its snapshot has no .git), else `git ls-files` of <src>; a <src> with no tracked set
+# (no git work tree) is copied whole, minus .git and .claude/worktrees, as before.
+copy_tracked_tree() {
+  local src dst list
+  src="$(cd -P "$1" && pwd)"; dst="$2"; list="$TMP/tracked-list.$$.$RANDOM"
+  mkdir -p "$dst"
+  if [ "$src" = "$ROOT" ] && [ -n "${TEST_HW_TRACKING_MANIFEST:-}" ] && [ "${TEST_HW_GIT_USABLE:-0}" = 1 ]; then  # MUTATION-ANCHOR: 681-M03
+    python3 -I -c 'import json,os,sys
+sys.stdout.buffer.write(b"".join(os.fsencode(p) + b"\0" for p in json.load(open(sys.argv[1]))["tracked"]))' "$TEST_HW_TRACKING_MANIFEST" > "$list"
+  elif [ "$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" = "$src" ]; then
+    git -C "$src" ls-files -z --cached > "$list"  # MUTATION-ANCHOR: 681-M01
+  else
+    ( cd "$src" && tar --exclude=./.git --exclude=./.claude/worktrees -cf - . ) | tar -xf - -C "$dst"
+    return 0
+  fi
+  ( cd "$src" && python3 -I -c 'import os,sys  # MUTATION-ANCHOR: 681-M02
+sys.stdout.buffer.write(b"".join(p + b"\0" for p in sys.stdin.buffer.read().split(b"\0") if p and (os.path.islink(p) or os.path.isfile(p))))' < "$list" \
+      | tar --null -T - -cf - ) | tar -xf - -C "$dst"
+  rm -f "$list"
+}
 # hw_lib_beside <bindir> — a lib/ of its own beside a copy of bin/hw, so a MUTANT of
 # a moved module (lib/hw/next.sh) is mutated in a file the copy actually sources:
 # hw reads the lib/ beside its bin/ first (HW_LIB_DIR above only fills in for none).

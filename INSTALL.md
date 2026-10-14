@@ -79,7 +79,9 @@ installed 2.1.296 in 18 s.
 
 `foreman-sh init` offers Homebrew only for what Homebrew carries. If only `git` or `python3`
 is missing it names `xcode-select --install` (Apple's Command Line Tools) and sends you
-to nothing else.
+to nothing else. A `git` or `python3` that does not run counts as missing: on a Mac without
+the Command Line Tools, `/usr/bin/git` and `/usr/bin/python3` exist as shims that print
+"No developer tools were found" and exit 1 (`--check` and `init` both say so, measured on a clean macOS VM).
 
 It installs packages and configures nothing. Claude Code's first run,
 `herdr integration install claude` and `engram setup claude-code` stay yours;
@@ -175,7 +177,8 @@ Claude integration and `engram setup claude-code` (it asks first, and `--yes` an
 for you), builds `~/brain` with a `demo` lane over a toy repository at `~/code/toy`
 (`--lane NAME --repo PATH` for your own), copies a sample brief to
 `~/brain/demo/briefs/hello.md` and ends with `hw demo hello … --dry-run`. Claude
-Code's first run and your PATH stay yours: `init` names them. A second run changes
+Code's first run and your PATH stay yours: `init` names them. Without a Go toolchain
+(1.22 or newer) it says in one `NOTE` line that `hw` runs in bash. A second run changes
 nothing and says so. `--brain DIR` and `--bin-dir DIR` move what it writes.
 
 ## The command

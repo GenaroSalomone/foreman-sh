@@ -66,7 +66,7 @@ TMPR="$(cd -P "$TMP" && pwd)"; RREPO="$(cd -P "$REPO" && pwd)"   # the installer
 # ── two fake releases, as the tarballs GitHub serves for a tag ──────────────
 REL="$TMP/releases"; mkdir -p "$REL"
 copy_tree() {  # <dst>
-  mkdir -p "$1"; ( cd "$SUBJECT" && tar --exclude=./.git -cf - . ) | tar -xf - -C "$1"
+  copy_tracked_tree "$SUBJECT" "$1"   # the tracked tree is what a release ships (_common.sh)
 }
 notes() {  # <version> <in short text> — a RELEASE-NOTES.md with an "In short" section
   printf '# foreman-sh %s\n\n## In short\n\n%s\n\n## Added\n\n- a thing\n' "$1" "$2"

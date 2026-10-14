@@ -1191,6 +1191,35 @@ if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$JOBS" -gt 1
 fi
 export TEST_HW_NESTED=1
 
+# ── A SLOT IS ONE JOB, NOT ONE JOB'S FAN-OUT (2026-10-14) ───────────────────
+#
+# The pool counts jobs. A contract subject (840, 843, 847, 860, 870) is one job
+# that starts three to six workers of its own, so five of them in six slots are
+# eighteen workers on a machine measured safe at six. Measured 2026-10-14: the
+# full run of 032e1682 ran 870 for 1508s on 3456 cpu-seconds at load 22 on 14
+# cpus, and 361, 510 and 680 beside it spent 2-4x their cpu (44/105/400s against
+# 20/25/127 alone) and were cut at their ceilings, twice. Their WAITING lines
+# were not a nested runner waiting for its parent's slot: a nested runner takes
+# none (TEST_HW_NESTED, and 361/510 give theirs a pool of their own), and 680
+# runs no runner at all. They were this run waiting for slots another suite held.
+#
+# So the runner hands every job its SHARE of the cpus: TEST_HW_FANOUT_JOBS = cpus /
+# MACHINE_JOBS (at least 1). A subject that fans out reads it where it used to
+# read a constant; run by hand it sets none and keeps that constant. It is NOT
+# an HW_* name on purpose: tests/_common.sh sweeps every HW_* before a subject
+# runs (which is also why HW_TEST_JOBS and HW_CONTRACT_JOBS never reached one).
+# A nested runner keeps the share of the runner above it.
+if [ -z "${TEST_HW_FANOUT_JOBS:-}" ]; then
+  _fo_ncpu="${HW_TEST_NCPU:-}"
+  if [ -z "$_fo_ncpu" ] && command -v sysctl >/dev/null 2>&1; then _fo_ncpu="$(sysctl -n hw.ncpu 2>/dev/null || true)"; fi
+  if [ -z "$_fo_ncpu" ] && command -v getconf >/dev/null 2>&1; then _fo_ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"; fi
+  case "${_fo_ncpu:-}" in ''|*[!0-9]*) _fo_ncpu=4 ;; esac
+  TEST_HW_FANOUT_JOBS=$(( _fo_ncpu / MACHINE_JOBS ))  # MUTATION-ANCHOR: 997-M01
+  [ "$TEST_HW_FANOUT_JOBS" -ge 1 ] || TEST_HW_FANOUT_JOBS=1
+  unset _fo_ncpu
+fi
+export TEST_HW_FANOUT_JOBS
+
 # ── THE JOB TABLE: every subject, then every guard, in the order they PRINT ──
 #
 # ONE LIST, because the guards are work like any other and the only thing that

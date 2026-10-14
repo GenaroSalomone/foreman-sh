@@ -230,9 +230,9 @@ func (a *app) depsUpdateFor(r depRow, bin string) depRow {
 	}
 	switch {
 	case strings.Contains(real, "/Caskroom/claude-code@latest/"):
-		r.update = "brew upgrade --cask claude-code@latest"
+		r.update = "brew upgrade --cask claude-code@latest" // # MUTATION-ANCHOR: 871-G05
 	case strings.Contains(real, "/Caskroom/claude-code/"):
-		r.update = "brew uninstall --cask claude-code && brew install --cask claude-code@latest"
+		r.update = "brew uninstall --cask claude-code && brew install --cask claude-code@latest" // # MUTATION-ANCHOR: 871-G06
 	}
 	return r
 }

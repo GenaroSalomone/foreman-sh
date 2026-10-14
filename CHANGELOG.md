@@ -4,6 +4,29 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.4.0-rc.2] — 2026-10-14
+
+### Changed
+- The pre-commit hook says once, before it runs, that a commit with no verdict for its tree runs
+  the gate now and takes minutes, and that an agent should run it in the background.
+
+### Fixed
+- On a Mac without the Command Line Tools, `/usr/bin/git` and `/usr/bin/python3` are shims that
+  exit 1; `--check` printed `ok git` and `ok python3` for them and `init` died on an empty
+  `--brain`. A `git` or `python3` that does not run is now MISSING, with `xcode-select --install`.
+- `foreman-sh init` passes on install.sh's `NOTE` line when `hw-core` is not built (no Go, Go older
+  than 1.22): it finished silently, so the person could not tell `hw` was running in bash.
+- `brain relaunch` no longer types `/exit` over a draft you had not sent in the brainer's input
+  box: the draft was submitted as a message and the relaunch refused with "NOT proved agent-free".
+  A session with no transcript is relaunched as a new conversation instead of a resume that cannot
+  work.
+- `setup/gate-select` does not walk checkouts nested in the tree it selects for. With agent
+  worktrees under `.claude/worktrees` the selection took 243 s; it takes 1.65 s and picks the same
+  83 tests on a normal tree.
+- A contract subject's fan-out fits the share of the machine its slot holds, instead of 18 workers
+  on 14 CPUs when five subjects ran in six slots.
+- The release-copy tests copy the tracked tree, not whatever the checkout carries untracked.
+
 ## [0.4.0-rc.1] — 2026-10-12
 
 ### Added

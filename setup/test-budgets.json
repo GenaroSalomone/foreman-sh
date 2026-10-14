@@ -319,7 +319,7 @@
     },
     "824-foreman-sh-init-lleva-de-cero-al-primer-dry-run.sh": {
       "exit": 0,
-      "seconds": 19.0
+      "seconds": 124.72
     },
     "85-codex-report-route.sh": {
       "exit": 0,
@@ -402,6 +402,6 @@
       "seconds": 120.0
     }
   },
-  "measured_at": "2026-10-13T13:01:34Z",
+  "measured_at": "2026-10-14T10:36:28Z",
   "touched_budget_seconds": 90
 }

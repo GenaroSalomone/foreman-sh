@@ -209,6 +209,11 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
     hook_started="$(date +%s)"
     hook_rc=0
     out=""
+    # ONE LINE, BEFORE THE WAIT. No verdict for this tree means the gate runs now, and it takes minutes
+    # (679 s measured 2026-10-13, retro of brain-resume-desde-su-pane): a foreground `git commit` from an
+    # agent dies at its 120 s tool timeout, three times in that run, and a `pgrep -f "git commit"` watcher
+    # matched its own command line. This is the one place the executor is reading while it waits.
+    [ -n "$hook_reused" ] || printf 'pre-commit: no fast-gate verdict for this tree, so the gate runs now and takes minutes (about 11 measured). An agent: run this commit in the background (run_in_background) and wait for its notification; a foreground git commit dies at the 120 s tool timeout.\n' >&2  # MUTATION-ANCHOR: 995-M01
     [ -n "$hook_reused" ] || out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
                -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
                -u GIT_COMMON_DIR -u GIT_PREFIX \

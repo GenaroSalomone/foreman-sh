@@ -15,6 +15,7 @@
 #      one run takes a machine without herdr to the dry-run dispatch;
 #   2d. git and python3 are not Homebrew's (Command Line Tools): a machine missing ONLY git is told
 #      `xcode-select --install`, is not offered brew and is not sent to --with-recommended;
+#   2e. without Go, init finishes and passes on install.sh's NOTE that hw runs in bash (4b below);
 #   3. without --yes and without a terminal, herdr's integration is asked for,
 #      not done: the run stops, names the command and writes no brain;
 #   4. `init --yes` builds the brain, the demo lane on a toy repository, the
@@ -33,7 +34,8 @@
 #   M04 the in-run Homebrew offer dropped — a missing herdr stops the run again;
 #   M05 the Command Line Tools line dropped — a machine missing only git is not told xcode-select;
 #   M06 the copyable brew line printed for what Homebrew cannot install (only git missing);
-#   M07 the in-run Homebrew offer fired for what Homebrew cannot install (only git missing).
+#   M07 the in-run Homebrew offer fired for what Homebrew cannot install (only git missing);
+#   M08 install.sh's NOTE lines (hw runs in bash: no Go) are not passed on.
 #
 # Run alone:  bash setup/tests/824-foreman-sh-init-lleva-de-cero-al-primer-dry-run.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
@@ -192,6 +194,25 @@ case "$out" in *"init: done"*) ;; *) fail "the first run does not say it changed
 [ ! -e "$HOME/work/demo/hello" ] || fail "the dry run created a worktree"
 pass "init --yes builds the brain, the demo lane on a toy repository and the sample brief, and ends with a dry-run dispatch that succeeds; first run and PATH are named as the person's"
 
+# 4b. no Go toolchain: install.sh says hw runs in bash (one NOTE line) and init, which keeps install.sh's output
+# to itself, must pass it on — measured 2026-10-13 on a clean macOS VM running rc.1: init finished, said nothing
+# about Go, and the person could not tell which half of hw they had.
+NOGO="$TMP/farm-nogo"; mkdir -p "$NOGO"
+for _l in "$FARM"/*; do case "${_l##*/}" in go) ;; *) ln -s "$(readlink "$_l")" "$NOGO/${_l##*/}" 2>/dev/null || true ;; esac; done
+OLD_HOME="$HOME"; export HOME="$TMP/home-nogo"; mkdir -p "$HOME"
+cp -p "$LOGS/herdr-install" "$TMP/herdr-install.4"; cp -p "$LOGS/engram-setup" "$TMP/engram-setup.4"   # section 5 counts the first run's calls
+git config --global user.name t; git config --global user.email t@t
+rc=0; out="$(unset FOREMAN_SH_NO_CORE; PATH="$STUBS:$NOGO" init --yes)" || rc=$?   # _common.sh sets it: the suite never builds Go
+[ "$rc" = 0 ] || fail "4b: init --yes without Go must still finish (got $rc): $out"
+if [ -d "$ROOT/core" ] && [ -f "$ROOT/setup/build-core" ]; then
+  case "$out" in *"NOTE  no Go toolchain on PATH: hw-core is not built and hw runs its bash implementation"*) ;; *) fail "4b: init does not say hw runs in bash without Go: $out" ;; esac
+  [ ! -e "$HOME/.config/hw/impl" ] || fail "4b: a switch file was written with no hw-core built"
+  pass "4b: without Go init finishes and passes on install.sh's one-line NOTE that hw runs in bash"
+else
+  pass "4b: skipped — this tree carries no Go core, so install.sh has no NOTE to pass on"
+fi
+export HOME="$OLD_HOME"; cp -p "$TMP/herdr-install.4" "$LOGS/herdr-install"; cp -p "$TMP/engram-setup.4" "$LOGS/engram-setup"
+
 # ── 5. a second run changes nothing and says so ─────────────────────────────
 t1="$(tree)"
 rc=0; out="$(init --yes)" || rc=$?
@@ -239,6 +260,15 @@ saw_mutant "M06 the brew line for what brew cannot install" "$(PATH="$STUBS:$NOG
 cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M04 "$MUT/init.sh" 'if [ "$MISSING" -gt 0 ] && type -P brew >/dev/null 2>&1 && [ "$DRY" = 0 ]; then'   # was: [ "$((MISSING - CLT_MISSING))" -gt 0 ]
 saw_mutant "M07 the offer fired for what brew cannot install" "$(PATH="$STUBS:$NOGIT" minit --yes)" "prerequisites, again:"
 
+# M08 — install.sh's NOTE lines dropped: the unmutated 4b run carried the no-Go NOTE
+if [ -d "$ROOT/core" ] && [ -f "$ROOT/setup/build-core" ]; then
+  cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M08 "$MUT/init.sh" '  :'   # was: ... sed -n 's/^  NOTE  //p' | while ... say "NOTE  $_note"
+  m8="$(unset FOREMAN_SH_NO_CORE; HOME="$TMP/home-nogo-m" PATH="$STUBS:$NOGO" minit --yes || true)"
+  # positive evidence: the run REACHED its end (so the mutated line ran) and the NOTE is gone
+  case "$m8" in *"init: done"*) case "$m8" in *"NOTE  no Go toolchain"*) m8=NOTE-STILL-THERE ;; *) m8=NOTE-GONE ;; esac ;; *) m8=RUN-NEVER-FINISHED ;; esac
+  saw_mutant "M08 install.sh's NOTE not passed on" "$m8" "NOTE-GONE"
+fi
+
 # ── 6. what the person edited is left alone; another lane needs its repository ─
 printf 'my own brief\n' > "$BRIEF"
 out="$(init --yes)" || true
@@ -254,4 +284,4 @@ rc=0; out="$(init --yes --lane myapp --repo "$HOME/myapp-repo")" || rc=$?
 case "$out" in *"dispatch myapp:hello"*) ;; *) fail "the sample brief does not dispatch on lane myapp: $out" ;; esac
 pass "a lane other than demo needs --repo, and with one it is built and its sample brief dispatches"
 
-printf 'coverage - 824: 10 live claims, 7 mutants (7 must be named)\n'
+printf 'coverage - 824: 11 live claims, 8 mutants (8 must be named)\n'

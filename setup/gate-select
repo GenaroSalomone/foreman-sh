@@ -96,6 +96,20 @@ def names(text, word):
                      + r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9])", text) is not None
 
 
+def nested_checkout(path):
+    """<path> is another checkout (a worktree: `.git` file or dir), not this repo's code.
+
+    Claude Code's agent worktrees live under .claude/worktrees/ in the main
+    checkout: full copies of the repo, ~12,000 files. Walking them made every
+    selection there read and scan them all (361, 510 and 680 hit their
+    ceilings only from the main checkout), and a copy of bin/hw in one counted
+    as a code file naming things. A registered worktree carries `.git`; a stale
+    leftover dir under .claude/worktrees may not, so that path is skipped too."""
+    return (os.path.lexists(os.path.join(path, ".git"))
+            or (os.path.basename(path) == "worktrees"
+                and os.path.basename(os.path.dirname(path)) == ".claude"))
+
+
 def universe(root):
     files = {}
     for rel in ROOT_FILES:
@@ -103,7 +117,7 @@ def universe(root):
             files[rel] = code_text(os.path.join(root, rel))
     for top in CODE_DIRS:
         for dirpath, dirnames, filenames in os.walk(os.path.join(root, top)):
-            dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__")]
+            dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__") and not nested_checkout(os.path.join(dirpath, d))]  # MUTATION-ANCHOR: 998-M01
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 rel = os.path.relpath(full, root)

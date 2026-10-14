@@ -57,7 +57,8 @@ _self="${BASH_SOURCE[0]:-}"
 if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
   _repo="${FOREMAN_SH_REPO:-https://github.com/GenaroSalomone/foreman-sh}"
   for _need in git curl; do
-    type -P "$_need" >/dev/null 2>&1 || { printf 'install: %s is required to fetch foreman-sh and was not found on PATH\n' "$_need" >&2; exit 1; }
+    # git must RUN: on a Mac without the Command Line Tools /usr/bin/git is a shim that exits 1 (see init.sh tool_runs)
+    { type -P "$_need" >/dev/null 2>&1 && { [ "$_need" != git ] || git --version >/dev/null 2>&1; }; } || { printf 'install: %s is required to fetch foreman-sh and was not found on PATH\n' "$_need" >&2; exit 1; }
   done
   _refs="$(git ls-remote --tags --refs "$_repo" 'v*' 2>/dev/null)" || { printf 'install: cannot list the tags of %s\n' "$_repo" >&2; exit 1; }
   # a release tag is vMAJOR.MINOR.PATCH; a pre-release (-rc.1) is only taken when no release exists
@@ -689,7 +690,9 @@ floor() {
   esac
 }
 need() {  # <command> <why> <how>
-  if type -P "$1" >/dev/null 2>&1; then ok "$1"
+  # git and python3 must RUN: without the Command Line Tools /usr/bin/git and /usr/bin/python3 are shims that
+  # exit 1, and `type -P` finds them (measured on a clean macOS VM: --check said `ok git`, `ok python3`)
+  if type -P "$1" >/dev/null 2>&1 && { case "$1" in git|python3) "$1" --version >/dev/null 2>&1 ;; esac; }; then ok "$1"   # MUTATION-ANCHOR: 996-M02
   else printf '  MISSING %s — %s. Install: %s\n' "$1" "$2" "$3"; missing=1; fix_tool "$3"; fi
 }
 [ "$(uname -s)" = Linux ] && PKG="apt install" || PKG="brew install"
@@ -730,7 +733,7 @@ if [ "$(uname -s)" = Linux ]; then
     printf '  MISSING node — the OpenCode guard plugin is an ES module in a .js file (%s or newer). Install: https://nodejs.org/en/download\n' "$DEPS_MIN"; missing=1; fix_tool "node >= $DEPS_MIN: https://nodejs.org/en/download"
   fi
 fi
-type -P python3 >/dev/null 2>&1 || die "python3 is required to continue"
+{ type -P python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; } || die "python3 is required to continue and does not run here (macOS: xcode-select --install; Linux: apt install python3)"   # MUTATION-ANCHOR: 996-M03
 MODEL_GIVEN="$MODEL"
 [ -z "$LANE" ] || adopt_lane_row
 : "${VENDOR:=claude}"

@@ -83,6 +83,13 @@ YOURS=""   # what is still the person's, one line each, printed last
 yours() { YOURS="${YOURS}${YOURS:+
 }$1"; }
 
+# A name on PATH that RUNS. On a Mac without the Command Line Tools /usr/bin/git and /usr/bin/python3 are shims:
+# `type -P` finds them, they print "No developer tools were found" and exit 1 (measured on a clean macOS VM,
+# 2026-10-13: --check said `ok git`, and init died on an empty --brain after python3 -c failed).
+tool_runs() {
+  type -P "$1" >/dev/null 2>&1 || return 1
+  case "$1" in git|python3) "$1" --version >/dev/null 2>&1 ;; esac   # MUTATION-ANCHOR: 996-M01
+}
 abspath() { python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "$1"; }
 strip_ansi() { local esc; esc="$(printf '\033')"; sed "s/${esc}\[[0-9;]*m//g"; }
 
@@ -97,7 +104,7 @@ confirm() {
   return 1
 }
 
-command -v python3 >/dev/null 2>&1 || die "python3 is required to continue (macOS: xcode-select --install; Linux: apt install python3)"
+tool_runs python3 || die "python3 is required to continue and does not run here (macOS: xcode-select --install installs the Command Line Tools, and /usr/bin/python3 is only a shim until then; Linux: apt install python3)"
 [ -n "$BRAIN_DIR" ] || BRAIN_DIR="$HOME/brain"
 BRAIN="$(abspath "$BRAIN_DIR")"
 BIN="$(abspath "${BIN_DIR:-$HOME/.local/bin}")"
@@ -136,7 +143,7 @@ check_tools() {
   MISSING=0 CLT_MISSING=0   # CLT_MISSING: the missing ones Homebrew does not carry (Command Line Tools do)
   local cmd why how v
   while IFS='|' read -r cmd why how; do
-    if ! type -P "$cmd" >/dev/null 2>&1; then
+    if ! tool_runs "$cmd"; then
       printf '  MISSING %s — %s. Install: %s\n' "$cmd" "$why" "$how"; MISSING=$((MISSING + 1))
       case "$how" in xcode-select*) CLT_MISSING=$((CLT_MISSING + 1)) ;; esac
       continue
@@ -315,6 +322,9 @@ else
   say "permissions: $PERMISSIONS ($PERMISSIONS_SRC) — change with: hw --permissions ask|skip"
   if [ "$before" = "$after" ]; then ok "brain $BRAIN and lane $LANE → $REPO were already in place: nothing changed"   # MUTATION-ANCHOR: 824-M03
   else chg "brain $BRAIN, lane $LANE → $REPO (links in $BIN)"; fi
+  # install.sh's own NOTE lines are the only place it says hw runs in bash (no Go, Go older than 1.22, --no-core):
+  # init keeps its log to itself, so without this the person never learns which half of hw they got (measured 2026-10-13)
+  strip_ansi < "$LOG" | sed -n 's/^  NOTE  //p' | while IFS= read -r _note; do say "NOTE  $_note"; done   # MUTATION-ANCHOR: 824-M08
 fi
 
 # ── 5. the sample brief ─────────────────────────────────────────────────────

@@ -412,6 +412,7 @@ func (l *lch) claudeSessionEnvPrep(pane string) {
 	}
 	prep := "unset CLAUDE_CODE_CHILD_SESSION"
 	prep += "; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
+	prep += "; export CLAUDE_CODE_BASH_EDIT_DIFF=0"
 	if _, rc := l.sh(cmdSpec{name: "herdr", args: []string{"pane", "run", pane, prep}, mut: true, merge: true}); rc != 0 { // # MUTATION-ANCHOR: 847-A1-17
 		l.errf("claude: could not clear CLAUDE_CODE_CHILD_SESSION in %s; Claude may report 'Transcript saving is off'.\n", pane)
 	}

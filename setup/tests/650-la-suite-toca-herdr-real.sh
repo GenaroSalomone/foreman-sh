@@ -163,8 +163,12 @@ while IFS= read -r line; do
   printf '%s\n' "\$turn" > "\$EV/executor-turn-\$n"
   case "\$turn" in
     *REPORT-650*)
-      "\$BIN/done-invoker" "650 live probe complete: REPORT-650-SUMMARY" > "\$EV/done-invoker.out" 2>&1
-      : > "\$EV/done-invoker.returned" ;;  # only reached if hw done did NOT close this pane
+      # A LONG summary, with a newline and non-ASCII in it: it crosses herdr's
+      # 80-character token width, so the invoker chunks it, and herdr deletes the
+      # newline and trims every value. The read-back must still PROVE it (the
+      # 2026-10-14 defect: "token publication UNPROVEN" on every real report).
+      "\$BIN/done-invoker" "\$(printf '650 live probe complete: REPORT-650-SUMMARY, a summary that crosses the eighty character token width of herdr, with \303\251 and \342\200\224 in it and\na newline besides, so what herdr stores is not what was sent unless the chunker spells it the way herdr keeps it')" > "\$EV/done-invoker.out" 2>&1
+      echo "\$?" > "\$EV/done-invoker.rc" ;;  # the invoker exits BEFORE the close: it must be able to say so
     *) sleep 1 ;;
   esac
   printf '{"hook_event_name":"Stop"}' | bash "\$BIN/hw-stop-hook.sh" stop > "\$EV/stop-hook-\$n.out" 2>&1
@@ -257,9 +261,10 @@ pass "650 the Stop hook refused the unreported turn and published turn_state=han
 
 EXEC_TAB="$(h pane get "$EXEC" | jq -r '.result.pane.tab_id')"
 h agent prompt "$EXEC" "REPORT-650 now" >/dev/null 2>&1 || fail "650 could not prompt the executor"
-# done-invoker's own exit is not observable: after the report lands it runs
-# `hw done`, which closes this very pane, as it does under a real agent. What
-# is observable is where the report went and what it left on disk.
+# SINCE 2026-10-14 done-invoker's own exit IS observable: the close runs after
+# the invoker has exited, in a process of its own (it used to run inside the
+# invoker, whose pane it then killed: "Exit code 137" on every delivered report).
+# Where the report went and what it left on disk are observed as before.
 _end=$((SECONDS + 90))
 until grep -q REPORT-650-SUMMARY "$TMP/ev/brainer.log" 2>/dev/null; do
   [ "$SECONDS" -lt "$_end" ] || fail "650 the report never reached the brainer pane: $(cat "$TMP/ev/done-invoker.out" 2>/dev/null)"
@@ -274,12 +279,21 @@ pass "650 done-invoker delivered the report into the brainer pane through channe
 gone=""; _end=$((SECONDS + 30))
 while [ "$SECONDS" -lt "$_end" ]; do
   if ! h tab list 2>/dev/null | jq -e --arg t "$EXEC_TAB" '.result.tabs[] | select(.tab_id == $t)' >/dev/null 2>&1; then gone=1; break; fi
-  # done-invoker returned in a pane that should be gone: the close is over and failed.
-  [ ! -e "$TMP/ev/done-invoker.returned" ] || break
+  # the detached close ran `hw done` and it failed: the tab will not go.
+  [ ! -s "$TMP/ev/ledger-close-failed" ] || break
+  ls "$TMP/work/$LANE/$TASK/.hw/"*/close-failed >/dev/null 2>&1 && break
   sleep 0.3
 done
-[ -n "$gone" ] || fail "650 hw done left the executor's tab $EXEC_TAB open after the report — hw done said: $(grep -E 'CLOSED|NOTHING TO CLOSE|CLOSE FAILED|could not close' "$TMP/ev/done-invoker.out" 2>/dev/null | head -5 | tr '\n' ' ') — last lines: $(tail -3 "$TMP/ev/done-invoker.out" 2>/dev/null | tr '\n' ' ')"
+[ -n "$gone" ] || fail "650 hw done left the executor's tab $EXEC_TAB open after the report — hw done said (its output is the detached close's log): $(grep -hE 'CLOSED|NOTHING TO CLOSE|CLOSE FAILED|could not close' "$TMP/work/$LANE/$TASK/.hw/"*/close.log "$TMP/ev/done-invoker.out" 2>/dev/null | head -5 | tr '\n' ' ') — last lines: $(tail -3 "$TMP/ev/done-invoker.out" 2>/dev/null | tr '\n' ' ')"
 pass "650 hw done closed the executor's tab $EXEC_TAB"
+
+# The exit and the proof — the two things the detached close exists to make true.
+[ "$(cat "$TMP/ev/done-invoker.rc" 2>/dev/null)" = 0 ] \
+  || fail "650 done-invoker did not exit 0 after a delivered report (rc '$(cat "$TMP/ev/done-invoker.rc" 2>/dev/null)'): $(tail -5 "$TMP/ev/done-invoker.out" | tr '\n' ' ')"
+pass "650 done-invoker exits 0 on a delivered report, because the close runs after it has exited"
+! grep -q 'UNPROVEN' "$TMP/ev/done-invoker.out" \
+  || fail "650 a long, multi-line summary was not proven by read-back on a real herdr: $(grep -h 'UNPROVEN\|unverified' "$TMP/ev/done-invoker.out" | tr '\n' ' ')"
+pass "650 a long multi-line summary is proven by read-back on a real herdr (no token publication UNPROVEN)"
 
 # ── nothing left behind ─────────────────────────────────────────────────────
 close_workspaces

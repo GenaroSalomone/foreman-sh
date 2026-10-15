@@ -174,6 +174,9 @@ esac
 FAST_THRESHOLD_SECONDS=""
 FG_FACTOR=1
 if [ "$HW_TEST_GATE" = fast ]; then
+  # An executor's own verify (no HW_TEST_CHANGED: pre-commit has its own line, no nested run) takes 8-12 minutes: said
+  # first, because a foreground call dies at the agent's 120 s tool timeout and a sleep loop past it is the same wait twice.
+  [ -n "${HW_TEST_CHANGED:-}" ] || [ -n "${TEST_HW_NESTED:-}" ] || printf 'runner: the fast gate takes minutes (8-12 measured). An agent: run it with run_in_background and wait for the completion notification; never sleep-poll it past the 120 s tool timeout.\n' >&2  # MUTATION-ANCHOR: 995-M03
   BUDGETS="$HERE/test-budgets.json"
   [ -f "$BUDGETS" ] || { printf 'not ok - runner: %s is missing — run setup/measure-tests.sh before the fast gate can run\n' "$BUDGETS" >&2; exit 1; }
   _gate_py_rc=0
@@ -661,6 +664,11 @@ count_into() {
 # afford. A subject run by hand, or a brief that pins one bare, takes no slot
 # and is not coordinated — pin it through the runner if it must be.
 #
+# SINCE 2026-10-14 THE WAIT ABOVE HAS A DIRECTION: a fast gate is not held up by a
+# full run's NEXT subject or by a full run that merely wants the machine alone — see
+# "FAST GATES FIRST" below (R1-R3, tests/964). It still waits for a subject that is
+# already running, which is all it ever should.
+#
 # AND ONE RACE THAT IS STATED RATHER THAN CLOSED. Reclaiming an orphan is
 # look-then-remove, so two runners that judge the same dead holder at the same
 # moment can, in the window between, remove a slot a third runner has just
@@ -745,7 +753,7 @@ _pool_waiter_alive() { # <file>
   local pid="${1##*.}" start
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   kill -0 "$pid" 2>/dev/null || return 1
-  start="$(cat "$1" 2>/dev/null || true)"
+  start="$(sed -n 1p "$1" 2>/dev/null || true)"   # line 1 is the start time; line 2, when there is one, is the gate that wrote it
   [ -n "$start" ] || return 0
   [ "$(_pool_proc_start "$pid")" = "$start" ]
 }
@@ -754,6 +762,67 @@ _pool_say() { # <signature> <message> — once per change of who is being waited
   POOL_SAID="$1"
   printf 'runner: %s\n' "$2" >&2
 }
+# ── FAST GATES FIRST (2026-10-14) ────────────────────────────────────────────
+#
+# MEASURED 2026-10-14: the brainer's full suite held a slot for 2h26 and its
+# timing subject took the exclusive "waiting for the machine to drain"; seven
+# executors' fast gates and pre-commits queued ~1h behind it, and the full suite
+# itself stalled. A commit must not wait on a run it is not part of, so the pool
+# has a PRIORITY, and it is three rules. NOTHING IS EVER KILLED; a subject that
+# is already running finishes, and a fast gate may wait for exactly that.
+#
+#   R1. A FAST run that needs a slot and finds none says so with `fastwait.<pid>`
+#       (written BEFORE it looks, removed once it holds a slot, so a full run that
+#       claims a slot afterwards sees it and gives the slot back). A FULL run
+#       starts no new subject while one exists: the slot a finishing job frees
+#       goes to the fast waiter, not to the full run's next subject.
+#   R2. A FULL run takes the exclusive — and keeps it between its timing subjects —
+#       only while no fast waiter exists; one that appears is let through by
+#       dropping the exclusive and the wait, and the full run asks again later.
+#       A full run's timing subjects therefore wait for the end of the run, and
+#       for a quiet moment.
+#   R3. A FAST run is not blocked by a FULL run that merely WANTS the machine
+#       alone: the wait file of a full run (its second line says which gate wrote
+#       it) does not stop a fast job from starting. The exclusive itself still
+#       does — a full run's timing subject is a subject already running, which is
+#       the only thing a fast gate may wait for. A full run that wants the machine
+#       alone takes the exclusive only AFTER the drain (claim, then look), so it is
+#       never held while a fast subject is still starting beside it.
+#
+# THE COST IS STATED RATHER THAN HIDDEN: while fast gates keep arriving, a full
+# run's timing subjects wait (R2) and its pooled work trickles (R1). That is the
+# trade the brief asked for — an executor's pre-commit outranks the brainer's
+# long run. tests/964-las-compuertas-rapidas-no-esperan-una-corrida-completa
+# drives it with two real runners and a mutant per rule.
+POOL_MODE="${HW_TEST_GATE:-full}"
+POOL_FASTWAIT=0      # this runner has $POOL_DIR/fastwait.$$ on disk
+_pool_fast_register() {
+  [ "$POOL_MODE" = fast ] && [ "$POOL_FASTWAIT" != 1 ] || return 0
+  _pool_proc_start "$$" > "$POOL_DIR/fastwait.$$.part" 2>/dev/null || true
+  mv -f "$POOL_DIR/fastwait.$$.part" "$POOL_DIR/fastwait.$$" 2>/dev/null || true
+  POOL_FASTWAIT=1
+}
+_pool_fast_unregister() {
+  if [ "$POOL_FASTWAIT" = 1 ]; then rm -f "$POOL_DIR/fastwait.$$" 2>/dev/null || true; POOL_FASTWAIT=0; fi
+}
+# 0 = some OTHER live fast run is waiting for a slot. Dead waiters are cleared.
+_pool_fast_waiting() { # [quiet]
+  local w
+  for w in "$POOL_DIR"/fastwait.*; do
+    [ -e "$w" ] || continue
+    [ "$w" != "$POOL_DIR/fastwait.$$" ] || continue
+    case "$w" in *.part) continue ;; esac
+    if _pool_waiter_alive "$w"; then
+      [ "${1:-}" = quiet ] || _pool_say "f:${w##*.}" "WAITING — a fast gate (pid ${w##*.}) needs a worker, so this full run starts nothing new until it has one. Nothing is being killed."
+      return 0
+    fi
+    rm -f "$w" 2>/dev/null || true
+  done
+  return 1
+}
+# R1, in one place: a FULL run yields every new subject to a fast waiter, before it looks at the slots and
+# again once it has claimed one.
+_pool_full_yields() { [ "$POOL_MODE" = full ] && _pool_fast_waiting; }  # MUTATION-ANCHOR: 964-M01
 _pool_reclaim() { # <dir> <what>
   printf 'runner: reclaiming an ORPHANED %s — %s is not running any more\n' "$2" "$(_pool_holder_line "$1")" >&2
   rm -rf "$1" 2>/dev/null || true
@@ -775,6 +844,8 @@ _pool_blocked() {
     [ "$w" != "$POOL_DIR/wait.$$" ] || continue
     case "$w" in *.part) continue ;; esac
     if _pool_waiter_alive "$w"; then
+      # R3: a fast run is not held up by a full run that only WANTS the machine alone.
+      [ "$POOL_MODE" = fast ] && [ "$(sed -n 2p "$w" 2>/dev/null || true)" = full ] && continue  # MUTATION-ANCHOR: 964-M03
       _pool_say "w:${w##*.}" "WAITING — pid ${w##*.} is waiting to run a timing subject alone, so this run starts nothing new until it has. Nothing is being killed."
       return 0
     fi
@@ -785,6 +856,9 @@ _pool_blocked() {
 # _pool_take_slot <idx> — 0 and JOB_SLOT[idx] set when a slot was claimed.
 _pool_take_slot() {
   local idx="$1" k=0 d reclaimed=0
+  _pool_fast_register
+  # R1: a full run starts no new subject while a fast run waits for a worker.
+  if _pool_full_yields; then return 1; fi
   _pool_blocked && return 1
   while [ "$k" -lt "$MACHINE_JOBS" ]; do  # MUTATION-ANCHOR: 176-M02
     d="$POOL_DIR/slot.$k"
@@ -794,8 +868,10 @@ _pool_take_slot() {
       # has already written its wait file, or it will see this slot when it
       # looks — one of the two is always true, never neither.
       if _pool_blocked; then rm -rf "$d" 2>/dev/null || true; return 1; fi
+      if _pool_full_yields; then rm -rf "$d" 2>/dev/null || true; return 1; fi
       JOB_SLOT[$idx]="$d"
       POOL_SAID=""
+      _pool_fast_unregister
       return 0
     fi
     if [ "$reclaimed" -lt "$MACHINE_JOBS" ] && ! _pool_dir_alive "$d"; then
@@ -816,13 +892,61 @@ _pool_release_slot() { # <idx>
 }
 # _pool_excl_step <idx> — 0 when the exclusive subject may start NOW: this
 # runner holds the exclusive and every slot on the machine is empty.
+_pool_wait_file() { # this runner's wait file: line 1 its start time, line 2 the gate that wrote it (R3)
+  [ "$POOL_WAITING" != 1 ] || return 0
+  { _pool_proc_start "$$"; printf '%s\n' "$POOL_MODE"; } > "$POOL_DIR/wait.$$.part" 2>/dev/null || true
+  mv -f "$POOL_DIR/wait.$$.part" "$POOL_DIR/wait.$$" 2>/dev/null || true
+  POOL_WAITING=1
+}
+# _pool_excl_step_full <idx> — a FULL run's timing subject (R2, R3). Not held while a fast waiter
+# exists, and the exclusive is taken only AFTER the drain, then checked once more: a fast job that
+# claimed a slot in between has been seen, and the exclusive goes back.
+_pool_excl_step_full() {
+  local idx="$1" d busy=""
+  if _pool_fast_waiting; then _pool_excl_release; return 1; fi  # MUTATION-ANCHOR: 964-M02
+  _pool_wait_file
+  if [ "$POOL_EXCL_MINE" != 1 ]; then
+    for d in "$POOL_DIR"/slot.*; do
+      [ -e "$d" ] || continue
+      if _pool_dir_alive "$d"; then
+        busy="$busy $(cat "$d/owner.pid" 2>/dev/null || true)"
+      else
+        _pool_reclaim "$d" "worker slot"
+      fi
+    done
+    if [ -n "$busy" ]; then
+      _pool_say "d:$busy" "WAITING to run $(basename "${JOB_PATH[$idx]}") alone — the machine is draining; still running: $(for d in "$POOL_DIR"/slot.*; do [ -e "$d" ] && printf '[%s] ' "$(_pool_holder_line "$d")"; done). A fast gate that needs a worker goes first. Nothing is being killed."
+      return 1
+    fi
+    if mkdir "$POOL_DIR/exclusive" 2>/dev/null; then
+      _pool_write_owner "$POOL_DIR/exclusive" "$(basename "${JOB_PATH[$idx]}")"
+      POOL_EXCL_MINE=1
+    elif ! _pool_dir_alive "$POOL_DIR/exclusive"; then
+      _pool_reclaim "$POOL_DIR/exclusive" "exclusive slot"
+      return 1
+    else
+      _pool_say "x:$(cat "$POOL_DIR/exclusive/owner.pid" 2>/dev/null || true):$(cat "$POOL_DIR/exclusive/owner.job" 2>/dev/null || true)" \
+        "WAITING to run $(basename "${JOB_PATH[$idx]}") alone — another timing subject has the machine: $(_pool_holder_line "$POOL_DIR/exclusive"). Nothing is being killed."
+      return 1
+    fi
+    # CLAIM, THEN LOOK: a slot taken since the drain check means that job is running beside us.
+    for d in "$POOL_DIR"/slot.*; do
+      [ -e "$d" ] || continue
+      if _pool_dir_alive "$d"; then
+        if _pool_mine "$POOL_DIR/exclusive"; then rm -rf "$POOL_DIR/exclusive" 2>/dev/null || true; fi
+        POOL_EXCL_MINE=0
+        return 1
+      fi
+    done
+  fi
+  printf '%s\n' "$(basename "${JOB_PATH[$idx]}")" > "$POOL_DIR/exclusive/owner.job" 2>/dev/null || true
+  POOL_SAID=""
+  return 0
+}
 _pool_excl_step() {
   local idx="$1" d busy=""
-  if [ "$POOL_WAITING" != 1 ]; then
-    _pool_proc_start "$$" > "$POOL_DIR/wait.$$.part" 2>/dev/null || true
-    mv -f "$POOL_DIR/wait.$$.part" "$POOL_DIR/wait.$$" 2>/dev/null || true
-    POOL_WAITING=1
-  fi
+  if [ "$POOL_MODE" = full ]; then _pool_excl_step_full "$idx"; return; fi
+  _pool_wait_file
   if [ "$POOL_EXCL_MINE" != 1 ]; then
     if mkdir "$POOL_DIR/exclusive" 2>/dev/null; then
       _pool_write_owner "$POOL_DIR/exclusive" "$(basename "${JOB_PATH[$idx]}") (waiting for the machine to drain)"
@@ -865,6 +989,7 @@ _pool_release_all() {
   local i=0
   [ "$POOL_ON" = 1 ] || return 0
   while [ "$i" -lt "${#JOB_SLOT[@]}" ]; do _pool_release_slot "$i"; i=$((i + 1)); done
+  _pool_fast_unregister
   _pool_excl_release
 }
 JOB_SLOT=(); JOB_SLOT_SEEN=()
@@ -1755,7 +1880,7 @@ _reap() {
         EXCLUSIVE_OWED=$((EXCLUSIVE_OWED - 1))
         # The machine is handed back once this run's LAST timing subject is
         # done; between two of them it is kept, so they run back to back.
-        if [ "$POOL_ON" = 1 ] && [ "$EXCLUSIVE_OWED" -eq 0 ]; then _pool_excl_release; fi
+        if [ "$POOL_ON" = 1 ] && { [ "$EXCLUSIVE_OWED" -eq 0 ] || { [ "$POOL_MODE" = full ] && _pool_fast_waiting quiet; }; }; then _pool_excl_release; fi
       fi
       if [ "$POOL_ON" = 1 ]; then _pool_release_slot "$idx"; fi
       any=0
@@ -1780,6 +1905,17 @@ _reap() {
 _top_up() {
   local idx
   [ "$ABORTED" -eq 0 ] || return 0
+  # R2: a fast gate arrived while this full run was going to take the machine FIRST: its timing
+  # subjects go to the end, so the pooled work runs (and frees workers) in the meantime. ONLY WHEN NO JOB
+  # IS RUNNING: the flip while a timing subject runs would let pooled jobs start beside it (Judgment Day,
+  # 2026-10-14, both judges) — a running subject finishes alone, and _reap hands the exclusive back at its
+  # end when the waiter is still there.
+  _flip=0
+  [ "$EXCL_PHASE" = first ] && [ "$POOL_ON" = 1 ] && [ "$POOL_MODE" = full ] && [ "$EXCLUSIVE_OWED" -gt 0 ] && [ "$NONEXCL_LEFT" -gt 0 ] && [ "$RUNNING" -eq 0 ] && _pool_fast_waiting quiet && _flip=1  # MUTATION-ANCHOR: 964-M05
+  if [ "$_flip" = 1 ]; then
+    EXCL_PHASE=last; _pool_excl_release
+    printf 'runner: a fast gate needs a worker, so this run'"'"'s %s timing subject(s) move to its end\n' "$EXCLUSIVE_OWED" >&2
+  fi
   # ALONE MEANS ALONE, and it means first. Anything still running would make the
   # exclusive job's own timing readings wrong, which is the only reason it is in
   # this lane; anything started after it would be measuring a machine it shares.

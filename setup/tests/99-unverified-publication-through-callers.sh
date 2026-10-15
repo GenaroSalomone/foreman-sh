@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -78,7 +79,7 @@ def run_case(publication, caller, route, delivery):
                        HW_WORKDIR=str(case/'work'), HW_ARTIFACTS=str(artifacts),
                        HW_EXECUTOR_VENDOR='opencode' if route == 'opencode' else 'claude',
                        HW_INVOKER_VENDOR='opencode' if route == 'opencode' else 'claude',
-                       HW_INVOKER_SESSION='ses_fixture', HW_INVOKER_ENDPOINT='http://127.0.0.1:1',
+                       HW_CLOSE_GRACE_SECONDS='0', HW_INVOKER_SESSION='ses_fixture', HW_INVOKER_ENDPOINT='http://127.0.0.1:1',
                        TMPDIR=str(tmp))
             result = subprocess.run(['bash', str(binary/caller), 'Probe message; evidence #1'], env=env,
                                     cwd=case/'work', capture_output=True, text=True, timeout=10 * int(os.environ.get('HW_TEST_SLOW', '1')))
@@ -95,12 +96,20 @@ def run_case(publication, caller, route, delivery):
                 if publication != 'verified':
                     notices = (case/'herdr').read_text()
                     assert not re.search(r'remains recorded|[Ii][Ss] recorded on this pane|question published on', output+notices), (label, 'false durable record claim', output, notices)
-                assert not (state/'done').exists() and not (case/'closed').exists(), (label, 'failure marked or closed task')
+                assert not (state/'done').exists() and not (case/'closed').exists() and not (state/'close.log').exists(), (label, 'failure marked or closed task')
                 assert (state/'ask-count').read_text() == '1', (label, 'failure consumed ask')
             elif caller == 'ask-invoker':
                 assert (state/'ask-count').read_text() == '2', (label, 'delivered ask not counted')
             else:
+                # The close is no longer inside done-invoker: it runs in a detached process
+                # AFTER the invoker has exited 0 (invoker_close_after_exit, 137 fix), so the
+                # `hw done` stub's marker lands a moment after returncode — wait for it.
+                deadline = time.time() + 10 * int(os.environ.get('HW_TEST_SLOW', '1'))
+                while not (state/'close-rc').is_file() and time.time() < deadline:
+                    time.sleep(0.05)
                 assert (state/'done').is_file() and (case/'closed').is_file(), (label, 'delivered report not finalized')
+                # the close ran in the detached closer (not inline), and succeeded
+                assert (state/'close.log').is_file() and (state/'close-rc').read_text().strip() == '0' and not (state/'close-failed').exists(), (label, 'close was not the detached closer, or failed')
             return 'ok - full caller '+label+' preserves publication and delivery facts'
 
 cases = [(publication, caller, route, delivery)

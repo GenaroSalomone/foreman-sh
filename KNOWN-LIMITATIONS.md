@@ -285,6 +285,31 @@ it leaves the brain directory, is unguarded even with the hook registered.
   the suite feeds `hw gentle-home` a local tarball (`HW_GENTLE_TARBALL`), so the live download is `unverified`.
 - **Workaround:** use `--sdd none` with the methodology named in the brief.
 
+### L17. A Claude Code session started before bashEditDiff was turned off keeps showing other lanes' changes
+- **Scope:** Claude Code 2.1.299 sessions (brainers and executors) that were already running when `brain`/`hw`
+  began setting `CLAUDE_CODE_BASH_EDIT_DIFF=0`, and any `claude` you start by hand under a repo shared by
+  several lanes (the brain checkout), or in a pane restored after a herdr crash (the restore replays only
+  `HW_*` and `ENGRAM_*`).
+- **Impact:** Claude Code snapshots the whole git repo of the cwd before and after every Bash call and
+  shows every change in that window as the command's own, so a brainer's pane (and its transcript) displays a
+  file another lane wrote meanwhile. It is the UI and the transcript only: it never enters the model's
+  context. A session only reads the variable at start.
+- **Evidence:** `measured` with a real `claude -p --model opus` and a concurrent writer (variable unset: the
+  concurrent files are in `toolUseResult.bashEditDiff`; `=0` and `=false`: none). It is model-gated:
+  the same probe on `--model haiku` shows nothing with the variable unset.
+- **Workaround:** `brain relaunch <lane>` (or start the session again) so the launch sets it, or
+  `export CLAUDE_CODE_BASH_EDIT_DIFF=0` before `claude`.
+
+### L20. `brain relaunch` moves a pane's background tasks out of the session; the resumed claude does not list them
+- **Scope:** a claude brainer that has background Bash tasks when `brain relaunch` (or `brain <lane> --resume`) replaces it.
+- **Impact:** the exit dialog is answered with «Move to background and exit», so the tasks keep running (reparented to
+  init) and the conversation resumes in the same pane, but the resumed claude does not show them as its own and
+  cannot read their output or stop them from the UI; they end on their own, or by `kill`.
+- **Evidence:** `measured` 2026-10-14 with a real `claude --model haiku`: option 1 («Exit and stop tasks») left no process;
+  option 2 left the task running and `claude --resume <session>` returned in the pane with its status bar not listing the shell.
+  `setup/tests/891-*.sh` drives the keys against a stub with a real process tree.
+- **Workaround:** finish or stop the tasks in the pane before relaunching, if you need to keep supervising them.
+
 ## Guards
 
 ### L5. The write guards are a tripwire, not a sandbox
@@ -513,9 +538,12 @@ it leaves the brain directory, is unguarded even with the hook registered.
     lane's SessionStart hook. The installer copies the module but does not
     register a SessionStart hook in a lane's `.claude/settings.json`; a lane
     without one gets neither, and `hw reap` stays a command you run.
-  - `hw done` called by `done-invoker` closes the executor's own tab and ends
-    with it, so it reaps nothing; the branch is usually not merged yet anyway.
-    A task is removed by the next background reap after its merge.
+  - `hw done` called by `done-invoker` runs after the invoker has exited, in a
+    process of its own, so it now finishes (before 2026-10-14 it was killed by
+    its own close and reaped nothing). The branch is usually not merged yet,
+    though, so the worktree stays: a task is removed by `hw done` or the next
+    background reap once it is merged and clean. A close that fails leaves
+    `close-failed` and `close.log` beside the run's `done` marker.
   - What reap never removes: a dirty or unmerged worktree, one an agent sits
     in, a leased preview, and any ignored file outside `.artifacts`,
     `qa-report`, `test-results` and `playwright-report` (credentials, notes,
@@ -558,3 +586,37 @@ it leaves the brain directory, is unguarded even with the hook registered.
   keep reporting the old version until you delete that directory (`rm -rf ~/.cache/hw/deps`).
   `unverified` for any given tool; `measured` only on the direct binaries of this machine.
 
+
+### L18. The incremental verdict trusts a marker-only runner change, and 540 may be skipped by two gate paths
+- **Scope:** `setup/verdict-incremental` (a runner file whose diff is only `# MUTATION-ANCHOR: <id>`
+  markers stays incremental) and `setup/gate-select` (`# gate-when:` on the slow subject 540).
+- **Impact:** (1) the marker strip is textual: a mode-only change, a marker glued to code (`a#MARKER`), or one
+  inside a `\` continuation or heredoc is not recognised as marker-only, so it falls back to a full run
+  (safe) or, for a marker the strip wrongly reads as a comment, is trusted; 540 is forced into the plan
+  for every dropped runner path, which catches an unregistered or duplicate marker in a file outside
+  `setup/tests/`; 540's orphan scan skips `setup/tests/`, so an unregistered id added to `tests/_common.sh`
+  or another non-subject file there is accepted until the registry is next checked. (2) `gate-select`
+  returns `all` before its gate-when pass, so a `mutants-*`-only commit (the RUNNER regex) or a pre-commit `all`
+  does not select the slow 540; a tsv-only commit gets it as `reference`, not as a suite.
+- **Evidence:** `measured` by `setup/tests/820-el-veredicto-incremental.sh` (marker-only runner change forces 540;
+  mutants 820-M04, M05, M06) and `setup/tests/999-*.sh`. `unverified`: that any real commit hits the
+  `all`-before-gate-when path without also touching a path 540 names.
+- **Workaround:** run `bash setup/tests/540-las-anclas-de-mutacion-existen.sh` (about 5 s) before pushing a change to
+  markers or to `mutants-*`; the full suite still runs 540 on every release cut.
+
+### L19. A chained incremental verdict compounds gate-select's blind spot, and fast gates outrank a full run
+- **Scope:** `setup/verdict-incremental` + `setup/verify-for-push` (a green incremental run leaves its own record, so
+  the next tree can start from it, up to `HW_VERDICT_MAX_CHAIN` = 3 hops off a real full run) and the pool in
+  `setup/test-hw` (a fast gate's worker request outranks a full run's next subject and its timing subjects).
+- **Impact:** (1) a job a diff reached only through a path built at runtime (gate-select's blind spot) keeps the
+  row it had; with a chain that row can be inherited across up to three diffs instead of one. The release cut
+  still takes ONE hop (`verdict-incremental chain`), so a release is never built on a chain. (2) While fast gates
+  keep arriving, a full run starts nothing new whenever one waits for a worker and its timing subjects wait for a
+  quiet moment, so the full run takes longer in proportion; nothing is killed. A fast subject that is already running
+  is still waited for, and a full run's timing subject that is already running is too.
+- **Evidence:** `measured` by `setup/tests/820-el-veredicto-incremental.sh` (chain section; mutants 820-M07, M08, M09) and
+  `setup/tests/964-las-compuertas-rapidas-no-esperan-una-corrida-completa.sh` (R1-R3; mutants 964-M01..M03).
+  `unverified`: how often the chain hides a real regression on production trees, and the full run's delay under
+  a sustained queue of fast gates.
+- **Workaround:** `bash setup/verify-for-push --full` runs every job and starts a new chain;
+  `HW_VERDICT_MAX_CHAIN=1` restores one hop.

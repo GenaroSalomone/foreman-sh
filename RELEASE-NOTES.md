@@ -1,39 +1,56 @@
-# foreman-sh 0.4.0-rc.2
+# foreman-sh 0.4.0-rc.3
 
-`foreman-sh` starts on a bare Mac without the Command Line Tools, restarts a brainer without losing what you were typing, and the commit gate stops running into its own checkouts.
+`foreman-sh` tests faster: an executor's gate no longer waits behind a full suite, a push reruns only what its change can reach, and the slow contract subjects run in parallel shards.
 
 ## In short
 
-- **A Mac without the Command Line Tools installs.** The `git` and `python3` shims that exit 1 count as missing, `--check` says so with `xcode-select --install`, and `init` no longer dies on an empty `--brain`.
-- **`init` tells you when `hw` runs in bash.** With no Go (or one older than 1.22) it passes on the installer's one-line note instead of finishing silently.
-- **`brain relaunch` keeps your unsent draft.** It no longer types `/exit` over it, and a session that never produced a transcript comes back as a new conversation instead of a failed resume.
-- **The test selector is 150 times faster beside agent worktrees.** `setup/gate-select` skips nested checkouts: 243 s down to 1.65 s on a tree with five of them, same selection.
-- **The commit hook says the gate takes minutes.** One line before the wait, so an agent runs the commit in the background instead of dying at its tool timeout.
+- **Fast gates first.** A full suite yields its workers and the machine to a fast gate that is waiting, instead of holding a slot for hours.
+- **A push stands on the last green suite.** It runs only the tests its change can reach, not the whole suite again.
+- **The slow contract subjects run as parallel shards.** 843, 847, 860 and 870 are cut into pieces the runner schedules side by side, with the same cases.
+- **A test world is cloned, not copied.** One clonefile(2) of the whole tree: 0.67 s where three copies took 31.7 s.
+- **`brain relaunch` keeps background tasks alive.** It answers Claude Code's exit dialog with «Move to background and exit».
 
 ## What changed
 
-7 changes since 0.4.0-rc.1.
+12 changes since 0.4.0-rc.2.
+
+### Added
+- The suite's time budget is a gate: `setup/test-budget-gate` fails when a subject's budget passes
+  600 s or the suite's estimate passes 45 minutes, and names the subject to split. A known debt carries
+  a ceiling with the split that pays it; a ceiling only goes down.
 
 ### Changed
-- The pre-commit hook says once, before it runs, that a commit with no verdict for its tree runs
-  the gate now and takes minutes, and that an agent should run it in the background.
+- `brain relaunch` no longer refuses a brainer that has background tasks: it answers Claude Code's exit dialog with
+  «Move to background and exit» (selection read back before Enter), so the tasks keep running and the conversation
+  resumes in the same pane. `--all` no longer skips such panes; a pane mid-turn is still skipped.
+- A fast gate no longer waits behind a full suite: while a fast gate waits for a worker, a full run starts
+  no new subject and gives the machine back; its timing subjects run alone only after the drain.
+- `verify-for-push` stands on the last green verdict: a green incremental verdict is a base for the next
+  push (at most 3 hops), so a push runs only the tests its change can reach.
+- The four slow contract subjects (843, 847, 860, 870) and the anchors of 844 and 848 run as shards in
+  parallel slots, with the same case lists as before.
+- A contract case's world is one clonefile(2) of the whole tree instead of a copy per file (3 clones:
+  0.67 s instead of 31.7 s).
+- The golden regen scripts take `--grep`: only the cases naming that string are regenerated.
+- The pre-commit hook runs the export check (about 2 s) before the gate, so an export leak fails before
+  the minutes-long wait.
 
 ### Fixed
-- On a Mac without the Command Line Tools, `/usr/bin/git` and `/usr/bin/python3` are shims that
-  exit 1; `--check` printed `ok git` and `ok python3` for them and `init` died on an empty
-  `--brain`. A `git` or `python3` that does not run is now MISSING, with `xcode-select --install`.
-- `foreman-sh init` passes on install.sh's `NOTE` line when `hw-core` is not built (no Go, Go older
-  than 1.22): it finished silently, so the person could not tell `hw` was running in bash.
-- `brain relaunch` no longer types `/exit` over a draft you had not sent in the brainer's input
-  box: the draft was submitted as a message and the relaunch refused with "NOT proved agent-free".
-  A session with no transcript is relaunched as a new conversation instead of a resume that cannot
-  work.
-- `setup/gate-select` does not walk checkouts nested in the tree it selects for. With agent
-  worktrees under `.claude/worktrees` the selection took 243 s; it takes 1.65 s and picks the same
-  83 tests on a normal tree.
-- A contract subject's fan-out fits the share of the machine its slot holds, instead of 18 workers
-  on 14 CPUs when five subjects ran in six slots.
-- The release-copy tests copy the tracked tree, not whatever the checkout carries untracked.
+- A brainer no longer shows another lane's concurrent edits as its own Bash diff: Claude Code snapshots
+  the whole git repo of the cwd around every Bash call, and every brainer shares one repo.
+  `brain` and `hw` now launch `claude` with `CLAUDE_CODE_BASH_EDIT_DIFF=0`. A session already running keeps
+  the diff until it is relaunched (KNOWN-LIMITATIONS L17).
+- `done-invoker` no longer ends with "Exit code 137" after a delivered report. `hw done` closed the
+  tab that held the invoker itself, which killed it; the close now runs after the invoker has
+  exited, in a process of its own, so the invoker exits 0. A close that fails leaves `close-failed`
+  and `close.log` beside the run's `done` marker.
+- `done-invoker` and `ask-invoker` no longer print "token publication UNPROVEN" for any summary or
+  question longer than one 80-character token: herdr deletes control characters and trims
+  whitespace from every token value, and the invoker now sends values spelled that way, so the
+  read-back proves them.
+- The exit-status advice that `done-invoker`, `ask-invoker` and `channel-send` print when their output
+  is piped no longer tells zsh users to read `${PIPESTATUS[0]}` (bash-only, empty under zsh); it
+  offers `<verb> … ; echo rc=$?`, which reads the same in bash and zsh.
 
 ## Known limits
 
@@ -42,7 +59,7 @@
   ARM64 only. WSL2 was not re-measured for this release, and mutation
   testing was not run on Windows.
 
-## Upgrading from 0.4.0-rc.1
+## Upgrading from 0.4.0-rc.2
 
 Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,

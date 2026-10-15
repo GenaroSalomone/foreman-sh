@@ -89,6 +89,7 @@ func (a *app) reviveClaudeSessionPrep(pane string) {
 	}
 	prep := "unset CLAUDE_CODE_CHILD_SESSION" // # MUTATION-ANCHOR: 863-G14
 	prep += "; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
+	prep += "; export CLAUDE_CODE_BASH_EDIT_DIFF=0"
 	if !a.reviveHerdrQuiet("pane", "run", pane, prep) {
 		a.err.Write([]byte("claude: could not clear CLAUDE_CODE_CHILD_SESSION in " + pane + "; Claude may report 'Transcript saving is off'.\n"))
 	}

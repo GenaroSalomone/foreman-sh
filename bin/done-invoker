@@ -44,14 +44,20 @@
 # landed. A caller reading 1 correctly concludes "retry, nothing was lost", and
 # for a delivered report that is false and produces a duplicate.
 #
-#   0  DELIVERED, and the owned task tab/workspace closed (or none was owed,
-#      because chaining is enabled).
+#   0  DELIVERED. The owned task tab/workspace is closed right after this
+#      command exits, by a process of its own (invoker_close_after_exit) — so
+#      the exit status is the delivery's, never the close's SIGKILL, which is
+#      what "Exit code 137" was. A close that then fails leaves
+#      `<state dir>/close-failed` and a toast. (Or no close was owed, because
+#      chaining is enabled.)
 #   1  NOT DELIVERED — nothing was reported, no marker was written, the pane is
 #      the only copy. Retryable. Also every refusal that happens BEFORE any
 #      report is attempted, for the same reason: nothing moved.
 #   4  DELIVERED AND SAFE, but `hw done` could not close the owned task
-#      tab/workspace. The report IS in the brainer's session and the done
-#      marker IS written; only the close failed, and the pane is preserved.
+#      tab/workspace — reachable only where the detached closer could not be
+#      started (no python3) and the close ran in the foreground. The report IS
+#      in the brainer's session and the done marker IS written; only the close
+#      failed, and the pane is preserved.
 #      Do NOT re-run done-invoker on a 4 — it would be a second report for one
 #      task. Close the tab by hand, or diagnose it.
 #   5  DELIVERY UNCERTAIN — channel-send's own 5: the message was ADMITTED but
@@ -127,7 +133,7 @@ _inv_exit_guard() {
   [ "$rc" -ne 0 ] 2>/dev/null || return 0
   [ ! -t 1 ] || return 0
   printf 'done-invoker: ══ MY EXIT CODE IS %s: %s ══\n' "$rc" "$(_inv_exit_meaning "$rc")" >&2
-  printf 'done-invoker: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `done-invoker … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: read `${PIPESTATUS[0]}` or drop the pipe. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the report fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2
+  printf 'done-invoker: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `done-invoker … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: run me unpiped — `done-invoker … ; echo rc=$?` reads the real status in bash and zsh (`${PIPESTATUS[0]}` is bash-only: zsh spells it `${pipestatus[1]}` and prints nothing for the bash spelling). If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the report fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2  # MUTATION-ANCHOR: 899-M07
   return 0
 }
 trap '_inv_exit_guard "$?"' EXIT
@@ -506,7 +512,11 @@ if [ "$STATUS" = done ]; then  # MUTATION-ANCHOR: 818-M05
 $_ck_sum
 EOF
     [ "${_ck_rows:-0}" -gt 0 ] 2>/dev/null || die "$_ck_file has no rows: a table of requirement | verdict | evidence | correction with nothing under its header proves nothing. $_ck_how"  # MUTATION-ANCHOR: 818-M02
-    [ "${_ck_bad:-0}" = 0 ] || die "row ${_ck_bad} of $_ck_file has ${_ck_why}. Every row needs pass, fail or unresolved. $_ck_how"  # MUTATION-ANCHOR: 818-M03
+    # THE VOCABULARY IS NAMED WHERE IT IS REFUSED: the verdict cell is exactly one of three words, alone —
+    # a qualifier such as "pass (n/a)" is a different verdict to the parser above, and was refused for it
+    # (retro of release-sin-suite-repetida, 2026-10-14). Anything else belongs in evidence or correction.
+    _ck_vocab="Accepted verdicts, exactly and alone in the cell: pass, fail, unresolved (case and surrounding spaces or backticks do not matter; a qualifier such as \"pass (n/a)\" does). Put the qualifier in the evidence or correction column."  # MUTATION-ANCHOR: 818-M06
+    [ "${_ck_bad:-0}" = 0 ] || die "row ${_ck_bad} of $_ck_file has ${_ck_why}. $_ck_vocab $_ck_how"  # MUTATION-ANCHOR: 818-M03
     _ck_parts=""
     [ "$_ck_pass"  = 0 ] || _ck_parts="$_ck_parts, $_ck_pass pass"
     [ "$_ck_fail"  = 0 ] || _ck_parts="$_ck_parts, $_ck_fail fail"
@@ -691,12 +701,12 @@ mem_get_observation the ids named above.
 Artifacts: $FILES file(s) in $ARTIFACTS_ROOT$FILES_NOTE$CHECKS_NOTE
 
 Distil what is decision-grade into decisions.md; the raw report stays in engram.
-After the receiver admitted the report, done-invoker closes the hw-owned task tab or
-workspace through \`hw done\`. If the brainer launched this run with
+After the receiver admitted the report, done-invoker exits 0 and then, in a process of
+its own, closes the hw-owned task tab or workspace through \`hw done\`. If the brainer launched this run with
 \`hw ... --keep-pane [duration] --why "..."\`, a bounded chaining lease keeps the pane
 for \`hw next\` and expiry closes it automatically.
-A failed close leaves the pane open and exits 4 — which means this report is
-delivered and safe and only the close failed, NOT that the report was lost."
+A failed close leaves the pane open and a \`close-failed\` file (and \`close.log\`) beside the
+run's done marker — this report is delivered and safe and only the close failed, NOT lost."
   SOUND=done
 elif [ "$CHAINING_LEASE" = 1 ] || [ "$LEGACY_KEEP" = 1 ]; then
   # A CHAINED RUN IS NOT MARKED WAITING. Its branch below exits before
@@ -909,17 +919,32 @@ publish_done delivered || true
 # process able to finish delivery. Refusal paths above remain before this block
 # and therefore do not call hw at all: an undelivered pane is still the recovery
 # copy.
-# SAY WHAT IS ABOUT TO TAKE TIME. `hw done` runs the brief's verification
-# synchronously before it closes anything (`_verify_at_close`, ceiling 900s), so
-# a delivered report whose process then sits silent reads as a hang. Not for
-# --blocked: that close skips the verification; and only where `hw done` is
-# really called (a chaining lease or kept pane runs no verification here).
-_say_verifying() {
-  local pin; pin="$(invoker_run_dir)/verify"
-  if [ "$STATUS" != blocked ] && [ -s "$pin" ]; then
-    printf 'reported — verifying before close: %s (up to %ss)\n' \
-      "$(head -n 1 "$pin")" "${HW_VERIFY_TIMEOUT_SECONDS:-900}"
+# THE CLOSE RUNS AFTER THIS PROCESS HAS EXITED. `hw done` closes the tab that
+# holds this very invoker, and a close that lands while the invoker is still
+# running SIGKILLs it: the executor's Bash tool answered "Exit code 137" about a
+# report that was delivered, proven and published, in all six setup runs retro'd
+# 2026-10-14 (measured with a real claude executor; see invoker_close_after_exit
+# in invoker-common.sh). So the close is started in a process of its own that
+# waits for this one to leave, and this command exits 0 on the fact it can state
+# — delivered — instead of dying on the close's.
+#
+# `hw done` runs the brief's verification before it closes anything (ceiling
+# 900s), so a delivered report whose pane then stays open for a while reads as a
+# hang unless it is said. Not for --blocked: that close skips the verification.
+#
+# THE FOREGROUND IS THE FALLBACK, not the path: with no python3 to start the
+# closer the close runs here as it always did, and its failure is exit 4.
+_CLOSE_NOTE=""
+_close_after_exit() {  # $@ = the hw arguments (done <project> <task> [--blocked])
+  local pin vcmd=""
+  pin="$(invoker_run_dir)/verify"
+  if [ "$STATUS" != blocked ] && [ -s "$pin" ]; then vcmd="$(head -n 1 "$pin")"; fi
+  if invoker_close_after_exit "$STATE_DIR" "$@"; then  # MUTATION-ANCHOR: 899-M06
+    _CLOSE_NOTE="the owned pane closes right after this command exits${vcmd:+, after verifying: $vcmd (up to ${HW_VERIFY_TIMEOUT_SECONDS:-900}s)}; the outcome is in close.log beside the done marker, and close-failed there says if it failed"
+    return 0
   fi
+  [ -z "$vcmd" ] || printf 'reported — verifying before close: %s (up to %ss)\n' "$vcmd" "${HW_VERIFY_TIMEOUT_SECONDS:-900}"
+  "$INVOKER_BIN_DIR/hw" "$@"
 }
 if [ "$CHAINING_LEASE" = 1 ]; then
   LEASE_RC=0
@@ -928,11 +953,10 @@ if [ "$CHAINING_LEASE" = 1 ]; then
     printf 'done-invoker: THE REPORT IS DELIVERED AND SAFE, but bounded chaining lease setup failed (exit %s). Refusing silent unbounded retention; attempting the normal owner-aware close now.\n' "$LEASE_RC" >&2
     _DONE_ARGS=()
     [ "$STATUS" = blocked ] && _DONE_ARGS=(--blocked)
-    _say_verifying
-    if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK" ${_DONE_ARGS[@]+"${_DONE_ARGS[@]}"}; then
+    if ! _close_after_exit done "$PROJECT" "$TASK" ${_DONE_ARGS[@]+"${_DONE_ARGS[@]}"}; then
       die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — bounded chaining lease setup failed and the fallback close also failed. The done marker exists, but no retention authority was created. Do NOT re-run done-invoker; close this pane with \`hw done $PROJECT $TASK\`."
     fi
-    printf 'brainer notified; chaining lease setup failed, so hw closed the owned pane instead of retaining it without a bound.\n'
+    printf 'brainer notified; chaining lease setup failed, so hw closes the owned pane instead of retaining it without a bound (%s).\n' "$_CLOSE_NOTE"
     exit 0
   fi
   printf 'brainer notified via %s (%s, %s file(s)); %s; bounded chaining lease recorded and scheduled.\n' \
@@ -975,11 +999,17 @@ fi
 # 1 is "not delivered, retry", and retrying here sends the brainer a second
 # report for one task. Exit 4 says the true thing, and says it in an order a
 # reader cannot misread: delivered and safe FIRST, then what failed.
-_say_verifying
-if ! "$INVOKER_BIN_DIR/hw" done "$PROJECT" "$TASK"; then
+if ! _close_after_exit done "$PROJECT" "$TASK"; then
   die_delivered_not_closed "THE REPORT IS DELIVERED AND SAFE — $RECEIPT_NOTE, and this run is marked done. What failed is the CLOSE: \`hw done $PROJECT $TASK\` could not close the owned task tab/workspace, so the pane is still open at $HERDR_PANE_ID (workdir $WORKDIR). Do NOT re-run done-invoker — the report landed, and a second one is a second report for one task. Close it by hand with \`hw done $PROJECT $TASK\` once the cause above is fixed. (Exit $EXIT_DELIVERED_NOT_CLOSED means delivered-but-not-closed; exit 1 would have meant nothing was reported.)"
 fi
 
+# Only the foreground fallback reaches here after a close; the normal path has
+# started the closer, which closes this pane once this command has exited.
+if [ -n "$_CLOSE_NOTE" ]; then
+  printf 'brainer notified via %s (%s, %s file(s)); %s; %s.\n' \
+    "$DELIVERY_ROUTE" "$STATUS" "$FILES" "$RECEIPT_NOTE" "$_CLOSE_NOTE"
+  exit 0
+fi
 # A successful close normally tears down this shell before execution can reach
 # here. Keep a truthful fallback for legacy/no-placement runs: delivery did
 # succeed, but no automatic close is claimed merely because `hw done` returned.

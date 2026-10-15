@@ -39,10 +39,11 @@ cd "$ROOT"
 # write could see a file that exists but is momentarily empty — passing the
 # existence half of the check on content that was never actually verified.
 # `mv` within the same directory is atomic on every filesystem this runs on.
-# write_verdict <commit> <tree> <elapsed-seconds> <headline> [<base_tree> <jobs_rerun>]
-# — the last two make it an incremental verdict, one hop off a recorded full run.
+# write_verdict <commit> <tree> <elapsed-seconds> <headline> [<base_tree> <jobs_rerun> <chain_depth>]
+# — the last three make it an incremental verdict, `chain_depth` hops off a recorded real full run
+# (setup/verdict-incremental caps the chain; setup/release/cut accepts only depth 1).
 write_verdict() {
-  local commit="$1" tree="$2" elapsed="$3" headline="$4" base_tree="${5:-}" jobs="${6:-}"
+  local commit="$1" tree="$2" elapsed="$3" headline="$4" base_tree="${5:-}" jobs="${6:-}" depth="${7:-1}"
   local dir cache_file tmp_cache_file
   dir="$(git rev-parse --git-common-dir)/hw-push-verified"
   mkdir -p "$dir"
@@ -57,11 +58,11 @@ write_verdict() {
     echo "headline=$headline"
     echo "host=$(hostname)"
     if [ -n "$base_tree" ]; then
-      # A full verdict that names the full run it stands on, one hop away.
-      # setup/release/cut accepts it only while `chain` still proves that.
+      # A full verdict that names the run it stands on, `depth` hops from a real full run.
+      # setup/release/cut accepts it only at depth 1, while `chain` still proves that.
       echo "incremental=1"
       echo "base_tree=$base_tree"
-      echo "chain_depth=1"
+      echo "chain_depth=$depth"
       echo "jobs_rerun=$jobs"
     fi
   } > "$tmp_cache_file"
@@ -195,6 +196,7 @@ fi
 vi="$ROOT/setup/verdict-incremental"
 only_file=""
 base_tree=""
+chain_depth=1
 plan_why="no planner here"
 if [ -f "$vi" ]; then
   only_file="$(mktemp "${TMPDIR:-/tmp}/verify-for-push-only.XXXXXX")"
@@ -204,6 +206,8 @@ if [ -f "$vi" ]; then
   case "$plan_rc:$plan_head" in
     0:incremental\ *)
       base_tree="$(printf '%s' "$plan_head" | sed -n 's/.*base_tree=\([0-9a-f]*\).*/\1/p')"
+      chain_depth="$(printf '%s' "$plan_head" | sed -n 's/.* chain_depth=\([0-9][0-9]*\)$/\1/p')"
+      chain_depth="${chain_depth:-1}"
       plan_why="$plan_head"
       echo "verify-for-push: INCREMENTAL — $plan_head" >&2
       printf '%s\n' "$plan_out" | sed -n 's/^run /    run /p' >&2 ;;
@@ -250,11 +254,18 @@ HW_TEST_ONLY="$only_file" HW_TEST_RESULTS="$results" HW_TEST_TIMINGS="$timings" 
 out="$(cat "$log")"
 elapsed=$(( $(date +%s) - started ))
 # A FULL RUN LEAVES ITS PER-JOB RECORD WHETHER IT WAS GREEN OR RED: it is what
-# the next, nearby tree starts from. An incremental run leaves none — a base is
-# always a REAL full run, never a hop off another incremental one.
-if [ -z "$only_file" ] && [ -f "$vi" ] && [ -s "$results" ]; then
-  python3 "$vi" record "$ROOT" --results "$results" --rc "$rc" --elapsed "$elapsed" --tree "$tree" --commit "$commit" >&2 \
-    || echo "verify-for-push: could not record this run's per-job results — the next run on a nearby tree will be a full one" >&2
+# the next, nearby tree starts from. A GREEN incremental run leaves one too, made of
+# its base's rows overlaid by the jobs it re-ran and chained to it (`--base-tree`):
+# without it every tree after the first fix paid the distance to the one full run
+# again, and past the caps that was a new full run per merge (2026-10-14). The
+# planner caps the chain (HW_VERDICT_MAX_CHAIN); a red incremental run leaves none.
+if [ -f "$vi" ] && [ -s "$results" ]; then
+  if [ -z "$only_file" ]; then
+    python3 "$vi" record "$ROOT" --results "$results" --rc "$rc" --elapsed "$elapsed" --tree "$tree" --commit "$commit" >&2 \
+      || echo "verify-for-push: could not record this run's per-job results — the next run on a nearby tree will be a full one" >&2
+  elif [ "$rc" -eq 0 ]; then
+    python3 "$vi" record "$ROOT" --results "$results" --rc "$rc" --elapsed "$elapsed" --tree "$tree" --commit "$commit" --base-tree "$base_tree" >&2 || echo "verify-for-push: could not record this incremental run — the next tree will start from $base_tree or a full run" >&2  # MUTATION-ANCHOR: 820-M07
+  fi
 fi
 if [ "$rc" -ne 0 ]; then
   echo "verify-for-push: FAILED after ${elapsed}s — no verdict cached; setup/hooks/pre-push will refuse this tree." >&2
@@ -270,5 +281,5 @@ if [ -n "$only_file" ]; then
 else
   headline="$(printf '%s\n' "$out" | grep -E '^[0-9]+ tests passed' | tail -1 || true)"
 fi
-write_verdict "$commit" "$tree" "$elapsed" "$headline" "$base_tree" "${_jobs:-}"
+write_verdict "$commit" "$tree" "$elapsed" "$headline" "$base_tree" "${_jobs:-}" "$chain_depth"
 echo "verify-for-push: PASSED${only_file:+ (INCREMENTAL on $base_tree)} in ${elapsed}s — cached for tree $tree. setup/hooks/pre-push will now let this exact tree through instantly." >&2

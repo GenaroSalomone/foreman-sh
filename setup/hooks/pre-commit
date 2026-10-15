@@ -206,6 +206,27 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
     hook_reused=""
     hook_tree="$(git write-tree 2>/dev/null)" || hook_tree=""
     if hook_verdict_green "$hook_tree"; then hook_reused="$hook_tree"; fi  # MUTATION-ANCHOR: 880-M04
+    # THE EXPORT LEAK IS ASKED FIRST, in seconds, and not found by the gate minutes in. Tests 280 and 606 are
+    # `setup/export/check`'s two refusals (a private term, a home path, an unclassified file in the export) run
+    # inside a gate of minutes: on 2026-10-14 (retro of apagar-bash-edit-diff) one leaked term was caught by 280
+    # and again by 606, two refusals of 4 and 9 minutes for what `python3 setup/export/check` answers in about 2 s
+    # over the staged index. A tree the gate already passed for needs none of it (that verdict ran 280 and 606).
+    # A repo with no export (a fixture) has no check and no manifest, and is not asked.
+    if [ -z "$hook_reused" ] && [ -f "$root/setup/export/check" ] && [ -f "$root/setup/export/manifest" ]; then
+      export_rc=0
+      export_out="$(python3 "$root/setup/export/check" --root "$root" 2>&1)" || export_rc=$?  # MUTATION-ANCHOR: 1001-M01
+      if [ "$export_rc" -ne 0 ]; then
+        {
+          echo "pre-commit: setup/export/check refused this commit in seconds, before the minutes-long fast gate (tests 280 and 606 would refuse it the same way)."
+          echo
+          printf '%s\n' "$export_out" | sed 's/^/    /'
+          echo
+          echo "Fix it and ask again, cheaply:  python3 setup/export/check   (about 2 s; or: bash setup/tests/606-el-export-entero-pasa-el-gate.sh)"
+          echo "If you are certain: git commit --no-verify"
+        } >&2
+        exit 1
+      fi
+    fi
     hook_started="$(date +%s)"
     hook_rc=0
     out=""
@@ -300,6 +321,13 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
       printf 'pre-commit: the fast gate passed in %ss (measured on this run) — %s\n' \
         "$hook_elapsed" "$hook_headline" >&2
       [ -z "$hook_untracked" ] || printf 'pre-commit:  %s\n' "$(printf '%s' "$hook_untracked" | sed 's/^ *//')" >&2
+      # A SELECTED GATE LEAVES NO VERDICT, and `hw done` and a task/* push accept only the whole fast gate's
+      # (`<tree>.fast`, written by setup/test-hw only when not SELECTED; lib/hw/done.sh _verify_cached_verdict
+      # reads it, and without it re-runs the gate at close). Measured 2026-10-14, retro of
+      # release-sin-suite-repetida: a 67 s SELECTED gate, then ~10 min by hand for the verdict done needed.
+      case "$hook_headline" in
+        *"(SELECTED)"*) printf 'pre-commit: this was a SELECTED gate and leaves no verdict for this tree; the whole fast gate'"'"'s is still owed for hw done and push: HW_TEST_GATE=fast bash setup/test-hw (minutes; run it in the background).\n' >&2 ;;  # MUTATION-ANCHOR: 361-M02
+      esac
     else
       printf 'pre-commit: the fast gate passed in %ss (measured on this run; its test count line was not found).\n' \
         "$hook_elapsed" >&2

@@ -117,18 +117,34 @@ INVOKER_NULL=$'\001'
 invoker_chunk_tokens() {
   python3 - "$1" "$2" "$3" "$INVOKER_TOKEN_CHARS" "$INVOKER_NULL" <<'CHUNKER'
 import sys
+import unicodedata
 
 prefix, max_chunks, text, width, sentinel = (
     sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), sys.argv[5])
 
+def herdr_stable(text):
+    """The text, spelled so herdr stores it as sent.
+
+    MEASURED 2026-10-14 on a live herdr: it DELETES every control character
+    (\n, \t, \r, ESC, DEL, \x85 — the words either side glue together) and
+    TRIMS Unicode whitespace from both ends of every value. A value that is not
+    already in that form is never read back as written, so invoker_publish could
+    not prove ANY multi-chunk or multi-line record: "token publication UNPROVEN"
+    on every real report. Whitespace runs and control characters become ONE
+    space here, so what herdr keeps is what was asked for.
+    """
+    out = [" " if (c.isspace() or unicodedata.category(c) == "Cc") else c for c in text]
+    return " ".join("".join(out).split())  # MUTATION-ANCHOR: 899-M01
+
 def split(text, width):
     """Fixed-width slices, but preferring a whitespace boundary.
 
-    LOSSLESS BY CONSTRUCTION: a reader reconstructs the value by concatenating
-    the chunks in order, so the break may move but no character may be dropped
-    — the whitespace stays at the end of the chunk it ended. A fixed slice cut
-    mid-word, which is only cosmetic in `herdr agent list` but made the one
-    surface a human actually reads harder to read than the text it carries.
+    A reader reconstructs the value by concatenating the chunks in order and,
+    because herdr trims, gives back ONE space after a chunk shorter than `width`
+    (bin/cockpit-state join_chunks): a soft cut leaves its chunk shorter than
+    `width`, a hard cut inside a word leaves it exactly `width`. The separator is
+    therefore NOT kept on the chunk — herdr would drop it anyway, and an expected
+    value that still carried it could never be proven.
 
     A word longer than `width` has no boundary to find, so it falls back to the
     hard cut. That is the correct outcome, not a limitation to work around.
@@ -137,21 +153,21 @@ def split(text, width):
     rest = text
     while len(rest) > width:
         head = rest[:width]
-        cut = max(head.rfind(" "), head.rfind("\n"), head.rfind("\t"))
+        cut = max(head.rfind(" "), 0)
         if cut <= 0:
-            cut = width          # one long token: cut it, there is nothing else
+            out.append(rest[:width])   # one long token: cut it, there is nothing else
+            rest = rest[width:].lstrip(" ")   # a space that ends the token is herdr-trimmed off the next chunk  # MUTATION-ANCHOR: 899-M08
         else:
-            cut += 1             # keep the separator on this chunk
-        out.append(rest[:cut])
-        rest = rest[cut:]
+            out.append(rest[:cut])     # the separator is dropped here and given back by the reader  # MUTATION-ANCHOR: 899-M02
+            rest = rest[cut + 1:]
     out.append(rest)
     return out
 
 
-chunks = split(text, width) if text else [""]
+chunks = split(herdr_stable(text), width) if text else [""]
 if len(chunks) > max_chunks:
     chunks = chunks[:max_chunks]
-    chunks[-1] = chunks[-1][:width - 1] + "\u2026"
+    chunks[-1] = chunks[-1][:width - 1].rstrip(" ") + "\u2026"
 chunks += [sentinel] * (max_chunks - len(chunks))
 for i, chunk in enumerate(chunks, 1):
     name = prefix if i == 1 else "%s%d" % (prefix, i)
@@ -258,6 +274,62 @@ invoker_publication_note() {
   else
     printf 'Metadata publication could not be established; do not rely on a token record on this pane.'
   fi
+}
+
+# invoker_close_after_exit <state_dir> <hw args…>
+#
+# Runs `hw <args…>` — the owner-aware close — AFTER this invoker has exited, in a
+# process of its own that the pane's death does not take with it. Returns 0 when
+# the closer was started and 1 when it could not be, so the caller can fall back
+# to closing in the foreground.
+#
+# WHY IT EXISTS. MEASURED 2026-10-14 with a real `claude --model haiku` executor
+# on a live herdr: `hw done` closes the tab that holds the invoker itself, the
+# close kills the invoker's whole session, and the executor's Bash tool answers
+# "Exit code 137" about a report that was delivered, proven and published —
+# in all six setup runs retro'd that day. 137 was the SUCCESS signature of the
+# close, and no reader can tell it from a kill that lost the report. It also cut
+# `hw done` itself short: everything after the close (the worktree verdict, the
+# reap of a merged one) ran in a process that no longer existed.
+#
+# So the close waits for this process to leave, then waits `HW_CLOSE_GRACE_SECONDS`
+# (default 1) for the executor's own tool to collect the exit status, then runs.
+# Its stdio is a log file, never the invoker's pipes: a Bash tool holds its
+# command open until every writer of its pipe has gone, so an inherited pipe
+# would keep the invoker "running" until the pane died — the same 137, later.
+#
+# A close that fails is not silent: `<state_dir>/close-failed` holds the exit
+# status and the log path, and the operator's toast says so. The report itself
+# was delivered before this ran, which is the only fact exit 0 claims.
+INVOKER_CLOSER_SH='
+pid="$1"; state="$2"; hw="$3"; shift 3
+export HW_DONE_INVOKER_PID="$pid"
+n=0
+while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done  # MUTATION-ANCHOR: 899-M03
+sleep "${HW_CLOSE_GRACE_SECONDS:-1}"
+[ -d "$state" ] || exit 0
+rm -f "$state/close-failed"
+rc=0
+"$hw" "$@" || rc=$?
+if [ "$rc" != 0 ]; then  # MUTATION-ANCHOR: 899-M05
+  printf "rc=%s\nat=%s\nlog=%s\nthe report was delivered; hw %s exited %s and the pane may still be open\n" \
+    "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state/close.log" "$*" "$rc" > "$state/close-failed"
+  herdr notification show "executor close FAILED (exit $rc)" --body "hw $* — see $state/close.log" --sound request >/dev/null 2>&1 || true
+fi
+printf "%s\n" "$rc" > "$state/close-rc"
+'
+invoker_close_after_exit() {
+  local state="$1" hw="$INVOKER_BIN_DIR/hw"
+  shift
+  [ -d "$state" ] || return 1
+  python3 - "$$" "$state" "$hw" "$INVOKER_CLOSER_SH" "$@" <<'CLOSER' 2>/dev/null || return 1
+import subprocess, sys
+pid, state, hw, script, *args = sys.argv[1:]
+log = open(state + "/close.log", "ab")
+subprocess.Popen(["bash", "-c", script, "_", pid, state, hw] + args,
+                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                 close_fds=True, start_new_session=True)  # MUTATION-ANCHOR: 899-M04
+CLOSER
 }
 
 # ── the cwd-derived fallback ───────────────────────────────────────────────

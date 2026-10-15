@@ -108,7 +108,7 @@ _cs_exit_guard() {
   [ "$rc" -ne 0 ] 2>/dev/null || return 0
   [ ! -t 1 ] || return 0  # MUTATION-ANCHOR: 66-M04
   printf 'channel-send: ══ MY EXIT CODE IS %s: %s ══\n' "$rc" "$(_cs_exit_meaning "$rc")" >&2
-  printf 'channel-send: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `channel-send … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: read `${PIPESTATUS[0]}` or drop the pipe. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the delivery fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2  # MUTATION-ANCHOR: 66-M05
+  printf 'channel-send: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `channel-send … | tail` — then `$?` is TAIL'"'"'s status (0 whenever it reads a byte), NOT mine: run me unpiped — `channel-send … ; echo rc=$?` reads the real status in bash and zsh (`${PIPESTATUS[0]}` is bash-only: zsh spells it `${pipestatus[1]}` and prints nothing for the bash spelling). If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the delivery fact is %s, not whatever the shell shows.\n' "$rc" "$rc" >&2  # MUTATION-ANCHOR: 66-M05
   return 0
 }
 trap '_cs_exit_guard "$?"' EXIT  # MUTATION-ANCHOR: 66-M01

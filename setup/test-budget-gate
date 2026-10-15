@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""test-budget-gate — the suite's time budget is a gate, not a hope.
+
+    test-budget-gate [<test-budgets.json> [<test-budget-ceilings.tsv>]]
+
+Red (exit 1, naming the subject and the cheapest split) when, in setup/test-budgets.json:
+  (a) any single subject's measured seconds exceed JOB_MAX (600) — one job that long is the floor of the whole
+      suite however many workers there are (860 alone was 6600 s of a 26854 s suite, 2026-10-14);
+  (b) the suite's estimated wall-clock exceeds WALL_MAX (45 min): max(longest job, total seconds / SLOTS).
+The estimate is the budgets' own sums over the default pool of 6 workers, not a run: a slow test turns red at the
+commit that records its measurement.
+
+An offender already there when this gate arrived is listed in setup/test-budget-ceilings.tsv with a CEILING it may
+not grow past (`<subject>\t<ceiling seconds>\t<cheapest split>`); the line `SUITE\t<ceiling seconds>` does the same
+for (b). A ceiling is a debt with a number on it, and it only goes down: an entry whose subject is back under the
+limit is itself red ("remove it"), so the list shrinks as the splits land.
+"""
+import json
+import sys
+
+JOB_MAX = 600.0
+WALL_MAX = 45 * 60.0
+SLOTS = 6
+
+
+def main(budgets_path, ceilings_path):
+    files = json.load(open(budgets_path))["files"]
+    ceil, suite_ceil, split = {}, None, {}
+    for line in open(ceilings_path, encoding="utf-8") if ceilings_path else []:
+        f = line.rstrip("\n").split("\t")
+        if len(f) >= 2 and not line.startswith("#"):
+            if f[0] == "SUITE":
+                suite_ceil = float(f[1])
+            else:
+                ceil[f[0]] = float(f[1])
+                split[f[0]] = f[2] if len(f) > 2 else ""
+    bad = []
+    for name, v in sorted(files.items()):
+        s = float(v["seconds"])
+        limit = ceil.get(name, JOB_MAX)
+        if s > JOB_MAX and s > limit:  # MUTATION-ANCHOR: 965-M01
+            bad.append("%s measured %.0fs, over %.0fs%s: cut it into jobs of at most %.0fs (the cheapest split: by case range, as tests/contract-hw/shard.sh does for 870)"
+                       % (name, s, limit, " (its ceiling)" if name in ceil else "", JOB_MAX))
+    for name in sorted(ceil):
+        if name not in files or float(files[name]["seconds"]) <= JOB_MAX:
+            bad.append("%s is listed in %s but is not over %.0fs any more: remove the line" % (name, ceilings_path, JOB_MAX))
+    total = sum(float(v["seconds"]) for v in files.values())
+    longest = max(float(v["seconds"]) for v in files.values())
+    wall = max(longest, total / SLOTS)
+    wall_limit = max(WALL_MAX, suite_ceil) if suite_ceil is not None else WALL_MAX
+    if wall > wall_limit:
+        top = sorted(files, key=lambda n: -float(files[n]["seconds"]))[:3]
+        bad.append("estimated full-suite wall-clock %.0fs (%.0f budgeted seconds / %d workers) is over %.0fs%s; the largest: %s"
+                   % (wall, total, SLOTS, wall_limit, " (its ceiling)" if suite_ceil is not None else "", ", ".join(top)))
+    elif suite_ceil is not None and wall <= WALL_MAX:
+        bad.append("SUITE ceiling %.0fs is listed but the estimate (%.0fs) is under %.0fs: remove the line" % (suite_ceil, wall, WALL_MAX))
+    for b in bad:
+        print("not ok - " + b)
+    if not bad:
+        print("ok - %d subjects, none over %.0fs beyond its ceiling; estimated wall-clock %.0fs" % (len(files), JOB_MAX, wall))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    here = __file__.rsplit("/", 1)[0] if "/" in __file__ else "."
+    b = sys.argv[1] if len(sys.argv) > 1 else here + "/test-budgets.json"
+    c = sys.argv[2] if len(sys.argv) > 2 else here + "/test-budget-ceilings.tsv"
+    ceilings_path = c
+    sys.exit(main(b, c))

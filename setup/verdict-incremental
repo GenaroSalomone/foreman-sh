@@ -2,7 +2,7 @@
 """verdict-incremental — after a red full run, rerun only what the fix can have changed.
 
     verdict-incremental plan   <root> [--full] [--tree <t>] [--out <file>]
-    verdict-incremental record <root> --results <file> --rc <n> --elapsed <s> [--tree <t> --commit <c>]
+    verdict-incremental record <root> --results <file> --rc <n> --elapsed <s> [--tree <t> --commit <c>] [--base-tree <b>]
     verdict-incremental chain  <common-dir> <tree>
 
 WHY. The 0.3.7 train ran `setup/verify-for-push` six times in about five hours
@@ -31,10 +31,19 @@ least, and reruns ONLY:
   · any job T1 never ran (a new subject).
 
 If all of them pass, verify-for-push caches a FULL verdict for T2 that names T1
-(`base_tree=`, `incremental=1`). T1 is always a real full run, never another
-incremental one: a hop onto an incremental verdict would compound
-gate-select's one blind spot (a path built at runtime names nothing) instead
-of paying it once.
+(`base_tree=`, `incremental=1`, `chain_depth=`) AND leaves T2's own record, so the
+next tree can start from T2 instead of paying a new full run (2026-10-14: every
+merge after the brainer's full run forced another 2h30 once the diff to that run
+passed the caps below). A record is either a real full run (depth 0) or a green
+incremental one whose rows are its base's, overlaid by the jobs it re-ran
+(`kind=incremental`, `base_tree=`, `root_tree=` the real full run, `chain_depth=`
+hops from it). THE CHAIN IS CAPPED at HW_VERDICT_MAX_CHAIN hops (3): a hop onto an
+incremental verdict compounds gate-select's one blind spot (a path built at
+runtime names nothing) — a job a diff reached only that way keeps the row it had
+— and the cap is what bounds how many diffs can hide behind one full run. Past it,
+or on any fall back below, the next run is a real full run and the chain starts
+over. The release cut stays at ONE hop (`chain`): a release claims "the whole suite
+passed on these bytes".
 
 IT FALLS BACK TO A FULL RUN, saying why, when any of these holds:
 
@@ -78,6 +87,7 @@ import time
 sys.dont_write_bytecode = True
 MAX_FILES = int(os.environ.get("HW_VERDICT_MAX_FILES", "30"))
 MAX_COMMITS = int(os.environ.get("HW_VERDICT_MAX_COMMITS", "25"))
+MAX_CHAIN = int(os.environ.get("HW_VERDICT_MAX_CHAIN", "3"))
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 GUARD_JOBS = ("test-deny-repo-writes.mjs", "test-deny-repo-writes-filesystem.mjs",
               "test-opencode-hw-blocked-reason.mjs", "test-herdr-opencode-background-state.mjs",
@@ -148,6 +158,36 @@ def runner_files(root):
     return {f for f in found if not f.startswith("setup/guards/") and not f.startswith("setup/tests/[")}
 
 
+# A `# MUTATION-ANCHOR: <id>` (or -END) comment closing a line, alone or several in a row. It is a
+# declaration read by setup/mutation-anchors.tsv and 540, never code: no subject's verdict moves with it.
+ANCHOR_TAIL = re.compile(r"(?:[ \t]*#[ \t]*MUTATION-ANCHOR(?:-END)?:[ \t]*[A-Za-z0-9][\w.-]*)+[ \t]*$")  # MUTATION-ANCHOR: 820-M04
+
+
+# 540 judges every marker against setup/mutation-anchors.tsv, but its gate-when matches no runner path:
+# a marker-only runner change is trusted by the strip above, so the job that checks the markers is forced.
+ANCHOR_JOB = "540-las-anclas-de-mutacion-existen.sh"
+
+
+def without_anchor_markers(text):
+    out = []
+    for line in text.split("\n"):
+        stripped = ANCHOR_TAIL.sub("", line)  # MUTATION-ANCHOR: 820-M05
+        if stripped != line and not stripped.strip():
+            continue  # a whole-line marker
+        out.append(stripped)
+    return "\n".join(out)
+
+
+def only_anchor_markers_changed(root, base, tree, path):
+    """True when the file differs between the two trees ONLY by anchor markers. Anything else, a file
+    that is new or gone, or a git that cannot say, is False: the caller falls back to a full run."""
+    old = git(root, "show", "%s:%s" % (base, path), check=False)
+    new = git(root, "show", "%s:%s" % (tree, path), check=False)
+    if old.returncode != 0 or new.returncode != 0:
+        return False
+    return without_anchor_markers(old.stdout) == without_anchor_markers(new.stdout)
+
+
 def is_runner_path(path, shared):
     if path in shared:
         return True
@@ -177,13 +217,29 @@ def parse_record(path):
     return {"head": head, "rows": rows}
 
 
-def usable_base(path, tree_from_name):
+def record_depth(h):
+    """Hops from a real full run: 0 for one, else the record's chain_depth (-1 when it is not a number)."""
+    if h.get("kind") == "full":
+        return 0
+    d = h.get("chain_depth", "")
+    return int(d) if d.isdigit() else -1
+
+
+def usable_base(path, tree_from_name, chain=False):
+    """A record a plan may start from: a real full run, and with chain=True also a green incremental one
+    still under the hop cap (a new run off it would be at most MAX_CHAIN hops from the full run)."""
     rec = parse_record(path)
     if not rec:
         return None, "unreadable"
     h = rec["head"]
     if h.get("kind") != "full":
-        return None, "not a full run"
+        if not chain or h.get("kind") != "incremental":
+            return None, "not a full run"
+        depth = record_depth(h)
+        if depth < 1 or not HEX40.match(h.get("root_tree", "")) or not HEX40.match(h.get("base_tree", "")):
+            return None, "an incremental record that does not name its chain"
+        if depth >= MAX_CHAIN:  # MUTATION-ANCHOR: 820-M08
+            return None, "its chain is %d hops from a full run, at the cap of %d" % (depth, MAX_CHAIN)
     if h.get("tree") != tree_from_name or not HEX40.match(tree_from_name):
         return None, "names another tree"
     if h.get("runner_red") != "0":
@@ -200,7 +256,7 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def cmd_record(root, results, rc, elapsed, tree=None, commit=None):
+def cmd_record(root, results, rc, elapsed, tree=None, commit=None, base_tree=None):
     # THE TREE THAT WAS TESTED, not the one HEAD points to when the run ends: a
     # full run lasts ~1000 s over a snapshot taken at its start, and another
     # agent committing into the shared tree meanwhile moves HEAD. Filing the
@@ -237,13 +293,37 @@ def cmd_record(root, results, rc, elapsed, tree=None, commit=None):
         runner_red = 1
     d = os.path.join(common_dir(root), "hw-push-verified")
     os.makedirs(d, exist_ok=True)
-    head = ["kind=full", "tree=" + tree, "commit=" + commit,
+    kind, extra = "full", []
+    if base_tree:
+        # AN INCREMENTAL RUN'S RECORD: only a GREEN one is a base (a red leaves nothing to stand on), made of
+        # its base's rows with the jobs this run re-ran written over them.
+        if int(rc) != 0 or reds or runner_red:
+            print("verdict-incremental: a red incremental run is no base — no record written", file=sys.stderr)
+            return 1
+        if base_tree == tree:  # MUTATION-ANCHOR: 820-M10
+            # A red full run re-run on the SAME tree is its own nearest base: its record is the real full run
+            # `chain` and the release cut stand on, and it must not be overwritten by an incremental one.
+            print("verdict-incremental: the base is this very tree — its record stays, none written", file=sys.stderr)
+            return 1
+        brec, why = usable_base(os.path.join(d, base_tree + ".subjects"), base_tree, chain=True)
+        if brec is None:
+            print("verdict-incremental: base %s is not usable (%s) — no record written" % (base_tree[:9], why), file=sys.stderr)
+            return 1
+        merged = dict(brec["rows"])
+        for r in rows:
+            merged[r[0]] = (r[1], r[2])
+        rows = [[n, k, st] for n, (k, st) in sorted(merged.items())]
+        depth = record_depth(brec["head"]) + 1
+        kind = "incremental"
+        extra = ["base_tree=" + base_tree, "root_tree=" + (brec["head"].get("root_tree") or base_tree),
+                 "chain_depth=%d" % depth]
+    head = ["kind=" + kind, "tree=" + tree, "commit=" + commit,
             "recorded_at=" + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "elapsed_seconds=" + str(elapsed), "rc=" + str(rc), "runner_red=%d" % runner_red,
-            "jobs=%d" % len(rows), "reds=%d" % reds]
+            "jobs=%d" % len(rows), "reds=%d" % reds] + extra
     body = "\n".join("\t".join(r) for r in rows)
     write_atomic(os.path.join(d, tree + ".subjects"), "\n".join(head) + "\n\n" + body + "\n")
-    print("verdict-incremental: recorded %d jobs (%d red) for tree %s" % (len(rows), reds, tree), file=sys.stderr)
+    print("verdict-incremental: recorded %d jobs (%d red) for tree %s%s" % (len(rows), reds, tree, " (incremental, chain_depth=%d)" % depth if base_tree else ""), file=sys.stderr)
     return 0
 
 
@@ -350,7 +430,7 @@ def cmd_plan(root, full, out, expect_tree=None):
         if not fn.endswith(".subjects"):
             continue
         base = fn[:-len(".subjects")]
-        rec, why = usable_base(os.path.join(d, fn), base)
+        rec, why = usable_base(os.path.join(d, fn), base, chain=True)  # MUTATION-ANCHOR: 820-M09
         if rec is None:
             skipped.append("%s (%s)" % (base[:9], why))
             continue
@@ -377,25 +457,35 @@ def cmd_plan(root, full, out, expect_tree=None):
     if dist is None:
         return fallback("the recorded run %s names a commit this repository does not have, so its distance is unknown" % base[:9])
     if dist > MAX_COMMITS:
-        return fallback("the nearest recorded full run (%s) is %d commits away, over %d" % (base[:9], dist, MAX_COMMITS))
+        return fallback("the nearest recorded verdict (%s) is %d commits away, over %d" % (base[:9], dist, MAX_COMMITS))
     if len(changed) > MAX_FILES:
-        return fallback("%d files changed since the nearest recorded full run (%s), over %d" % (len(changed), base[:9], MAX_FILES))
+        return fallback("%d files changed since the nearest recorded verdict (%s), over %d" % (len(changed), base[:9], MAX_FILES))
+    marked = set()  # runner paths changed only by anchor markers: not code, so not a reason for a full run
     for p in changed:
-        if is_runner_path(p, shared):  # MUTATION-ANCHOR: 820-M02
-            return fallback("%s is the runner or something it loads: any verdict can move" % p)
+        if not is_runner_path(p, shared):
+            continue
+        if only_anchor_markers_changed(root, base, tree, p):
+            marked.add(p)
+            continue
+        return fallback("%s is the runner or something it loads: any verdict can move" % p)  # MUTATION-ANCHOR: 820-M02
 
     run = {}  # name -> why
 
     def add(name, why):
         run.setdefault(name, why)
 
+    if marked:
+        add(ANCHOR_JOB, "a runner file changed only by anchor markers (%s): 540 checks them" % ", ".join(sorted(marked)))  # MUTATION-ANCHOR: 820-M06
+
     rows = rec["rows"]
     for name, (_k, st) in sorted(rows.items()):
         if st == "red":
             add(name, "red in the recorded run %s" % base[:9])
     try:
-        sel = run_gate_select(root, changed) if changed else []
-        tch = run_gate_select(root, changed, "touched") if changed else []
+        # gate-select reads a runner path as `all` (the whole fast gate): a marker-only one is no change to it.
+        code_changed = [p for p in changed if p not in marked]
+        sel = run_gate_select(root, code_changed) if code_changed else []
+        tch = run_gate_select(root, code_changed, "touched") if code_changed else []
     except RuntimeError as e:
         return fallback(str(e))
     guards_changed = False
@@ -426,8 +516,8 @@ def cmd_plan(root, full, out, expect_tree=None):
     if not run:
         return fallback("nothing selected — refusing an empty run")
 
-    print("incremental base_tree=%s base_commit=%s files=%d commits=%d jobs=%d of %d"
-          % (base, rec["head"].get("commit", ""), len(changed), dist, len(run), total))
+    print("incremental base_tree=%s base_commit=%s files=%d commits=%d jobs=%d of %d chain_depth=%d"
+          % (base, rec["head"].get("commit", ""), len(changed), dist, len(run), total, record_depth(rec["head"]) + 1))
     for name in sorted(run):
         print("run %s %s" % (name, run[name]))
     if out:
@@ -452,7 +542,7 @@ def cmd_chain(common, tree):
         print("an incremental verdict that does not name a base tree at one hop (chain_depth=%s, base_tree=%s)"
               % (v.get("chain_depth", "?"), base or "?"))
         return 1
-    rec, why = usable_base(os.path.join(d, base + ".subjects"), base)
+    rec, why = usable_base(os.path.join(d, base + ".subjects"), base)  # chain=False: the cut wants a REAL full run
     if rec is None:
         print("its base %s is not a recorded real full run (%s)" % (base[:9], why))
         return 1
@@ -479,7 +569,7 @@ def main(argv):
     flags = set()
     i = 0
     while i < len(rest):
-        if rest[i] in ("--results", "--rc", "--elapsed", "--out", "--tree", "--commit"):
+        if rest[i] in ("--results", "--rc", "--elapsed", "--out", "--tree", "--commit", "--base-tree"):
             opt[rest[i]] = rest[i + 1] if i + 1 < len(rest) else ""
             i += 2
         else:
@@ -489,7 +579,7 @@ def main(argv):
         return cmd_plan(root, "--full" in flags, opt.get("--out"), opt.get("--tree"))
     if cmd == "record":
         return cmd_record(root, opt.get("--results", ""), opt.get("--rc", "1"), opt.get("--elapsed", "0"),
-                          opt.get("--tree"), opt.get("--commit"))
+                          opt.get("--tree"), opt.get("--commit"), opt.get("--base-tree"))
     if cmd == "chain":
         return cmd_chain(argv[2], rest[0] if rest else "")
     print("verdict-incremental: unknown command %s" % cmd, file=sys.stderr)

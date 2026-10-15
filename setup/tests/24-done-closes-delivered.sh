@@ -39,6 +39,12 @@ if [ -f "$HW_WORKDIR/.hw/$HW_RUN/done" ]; then
 else
   printf 'marker-absent\n' >> "$STUB_EVENTS"
 fi
+# The closer exports the pid of the invoker it waited for: is it still there?
+if kill -0 "$HW_DONE_INVOKER_PID" 2>/dev/null; then
+  printf 'invoker-alive\n' >> "$STUB_EVENTS"
+else
+  printf 'invoker-gone\n' >> "$STUB_EVENTS"
+fi
 exit "${STUB_HW_RC:-0}"
 STUB
   cat > "$dir/bin/herdr" <<'STUB'
@@ -55,11 +61,22 @@ run_case() { # name [extra env assignments...]
   set +e
   env PATH="$dir/bin:$PATH" STUB_EVENTS="$dir/events" STUB_MESSAGE="$dir/message" STUB_DELIVERY_ARGS="$dir/delivery-args" \
     HW_INVOKER_PANE=wT:p1 HERDR_PANE_ID=wT:p2 HW_TASK=task HW_PROJECT=setup \
-    HW_RUN=run HW_WORKDIR="$dir/work" HW_ARTIFACTS="$dir/artifacts" \
+    HW_RUN=run HW_WORKDIR="$dir/work" HW_ARTIFACTS="$dir/artifacts" HW_CLOSE_GRACE_SECONDS=0 \
     "$@" "$dir/bin/done-invoker" "completed; findings in engram #1" \
     > "$dir/out" 2>&1
   CASE_RC=$?
   set -e
+}
+
+# The close is no longer a child of the invoker: it starts after the invoker has
+# exited, in a process of its own (invoker_close_after_exit). Wait for its record
+# — close-rc is written when `hw done` returns, whatever it returned.
+wait_close() { # name
+  local end=$((SECONDS + 15))
+  while [ ! -e "$TMP/$1/work/.hw/run/close-rc" ]; do
+    [ "$SECONDS" -lt "$end" ] || fail "done close: $1: the detached close never finished: $(tr '\n' ' ' < "$TMP/$1/events" 2>/dev/null)"
+    sleep 0.1
+  done
 }
 
 run_summary_case() { # name summary
@@ -68,7 +85,7 @@ run_summary_case() { # name summary
   set +e
   env PATH="$dir/bin:$PATH" STUB_EVENTS="$dir/events" STUB_MESSAGE="$dir/message" STUB_DELIVERY_ARGS="$dir/delivery-args" \
     HW_INVOKER_PANE=wT:p1 HERDR_PANE_ID=wT:p2 HW_TASK=task HW_PROJECT=setup \
-    HW_RUN=run HW_WORKDIR="$dir/work" HW_ARTIFACTS="$dir/artifacts" \
+    HW_RUN=run HW_WORKDIR="$dir/work" HW_ARTIFACTS="$dir/artifacts" HW_CLOSE_GRACE_SECONDS=0 \
     "$dir/bin/done-invoker" "$summary" > "$dir/out" 2>&1
   CASE_RC=$?
   set -e
@@ -80,8 +97,9 @@ run_summary_case() { # name summary
 make_case delivered
 run_case delivered
 [ "$CASE_RC" = 0 ] || fail "done close: delivered fixture failed: $(cat "$TMP/delivered/out")"
-[ "$(cat "$TMP/delivered/events")" = $'deliver\nclose done setup task\nartifacts '"$TMP"$'/delivered/artifacts\nmarker-present' ] \
-  || fail "done close: order was not receiver delivery -> done marker -> hw done: $(tr '\n' ' ' < "$TMP/delivered/events")"
+wait_close delivered
+[ "$(cat "$TMP/delivered/events")" = $'deliver\nclose done setup task\nartifacts '"$TMP"$'/delivered/artifacts\nmarker-present\ninvoker-gone' ] \
+  || fail "done close: order was not receiver delivery -> done marker -> hw done, run AFTER the invoker exited: $(tr '\n' ' ' < "$TMP/delivered/events")"
 case "$(cat "$TMP/delivered/message")" in
   *"receiver admitted the report"*"hw done"*"--keep-pane"*"chaining"*)
     pass "done close: the report reaches the brainer before the existing hw close path runs" ;;
@@ -135,18 +153,26 @@ pass "done close: legacy HW_DONE_KEEP_PANE=1 still enables chaining"
 # the delivered-but-not-closed fact, and the message leads with it.
 make_case close-failed
 run_case close-failed STUB_HW_RC=9
-[ "$CASE_RC" = 4 ] || fail "done close: hw close failure exited $CASE_RC, wanted 4 (delivered but not closed) — 1 would say the report was lost: $(cat "$TMP/close-failed/out")"
-grep -q 'could not close the owned task tab/workspace' "$TMP/close-failed/out" \
-  || fail "done close: hw close failure was not surfaced"
-head -1 "$TMP/close-failed/out" | grep -q 'THE REPORT IS DELIVERED AND SAFE' \
-  || fail "done close: close failure does not LEAD with the report being delivered and safe: $(cat "$TMP/close-failed/out")"
-grep -q 'Do NOT re-run done-invoker' "$TMP/close-failed/out" \
-  || fail "done close: close failure does not warn against the retry that would double-report"
+# SINCE 2026-10-14 THE CLOSE IS NOT THE INVOKER'S TO REPORT. It runs after the
+# invoker has exited (a close inside the invoker SIGKILLed it: "Exit code 137"
+# on every delivered report), so the invoker's own exit is the delivery's: 0.
+# The close's failure is a fact on disk — close-failed — never a lie about the
+# report, and never silent. The old expectation here (exit 4 on a failed close)
+# asserted the defect: it could only hold where the close was a child of the
+# invoker, which is what made every SUCCESSFUL close read as 137.
+[ "$CASE_RC" = 0 ] || fail "done close: a delivered report exited $CASE_RC although only the close failed — the close is not the report's exit: $(cat "$TMP/close-failed/out")"
+wait_close close-failed
+[ -f "$TMP/close-failed/work/.hw/run/close-failed" ] \
+  || fail "done close: hw close failure left no close-failed record — a failed close would be silent"
+grep -q '^rc=9$' "$TMP/close-failed/work/.hw/run/close-failed" \
+  || fail "done close: close-failed does not carry hw's exit status: $(cat "$TMP/close-failed/work/.hw/run/close-failed")"
+grep -q 'the report was delivered' "$TMP/close-failed/work/.hw/run/close-failed" \
+  || fail "done close: close-failed does not lead with the report being delivered"
 [ -f "$TMP/close-failed/work/.hw/run/done" ] \
   || fail "done close: close failure discarded the done marker, so a retry would double-report"
 case "$(cat "$TMP/close-failed/events")" in
-  $'deliver\nclose done setup task\nartifacts '"$TMP"$'/close-failed/artifacts\nmarker-present') pass "done close: a failed owner-aware close inherits the executor artifact path and exits 4 after proven delivery" ;;
-  *) fail "done close: close-failure fixture did not traverse the expected path" ;;
+  $'deliver\nclose done setup task\nartifacts '"$TMP"$'/close-failed/artifacts\nmarker-present\ninvoker-gone') pass "done close: a failed close inherits the executor artifact path, runs after the invoker is gone, and is recorded, not reported as the invoker's exit" ;;
+  *) fail "done close: close-failure fixture did not traverse the expected path: $(tr '\n' ' ' < "$TMP/close-failed/events")" ;;
 esac
 
 # THE LATE PRECONDITION, one layer up from where it was found. `hw` is a hard
@@ -206,7 +232,8 @@ PY
 chmod +x "$TMP/empty-mutant/bin/done-invoker"
 run_summary_case empty-mutant ""
 [ "$CASE_RC" = 0 ] || fail "done summary mutant: removing the barrier did not reproduce old acceptance"
-[ "$(cat "$TMP/empty-mutant/events")" = $'deliver\nclose done setup task\nartifacts '"$TMP"$'/empty-mutant/artifacts\nmarker-present' ] \
+wait_close empty-mutant
+[ "$(cat "$TMP/empty-mutant/events")" = $'deliver\nclose done setup task\nartifacts '"$TMP"$'/empty-mutant/artifacts\nmarker-present\ninvoker-gone' ] \
   || fail "done summary mutant: empty report did not traverse delivery and accounting"
 pass "mutant killed: removing the non-empty summary barrier restores the hollow done report"
 

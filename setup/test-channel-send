@@ -494,7 +494,7 @@ DONE_SUCCESS_HW_LOG="$HARNESS/done-success-hw.log"
 ds_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=0 MOCK_METADATA_LOG="$DONE_SUCCESS_METADATA" \
   MOCK_HW_LOG="$DONE_SUCCESS_HW_LOG" \
   HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
-  HW_TASK=artifact-test HW_PROJECT=setup HW_WORKDIR="$DONE_SUCCESS_WORK" \
+  HW_TASK=artifact-test HW_PROJECT=setup HW_WORKDIR="$DONE_SUCCESS_WORK" HW_CLOSE_GRACE_SECONDS=0 \
   HW_ARTIFACTS="$DONE_SUCCESS_ARTIFACTS" HW_RUN=done-success-run \
   "$HARNESS/bin/done-invoker" "Artifact root accounting test." 2>&1)" && ds_rc=0 || ds_rc=$?
 [ "$ds_rc" = 0 ] || { printf 'not ok - a delivered-and-closed report exited %s, expected 0: %s\n' "$ds_rc" "$ds_out" >&2; exit 1; }
@@ -503,6 +503,10 @@ jq -e 'select(.tokens.artifacts == "2")' "$DONE_SUCCESS_METADATA" >/dev/null || 
   exit 1
 }
 pass "done-invoker counts only HW_ARTIFACTS"
+# The close runs AFTER the invoker has exited, in a process of its own (2026-10-14: inside the
+# invoker it killed it, and every delivered report read "Exit code 137"): wait for its record.
+wait_for_close() { local end=$((SECONDS + 15)); until [ -e "$1" ]; do [ "$SECONDS" -lt "$end" ] || return 1; sleep 0.1; done; }
+wait_for_close "$DONE_SUCCESS_HW_LOG" || { printf 'not ok - the detached close never ran hw done\n' >&2; exit 1; }
 [ "$(cat "$DONE_SUCCESS_HW_LOG")" = "hw done setup artifact-test" ] || {
   printf 'not ok - delivered report did not close through hw done: %s\n' "$(cat "$DONE_SUCCESS_HW_LOG")" >&2
   exit 1
@@ -512,40 +516,40 @@ pass "a delivered report closes through hw done and exits 0"
 # ── THE COLLAPSE THIS SUITE MISSED. A delivered report whose close fails used
 # to exit 1 — the same code as a report that never reached the brainer — so a
 # caller branching on the exit read "retry, nothing was lost" about a report
-# the brainer was already holding. Asserting the CODE, not just nonzero: the
-# whole point is that 1 and 4 are now different facts. The `expect_failure`
-# helpers above are exactly the shape that let channel-send's own exit-1 lie
-# survive for a day.
+# the brainer was already holding. It then exited 4 (delivered, not closed); but
+# the close ran INSIDE the invoker, so every SUCCESSFUL close killed it with its
+# own tab ("Exit code 137"), and 4 could only ever be told apart from 137 by luck.
+# Since 2026-10-14 the close runs after the invoker has exited: the invoker's exit
+# is the delivery's (0), and the close's failure is a fact on disk (close-failed),
+# never the code of a report that landed — and never 1. The exit 4 survives only
+# where no detached closer can start (setup/tests/899 D).
 DONE_CF_WORK="$HARNESS/done-close-failed-work"
 DONE_CF_STATE="$DONE_CF_WORK/.hw/done-cf-run"
 DONE_CF_HW_LOG="$HARNESS/done-close-failed-hw.log"
 mkdir -p "$DONE_CF_STATE"
 cf_out="$(env PATH="$MOCK_BIN:$PATH" MOCK_CHANNEL_RC=0 MOCK_METADATA_LOG="$HARNESS/done-cf-metadata.jsonl" \
-  MOCK_HW_LOG="$DONE_CF_HW_LOG" MOCK_HW_RC=9 \
+  MOCK_HW_LOG="$DONE_CF_HW_LOG" MOCK_HW_RC=9 HW_CLOSE_GRACE_SECONDS=0 \
   HW_INVOKER_PANE=pane-brainer HERDR_PANE_ID=pane-executor \
   HW_TASK=close-failed-test HW_PROJECT=setup HW_WORKDIR="$DONE_CF_WORK" HW_RUN=done-cf-run \
   "$HARNESS/bin/done-invoker" "Close failure test." 2>&1)" && cf_rc=0 || cf_rc=$?
-[ "$cf_rc" = 4 ] || { printf 'not ok - delivered-but-close-failed exited %s, expected 4: %s\n' "$cf_rc" "$cf_out" >&2; exit 1; }
-case "$cf_out" in
-  "done-invoker: THE REPORT IS DELIVERED AND SAFE"*) ;;
-  *) printf 'not ok - exit 4 does not LEAD with the report being delivered and safe: %s\n' "$cf_out" >&2; exit 1 ;;
-esac
-case "$cf_out" in
-  *"could not close the owned task tab/workspace"*"pane is still open at pane-executor"*) ;;
-  *) printf 'not ok - exit 4 does not name the close failure and where the pane is: %s\n' "$cf_out" >&2; exit 1 ;;
-esac
+[ "$cf_rc" = 0 ] || { printf 'not ok - a delivered report whose close fails exited %s, expected 0 (the close is not the report'"'"'s exit): %s\n' "$cf_rc" "$cf_out" >&2; exit 1; }
 # NOT SILENT. Masking the failed close would undo the same-day fix in bin/hw.
+wait_for_close "$DONE_CF_STATE/close-rc" || { printf 'not ok - the detached close never finished\n' >&2; exit 1; }
 [ "$(cat "$DONE_CF_HW_LOG")" = "hw done setup close-failed-test" ] || {
   printf 'not ok - the close was never attempted: %s\n' "$(cat "$DONE_CF_HW_LOG")" >&2
   exit 1
 }
-# The report DID land, so the marker stays written: re-running would be a
-# second report for one task, which is why the diagnostic forbids it.
-[ -f "$DONE_CF_STATE/done" ] || {
-  printf 'not ok - exit 4 discarded the done marker, so a retry would double-report\n' >&2
+grep -q '^rc=9$' "$DONE_CF_STATE/close-failed" 2>/dev/null || {
+  printf 'not ok - a close that failed with 9 left no close-failed saying so: %s\n' "$(cat "$DONE_CF_STATE/close-failed" 2>&1)" >&2
   exit 1
 }
-pass "a delivered report whose close fails exits 4, not 1, and leads with the report being safe"
+# The report DID land, so the marker stays written: re-running would be a
+# second report for one task.
+[ -f "$DONE_CF_STATE/done" ] || {
+  printf 'not ok - a failed close discarded the done marker, so a retry would double-report\n' >&2
+  exit 1
+}
+pass "a delivered report whose close fails exits 0 and leaves close-failed with hw's status"
 
 # NEGATIVE: an undelivered report must still be 1, or 1 and 4 are noise. This
 # is the third of the three exits, run for real rather than read off the source.

@@ -218,7 +218,7 @@ print(s[s.find("❯") + 1:].replace("\xa0", " ").strip())
 }
 
 brain_relaunch() {   # brain relaunch [--all | <lane|pane>...] [--dry-run]
-  local all=0 dry=0 targets=() a lane json rc=0 n=0 fails=0 pane cwd sid st out up conv mod
+  local all=0 dry=0 targets=() a lane json rc=0 n=0 fails=0 pane cwd sid st out up conv mod bg
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -293,9 +293,10 @@ brain_relaunch() {   # brain relaunch [--all | <lane|pane>...] [--dry-run]
         "$([ "$conv" = 1 ] && printf 'resuming %s' "$sid" || printf 'a new conversation')" "$lane"
       fails=$((fails + 1)); continue
     }
+    bg="$(printf '%s' "$out" | grep -Eo 'background-kept [0-9]+/[0-9]+|background-kept unverified' | head -1 | sed 's/^background-kept \(.*\)$/ — background tasks moved to the background (processes alive: \1)/' || true)"
     mod="$(printf '%s' "$out" | grep -Eo 'cockpit needs claude >= [0-9.]+ \(found [^)]*\)' | head -1 | sed 's/^/ — without the mod: /' || true)"
-    if [ "$conv" = 1 ]; then printf 'relaunched %s (%s) resuming %s%s\n' "$pane" "$lane" "$sid" "$mod"
-    else printf 'relaunched %s (%s) as a NEW conversation — %s has no transcript (it never had a turn), so there was nothing to resume%s\n' "$pane" "$lane" "$sid" "$mod"; fi
+    if [ "$conv" = 1 ]; then printf 'relaunched %s (%s) resuming %s%s%s\n' "$pane" "$lane" "$sid" "$bg" "$mod"
+    else printf 'relaunched %s (%s) as a NEW conversation — %s has no transcript (it never had a turn), so there was nothing to resume%s%s\n' "$pane" "$lane" "$sid" "$bg" "$mod"; fi
   done < <(printf '%s' "$json" | jq -r '.result.panes[] | select(.label == "brain" and .agent == "claude")
       | [.pane_id, (.cwd // ""), (.agent_session.value // ""), (.agent_status // "")] | join("|")')
   [ "$n" -gt 0 ] || echo "brain relaunch: no open claude brainer matched."
@@ -678,6 +679,48 @@ brain_exit_confirmation() {   # $1 = pane, $2 = the `agent get` reply just read;
     *"Enter to confirm"*"Esc to cancel"*) return 0 ;;
   esac
   return 1
+}
+
+# THE PROCESSES CLAUDE HOLDS AS BACKGROUND WORK, as pids: its background shells (a direct child that is a shell — claude's MCP
+# servers are children too, and die with it) and everything those run. `herdr pane process-info` names claude's pid; the tree is
+# walked from `ps`. MEASURED 2026-10-14: the shell and its `sleep` are what outlive «Move to background and exit». Prints one pid
+# per line, none when claude's pid or its shells cannot be found, which is "not provable", not "no tasks".
+brain_claude_descendants() {   # <pane>
+  local pid
+  pid="$(herdr pane process-info --pane "$1" 2>/dev/null | jq -r '[.result.process_info.foreground_processes[]? | select((.argv[0]? // .argv0 // "") | split("/") | last == "claude") | .pid][0] // empty' 2>/dev/null || true)"
+  [ -n "$pid" ] || return 0
+  ps -axo pid=,ppid=,comm= 2>/dev/null | python3 -I -c '
+import os, sys
+root = int(sys.argv[1]); kids, comm = {}, {}
+for l in sys.stdin:
+    a = l.split(None, 2)
+    if len(a) == 3: kids.setdefault(int(a[1]), []).append(int(a[0])); comm[int(a[0])] = os.path.basename(a[2].strip()).lstrip("-")
+out = [c for c in kids.get(root, []) if comm.get(c) in ("sh", "bash", "zsh", "dash")]
+todo = list(out)
+while todo:
+    for c in kids.get(todo.pop(), []):
+        out.append(c); todo.append(c)
+print("\n".join(map(str, out)))' "$pid"
+}
+
+# THE EXIT DIALOG, ANSWERED WITH ITS SECOND OPTION. MEASURED 2026-10-14 on a real probe pane (claude --model haiku, a
+# background `sleep 300; touch …`): «1. Exit and stop tasks» KILLED the task (no process left); «2. Move to background and exit»
+# left the task running (reparented to pid 1) and `claude --resume <same session>` came back in the same pane. So a pane with
+# background work is relaunched by choosing 2, never 1. NEVER BLIND KEYS: the dialog is the one just detected, the selection
+# is moved (Down) and READ BACK as «2. Move to background and exit» before Enter; anything else is Esc (stay), a skip.
+# Prints nothing; 0 = option 2 was submitted, 1 = Esc was sent instead (the agent is untouched).
+brain_exit_move_to_background() {   # <pane>
+  local screen
+  screen="$(herdr agent read "$1" --source visible --lines 30 2>/dev/null || true)"
+  case "$screen" in *"2. Move to background and exit"*) ;; *) return 1 ;; esac
+  herdr pane send-keys "$1" down >/dev/null 2>&1 || return 1  # MUTATION-ANCHOR: 895-M01
+  sleep 1
+  screen="$(herdr agent read "$1" --source visible --lines 30 2>/dev/null || true)"
+  # MUTATION-ANCHOR: 895-M02
+  case "$screen" in *"❯ 2. Move to background and exit"*) ;; *) return 1 ;; esac
+  # MUTATION-ANCHOR-END: 895-M02
+  herdr pane send-keys "$1" enter >/dev/null 2>&1 || return 1
+  return 0
 }
 
 # THE PANE BRAIN IS RUNNING IN IS NOT A PANE IT CAN TYPE INTO. MEASURED 2026-10-13: `brain setup --resume <id>` run in
@@ -1303,7 +1346,7 @@ PY
         # defect this file already carries two guards for, and here it would
         # start a SECOND agent on top of a live conversation. So the body is the
         # evidence, and nothing else is accepted as proof.
-        gone=0
+        gone=0 bg_moved=0 bg_pids=
         for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
           sleep 1
           agent_reply="$(brain_agent_get "$pane")"
@@ -1314,15 +1357,24 @@ PY
           # `blocked`, not gone. MEASURED 2026-10-13 (setup brainer, rc=75 three times): "Background work is
           # running / The following will stop when you exit: … 1. Exit and stop tasks 2. Move to background
           # and exit 3. Stay". Waiting out 15s on it only ended in "NOT proved agent-free" with that prompt
-          # still up. Answering it is not ours: option 1 kills the person's tasks, option 2 detaches them from
-          # a session about to be replaced. So it is CANCELLED (Esc = stay, the agent is untouched) and the pane
-          # is skipped with the reason. One look, no retry: this exits, it does not loop.
+          # still up. ANSWERED WITH OPTION 2 (measured 2026-10-14, see brain_exit_move_to_background): the tasks keep
+          # running and the conversation resumes. The pids claude holds are recorded first and looked for after the
+          # exit. If option 2 cannot be selected and read back, or the question is up a SECOND time, Esc = stay (the
+          # agent is untouched) and the pane is skipped with the reason: one look, no retry.
           # MUTATION-ANCHOR: 891-M01
           if brain_exit_confirmation "$pane" "$agent_reply"; then
+            if [ "$bg_moved" = 0 ]; then
+              bg_pids="$(brain_claude_descendants "$pane")"
+              if brain_exit_move_to_background "$pane"; then
+                bg_moved=1
+                printf 'brain: %s asked to confirm /exit — it has background work; chose «Move to background and exit».\n' "$pane" >&2
+                continue
+              fi
+            fi
             herdr pane send-keys "$pane" escape >/dev/null 2>&1 || true
             sleep 2
             trap - EXIT   # nothing was stopped: a refusal (rc 1, a skip for `brain relaunch`), not the 75 of a pane left empty
-            printf 'brain: %s asked to confirm /exit — it has background work that exit would stop or detach.\n' "$pane" >&2
+            printf 'brain: %s asked to confirm /exit — it has background work and «Move to background and exit» could not be chosen.\n' "$pane" >&2
             printf 'brain: Esc was sent (stay): the agent is still there, now %s. Nothing was restarted.\n' \
               "$(brain_agent_get "$pane" | jq -r '.result.agent.agent_status // "unreadable"' 2>/dev/null || printf unreadable)" >&2
             printf 'brain: %s has background tasks — relaunch would kill them; stop or finish them in that pane, then relaunch.\n' "$pane" >&2
@@ -1330,6 +1382,16 @@ PY
           fi
           # MUTATION-ANCHOR-END: 891-M01
         done
+        # THE TASKS MOVED TO THE BACKGROUND ARE LOOKED FOR, not assumed: each recorded pid is probed after the agent is gone.
+        if [ "$gone" = 1 ] && [ "$bg_moved" = 1 ]; then
+          bg_total=0 bg_alive=0
+          for _p in $bg_pids; do
+            bg_total=$((bg_total + 1)); kill -0 "$_p" 2>/dev/null && bg_alive=$((bg_alive + 1))
+          done
+          if [ "$bg_total" = 0 ]; then printf 'brain: background-kept unverified (claude'"'"'s process tree could not be read)\n' >&2
+          else printf 'brain: background-kept %s/%s\n' "$bg_alive" "$bg_total" >&2; fi
+          [ "$bg_total" = 0 ] || [ "$bg_alive" -gt 0 ] || printf 'brain: WARNING — none of the %s background processes survived the exit (they may have finished meanwhile).\n' "$bg_total" >&2
+        fi
         [ "$gone" = 1 ] || {
           echo "brain: 15s after /exit, $pane has NOT been proved agent-free — herdr either still reports an agent there or could not be asked. brain will NOT start a second one over it. Look at that pane." >&2
           exit 1
@@ -1618,8 +1680,9 @@ hw_permissions_resolve "" || { echo "brain: $PERMISSIONS_ERR" >&2; exit 1; }
 tries=0
 agent_args=()
 if [ "$kind" != claude ]; then :
-elif [ "$INPROC" = 1 ]; then   # the same two settings claude_session_env_prep types, set where they take effect
+elif [ "$INPROC" = 1 ]; then   # the same settings claude_session_env_prep types, set where they take effect
   unset CLAUDE_CODE_CHILD_SESSION; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1  # MUTATION-ANCHOR: 892-M03
+  export CLAUDE_CODE_BASH_EDIT_DIFF=0  # MUTATION-ANCHOR: 892-M05
 else claude_session_env_prep "$pane"  # MUTATION-ANCHOR: 810-M01
 fi
 if [ "$kind" = opencode ]; then

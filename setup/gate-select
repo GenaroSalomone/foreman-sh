@@ -21,7 +21,8 @@ touched_budget_seconds:
     touched-skipped <name> <secs> <path>   over the budget: left to the full run
 
     reference <name> <path>  a SLOW subject that declares `# gate-reference:` and
-                           names a changed path: it runs beside the selection
+                           names a changed path, or `# gate-when: <regex>` and
+                           a changed path matches: it runs beside the selection
 
 A subject that declares `# gate-reference:` compares against a reference output
 (a golden, the previous installer) that goes stale whenever what it names
@@ -206,19 +207,50 @@ def subject_text(text, top, helpers):
     return "\n".join(parts)
 
 
-def header_declares(path, key):
-    """`# <key>:` in the comment block at the top of the file."""
+def header_value(path, key):
+    """The text after `# <key>:` in the comment block at the top of the file, or None."""
     for n, line in enumerate(read(path).split("\n")):
         if n == 0 and line.startswith("#!"):
             continue
         if line.startswith("#"):
-            if re.match(r"^# " + re.escape(key) + r":", line):
-                return True
+            m = re.match(r"^# " + re.escape(key) + r":(.*)$", line)
+            if m:
+                return m.group(1).strip()
             continue
         if line.strip() == "":
             continue
-        return False
-    return False
+        return None
+    return None
+
+
+def header_declares(path, key):
+    """`# <key>:` in the comment block at the top of the file."""
+    return header_value(path, key) is not None
+
+
+def when_hits(root, changed):
+    """-> {subject: first changed path matching its `# gate-when: <regex>`}, fast or slow.
+
+    The regex is the header's first word. A subject that judges what OTHER
+    files declare (540: every subject's mutation anchors) names none of them,
+    so naming cannot select it; this says which paths do, and costs nothing
+    when none changed."""
+    tests = os.path.join(root, "setup", "tests")
+    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    hits = {}
+    for n in budgets["files"]:
+        path = os.path.join(tests, n)
+        if not os.path.isfile(path):
+            continue
+        spec = (header_value(path, "gate-when") or "").split(None, 1)
+        if not spec:
+            continue
+        pat = re.compile(spec[0])
+        for c in changed:
+            if pat.search(c):
+                hits[n] = c
+                break
+    return hits
 
 
 def slow_hits(root, changed, trigger):
@@ -258,6 +290,10 @@ def slow_hits(root, changed, trigger):
             if any(r in t or names(t, os.path.basename(r)) for r in reach):
                 found[n] = (1, path)
     pinned = {n for n in found if header_declares(os.path.join(tests, n), "gate-reference")}
+    for n, path in when_hits(root, changed).items():
+        if n in slow:  # a fast one is taken by main(); a slow one runs beside the selection, never cut  # MUTATION-ANCHOR: 999-M01
+            found[n] = (0, path)
+            pinned.add(n)
     return found, slow, pinned
 
 
@@ -332,6 +368,11 @@ def main(argv):
         if not hit and path not in guards:
             print("all %s reaches no fast subject by name" % path)
             return 0
+    # A subject that declares `# gate-when: <regex>` runs when a changed path
+    # matches it (a slow one is taken by slow_hits, as a pinned `reference`).
+    for n, path in when_hits(root, changed).items():
+        if n in stext:  # MUTATION-ANCHOR: 999-M02
+            chosen.setdefault(n, path)
     # The core runs on EVERY selection, including one that reached nothing
     # else (a slow subject, a document nobody reads): whoever called the runner
     # asked for a gate, and the core is the floor of one. Whether to call it at

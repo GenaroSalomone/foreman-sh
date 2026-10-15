@@ -787,12 +787,17 @@ claude_first_run_command() {  # $1 = account config dir, empty for the default
 # `herdr agent start --kind claude`, by every launcher (brain, hw `_agent_start`). A pane that already
 # runs an agent is left alone: typing into it would land in that agent's prompt, and `agent start`
 # refuses it anyway.
+# The same line turns Claude Code's bashEditDiff off (CLAUDE_CODE_BASH_EDIT_DIFF=0; project settings cannot):
+# it snapshots the WHOLE git repo of the cwd around every Bash call and shows every change in that window as
+# the command's own, so a brainer under the shared brain checkout displayed another lane's concurrent write
+# (MEASURED 2026-10-14, setup/tests/810). UI and transcript only, never the model's context.
 claude_session_env_prep() {  # $1 = pane
   local pane="${1:-}" prep
   [ -n "$pane" ] || return 0
   if herdr agent get "$pane" 2>/dev/null | jq -e '.result.agent != null' >/dev/null 2>&1; then return 0; fi
   prep="unset CLAUDE_CODE_CHILD_SESSION"  # MUTATION-ANCHOR: 810-M03
   prep="$prep; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"  # MUTATION-ANCHOR: 810-M04
+  prep="$prep; export CLAUDE_CODE_BASH_EDIT_DIFF=0"  # MUTATION-ANCHOR: 810-M05
   herdr pane run "$pane" "$prep" >/dev/null 2>&1 \
     || echo "claude: could not clear CLAUDE_CODE_CHILD_SESSION in $pane; Claude may report 'Transcript saving is off'." >&2
   return 0

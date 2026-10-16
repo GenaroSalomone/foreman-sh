@@ -4,9 +4,7 @@ package main
 // argv, same stream, same exit status), so the commands a case records in `calls` are the ones bash ran.
 
 import (
-	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,17 +14,8 @@ import (
 // reapApplyExec runs name with args (in dir when it is not empty, feeding stdin), and answers both streams and the
 // status: 127 when the program cannot be run at all, as the shell says.
 func reapApplyExec(dir, stdin, name string, args ...string) (string, string, int) {
-	cmd := exec.Command(name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
-	return out.String(), errb.String(), exitStatus(err)
+	r := extRun(extCall{Dir: dir, Stdin: stdin, Name: name, Args: args, KeepErr: true})
+	return r.Out, r.Err, r.RC
 }
 
 // reapApplyOut is `name args… 2>/dev/null`: stdout and the status.

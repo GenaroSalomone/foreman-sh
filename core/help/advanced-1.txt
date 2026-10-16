@@ -26,3 +26,6 @@ ADVANCED
     --below-floor-why <s>  the reason this dispatch runs below the lane's
                        model_floor (projects.json). Refused
                        without it; recorded in the manifest and the receipt.
+    --top-tier-why <s>  the reason a `kind: build` task runs on the top tier
+                       (opus, fable). Refused without it (flag or the brief's
+                       `top_tier_why:`); recorded in the manifest and receipt.

@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -58,9 +57,8 @@ func (a *app) reviveGentleArgs(rundir string) (args string, ok bool) {
 }
 
 func (a *app) reviveGit(args ...string) (string, bool) {
-	cmd := exec.Command("git", args...)
-	out, err := cmd.Output()
-	return string(out), err == nil
+	r := extRun(extCall{Name: "git", Args: args})
+	return r.Out, r.RC == 0
 }
 
 // reviveGentleRefusal is _gentle_home_refusal: why a destination is not allowed, or "" when it is.

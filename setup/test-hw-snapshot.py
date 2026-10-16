@@ -176,7 +176,8 @@ def main():
                     child[0].send_signal(signum)
                 except OSError:
                     pass
-        for signum in (signal.SIGTERM, signal.SIGHUP):  # MUTATION-ANCHOR: 881-M01
+        # Windows Python has no SIGHUP: install the handlers for the signals this platform has.
+        for signum in [getattr(signal, n) for n in ('SIGTERM', 'SIGHUP') if hasattr(signal, n)]:  # MUTATION-ANCHOR: 881-M01
             signal.signal(signum, forward)  # MUTATION-ANCHOR-END: 881-M01
         proc = subprocess.Popen(['bash', str(candidate / 'setup/test-hw')],
                                 cwd=candidate, env=env, stdout=subprocess.PIPE,

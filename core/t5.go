@@ -177,6 +177,7 @@ func (d *dsp) run(argv []string) {
 	d.buildAgentArgs()
 	d.brainGuardCheck()
 	d.brainGuardArgs()
+	d.pluginsArgs()
 	d.engramProxyArgs()
 	d.writeEngramMcp()
 	d.artifactsArgs()
@@ -264,6 +265,10 @@ func (d *dsp) parseFlags(rest []string) {
 		case "--below-floor-why":
 			d.needVal(rest)
 			d.belowFloorWhy = rest[1]
+			rest = rest[2:]
+		case "--top-tier-why":
+			d.needVal(rest)
+			d.topTierWhy = rest[1]
 			rest = rest[2:]
 		case "--effort":
 			d.needVal(rest)

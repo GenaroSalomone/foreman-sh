@@ -115,6 +115,10 @@ func (d *doneRun) disposition(main, wt, branch, base string) {
 		d.why = "git status exited " + itoa(rc) + " in " + wt + " — " + trimTR(statusErr, 200) + ". Empty output from a FAILED status is the same bytes as a clean tree; it is not a clean tree."
 		return
 	}
+	statusOut, d.agentsBlock = statusWithoutAgentsBlock(statusOut, func() string {
+		o, _ := doneGit(wt, "diff", "--no-color", "--no-ext-diff", "--unified=0", "--", "AGENTS.md")
+		return o
+	})
 	if statusOut != "" { // # MUTATION-ANCHOR: 861-G33
 		d.verdict = "dirty"
 		d.why = itoa(strings.Count(statusOut, "\n")+1) + " uncommitted tracked change(s)"
@@ -506,23 +510,12 @@ func (d *doneRun) archiveDest(proj, wt string) string {
 	return dest
 }
 
-// archiveEntries is _reap_archive_entries: each entry copied, and the copy compared byte for byte.
-func doneArchiveEntries(wt, dest string, entries []string) bool {
-	for _, rel := range entries {
-		if rel == "" {
-			continue
-		}
-		if os.MkdirAll(doneDirname(dest+"/"+rel), 0o777) != nil {
-			return false
-		}
-		if _, rc := doneTool("", nil, "cp", "-pR", wt+"/"+rel, dest+"/"+rel); rc != 0 {
-			return false
-		}
-		if _, rc := doneTool("", nil, "diff", "-rq", wt+"/"+rel, dest+"/"+rel); rc != 0 { // # MUTATION-ANCHOR: 861-G36
-			return false
-		}
-	}
-	return true
+// doneArchiveEntries is _reap_archive_entries: the same verified copy `hw reap --apply` makes (archiveVerified).
+func doneArchiveEntries(wt, dest string, entries []string, warn func(string)) bool {
+	return archiveVerified(wt, dest, entries, warn, func(src, dst string) bool {
+		_, rc := doneTool("", nil, "diff", "-q", src, dst)
+		return rc == 0 // # MUTATION-ANCHOR: 861-G36
+	})
 }
 
 // doneRmWorkdir is _reap_rm_workdir: made writable, removed, and its absence checked.
@@ -546,7 +539,7 @@ func (d *doneRun) reapWorktree(proj, main, wt, branch, base string) bool {
 	if d.verdict == "archivable" {
 		entries := d.archive
 		dest = d.archiveDest(proj, wt)
-		if !doneArchiveEntries(wt, dest, entries) {
+		if !doneArchiveEntries(wt, dest, entries, a.warn) {
 			doneRmWorkdir(dest)
 			a.warn("kept " + doneBasename(wt) + " — the copy into " + dest + " could not be verified, so nothing was removed")
 			return false
@@ -563,6 +556,9 @@ func (d *doneRun) reapWorktree(proj, main, wt, branch, base string) bool {
 			a.warn("kept " + doneBasename(wt) + " — with its outputs archived it reads " + d.verdict + ": " + d.why)
 			return false
 		}
+	}
+	if d.agentsBlock {
+		doneGit(wt, "checkout", "--", "AGENTS.md")
 	}
 	if _, rc := doneTool("", nil, "git", "-C", main, "worktree", "remove", wt); rc != 0 {
 		a.warn("could not remove " + wt + " — run it by hand and read what git says")

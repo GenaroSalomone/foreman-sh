@@ -21,6 +21,13 @@
     --no-handle-check  skip the keychain-handle preflight
     hw handle <handle>...           does a keychain handle resolve?
 
+  BITWARDEN SECRETS (brief frontmatter  secrets: [item, ...] — items of the folder agents)
+    hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR ...] -- <cmd...>
+                                    the value reaches <cmd>'s environment only; never printed
+    hw secret check <item>...       present / absent, no value      hw secret status | ensure
+    secret-unlock --setup             once, a person: the master password into the Keychain (a LaunchAgent unlocks from it)
+    secret-unlock [--hours N|--lock]  an interactive unlock / lock
+
   THE ONE-SHOT ESCAPE
     hw human-boundary "<why>"       executor-only one-shot escape for a genuine
                                     money/third-party/irreversible/outward/priority

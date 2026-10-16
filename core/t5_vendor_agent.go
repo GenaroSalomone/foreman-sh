@@ -226,4 +226,11 @@ func (d *dsp) buildAgentArgs() {
 	if d.agentArgs != "" {
 		d.info("agent args: " + d.agentArgs)
 	}
+	// THE CHEAP EXPLORER (lib/hw/explorer.sh), AFTER the line above so it stays the flags the operator chose.
+	switch d.agent {
+	case "codex":
+		d.agentArgs += d.explorer().codexArgs()
+	}
+	d.agentArgs = strings.TrimPrefix(d.agentArgs, " ")
+	d.explorerResolve()
 }

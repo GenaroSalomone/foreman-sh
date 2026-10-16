@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -39,10 +38,8 @@ func (d *dsp) gentleHomeDir() string {
 
 // rtGit runs `git -C <dir> <args>` with stderr dropped: its stdout (newline-stripped) and whether it succeeded.
 func rtGit(dir string, args ...string) (string, bool) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = childEnv()
-	out, err := cmd.Output()
-	return bashSub(string(out)), err == nil
+	r := extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...), Env: childEnv()})
+	return bashSub(r.Out), r.RC == 0
 }
 
 // rtBashDirname is dirname(1) for the paths this file walks up.

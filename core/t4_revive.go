@@ -38,6 +38,7 @@ type reviveRunState struct {
 	rundir       string
 	cwd          string
 	agentArgs    string // AGENT_ARGS
+	explorerArm  bool   // EXPLORER_ARM: the revived claude gets the cheap explorer by file + function (EXPLORER_RUNDIR is rundir)
 	sandbox      bool   // SANDBOX
 	sandboxRun   string // _SANDBOX_RUNDIR
 	sandboxArmed string // _SANDBOX_ARMED

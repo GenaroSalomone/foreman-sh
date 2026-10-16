@@ -33,6 +33,78 @@ import (
 const wtRegenerable = ".agents .atl .claude .codex .opencode .hw .specify .venv .ruff_cache .pytest_cache .mypy_cache __pycache__ node_modules dist build .next .turbo .DS_Store AGENTS.md PROGRESS.md opencode.json local next-env.d.ts tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo .astro"
 const wtArchivable = ".artifacts qa-report test-results playwright-report"
 
+// A TRACKED AGENTS.md THAT `next dev` REWROTE (bin/hw _wt_agents_block_only): excused only while the diff of the file is
+// ONE insertion that is exactly the block between these markers, blank lines around it aside.
+const (
+	agentsBlockBegin = "<!-- BEGIN:nextjs-agent-rules -->"
+	agentsBlockEnd   = "<!-- END:nextjs-agent-rules -->"
+	agentsModified   = " M AGENTS.md"
+)
+
+// agentsBlockOnly reads `git diff --unified=0 -- AGENTS.md`: a header, one hunk that removes nothing, and added lines
+// that are the block and nothing else.
+func agentsBlockOnly(diff string) bool {
+	st, hunks := 0, 0 // 0 header, 1 before BEGIN, 2 inside, 3 after END
+	hunkRE := regexp.MustCompile(`^@@ -[0-9]+,0 \+[0-9]+(,[0-9]+)? @@`)
+	for _, l := range strings.Split(strings.TrimSuffix(diff, "\n"), "\n") {
+		if st == 0 {
+			switch {
+			case hunkRE.MatchString(l):
+				hunks++
+				st = 1
+			case strings.HasPrefix(l, "diff --git ") || strings.HasPrefix(l, "index ") || strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ "):
+			default:
+				return false
+			}
+			continue
+		}
+		if !strings.HasPrefix(l, "+") {
+			return false
+		}
+		switch st {
+		case 1:
+			if l == "+" {
+				continue
+			}
+			if l != "+"+agentsBlockBegin {
+				return false
+			}
+			st = 2
+		case 2:
+			if l == "+"+agentsBlockEnd {
+				st = 3
+			} else if l == "+"+agentsBlockBegin {
+				return false
+			}
+		case 3:
+			if l != "+" { // # MUTATION-ANCHOR: 865-G39
+				return false
+			}
+		}
+	}
+	return st == 3 && hunks == 1
+}
+
+// statusWithoutAgentsBlock drops the ` M AGENTS.md` line of a `git status --porcelain` when that change is only the block;
+// diffOf runs the `git diff` (only asked when the line is there).
+func statusWithoutAgentsBlock(status string, diffOf func() string) (string, bool) {
+	lines := strings.Split(status, "\n")
+	has := false
+	for _, l := range lines {
+		has = has || l == agentsModified
+	}
+	if !has || !agentsBlockOnly(diffOf()) { // # MUTATION-ANCHOR: 865-G40
+		return status, false
+	}
+	var keep []string
+	for _, l := range lines {
+		if l != agentsModified {
+			keep = append(keep, l)
+		}
+	}
+	return bashSub(strings.Join(keep, "\n")), true
+}
+
 type reapRun struct {
 	*app
 	occ     occupantsReader
@@ -73,20 +145,14 @@ func (a *app) cmdReap() int {
 
 // gitRC is `git -C dir <args> 2>/dev/null`: stdout, and the exit status.
 func gitRC(dir string, args ...string) (string, int) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	rc := exitStatus(cmd.Run())
-	return out.String(), rc
+	r := extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...)})
+	return r.Out, r.RC
 }
 
 // toolOut runs a program as the shell does: stdout, the status, stderr dropped.
 func toolOut(name string, args ...string) (string, int) {
-	cmd := exec.Command(name, args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	rc := exitStatus(cmd.Run())
-	return out.String(), rc
+	r := extRun(extCall{Name: name, Args: args})
+	return r.Out, r.RC
 }
 
 func retentionDays(def int64, v string) int64 { // _retention_days: a whole number read as base 10, else the default
@@ -523,6 +589,10 @@ func (r *reapRun) disposition(main, wt, branch, base string) {
 		r.why = "git status exited " + itoa(rc) + " in " + wt + " — " + trimTR(errText, 200) + ". Empty output from a FAILED status is the same bytes as a clean tree; it is not a clean tree."
 		return
 	}
+	statusOut, _ = statusWithoutAgentsBlock(statusOut, func() string {
+		o, _ := gitRC(wt, "diff", "--no-color", "--no-ext-diff", "--unified=0", "--", "AGENTS.md")
+		return o
+	})
 	if statusOut != "" {
 		r.verdict = "dirty"
 		r.why = itoa(strings.Count(statusOut, "\n")+1) + " uncommitted tracked change(s)"

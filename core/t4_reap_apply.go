@@ -5,9 +5,15 @@ package main
 // executor that reported BLOCKED and was never answered. lib/hw/reap.sh, function by function.
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -21,8 +27,24 @@ func (r *reapApplyRun) archiveDest(proj, wt string) string { // _reap_archive_de
 	return d
 }
 
-// archiveEntries is _reap_archive_entries: each copy is verified, not assumed.
+// archiveEntries is _reap_archive_entries (and `hw done`'s doneArchiveEntries, which is the same function): each copy is
+// verified, not assumed.
 func (r *reapApplyRun) archiveEntries(wt, dest string, entries []string) bool {
+	return archiveVerified(wt, dest, entries, r.a.warn, func(src, dst string) bool {
+		return reapApplyRC("diff", "-q", src, dst) == 0 // # MUTATION-ANCHOR: 865-G17
+	})
+}
+
+// archiveVerified verifies as the worktree HOLDS the tree, never as a path resolves it (`diff -rq` follows links: an
+// absolute link back into the worktree is a loop, a dangling one is missing, a socket never compares equal). A link is
+// copied as a link and compared by its target text; a socket, fifo or device cannot be archived, so it is named and left
+// out of both sides. `same` is the arbiter of the two manifests (`diff -q`), so a stub that fails it refuses the copy.
+func archiveVerified(wt, dest string, entries []string, warn func(string), same func(src, dst string) bool) bool {
+	m, err := os.MkdirTemp("", "hw-reap-manifest.")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(m)
 	for _, rel := range entries {
 		if rel == "" {
 			continue
@@ -30,14 +52,85 @@ func (r *reapApplyRun) archiveEntries(wt, dest string, entries []string) bool {
 		if reapApplyRC("mkdir", "-p", dest+"/"+reapApplyDirname(rel)) != 0 {
 			return false
 		}
-		if reapApplyRC("cp", "-pR", wt+"/"+rel, dest+"/"+rel) != 0 {
+		specials, _ := reapApplyTree(wt, rel)
+		for _, sp := range specials {
+			warn("skipped " + sp.path + " — a " + sp.kind + " cannot be archived, it goes with its entry")
+		}
+		// -P: a link is copied AS a link. A special file may make cp say so; the manifests are the judge of the copy.
+		if reapApplyRC("cp", "-pPR", wt+"/"+rel, dest+"/"+rel) != 0 && len(specials) == 0 {
 			return false
 		}
-		if reapApplyRC("diff", "-rq", wt+"/"+rel, dest+"/"+rel) != 0 { // # MUTATION-ANCHOR: 865-G17
+		if len(specials) > 0 {
+			copied, _ := reapApplyTree(dest, rel)
+			for _, sp := range copied {
+				os.Remove(dest + "/" + sp.path)
+			}
+		}
+		_, src := reapApplyTree(wt, rel)
+		_, dst := reapApplyTree(dest, rel)
+		if src == nil || dst == nil || os.WriteFile(m+"/src", []byte(strings.Join(src, "\n")+"\n"), 0o600) != nil ||
+			os.WriteFile(m+"/dst", []byte(strings.Join(dst, "\n")+"\n"), 0o600) != nil {
+			return false
+		}
+		if !same(m+"/src", m+"/dst") {
 			return false
 		}
 	}
 	return true
+}
+
+type reapApplySpecial struct{ path, kind string }
+
+// reapApplyTree walks root/rel WITHOUT following a link: the special files it holds (sorted, named by their path from
+// root) and the manifest of everything else — a directory, a link WITH its target text, a file with its digest —
+// sorted bytewise (LC_ALL=C). A nil manifest is a walk that failed.
+func reapApplyTree(root, rel string) ([]reapApplySpecial, []string) {
+	var specials []reapApplySpecial
+	lines := []string{}
+	err := filepath.WalkDir(root+"/"+rel, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name, _ := filepath.Rel(root, p)
+		mode := d.Type()
+		switch {
+		case mode&os.ModeSymlink != 0:
+			t, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			lines = append(lines, "l "+name+" -> "+t)
+		case mode.IsDir():
+			lines = append(lines, "d "+name)
+		case mode.IsRegular():
+			f, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			h := sha256.New()
+			_, err = io.Copy(h, f)
+			f.Close()
+			if err != nil {
+				return err
+			}
+			lines = append(lines, fmt.Sprintf("f %s %x", name, h.Sum(nil)))
+		default:
+			kind := "device"
+			if mode&os.ModeSocket != 0 {
+				kind = "socket"
+			} else if mode&os.ModeNamedPipe != 0 {
+				kind = "fifo"
+			}
+			specials = append(specials, reapApplySpecial{name, kind})
+		}
+		return nil
+	})
+	if err != nil {
+		return specials, nil
+	}
+	sort.Strings(lines)
+	sort.Slice(specials, func(i, j int) bool { return specials[i].path < specials[j].path })
+	return specials, lines
 }
 
 // rmWorkdir is _reap_rm_workdir: a read-only candidate included, and its own failure reported.
@@ -78,6 +171,10 @@ func (r *reapApplyRun) reapWorktree(proj, main, wt, branch, base string) bool {
 			a.warn("kept " + reapApplyBasename(wt) + " — with its outputs archived it reads " + r.verdict + ": " + r.why)
 			return false
 		}
+	}
+	// the verdict excused a tracked AGENTS.md that is only next dev's block; `worktree remove` does not (lib/hw/reap.sh)
+	if r.agentsBlock { // # MUTATION-ANCHOR: 865-G41
+		reapApplyGitRC(wt, "checkout", "--", "AGENTS.md")
 	}
 	if reapApplyGitRC(main, "worktree", "remove", wt) != 0 {
 		a.warn("could not remove " + wt + " — run it by hand and read what git says")

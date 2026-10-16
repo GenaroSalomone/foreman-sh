@@ -288,6 +288,18 @@ func (a *app) reviveFrameworkArgs(st *reviveRunState, vendor, cmdArgs, rundir st
 				args += " --disallowedTools Artifact,ArtifactComments,ArtifactData"
 			}
 		}
+		// And its cheap explorer: policy too, the recorded `--resume` never carried it. It goes to the revived run's own
+		// directory by file and function (reviveAgentStart), not by argument; a recorded line that already carries --agents
+		// (hand-edited) is left alone rather than given the explorer twice.
+		st.explorerArm = false
+		if !reviveHasWord(args, "--agents") && a.explorerFor(st.proj).claudeJSON() != "" { // # MUTATION-ANCHOR: 1007-G02
+			st.explorerArm = true
+		}
+	}
+	if vendor == "codex" {
+		if !strings.Contains(" "+args+" ", " -c agents."+explorerName+".") {
+			args += a.explorerFor(st.proj).codexArgs()
+		}
 	}
 	st.agentArgs = args
 }

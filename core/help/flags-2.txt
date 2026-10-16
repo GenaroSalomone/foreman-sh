@@ -27,6 +27,16 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        agents the task cannot do without. hw refuses the
                        dispatch when the executor cannot reach one from its
                        work directory, instead of warning.
+    plugins: [<name>, …]  installed review plugins (thermo, ponytail, pstack)
+                       loaded into THIS executor only. They are an optional
+                       install step, off by default (setup/vendor/plugins/install
+                       or install.sh --with-review-plugins, into <brain>/plugins).
+                       claude: one --plugin-dir each, hooks running natively in
+                       that session (writes redirected to $HW_ARTIFACTS/plugin-state);
+                       pi: one -e <plugin dir> each (skills and extension);
+                       opencode and codex: NOT APPLIED. A name that is not
+                       installed refuses the dispatch before anything is built,
+                       naming the command that installs them.
     boundary: <what must never cross>
                        a build is not accepted as done without
                        $HW_ARTIFACTS/design-judgment.md naming it and ending

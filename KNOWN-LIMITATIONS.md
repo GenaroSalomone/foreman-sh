@@ -250,6 +250,55 @@ it leaves the brain directory, is unguarded even with the hook registered.
   mutants.
 - **Workaround:** `--sdd none`, or Claude Code where a framework flow is needed.
 
+### L22. `plugins:` loads pinned plugins into claude and pi executors only, and the export ships none
+- **Scope:** the brief field `plugins: [<name>, …]`.
+- **Impact:**
+  - **Where it applies.** Claude Code gets one `--plugin-dir` per plugin and pi one `-e <plugin dir>` (the package's
+    skills and its extension). opencode and codex get `NOT APPLIED` in the dry run and in the receipt, and hw does
+    not touch them.
+  - **The hooks run, in that executor only.** The vendored copies are complete. Every hook command goes through
+    `hw/hook-env`, which points `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME` at `$HW_ARTIFACTS/plugin-state/<plugin>`
+    for that process, so nothing is written to `~/.claude` or `~/.config` and ponytail's statusline nudge (it asks the
+    model to edit `settings.json`) is switched off. Measured with a real haiku session each: ponytail's hook answers
+    `PONYTAIL MODE ACTIVE` and pstack's `You have pstack.` with the plugin, nothing without it, and the real HOME is
+    unchanged. pstack's `SessionStart` mandate (route a multi-file task to `poteto-mode`) is the plugin's own behaviour
+    and competes with the brief as the contract: declare pstack only when that is wanted. pi has no Claude hooks: its
+    equivalent is the extension, which `-e` loads (pstack's adds the `agent`, `send_message`, `list_agents`,
+    `stop_agent`, `ask_user_question` and `schedule_wakeup` tools; ponytail's answers `PONYTAIL MODE ACTIVE`).
+  - **Neutralised, on purpose.** pstack's `poteto-mode/scripts/bootstrap.ts` refuses `bun install` (network, writes
+    `node_modules` into the plugin) unless `HW_PLUGIN_ALLOW_INSTALL=1`, so `watch-pr`, `ship-pr` and `orch` do not run
+    in an executor; the skills that name `~/.claude` name the plugin state instead. Not redirected: ponytail's pi
+    command `/ponytail default <mode>` writes `$XDG_CONFIG_HOME/ponytail/config.json` when a person types it, and
+    pstack's `agent` tool may create worktrees under the repository's `.claude/worktrees`.
+  - **A re-task cannot add them.** A plugin is loaded when a session starts: the reuse route says `NOT APPLIED`
+    and the brainer launches with `--fresh`, and `hw next` ignores the field. A revived pane (`hw revive`) is not
+    given them again.
+  - **pi stays on bash.** The pi half exists in the bash implementation only; the Go core carries the field for
+    claude, opencode and codex and sends a pi dispatch to bash, as before (L16).
+  - **Plugin state counts as artifacts.** A hook's state lives under `$HW_ARTIFACTS/plugin-state`, and `done-invoker`
+    counts every file under `$HW_ARTIFACTS` (only `.hw/` is excluded): a report-only executor that loaded ponytail
+    reports `Artifacts: 2 file(s)` (the nudge flag and `.ponytail-active`) instead of none. Found by both Judgment Day
+    judges; not fixed here (it is `done-invoker`'s count, outside this change): exclude `plugin-state` there, or move
+    the state under `.hw/`.
+  - **`verify` checks the hook shapes the pinned copies use.** It scans `hooks/hooks.json` and the file a string
+    `"hooks"` in `plugin.json` names; an inline hooks object or an array of paths in `plugin.json`, a malformed hooks
+    file or a missing `jq` read as clean, and a command that merely mentions `hw/hook-env` passes. The manifest still
+    catches any byte changed after `build`, so this matters only when a pin is updated: read `PATCH.diff`.
+  - **Installing them is optional and off by default.** `hw` reads only `<brain>/plugins/`, which
+    `install.sh --with-review-plugins` (or `bash setup/vendor/plugins/install` in a checkout) fills after verifying
+    the pinned copies; without it a brief with `plugins:` is refused, naming that command. An install is never
+    active by itself and never writes to `~/.claude` or `~/.pi`.
+  - **The export ships no plugin.** The copies carry third-party text and its licenses; `setup/vendor/` is
+    excluded from the export, so there `--with-review-plugins` refuses and `plugins:` refuses every name until
+    you put one at `<brain>/plugins/<name>/` with a `.claude-plugin/plugin.json`.
+  - **Cost.** pstack puts ≈12.5 KB of skill descriptions in the executor's context for as long as it runs.
+- **Evidence:** `measured` for the dispatch lines, the receipt, the launch flags and the refusals (setup tests 843,
+  844, 847, 848 and 979, bash against Go on the same goldens, with a mutant on each decision), and for a real
+  executor of each vendor that sees a plugin's skill when its brief asks and does not when it does not, with
+  `~/.claude` and `~/.pi` unchanged. `unverified`: that a plugin improves any task; that is a question for a
+  measurement of its own.
+- **Workaround:** none needed; declare only the plugins the task wants.
+
 ### L4. OpenCode background subagents are experimental
 - **Scope:** OpenCode executors and brainers that spawn subagents in the
   background. The harness enables them with OpenCode's
@@ -266,6 +315,62 @@ it leaves the brain directory, is unguarded even with the hook registered.
 - **Workaround:** dispatch without relying on background subagents; the
   foreground path does not depend on the variable.
 - **Next decision:** revisit when OpenCode documents the feature as stable.
+
+### L21. Every executor is handed a cheap explorer; the prompt asks for it, nothing forces it
+- **Scope:** `hw <lane> <task>` on every vendor, and the `kind: build` ceiling.
+- **Impact:**
+  - **What `hw` does.** It hands each executor a read-only subagent named `cheap-explorer`
+    on its vendor's cheapest tier, through the vendor's own per-launch mechanism and never
+    by writing into a product repo: Claude Code `--agents` (haiku), OpenCode an `agent` entry
+    in the `OPENCODE_CONFIG_CONTENT` overlay (`gpt-5.6-luna`, `reasoningEffort low`), codex
+    `-c agents.cheap-explorer.*` plus `setup/codex/agents/cheap-explorer.toml`
+    (`gpt-5.6-luna`, effort low, read-only sandbox), pi `setup/pi/agents` added to
+    `PI_SUBAGENT_EXTRA_AGENT_DIRS` (`deepseek-v4.1-flash`, thinking off). The dry run's
+    `explorer` line says what reached the launch, or `NOT INJECTED` and why (a pi executor
+    whose pi-subagents is not loaded has no subagent tool, and says so). A re-task through
+    `hw next` states the tier table only if the run's receipt says the session was launched
+    with the explorer.
+  - **The prompt asks; nothing forces.** The instruction to hand reading to the explorer is
+    text in the executor's prompt. An executor that reads the files itself is not stopped,
+    and `hw` does not count its reads.
+  - **The top-tier ceiling reaches only models `hw` can rank.** A `kind: build` dispatch on
+    the Claude ladder's top (names containing `opus` or `fable`, on the last path segment) is
+    refused without `--top-tier-why` or the brief's `top_tier_why:`. `openai/gpt-5.6-sol` (a
+    build-only pin by its lane's own decision), `gpt-6-astra`, `deepseek-v4-pro` and other
+    non-Claude models are not ranked, so the ceiling does not apply to them: `UNESTABLISHED`,
+    not guessed. An undeclared kind is not judged (a claude executor defaults to sonnet);
+    a reused pane runs what it already runs.
+  - **Cheapest means the vendor's own description.** `luna` is the cheapest tier by the
+    descriptions in this machine's `~/.config/opencode/opencode.json` and `~/.codex/config.toml`;
+    no pricing is on disk, so the order luna < terra < sol is not a cost measurement. Those
+    two vendors' model ids are constants in `lib/hw/explorer.sh`, not read from the account.
+  - **pi's probe did not include the write guard.** The pi probe loaded pi-subagents and the
+    extra agent directory without `hw-executor.ts`, so that the explorer's children pass through the
+    same guard as the executor's (the adapter registers itself as a required child extension) is
+    the documented mechanism, not something that probe exercised.
+  - **A crash restore drops OpenCode's explorer.** `shell/hw-restore-env.zsh` rebuilds only the
+    `--effort` overlay of `OPENCODE_CONFIG_CONTENT` (it never copies a config layer out of a
+    file), so a shell restored after a crash has the engram proxy and the explorer missing
+    until the pane is revived; `hw revive` replays the run's recorded environment, which
+    carries the whole overlay. `unverified` live.
+  - **Claude Code's `--agents` JSON is not on the launch line.** `hw` writes it to
+    `.hw/<run>/explorer-agents.json` and types a short shell function into the pane with the
+    session env (`claude() { command claude --agents "$(cat <file>)" "$@"; }`), because the launch
+    line is typed and a pane whose shell is still starting reads it in the tty's canonical mode,
+    which holds 1023 bytes: the old 2310-byte line left claude unstarted (measured 2026-10-15,
+    opus; a typed line of 1017 bytes started 3/3, 1023 bytes and up 0/3). The function stays
+    defined in that pane's shell after claude exits, so a `claude` typed there later carries the
+    explorer too.
+- **Evidence:** `measured` by real probes on 2026-10-14 (scratch repo, private `ENGRAM_PORT`):
+  a mid- or top-tier primary asked where a class is defined delegated to `cheap-explorer`
+  and the child ran on `claude-haiku-5-5` (Claude Code, headless and through `herdr agent
+  start`), `openai/gpt-5.6-luna` (OpenCode 1.19.0, the task's metadata), `gpt-5.6-luna` at effort low
+  (codex 0.153.4, the child rollout's `agent_role` and turn context) and
+  `opencode-go/deepseek-v4.1-flash` (pi 1.1.0, pi-subagents 0.77.0); and by
+  `setup/tests/1003-cada-ejecutor-delega-por-modelo.sh` with its mutants.
+- **Workaround:** for a task that must not be read by the top tier, say so in the brief
+  (`requires-agents: subagent:cheap-explorer`) and check the transcript; for a build that needs
+  the top tier, pass `--top-tier-why`.
 
 ### L14. `--sdd speckit` and `--sdd gentle` are Claude Code only, and gentle needs a download
 - **Scope:** dispatches with `--sdd speckit` or `--sdd gentle`, and `hw gentle-home`.
@@ -381,6 +486,32 @@ it leaves the brain directory, is unguarded even with the hook registered.
   identity check is `unverified`.
 - **Workaround:** keep protected repositories on a filesystem account or mount
   that the agent user cannot write, if you need a hard boundary.
+
+### L23. Bitwarden secrets: the session token and the master password sit where the user's own processes can read them
+- **Scope:** `secrets:` in a brief, `hw secret run|check|ensure`, `secret-unlock`
+  and the global guard `deny-bitwarden-secrets.py` (Claude, Codex, OpenCode).
+- **Impact:** the master password (`secret-unlock --setup`) is kept in the login
+  Keychain as the service `hw-bw-master`, readable by any process of the user that
+  passes the item's ACL, and a LaunchAgent unlocks from it at load and every 11 h.
+  The guard cuts AGENTS (a Keychain read of it, `secret-unlock --auto|--setup`), not
+  a process made on purpose. `~/.cache/hw/bw-session` (0600) holds a
+  token that opens the WHOLE vault, not only the folder `agents`: `hw secret run`
+  refuses items outside that folder, but a process running as the same user can
+  read the file and ask bw for anything. The guard refuses `bw get|unlock|export|
+  list|serve`, the file's name and `BW_SESSION` in an agent's command, and judges
+  the command's TEXT: `B=bw; $B get x`, a script that calls bw, or a value already
+  in a child's environment and printed on purpose (`hw secret run … -- sh -c 'echo
+  $V'`) are not caught. Like L5 it is a tripwire for the careless, not a sandbox,
+  and a quoted mention (a commit message spelling `bw get`) is refused too: write
+  it through a heredoc. Codex and Claude settings carry the registration by hand.
+  `hw next` re-tasks and the Go core (`HW_IMPL=go|shadow`, L16) do not run the
+  `secrets:` preflight.
+- **Evidence:** the resolver, the guard and the preflight are `measured` against a
+  throwaway `bw` stub (tests 1009-1011); a run against a real vault is `unverified`
+  here and belongs to the operator who unlocks it.
+- **Workaround:** keep in the folder `agents` only what an agent may be trusted
+  with, lock with `secret-unlock --lock` when done, and use the default 12 h expiry
+  (`--hours N` shortens it).
 
 ## First run
 

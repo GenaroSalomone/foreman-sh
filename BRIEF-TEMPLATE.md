@@ -40,6 +40,14 @@
 #              out-of-scope — <why>   non-empty reason; the separator may be —, –, - or :
 #                                 e.g.  deployed_check: out-of-scope — docs-only, nothing is deployed
 #              Anything else is refused before anything is built.
+#   plugins:   [thermo, ponytail, pstack]  (any subset)
+#              Review plugins (pinned, complete: their hooks run in THIS executor only) loaded
+#              into it: claude gets one --plugin-dir each (hook writes go to $HW_ARTIFACTS/plugin-state),
+#              pi one -e <plugin dir> each, opencode and codex get NOT APPLIED. They are an
+#              OPTIONAL install step, off by default (setup/vendor/plugins/install, or
+#              install.sh --with-review-plugins): a name that is not installed is refused
+#              before anything is built, naming that command. Nothing is installed globally
+#              and nothing is written to ~/.claude or ~/.pi. A re-task (`hw next`) cannot add one.
 #   boundary:  <what must never cross> — the task is not done without an
 #              approved design judgment (INSTALL.md, Judgment Day)
 #
@@ -106,10 +114,13 @@ proves nothing about yours — that is why this section exists.>
 
 ## Access
 <Every credential this task needs, as a HANDLE, never a value:>
-- <what it is> — handle `<handle>` (checked with `hw handle <handle>`)
-<A global hook blocks every Keychain secret read, so a PREEXISTING stored
-credential is unreachable today: do not prescribe the Keychain read as if it
-works. A credential the task GENERATES
+- <what it is> — Bitwarden item `<item>` in the folder `agents`, declared in the
+  frontmatter as `secrets: [<item>]`; the executor reaches it only as
+  `hw secret run <item> --as VAR -- <cmd>` (hw checks it is there before building)
+- <what it is> — Keychain handle `<handle>` (checked with `hw handle <handle>`)
+<A global hook blocks every Keychain secret read, so a PREEXISTING Keychain
+credential is unreachable: put it in Bitwarden instead, and do not prescribe the
+Keychain read as if it works. A credential the task GENERATES
 is fine. If there is no handle for something the task needs, say so here — that
 is a gap, and the executor reports it blocked rather than asking a person to
 paste a secret into a pane.>

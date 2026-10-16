@@ -273,6 +273,10 @@ every mem_search already reads all labels (all_projects is forced).`, binDir, bi
 	if vendor == "" {
 		vendor = l.agent
 	}
+	// DELEGATE BY MODEL TIER, ON EVERY VENDOR: the explorer's exact name and which job goes to which tier.
+	if note := l.explorer().tierNote(vendor); note != "" {
+		preamble = pjoin(preamble, note)
+	}
 	if vendor == "codex" { // # MUTATION-ANCHOR: 847-C-06
 		preamble = pjoin(preamble, `RULES CODEX DOES NOT LOAD (shared rules, one line each):
 - Secrets: never print, copy into a new file, paste or commit .env, *.db, *.credentials or secrets/; report key names, never values.

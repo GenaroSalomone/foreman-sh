@@ -278,6 +278,9 @@ fi
 TMP="$(mktemp -d "$_tmp_root/hw-test.XXXXXX")"
 unset _tmp_root
 trap 'rm -rf "$TMP"' EXIT
+# THE GO BUILD CACHE: one shared directory for the real builds, a throwaway clone for the mutants (setup/gocache.sh).
+if [ -f "$ROOT/setup/gocache.sh" ]; then . "$ROOT/setup/gocache.sh"; HW_GOCACHE_DEFAULT="$(gocache_default)"   # a harness that copies only _common.sh (145) has none
+else HW_GOCACHE_DEFAULT="${TMPDIR:-/tmp}/hw-go-cache.v2"; fi
 # HW_CORE IS A SEAM, like HW_LIB_DIR above: a subject that runs hw from a COPY of bin/ has no
 # core/dist beside it, and with HW_IMPL=go|shadow the shim would warn that hw-core is not built. When the
 # suite is asked for an implementation other than bash, it hands the shim the hw-core it has (the built

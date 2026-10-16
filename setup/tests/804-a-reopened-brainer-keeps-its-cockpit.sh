@@ -62,7 +62,21 @@ run() {  # <label> <env assignments...> -- <brain args...>
   env -i PATH="$TMP/stub:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP/home" TMPDIR="$TMP" \
       STUB_SPACE="$SPACE" STUB_CALLS="$TMP/calls-$label" STUB_STATE="$TMP/state" STUB_WRITER="$TMP/writer-$label" \
       "${envs[@]+"${envs[@]}"}" "$BH/bin/brain" setup "$@" > "$TMP/out-$label" 2>&1 || true
-  sleep 0.5   # the writer is detached
+  settle "$label"
+}
+# THE WRITER IS DETACHED (`nohup cockpit-state --loop … &`), so brain exits before it has run, and its FIRST exec is of a file the
+# machine has not run before: ~270 ms alone, and the machine does those one at a time (setup/evidence/pool-3x/README.md), so beside
+# other jobs it is seconds. A fixed sleep 0.5 read "no writer" off a writer that was only queued (red 10 of 10 beside 16 jobs
+# making and running new files, with the text «brain started no writer»; green alone). The run that EXPECTS a writer waits for it
+# to appear, up to a minute. The runs that expect none cannot wait for an absence: they come after it, when the stub has run once
+# and a second exec of it is ms, so one second is the margin.
+settle() { # <label>
+  local i=0
+  case "$1" in
+    on) while [ ! -s "$TMP/writer-on" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done ;;
+    off*) sleep 1 ;;
+    *) sleep 0.5 ;;
+  esac
 }
 want_work="$(jq -r '.work' "$BH/projects.json" | sd '^~' "$TMP/home")"
 export_line="pane run wX:p1 export HW_COCKPIT_WORK=$want_work"

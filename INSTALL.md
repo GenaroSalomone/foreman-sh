@@ -383,6 +383,34 @@ table below). A bare `hw` opens an `fzf` picker over every lane's briefs.
 about a dispatch you have not run, as `{"level":"ok|warn|block","rules":[…]}`.
 It is read-only and exits 0 whatever the level (a malformed call exits 1).
 
+### Plugins for one executor: `plugins:`
+
+A brief can ask for third-party code-quality plugins with `plugins: [thermo, ponytail, pstack]`
+in its frontmatter. `hw` loads them into **that executor only**: a Claude Code executor gets one
+`--plugin-dir` per plugin (that session; the plugins' hooks run natively in it), a pi executor one
+`-e <plugin dir>` per plugin (that run: skills and extension); opencode and codex are told `NOT APPLIED`
+in the dry run. Nothing is installed globally; what a hook writes goes to `$HW_ARTIFACTS/plugin-state`,
+never to `~/.claude` or `~/.pi`; the receipt of the run records the field.
+
+**Installing them is an optional step, off by default.** The plugins are pinned copies under
+`setup/vendor/plugins/<name>/` (the upstream sha, a sha256 manifest and the license are in each;
+`setup/vendor/plugins/verify` checks them offline). Installing them only copies them, after checking
+every file against its manifest, into `<brain>/plugins/`, where a brief that declares `plugins:` can
+find them; nothing is written to `~/.claude` or `~/.pi` and nothing becomes active by itself. Without
+the step, a brief with `plugins:` is refused before anything is built, and the refusal names the
+command that installs them and lists what is installed.
+
+```bash
+./install.sh --brain ~/brain --with-review-plugins         # a new or existing brain (also: init --with-review-plugins)
+bash setup/vendor/plugins/install                          # a brain that IS a checkout of this repository: <checkout>/plugins
+./install.sh --brain ~/brain --check                       # says whether they are installed ("Review plugins (optional)")
+```
+
+`upgrade` replays the flag once it was used. Their hooks are **not** vendored, so none runs. **The
+export does not ship the copies**, so there `--with-review-plugins` refuses; to use the field in your
+own brain, put a plugin at `<brain>/plugins/<name>/` with a `.claude-plugin/plugin.json` and its
+skills. A re-task with `hw next` cannot add plugins to a live executor.
+
 ## What it installs
 
 | Where | What |

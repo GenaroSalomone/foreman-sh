@@ -18,10 +18,11 @@ import (
 // its helpers (_HERDR_CLOSE_RESULT, WT_VERDICT, WT_WHY, WT_ARCHIVE, WT_MERGE_EVIDENCE, REAP_ARCHIVE_DIR).
 type doneRun struct {
 	*app
-	x      *doneLaneExtra
-	binDir string // HW_BIN_DIR
-	root   string // _brain_root
-	occ    occupantsReader
+	x           *doneLaneExtra
+	binDir      string // HW_BIN_DIR
+	agentsBlock bool   // WT_AGENTS_BLOCK: the verdict excused a tracked AGENTS.md that is only next dev's block
+	root        string // _brain_root
+	occ         occupantsReader
 
 	dropDB, force, blocked, keepPreview bool
 	keepFor, keepWhy, verifySkip        string

@@ -33,6 +33,7 @@ run_args() {
       set -euo pipefail
       AGENT="$AGENT_VALUE"; SDD="$SDD_VALUE"; MODEL="$MODEL_VALUE"; EFFORT=""
       _free_channel_port() { printf 51234; }
+      _explorer_claude_args() { return 1; }; _explorer_codex_args() { return 1; }; _explorer_resolve() { :; }  # lib/hw/explorer.sh is not in the fragment (1003)
       info() { printf "INFO:%s\n" "$*" >&2; }
       warn() { printf "WARN:%s\n" "$*" >&2; }
       source "$FRAGMENT"
@@ -44,6 +45,7 @@ run_args() {
       set -euo pipefail
       AGENT="$AGENT_VALUE"; SDD="$SDD_VALUE"; MODEL="$MODEL_VALUE"; EFFORT=""
       _free_channel_port() { printf 51234; }
+      _explorer_claude_args() { return 1; }; _explorer_codex_args() { return 1; }; _explorer_resolve() { :; }  # lib/hw/explorer.sh is not in the fragment (1003)
       info() { printf "INFO:%s\n" "$*" >&2; }
       warn() { printf "WARN:%s\n" "$*" >&2; }
       source "$FRAGMENT"

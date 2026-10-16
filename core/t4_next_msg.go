@@ -53,15 +53,15 @@ func (a *app) nextLaneField(lane, key string) string {
 
 // nextMsgEnv is what _next_message's subshell rebuilds from the RUN, never from the brainer's shell.
 type nextMsgEnv struct {
-	brief, workdir, engram, baseRef, baseBranch, vendor, portWeb, proj, session string
-	gentlePane                                                                  bool
-	gentleReview                                                                string
+	brief, workdir, engram, baseRef, baseBranch, vendor, portWeb, proj, session, rundir string
+	gentlePane                                                                          bool
+	gentleReview                                                                        string
 }
 
 // nextMessage is _next_message: the counter, the entry line, the safeguard, the preamble and the task.
 func (a *app) nextMessage(s *nextState, nextSeq, entryLine string) string {
 	r := s.rundir
-	e := nextMsgEnv{brief: s.brief, workdir: s.wtdir, gentleReview: s.gReview}
+	e := nextMsgEnv{brief: s.brief, workdir: s.wtdir, gentleReview: s.gReview, rundir: r}
 	if v, rc := a.nextRunEnv(r, "ENGRAM_PROJECT", false); rc == 0 {
 		e.engram = bashSub(v) // # MUTATION-ANCHOR: 862-G17
 	} else {
@@ -88,7 +88,10 @@ func (a *app) nextMessage(s *nextState, nextSeq, entryLine string) string {
 }
 
 // nextEngramSession is `jq -r 'select(.key=="engram_session") | .value' receipt.jsonl | tail -1`.
-func nextEngramSession(path string) string {
+func nextEngramSession(path string) string { return nextReceiptValue(path, "engram_session") }
+
+// nextReceiptValue is `jq -r 'select(.key==<key>) | .value' receipt.jsonl | tail -1`.
+func nextReceiptValue(path, key string) string {
 	vals, _ := readStream(path)
 	var outs []string
 	for _, v := range vals {
@@ -98,7 +101,7 @@ func nextEngramSession(path string) string {
 			}
 			break // .key of a non-object: jq stops there
 		}
-		if k, ok := v.get("key"); ok && k.kind == vStr && k.s == "engram_session" {
+		if k, ok := v.get("key"); ok && k.kind == vStr && k.s == key {
 			val, ok := v.get("value")
 			if !ok {
 				outs = append(outs, "null")
@@ -136,6 +139,13 @@ func (a *app) nextBriefPreamble(e nextMsgEnv) string {
 	vendor := e.vendor
 	if vendor == "" {
 		vendor = a.getenv("AGENT")
+	}
+	// DELEGATE BY MODEL TIER: only when the session being re-tasked was LAUNCHED with the explorer (its receipt says
+	// so), so the prompt never names an agent that session does not have.
+	if strings.HasPrefix(nextReceiptValue(e.rundir+"/receipt.jsonl", "explorer"), explorerName+" on ") {
+		if note := a.explorerFor(e.proj).tierNote(vendor); note != "" {
+			p = pjoin(p, note)
+		}
 	}
 	if vendor == "codex" { // # MUTATION-ANCHOR: 862-G19
 		p = bashSub(p + "\n\n" + "RULES CODEX DOES NOT LOAD (shared rules, one line each):\n- Secrets: never print, copy into a new file, paste or commit .env, *.db, *.credentials or secrets/; report key names, never values.\n- A brief names a Keychain handle for a credential; no handle is a gap, report it with done-invoker --blocked.\n- Browser: close it with " + bin + "/browser-close, and never retry a failed launch (a failed launch is a blocked report).\n- Artifacts (audio, exports, captures, generated files) go to $HW_ARTIFACTS, never into git status.")

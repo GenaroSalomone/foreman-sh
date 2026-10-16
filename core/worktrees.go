@@ -151,11 +151,8 @@ func pyJSONCompact(v any) string {
 }
 
 func gitOut(dir string, args ...string) (string, bool) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
-	return out.String(), err == nil
+	r := extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...)})
+	return r.Out, r.RC == 0
 }
 
 func (a *app) cmdWorktrees() int {
@@ -305,11 +302,9 @@ func (a *app) cmdWorktrees() int {
 
 // gitOutErr is `git -C dir <args> 2>file`: stdout on success, the diagnostic on failure.
 func gitOutErr(dir string, args ...string) (string, bool) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return errb.String(), false
+	r := extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...), KeepErr: true})
+	if r.RC != 0 {
+		return r.Err, false
 	}
-	return out.String(), true
+	return r.Out, true
 }

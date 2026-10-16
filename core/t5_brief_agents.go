@@ -387,6 +387,14 @@ func (d *dsp) checkRequiredAgents(list string) bool {
 			bad = true
 			continue
 		}
+		// THE EXPLORER IS INJECTED BY hw, NOT FOUND ON DISK: met when this dispatch put it in the launch, as a subagent.
+		if required == explorerName && d.explorerInjected {
+			if role == "primary" {
+				d.warn("brief requires agent '" + required + "' as primary, but the cheap explorer hw injects is a subagent")
+				bad = true
+			}
+			continue
+		}
 		switch d.agent {
 		case "opencode":
 			projectAgent, st := d.opencodeProjectAgent(required)

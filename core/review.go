@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -30,15 +29,9 @@ func gitRun(dir string, stdin []byte, args ...string) ([]byte, bool) {
 // gitRunErr is gitRun with git's stderr sent to errw (nil: dropped). `_file_pid` in bash redirects nothing, so what
 // git says about a file it cannot diff is part of the answer.
 func gitRunErr(dir string, stdin []byte, errw io.Writer, args ...string) ([]byte, bool) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = errw
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
-	}
-	err := cmd.Run()
-	return out.Bytes(), err == nil
+	r := extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...), Stdin: string(stdin), KeepErr: errw != nil})
+	r.writeErr(errw)
+	return []byte(r.Out), r.RC == 0
 }
 
 // reviewRange is cmd_review_range: the SHA on stdout and 0, or a line on stderr and 1.

@@ -50,6 +50,8 @@ pass "gate: the fixture does not parse, which is the condition both gates must c
 root="$TMP/fakeroot"; mkdir -p "$root/setup"
 cp -R "$ROOT/setup/." "$root/setup/"
 rm -f "$root/setup/tests"/[0-9]*.sh
+# the copy carries the real setup/retired-subjects.txt, whose globs match none of the stubs below, and the runner refuses a glob that matches no subject
+rm -f "$root/setup/retired-subjects.txt"
 cp "$broken" "$root/setup/tests/01-broken.sh"
 budget='{"fast_gate_threshold_seconds": 2.0, "files": {"01-broken.sh": {"exit": 0, "seconds": 0.05}}}'
 printf '%s\n' "$budget" > "$root/setup/test-budgets.json"

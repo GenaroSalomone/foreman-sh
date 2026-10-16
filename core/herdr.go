@@ -32,29 +32,23 @@ type herdrClient struct {
 // stream, and the status. Trailing newlines are the caller's to strip, as `$()`
 // does.
 func (h herdrClient) capture(args ...string) (string, int) {
-	cmd := exec.Command("herdr", args...)
-	cmd.Env = h.env
-	if cmd.Env == nil {
-		cmd.Env = childEnv()
+	env := h.env
+	if env == nil {
+		env = childEnv()
 	}
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
-	err := cmd.Run()
-	return buf.String(), exitStatus(err)
+	r := extRun(extCall{Name: "herdr", Args: args, Env: env, Merge: true})
+	return r.Out, r.RC
 }
 
 // stdout is `herdr <args> 2>/dev/null`: what it printed, and whether it
 // succeeded. A caller that reads `... || x='{}'` discards the text on failure.
 func (h herdrClient) stdout(args ...string) (string, bool) {
-	cmd := exec.Command("herdr", args...)
-	cmd.Env = h.env
-	if cmd.Env == nil {
-		cmd.Env = childEnv()
+	env := h.env
+	if env == nil {
+		env = childEnv()
 	}
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	err := cmd.Run()
-	return buf.String(), err == nil
+	r := extRun(extCall{Name: "herdr", Args: args, Env: env})
+	return r.Out, r.RC == 0
 }
 
 func exitStatus(err error) int {

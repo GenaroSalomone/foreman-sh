@@ -154,7 +154,10 @@ func (l *lch) claudeStartFailureScreen(target string) {
 
 // ── the sandbox ─────────────────────────────────────────────────────────────────────────────────────────────
 
-// bashPrintfQ is `printf '%q'` for the paths and words this file feeds it.
+// bashPrintfQ is `printf '%q'` for the paths and words this file feeds it, as bash 3.2.57 (/bin/bash on macOS, the reference the
+// goldens were captured with) prints it in a UTF-8 locale: it asks isprint of each BYTE, so the C1 range 0x80-0x9f (the
+// middle bytes of most non-Latin runes: the snowman is e2 98 83) forces the $'...' form and prints those bytes as octal,
+// while every other high byte stays raw. é (c3 a9) is plain; ☃ is $'\xe2' raw followed by \230\203.
 func bashPrintfQ(s string) string {
 	if s == "" {
 		return "''"
@@ -163,7 +166,7 @@ func bashPrintfQ(s string) string {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c == '\n' || c == '\t' || c < 0x20 || c == 0x7f:
+		case c == '\n' || c == '\t' || c < 0x20 || c == 0x7f || (c >= 0x80 && c <= 0x9f):
 			return bashAnsiQ(s)
 		case strings.IndexByte("\\'\"` !$&()*;<>?[]^{|}", c) >= 0, (c == '#' || c == '~') && i == 0:
 			sb.WriteByte('\\')
@@ -185,7 +188,7 @@ func bashAnsiQ(s string) string {
 		case c == '\\' || c == '\'':
 			sb.WriteByte('\\')
 			sb.WriteByte(c)
-		case c < 0x20 || c == 0x7f:
+		case c < 0x20 || c == 0x7f || (c >= 0x80 && c <= 0x9f):
 			sb.WriteString("\\" + strconv.FormatInt(int64(c)+0o1000, 8)[1:])
 		default:
 			sb.WriteByte(c)
@@ -306,6 +309,23 @@ func probeReady(probe string) bool {
 	return ok && st.kind == vStr && (st.s == "idle" || st.s == "done")
 }
 
+// explorerClaudeArm is `_explorer_claude_arm "${EXPLORER_RUNDIR:-$HW_WORKDIR/.hw/$HW_RUN}"` when EXPLORER_ARM=1: the
+// explorer's JSON goes to a file in the run directory and the pane is handed the function that reads it, so the
+// launch line stays short. "" (and a warning) when it cannot be armed: the executor then starts without it.
+func (l *lch) explorerClaudeArm(pane string) string {
+	if !l.explorerArm { // # MUTATION-ANCHOR: 1007-G01
+		return ""
+	}
+	rundir := l.lHwWorkdir() + "/.hw/" + l.lHwRun()
+	json := l.explorer().claudeJSON()
+	file := explorerClaudeFile(rundir)
+	if !explorerRundirOK(rundir) || json == "" || l.fs.mkdirAll(rundir) != nil || l.fs.write(file, []byte(json+"\n"), 0o600) != nil {
+		l.warn("the cheap explorer could not be armed for " + pane + " (no run directory, or the role is unreadable): this executor starts without it")
+		return ""
+	}
+	return explorerClaudeFunction(file)
+}
+
 // agentStart is `_agent_start "$pane" "$name" "$kind"`: true when the agent is up and ready (bash's status 0).
 // Retries while the pane comes up; every call here is inside an `if` in bash, so no status escapes under set -e.
 func (l *lch) agentStart(pane, name, kind string) bool {
@@ -313,7 +333,7 @@ func (l *lch) agentStart(pane, name, kind string) bool {
 		return l.agentStartSandboxed(pane, name, kind)
 	}
 	if kind == "claude" { // # MUTATION-ANCHOR: 847-B2-10
-		l.claudeSessionEnvPrep(pane)
+		l.claudeSessionEnvPrep(pane, l.explorerClaudeArm(pane))
 	}
 	tries, registered := 0, false
 	for tries < 15 { // # MUTATION-ANCHOR: 847-B2-11
@@ -531,6 +551,12 @@ func (l *lch) agentStep() {
 		l.receipt("pane", l.pAgent, "layout.apply output")
 		if l.modelFloorLine != "" {
 			l.receipt("model_floor", l.modelFloorLine, "_check_model_floor against projects.json model_floor of "+l.proj)
+		}
+		if l.explorerLine != "" {
+			l.receipt("explorer", l.explorerLine, "_explorer_resolve (lib/hw/explorer.sh)")
+		}
+		if l.topTierLine != "" {
+			l.receipt("top_tier_why", l.topTierWhy, "--top-tier-why or the brief's top_tier_why (_check_top_tier_ceiling)")
 		}
 		if l.belowFloorWhy != "" {
 			l.receipt("below_floor_why", l.belowFloorWhy, "--below-floor-why")

@@ -145,6 +145,45 @@ if [ "${#ALL[@]}" -ne "$(( ${#FILES[@]} + 1 ))" ]; then
 fi
 [ -f "$TESTS/_common.sh" ] || { printf 'not ok - runner: tests/_common.sh is missing\n' >&2; exit 1; }
 
+# ── RETIRED SUBJECTS: listed in setup/retired-subjects.txt, run by NO gate ──
+#
+# 2026-10-15, by the maintainer's order: the on-disk contract-golden corpora and their mutation anchors leave the runner (the
+# fast gate's touched subjects, the full run and the push gate), and `go test` over core/ (setup/go-test-core.sh, a job
+# of every gate below) runs in their place. The file lists one shell glob per line over a subject's file name, then a
+# one-line why. THE LIST IS THE ONLY WAY A SUBJECT LEAVES: a glob that matches no subject is refused (a typo would run
+# the old suite and say nothing), and the skip is counted and said in ONE line, every run. The files stay on disk and
+# in setup/test-budgets.json (the 1:1 check reads the glob, not this list); gate-select reads the same list, so a
+# retired subject never takes a touched slot. A tree with no list (a fixture runner) retires nothing.
+RETIRED_FILE="$HERE/retired-subjects.txt"
+RETIRED_GLOBS=(); RETIRED_N=0
+if [ -f "$RETIRED_FILE" ]; then
+  while read -r _rg _rest || [ -n "$_rg" ]; do
+    case "$_rg" in ''|'#'*) continue ;; esac
+    RETIRED_GLOBS+=("$_rg")
+  done < "$RETIRED_FILE"
+fi
+_is_retired() { # <subject path or name> — 0 when a glob of the list matches its file name
+  local _bn _g; _bn="$(basename "$1")"
+  for _g in ${RETIRED_GLOBS[@]+"${RETIRED_GLOBS[@]}"}; do
+    case "$_bn" in $_g) return 0 ;; esac  # MUTATION-ANCHOR: 1013-M04
+  done
+  return 1
+}
+if [ "${#RETIRED_GLOBS[@]}" -gt 0 ]; then
+  for _g in "${RETIRED_GLOBS[@]}"; do
+    _hit=0
+    for f in "${FILES[@]}"; do case "$(basename "$f")" in $_g) _hit=1; break ;; esac; done
+    [ "$_hit" = 1 ] || { printf 'not ok - runner: %s lists %s, which matches no subject in %s\n' "$RETIRED_FILE" "$_g" "$TESTS" >&2; exit 1; }
+  done
+  _kept=()
+  for f in "${FILES[@]}"; do
+    if _is_retired "$f"; then RETIRED_N=$((RETIRED_N + 1)); else _kept+=("$f"); fi  # MUTATION-ANCHOR: 1013-M02
+  done
+  FILES=(${_kept[@]+"${_kept[@]}"})
+  unset _g _hit _kept
+  printf 'runner: RETIRED %s subject(s) skipped in this gate — the contract-golden and mutation-anchor corpora listed in setup/retired-subjects.txt; go test ./core/... (setup/go-test-core.sh) runs in their place\n' "$RETIRED_N" >&2
+fi
+
 # ── THE FAST GATE, derived from measurement rather than a hand-kept list ────
 #
 # `HW_TEST_GATE=fast` is what pre-commit passes; unset (or `full`) is every
@@ -270,6 +309,8 @@ FAST_TOTAL="${#FILES[@]}"
 # accepts `<tree>.fast` for task/* pushes, and that file has to mean all 104.
 # Full runs ignore HW_TEST_CHANGED; the floor at push does not move.
 GATE_SELECTED=0; GATE_GUARDS=0; GATE_CHANGED=""
+# the changed paths of this gate, one per line, when it knows them: what narrows the in-process partitions (the job table below)
+GATE_PATHS_FILE=""
 if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
   _gs_why=""
   if [ ! -f "$HERE/gate-select" ]; then
@@ -294,6 +335,7 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
   else
     GATE_SELECTED=1
     GATE_CHANGED="$HW_TEST_CHANGED"
+    GATE_PATHS_FILE="$HW_TEST_CHANGED"
     printf '%s\n' "$_gs_out" | grep -q '^guards ' && GATE_GUARDS=1
     _narrowed=()
     for f in "${FILES[@]}"; do
@@ -306,7 +348,7 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
     # A GOLDEN THE STAGED PATHS STALE RUNS TOO: a slow subject declaring
     # `# gate-reference:` that names a staged path (setup/gate-select, `reference`).
     while read -r _gs_kind _gs_name _gs_rest; do
-      [ "$_gs_kind" = reference ] && [ -f "$TESTS/$_gs_name" ] && FILES+=("$TESTS/$_gs_name")
+      [ "$_gs_kind" = reference ] && [ -f "$TESTS/$_gs_name" ] && ! _is_retired "$_gs_name" && FILES+=("$TESTS/$_gs_name")
     done <<< "$_gs_out"
     printf 'runner: SELECTED %s of %s fast subjects from the changed paths%s:\n' "${#FILES[@]}" "$FAST_TOTAL" \
       "$([ "$GATE_GUARDS" = 1 ] && printf ', plus the guard drivers')" >&2
@@ -382,12 +424,12 @@ if [ "$HW_TEST_GATE" = fast ] && [ -z "${HW_TEST_CHANGED:-}" ] && [ -z "${TEST_H
     fi
     _tc_rc=0
     _tc_out="$(python3 "$HERE/gate-select" "$SOURCE_ROOT" "$_tc_file" "$_tc_pat" touched 2>&1)" || _tc_rc=$?
-    rm -f "$_tc_file"
+    GATE_PATHS_FILE="$_tc_file"   # removed once the in-process partitions are picked (the job table below)
     if [ "$_tc_rc" -ne 0 ]; then
       printf 'runner: setup/gate-select touched failed (exit %s) — no touched slow subject runs: %s\n' "$_tc_rc" "$(printf '%s' "$_tc_out" | tail -1)" >&2
     else
       while read -r _tc_kind _tc_name _tc_rest; do
-        [ "$_tc_kind" = touched ] && [ -f "$TESTS/$_tc_name" ] && FILES+=("$TESTS/$_tc_name") && TOUCHED_RUN=$((TOUCHED_RUN + 1))
+        [ "$_tc_kind" = touched ] && [ -f "$TESTS/$_tc_name" ] && ! _is_retired "$_tc_name" && FILES+=("$TESTS/$_tc_name") && TOUCHED_RUN=$((TOUCHED_RUN + 1))
       done <<< "$_tc_out"
       if [ -n "$_tc_out" ]; then
         printf 'runner: %s slow subject(s) name what this branch changed since %s and run with the fast gate:\n' "$TOUCHED_RUN" "$(printf '%s' "$_tc_base" | cut -c1-9)" >&2
@@ -682,6 +724,7 @@ count_into() {
 # lane table's `work` with a leading ~ as $HOME (bin/project-spaces.sh,
 # lane_config_load). The same directory, or the pool is two pools. A tree with
 # no readable table (a fixture runner) and no WORK takes no slot, and says so.
+[ ! -f "$SOURCE_ROOT/setup/gocache.sh" ] || . "$SOURCE_ROOT/setup/gocache.sh"
 SUITE_WORK="${WORK:-}"
 if [ -z "$SUITE_WORK" ]; then
   SUITE_WORK="$(jq -r '.work // empty' "$SOURCE_ROOT/projects.json" 2>/dev/null || true)"
@@ -1314,6 +1357,8 @@ if [ -z "${HW_TEST_JOBS:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ "$JOBS" -gt 1
     JOBS="$_ld_jobs"
   fi
 fi
+# whether a PARENT runner started this one, read before this runner marks itself and every runner it starts as nested
+_RUNNER_STARTED_NESTED="${TEST_HW_NESTED:-}"
 export TEST_HW_NESTED=1
 
 # ── A SLOT IS ONE JOB, NOT ONE JOB'S FAN-OUT (2026-10-14) ───────────────────
@@ -1390,9 +1435,59 @@ _timing_of() { # <subject path> → retry | no
        END { if (!found) print "no" }' "$1" 2>/dev/null || printf 'no'
 }
 JOB_PATH=(); JOB_KIND=(); JOB_LANE=(); JOB_HINT=()
+# JOB_ARG is sparse: only a go-test job has one (its partition of setup/go-test-partitions.txt), read as ${JOB_ARG[i]:-}
+JOB_ARG=()
+_job_name() { # <idx> → the job's name in every line the runner prints: the file, and for a go-test partition `:<partition>`
+  case "${JOB_ARG[$1]:-}" in
+    +*) printf '%s:%s-at-once' "$(basename "${JOB_PATH[$1]}")" "$(printf '%s' "${JOB_ARG[$1]}" | tr ',' '\n' | grep -c .)" ;;
+    *) printf '%s%s' "$(basename "${JOB_PATH[$1]}")" "${JOB_ARG[$1]:+:${JOB_ARG[$1]}}" ;;
+  esac
+}
 for f in ${FILES[@]+"${FILES[@]}"}; do
   JOB_PATH+=("$f"); JOB_KIND+=("subject"); JOB_LANE+=("$(_lane_of "$f")"); JOB_HINT+=("")
 done
+# THE IN-PROCESS SUITE IS A SET OF JOBS IN EVERY GATE (fast, touched, full, a selected pre-commit run): `go test` over core/,
+# the Go module of hw-core, through setup/go-test-core.sh with the shared GOCACHE, cut into the partitions of
+# setup/go-test-partitions.txt (a contract shard, a corpus' mutants...) so they run in parallel in the pool, each its own
+# job. They take the place of the retired corpora, so a red `go test` or a SKIPPED in-process test fails the gate like any
+# subject, and a list of retired subjects with no such jobs to replace them is refused. The full run queues every partition;
+# the fast and touched gates queue only those the changed paths can reach (go-test-core.sh --affected), and ALL of them when
+# no changed paths are known. A fixture runner that carries no core/ has no such jobs.
+if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
+  _gt_all="$(bash "$HERE/go-test-core.sh" --list 2>/dev/null)" || _gt_all=""
+  if [ -z "$_gt_all" ]; then
+    printf 'not ok - runner: setup/go-test-core.sh --list names no partition (setup/go-test-partitions.txt), so the in-process suite has nothing to run\n' >&2
+    exit 1
+  fi
+  _gt_pick="$(printf '%s\n' "$_gt_all" | cut -f1)"
+  if [ "$HW_TEST_GATE" = fast ] && [ -n "${GATE_PATHS_FILE:-}" ] && [ -r "$GATE_PATHS_FILE" ]; then
+    _gt_aff="$(bash "$HERE/go-test-core.sh" --affected "$GATE_PATHS_FILE" 2>/dev/null)" || _gt_aff="$_gt_pick"
+    _gt_cut=0
+    for _gt_n in $_gt_pick; do printf '%s\n' "$_gt_aff" | grep -qx -- "$_gt_n" || _gt_cut=$((_gt_cut + 1)); done
+    printf 'runner: the in-process suite queues %s of %s partitions — the changed paths reach: %s\n' \
+      "$(printf '%s\n' "$_gt_aff" | grep -c .)" "$(printf '%s\n' "$_gt_pick" | grep -c .)" "$(printf '%s' "$_gt_aff" | tr '\n' ' ' | sed 's/ $//; s/^$/nothing/')" >&2
+    _gt_pick="$_gt_aff"  # MUTATION-ANCHOR: 1014-M04
+  fi
+  # MUTATION-ANCHOR: 1013-M03
+  if [ "$JOBS" = 1 ] && [ -n "$_gt_pick" ] && { [ "$HW_TEST_GATE" = fast ] || [ -n "$_RUNNER_STARTED_NESTED" ]; }; then  # MUTATION-ANCHOR: 1014-M06
+    # ONE JOB AT A TIME BY DESIGN (the fast gate, or a nested fixture run; NOT a full gate the load rule cut to one job, which
+    # queues them one by one, as slowly as the load asks): a subject's budget is judged on an unloaded machine, the partitions are the one parallel
+    # work of such a run, so they go as a single job that runs them all at once (go-test-core.sh +a,b,c), alone, like any job of that gate.
+    JOB_ARG[${#JOB_PATH[@]}]="+$(printf '%s' "$_gt_pick" | tr '\n' ',' | sed 's/,$//')"
+    JOB_PATH+=("$HERE/go-test-core.sh"); JOB_KIND+=("go-test"); JOB_LANE+=("pool"); JOB_HINT+=("600")
+  else
+    for _gt_n in $_gt_pick; do
+      _gt_h="$(printf '%s\n' "$_gt_all" | awk -F'\t' -v n="$_gt_n" '$1 == n { print $2 }')"
+      JOB_ARG[${#JOB_PATH[@]}]="$_gt_n"
+      JOB_PATH+=("$HERE/go-test-core.sh"); JOB_KIND+=("go-test"); JOB_LANE+=("pool"); JOB_HINT+=("${_gt_h:-600}")
+    done
+  fi
+  # MUTATION-ANCHOR-END: 1013-M03
+elif [ "${#RETIRED_GLOBS[@]}" -gt 0 ]; then
+  printf 'not ok - runner: %s retires subjects but there is no setup/go-test-core.sh or core/go.mod to run in their place\n' "$RETIRED_FILE" >&2
+  exit 1
+fi
+[ -z "${_tc_file:-}" ] || rm -f "$_tc_file"
 # THE GUARD JOBS ARE FULL-GATE ONLY. `setup/guards/*` are not `setup/tests/*.sh`
 # subjects, so the fast/slow split's completeness rule (every FILE in tests/ is
 # in exactly one gate) does not apply to them directly — but the read-only
@@ -1453,20 +1548,21 @@ fi
 if [ -n "${HW_TEST_ONLY:-}" ]; then
   [ "$HW_TEST_GATE" = full ] || { printf 'not ok - runner: HW_TEST_ONLY narrows the FULL gate only (HW_TEST_GATE=%s)\n' "$HW_TEST_GATE" >&2; exit 1; }
   [ -r "$HW_TEST_ONLY" ] || { printf 'not ok - runner: HW_TEST_ONLY=%s is not a readable file\n' "$HW_TEST_ONLY" >&2; exit 1; }
-  _only_p=(); _only_k=(); _only_l=(); _only_h=(); _only_kept=$'\n'
+  _only_p=(); _only_k=(); _only_l=(); _only_h=(); _only_a=(); _only_kept=$'\n'
   for _o in "${!JOB_PATH[@]}"; do
     _ob="$(basename "${JOB_PATH[$_o]}")"
-    if grep -qxF -- "$_ob" "$HW_TEST_ONLY"; then
-      _only_p+=("${JOB_PATH[$_o]}"); _only_k+=("${JOB_KIND[$_o]}"); _only_l+=("${JOB_LANE[$_o]}"); _only_h+=("${JOB_HINT[$_o]}")
+    if grep -qxF -- "$_ob" "$HW_TEST_ONLY" || [ "${JOB_KIND[$_o]}" = go-test ]; then  # the in-process suite is in every run
+      _only_p+=("${JOB_PATH[$_o]}"); _only_k+=("${JOB_KIND[$_o]}"); _only_l+=("${JOB_LANE[$_o]}"); _only_h+=("${JOB_HINT[$_o]}"); _only_a[${#_only_p[@]}-1]="${JOB_ARG[$_o]:-}"
       _only_kept="$_only_kept$_ob"$'\n'
     fi
   done
   while IFS= read -r _on || [ -n "$_on" ]; do
     [ -n "$_on" ] || continue
+    ! _is_retired "$_on" || continue   # a retired subject is no job of any run: its name is not a typo
     case "$_only_kept" in *$'\n'"$_on"$'\n'*) ;; *) printf 'not ok - runner: HW_TEST_ONLY names %s, which is no job of this run\n' "$_on" >&2; exit 1 ;; esac
   done < "$HW_TEST_ONLY"
   [ "${#_only_p[@]}" -gt 0 ] || { printf 'not ok - runner: HW_TEST_ONLY=%s names no job\n' "$HW_TEST_ONLY" >&2; exit 1; }
-  JOB_PATH=("${_only_p[@]}"); JOB_KIND=("${_only_k[@]}"); JOB_LANE=("${_only_l[@]}"); JOB_HINT=("${_only_h[@]}")
+  JOB_PATH=("${_only_p[@]}"); JOB_KIND=("${_only_k[@]}"); JOB_LANE=("${_only_l[@]}"); JOB_HINT=("${_only_h[@]}"); JOB_ARG=("${_only_a[@]}")
   printf 'runner: INCREMENTAL — %s of the full gate'"'"'s jobs, named by HW_TEST_ONLY=%s; this is not the whole suite\n' "${#JOB_PATH[@]}" "$HW_TEST_ONLY" >&2
 fi
 # THE GUARD JOBS' HOME IS THE GUARD'S, NOT THE CALLER'S (since 2026-09-22).
@@ -1553,7 +1649,7 @@ _tm_row() { # <idx> — after its status was sourced
   [ -z "${JOB_LAUNCH_AT[$idx]:-}" ] || rel=$(( JOB_LAUNCH_AT[$idx] - RUN_T0 ))
   if [ "${started_at:-0}" -gt 0 ]; then st=$(( started_at - RUN_T0 )); en=$(( ended_at - RUN_T0 )); run=$(( ended_at - started_at )); fi
   TM_BUSY=$((TM_BUSY + run))
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(basename "${JOB_PATH[$idx]}")" "${JOB_KIND[$idx]}" "${JOB_LANE[$idx]}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(_job_name "$idx")" "${JOB_KIND[$idx]}" "${JOB_LANE[$idx]}" \
     "$(basename "${JOB_SLOT_SEEN[$idx]:-none}")" "$rel" "$st" "$en" "$run" "${rc:-?}" "$cpu" >> "$TIMINGS" 2>/dev/null || true
 }
 _tm_run() {
@@ -1565,8 +1661,20 @@ _tm_run() {
   printf 'runner: timings in %s — wall %ss, %s jobs, pool wait %ss, exclusive drain %ss, busy %ss\n' \
     "$TIMINGS" "$wall" "$JOBS" "$TM_POOL_WAIT" "$TM_EXCL_WAIT" "$TM_BUSY" >&2
 }
+# THE GO BUILD CACHE IS CAPPED WHEN A FULL RUN ENDS (setup/gocache.sh, tests/1004). Mutants build in a throwaway clone
+# inside their own subject, so what grows the shared cache is only the real tree; the cap is the backstop, and the
+# old `hw-go-cache` (168 GB on 2026-10-15) goes the first time the machine is quiet. Only a whole, un-nested full
+# run does it, after its own slots are released but BEFORE the queue turn and the gate go (the next full run cannot
+# start building under the emptying), and never while another runner holds or waits for the pool.
+_gocache_trim_at_exit() {
+  [ -z "${TEST_HW_NESTED:-}" ] && [ "$POOL_MODE" = full ] && [ -z "${HW_TEST_ONLY:-}" ] && [ "$POOL_ON" = 1 ] || return 0
+  type gocache_trim >/dev/null 2>&1 || return 0
+  local cache="${GOCACHE:-$(gocache_default)}" old=""
+  [ -n "${GOCACHE:-}" ] || old="$(dirname "$cache")/hw-go-cache"   # MUTATION-ANCHOR: 1004-M05
+  gocache_trim "$cache" "${HW_TEST_GOCACHE_CAP_MB:-4096}" "$POOL_DIR" ${old:+"$old"}
+}
 WITNESS_PID=""
-trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _queue_release; _gate_release' EXIT
+trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _gocache_trim_at_exit; _queue_release; _gate_release' EXIT  # MUTATION-ANCHOR: 1004-M07
 
 # ── THE PANE A FULL RUN IS STARTED FROM IS A WITNESS, NOT A TARGET ──────────
 #
@@ -1658,7 +1766,7 @@ SCHED_ORDER=""
 if [ "$JOBS" -gt 1 ]; then
   _i=0
   while [ "$_i" -lt "$JOB_TOTAL" ]; do
-    printf '%s\t%s\t%s\n' "$_i" "$(basename "${JOB_PATH[$_i]}")" "${JOB_HINT[$_i]}"
+    printf '%s\t%s\t%s\n' "$_i" "$(_job_name "$_i")" "${JOB_HINT[$_i]}"
     _i=$((_i + 1))
   done > "$JOBDIR/schedule.in"
   # THE JOB LIST ARRIVES AS A FILE, NOT ON STDIN. `python3 -` already reads its
@@ -1772,7 +1880,7 @@ _run_job() {
     fi
   else
     started="$(date +%s)"
-    "${_JOB_RUNNER[@]}" "$f" > "$JOBDIR/$idx.out" 2> "$JOBDIR/$idx.err" < /dev/null
+    "${_JOB_RUNNER[@]}" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"} > "$JOBDIR/$idx.out" 2> "$JOBDIR/$idx.err" < /dev/null
     rc=$?
     ended="$(date +%s)"
   fi
@@ -2077,6 +2185,9 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
       subject)
         printf '\nnot ok - suite: setup/tests/%s failed (exit %s) — %s\n' \
           "$(basename "$f")" "$rc" "$_stops" >&2 ;;
+      go-test)
+        printf '\nnot ok - suite: setup/%s failed (exit %s) — the in-process suite (go test over core/) replaces the retired corpora; %s\n' \
+          "$(_job_name "$_i")" "$rc" "$_stops" >&2 ;;
       guard-mutate)
         printf '\nnot ok - suite: setup/guards/%s failed (exit %s) — a surviving mutant means the read-only guard has a hole its own suite cannot see\n' \
           "$(basename "$f")" "$rc" >&2 ;;
@@ -2087,7 +2198,7 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
     # Its `ok` lines are already in the tally, so they are counted here too, or
     # the tracked/untracked split below would not add up.
     [ "$KEEP_GOING" != 1 ] || count_into "$f" "$JOBDIR/$_i.out"
-    _job_red "$rc" "$(basename "$f") failed (exit $rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
+    _job_red "$rc" "$(_job_name "$_i") failed (exit $rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
   fi
   count_into "$f" "$JOBDIR/$_i.out"
   # THE FAST GATE'S OWN TIMING IS THE ENFORCEMENT, not the committed manifest.
@@ -2253,7 +2364,7 @@ _results_write() {
   local _rf="$HW_TEST_RESULTS.tmp.$$" _r
   : > "$_rf" 2>/dev/null || { printf 'runner: cannot write HW_TEST_RESULTS=%s — this run records no results\n' "$HW_TEST_RESULTS" >&2; return 0; }
   for _r in "${!JOB_PATH[@]}"; do
-    printf '%s\t%s\t%s\n' "$(basename "${JOB_PATH[$_r]}")" "${JOB_KIND[$_r]}" "$([ -n "${JOB_RED[$_r]:-}" ] && echo red || echo ok)" >> "$_rf"
+    printf '%s\t%s\t%s\n' "$(_job_name "$_r")" "${JOB_KIND[$_r]}" "$([ -n "${JOB_RED[$_r]:-}" ] && echo red || echo ok)" >> "$_rf"
   done
   [ "${WITNESS_RED:-0}" != 1 ] || printf 'runner\trunner\tred\n' >> "$_rf"
   mv -f "$_rf" "$HW_TEST_RESULTS" 2>/dev/null || true
@@ -2369,6 +2480,9 @@ else
     # SAID EVEN WHEN THERE IS NOTHING TO SAY. The qualification vanishing when it
     # is not needed is how an unqualified number comes back.
     printf '  no untracked subjects ran, so this is the whole suite\n'
+  fi
+  if [ "$RETIRED_N" -gt 0 ]; then
+    printf '  RETIRED: %s subject(s) of setup/retired-subjects.txt did not run in this gate; go test ./core/... ran in their place — a retired corpus with no in-process port yet is UNCOVERED\n' "$RETIRED_N"
   fi
   if [ "$GATE_SELECTED" = 1 ]; then
     printf 'runner: no fast-gate verdict cached — a SELECTED run is not the whole fast gate\n' >&2

@@ -248,6 +248,7 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 | `hw` | With no arguments, an [fzf](https://github.com/junegunn/fzf) picker over every lane's briefs, plus a `+ new brief` row. Needs `fzf`. |
 | `hw status` | What is running, what reported and what is left over. |
 | `hw ledger [<lane>] [--brief <path>\|--task <t>] [--state <s>] [--json]` | Every brief as never-dispatched, in-progress or done, from the ledger `hw` writes at each dispatch. When the brain is a git repository on `main` (the installer does not make it one), `hw` also commits the brief at dispatch if it is untracked or changed. `hw <lane> <task>` with no brief is refused, naming the path it looked for; `--no-brief` launches without one on purpose. |
+| brief frontmatter `plugins: [<name>, …]` | Load installed review plugins (an optional install step, off by default: `install.sh --with-review-plugins`) into that executor only: Claude Code gets one `--plugin-dir` each, pi one `-e <plugin dir>` each (the plugins' hooks run natively in that executor only), and the dry run says `NOT APPLIED` for opencode and codex. Nothing is installed globally; what a hook writes goes to `$HW_ARTIFACTS/plugin-state`, never `~/.claude` or `~/.pi`, and a name that is not installed refuses the dispatch, naming the command that installs it. The export ships no plugin (KNOWN-LIMITATIONS L22). |
 | `hw briefs archive <lane> [--apply]` | Move the lane's finished briefs to `briefs/archive/<yyyy-mm>/` (a plan unless `--apply`). An archived task does not launch: `hw` names the archived path and `hw briefs restore <lane> <task>`; `hw briefs unarchive <lane> --manifest <file>` undoes a whole run. |
 | `hw log <lane> <task>` | What a task asked and reported. |
 | `hw ruling <pane> "<correction>"` | Correct an executor that is still working, or resume one that reported `--blocked`. |
@@ -296,6 +297,22 @@ implied:
 
 - [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), MIT licence.
 - [Spec Kit](https://github.com/github/spec-kit), MIT licence.
+
+### Delegating by model tier
+
+Every executor, on every vendor, is handed a read-only `cheap-explorer` subagent on its
+vendor's cheapest tier (Claude Code: haiku; OpenCode and codex: `gpt-5.6-luna`; pi:
+`deepseek-v4.1-flash`), and the prompt `hw` prepends names it and says which job goes where:
+search and mapping to the explorer, edits and tests to a mid tier, design and the verdict to
+the executor. The role lives in the brain (`_agents/cheap-explorer.md`) and reaches each
+vendor through its own per-launch mechanism, so nothing is written into a product repo. The
+dry run's `explorer` line says what reached the launch, or `NOT INJECTED` and why; a brief
+can require it with `requires-agents: subagent:cheap-explorer`.
+
+A `kind: build` task refuses the top tier (opus, fable) unless it says why: pass
+`--top-tier-why "<reason>"`, or put a `top_tier_why:` line in the brief's frontmatter. The
+prompt asks for delegation and nothing forces it, and the ceiling reaches only models `hw` can
+rank (KNOWN-LIMITATIONS L21).
 
 ## The cockpit
 

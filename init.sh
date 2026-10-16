@@ -37,17 +37,20 @@ set -uo pipefail
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INIT_CMD="${FOREMAN_SH_INIT_CMD:-./install.sh init}"
 FRONT="${INIT_CMD% init}"
-BRAIN_DIR="" LANE="demo" REPO="" BIN_DIR="" YES=0 DRY=0
+BRAIN_DIR="" LANE="demo" REPO="" BIN_DIR="" YES=0 DRY=0 WITH_RP=0
 SAMPLE_TASK=hello
 
 usage() {
   cat <<'EOF'
-usage: init.sh [--brain DIR] [--lane NAME] [--repo PATH] [--bin-dir DIR] [--yes] [--dry-run]
+usage: init.sh [--brain DIR] [--lane NAME] [--repo PATH] [--bin-dir DIR] [--with-review-plugins] [--yes] [--dry-run]
 
   --brain DIR    where the brain lives (default: ~/brain)
   --lane NAME    the first lane (default: demo, on a toy repository made for it)
   --repo PATH    that lane's repository; required for any lane but demo, unless the lane exists
   --bin-dir DIR  where hw, brain and the invokers are linked (default: ~/.local/bin)
+  --with-review-plugins  also install the pinned review plugins (thermo, ponytail, pstack) into <brain>/plugins.
+                 Off by default, and --yes does not turn it on: it only makes them available to a brief's
+                 plugins:, each into its own executor, and writes nothing to ~/.claude or ~/.pi
   --yes          answer every question yes (herdr's Claude integration, engram's setup)
   --dry-run      print the plan and change nothing
   -h, --help     this text
@@ -63,6 +66,7 @@ while [ $# -gt 0 ]; do
     --lane)    [ $# -ge 2 ] || die "--lane needs a name" 2; LANE="$2"; shift 2 ;;
     --repo)    [ $# -ge 2 ] || die "--repo needs a path" 2; REPO="$2"; shift 2 ;;
     --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a directory" 2; BIN_DIR="$2"; shift 2 ;;
+    --with-review-plugins) WITH_RP=1; shift ;;
     --yes|-y)  YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -298,6 +302,7 @@ fingerprint() {  # the brain, its links, Claude's settings and the permissions f
 ARGS=(--brain "$BRAIN" --lane "$LANE" --repo "$REPO" --bin-dir "$BIN")
 # What a NEW lane would be asked is answered here, so init asks nothing install.sh would: an existing
 # lane keeps its row, and an explicit value that differs from it is refused.
+[ "$WITH_RP" = 0 ] || ARGS+=(--with-review-plugins)  # MUTATION-ANCHOR: 979-I05
 if [ -z "$EXISTING" ]; then
   OP="the operator"
   [ ! -f "$PJ" ] || OP="$(jq -r '.operator // "the operator"' "$PJ" 2>/dev/null || echo "the operator")"

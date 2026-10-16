@@ -372,6 +372,19 @@ model_tier() {
   esac
 }
 
+# THE TOP TIER OF A VENDOR, AS FAR AS hw CAN RANK IT — the ceiling's counterpart of the ladder above. A `kind:
+# build` task is implementation: its decisions were made upstream, and the top model reads files it should hand to
+# a cheap explorer (road-pace-build, 2026-10-14: opus, `kind: build`, read the code itself). Claude's opus and
+# fable qualify, on the LAST path segment like the ladder (so opencode's `anthropic/claude-opus-5` does too).
+# Models hw cannot rank (openai/gpt-5.6-sol is a build-only pin by its own decision; gpt-6-astra, deepseek-v4-pro)
+# are NOT top tier here: UNESTABLISHED, named in KNOWN-LIMITATIONS, not guessed.
+model_is_top_tier() {
+  case "${1##*/}" in
+    *opus*|*fable*) return 0 ;;  # MUTATION-ANCHOR: 1003-M05
+  esac
+  return 1
+}
+
 project_default_model() {
   lane_get "$1" model || true
 }
@@ -791,13 +804,14 @@ claude_first_run_command() {  # $1 = account config dir, empty for the default
 # it snapshots the WHOLE git repo of the cwd around every Bash call and shows every change in that window as
 # the command's own, so a brainer under the shared brain checkout displayed another lane's concurrent write
 # (MEASURED 2026-10-14, setup/tests/810). UI and transcript only, never the model's context.
-claude_session_env_prep() {  # $1 = pane
+claude_session_env_prep() {  # $1 = pane, $2 = optional shell text typed after the settings (hw: the explorer's function)
   local pane="${1:-}" prep
   [ -n "$pane" ] || return 0
   if herdr agent get "$pane" 2>/dev/null | jq -e '.result.agent != null' >/dev/null 2>&1; then return 0; fi
   prep="unset CLAUDE_CODE_CHILD_SESSION"  # MUTATION-ANCHOR: 810-M03
   prep="$prep; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"  # MUTATION-ANCHOR: 810-M04
   prep="$prep; export CLAUDE_CODE_BASH_EDIT_DIFF=0"  # MUTATION-ANCHOR: 810-M05
+  [ -z "${2:-}" ] || prep="$prep; $2"  # MUTATION-ANCHOR: 1007-M03
   herdr pane run "$pane" "$prep" >/dev/null 2>&1 \
     || echo "claude: could not clear CLAUDE_CODE_CHILD_SESSION in $pane; Claude may report 'Transcript saving is off'." >&2
   return 0

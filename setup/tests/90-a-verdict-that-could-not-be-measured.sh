@@ -236,6 +236,9 @@ open(sys.argv[2], "w", encoding="utf-8").write(
     "proj=demo; total_removed=0\n"
     + helpers +
     "total_safe=0; apply=1; main=/main; wt=/wt; branch=task/x; base=main\n"
+    # _reap_worktree reads WT_AGENTS_BLOCK, which the real _wt_disposition sets (stubbed
+    # here): unset under `set -u` it dies before the removal — empty is "no AGENTS.md block".
+    "WT_AGENTS_BLOCK=\n"
     "ok(){ :; }; info(){ :; }; warn(){ :; }\n"
     "C_DIM=; C_0=\n"
     # The slice ends inside the `if [ "$WT_VERDICT" = safe ]`, at the `else`

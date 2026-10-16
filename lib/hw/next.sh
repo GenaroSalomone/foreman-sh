@@ -369,6 +369,7 @@ _next_message() {
     HW_ENGRAM_SESSION="$(jq -r 'select(.key=="engram_session") | .value' "$rundir/receipt.jsonl" 2>/dev/null | tail -1 || true)"
     # An `if`, not a `case`: an unbalanced `)` inside this substitution breaks bash 3.2.
     if [ "${HW_ENGRAM_SESSION#none}" != "$HW_ENGRAM_SESSION" ]; then HW_ENGRAM_SESSION=""; fi
+    HW_EXPLORER_RUNDIR="$rundir"
     _brief_preamble
   )"
   epistemic="$(_brief_epistemic)"

@@ -37,6 +37,10 @@ type dsp struct {
 	modelPinned                                                  string
 	modelFloorLine                                               string
 	belowFloorWhy                                                string
+	topTierWhy, topTierLine                                      string // TOP_TIER_WHY, TOP_TIER_LINE (_check_top_tier_ceiling)
+	explorerLine                                                 string // EXPLORER_LINE (_explorer_resolve)
+	explorerInjected                                             bool
+	explorerArm                                                  bool // EXPLORER_ARM: claude's launch writes the explorer's file and arms the pane
 	effort                                                       string
 	account, accountSrc                                          string
 	subagentModel, subagentModelSrc, subagentModelLine           string // SUBAGENT_MODEL, _SRC, _LINE

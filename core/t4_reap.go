@@ -40,6 +40,8 @@ type reapApplyRun struct {
 	buildAge  int64
 	// REAP_ARCHIVE_DIR
 	archiveDir string
+	// WT_AGENTS_BLOCK: the verdict excused a tracked AGENTS.md that is only next dev's block
+	agentsBlock bool
 	// _WT_PRS_MAIN, _WT_PRS_OK, _WT_PRS
 	prsMain string
 	prsOK   bool
@@ -118,7 +120,7 @@ func (r *reapApplyRun) logReady() bool { // _reap_log_ready: `: >> "$(_reap_log_
 	f, err := os.OpenFile(r.logFile(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o666)
 	if err != nil {
 		// `: >> file 2>/dev/null` — the redirections apply left to right, so the failed `>>` is reported BEFORE stderr is
-		// silenced: bash names its own source line (reap.sh, line 513) and the errno, on the real stderr.
+		// silenced: bash names its own source line (reap.sh, line 560) and the errno, on the real stderr.
 		var pe *fs.PathError
 		why := err.Error()
 		if errors.As(err, &pe) {
@@ -131,7 +133,7 @@ func (r *reapApplyRun) logReady() bool { // _reap_log_ready: `: >> "$(_reap_log_
 		if bin == "" {
 			bin = r.a.c.brain + "/bin"
 		}
-		r.a.printErr(bin + "/../lib/hw/reap.sh: line 513: " + r.logFile() + ": " + why)
+		r.a.printErr(bin + "/../lib/hw/reap.sh: line 560: " + r.logFile() + ": " + why)
 		return false
 	}
 	f.Close()

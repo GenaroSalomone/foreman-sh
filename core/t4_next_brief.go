@@ -10,15 +10,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 )
 
 var nextKnownKeys = map[string]bool{"agent": true, "model": true, "sdd": true, "placement": true, "worktree": true,
 	"database": true, "invoker": true, "requires": true, "requires-agents": true, "kind": true, "base": true,
-	"decision": true, "delivery": true, "boundary": true, "deployed_check": true, "sandbox": true, "review": true,
-	"requested_by": true, "asked": true, "authorizes": true}
+	"decision": true, "delivery": true, "boundary": true, "deployed_check": true, "sandbox": true, "review": true, "plugins": true,
+	"requested_by": true, "asked": true, "authorizes": true, "secrets": true}
 
 // nextBriefDeclares is _brief_declares: "key\tvalue" per declared key, "__malformed__\t…" and
 // "__unknown__\t<key>" for what it cannot take, nothing for a brief with no frontmatter.
@@ -354,16 +353,12 @@ func (a *app) nextGentleHomeRefusal(d string) (string, bool) {
 }
 
 func nextGit(dir string, args ...string) error {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	return cmd.Run()
+	return extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...)}).errOf()
 }
 
 func nextGitOut(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
-	return out.String(), err
+	r := extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...)})
+	return r.Out, r.errOf()
 }
 
 // nextGentleHomeReady is _gentle_home_ready: "" and true for a complete home of the pinned version.

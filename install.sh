@@ -92,7 +92,7 @@ fi
 case "${OSTYPE:-}" in msys*|cygwin*) . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/bin/msys-compat.sh" ;; esac
 
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_REC=0 PERMISSIONS_OPT=""
+BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_RP=0 WITH_REC=0 PERMISSIONS_OPT=""
 UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0 NO_CORE="${FOREMAN_SH_NO_CORE:-0}" NO_CORE_ASKED=0
 ORIG_ARGS=("$@")
 OPERATOR="" MIN_MODEL="" REQ_BY=""   # "" = not given; --min-model / --requested-by "none" = given, none
@@ -133,7 +133,7 @@ usage: install.sh init [--brain DIR] [--lane NAME] [--repo PATH] [--yes] [--dry-
        install.sh upgrade --brain DIR [--to VERSION] [--dry-run]
        install.sh --brain DIR [--lane NAME --repo PATH [--base BRANCH] [--vendor claude|opencode [--model P/M]]]
                   [--operator NAME] [--min-model haiku|sonnet|opus|none] [--requested-by required|warn|none]
-                  [--bin-dir DIR] [--with-judgment-day] [--with-recommended] [--permissions ask|skip] [--check]
+                  [--bin-dir DIR] [--with-judgment-day] [--with-review-plugins] [--with-recommended] [--permissions ask|skip] [--check]
 
   --brain DIR     where your brain lives (created if absent)
   --lane NAME     a lane for one product repository (lowercase word)
@@ -150,6 +150,11 @@ usage: install.sh init [--brain DIR] [--lane NAME] [--repo PATH] [--yes] [--dry-
   --bin-dir DIR   where hw, brain and the invokers are linked (default: ~/.local/bin)
   --with-judgment-day  also copy the Judgment Day skill and its three agents into the
                   Claude Code config (skills/ and agents/); refuses over a file of yours
+  --with-review-plugins  also install the pinned review plugins (thermo, ponytail, pstack) into
+                  <brain>/plugins, off by default. Installing them only makes them available to a
+                  brief that declares plugins:, each into its own executor; nothing is written to
+                  ~/.claude or ~/.pi and nothing becomes active by itself. Without them a brief with
+                  plugins: is refused, naming this flag. Needs a checkout that carries setup/vendor/plugins
   --permissions P skip (recommended, the default) or ask. skip launches Claude Code with
                   --dangerously-skip-permissions and OpenCode with --auto; ask leaves their
                   permission prompts on, so an unattended executor waits for a person.
@@ -206,6 +211,7 @@ while [ $# -gt 0 ]; do
     --permissions) [ $# -ge 2 ] || die "--permissions needs ask or skip"; PERMISSIONS_OPT="$2"; shift 2 ;;
     --check)   CHECK=1; shift ;;
     --with-judgment-day) WITH_JD=1; shift ;;
+    --with-review-plugins) WITH_RP=1; shift ;;
     --with-recommended) WITH_REC=1; shift ;;
     --no-core) NO_CORE=1; NO_CORE_ASKED=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -218,7 +224,7 @@ done
 [ "$UPGRADE" = 1 ] || [ "$DRY_RUN" = 0 ] || die "--dry-run only means something with upgrade"
 if [ "$UPGRADE" = 1 ]; then
   [ -n "$BRAIN_DIR" ] || die "upgrade needs --brain DIR"
-  [ -z "$LANE$REPO$BASE$VENDOR$MODEL$OPERATOR$MIN_MODEL$REQ_BY$PERMISSIONS_OPT" ] && [ "$CHECK$WITH_JD$WITH_REC$BIN_DIR_GIVEN" = 0000 ] \
+  [ -z "$LANE$REPO$BASE$VENDOR$MODEL$OPERATOR$MIN_MODEL$REQ_BY$PERMISSIONS_OPT" ] && [ "$CHECK$WITH_JD$WITH_RP$WITH_REC$BIN_DIR_GIVEN" = 00000 ] \
     || die "upgrade takes only --brain, --to and --dry-run: it reinstalls with the flags the install recorded"
 fi
 case "$PERMISSIONS_OPT" in ""|ask|skip) ;; *) die "--permissions must be ask or skip (got: $PERMISSIONS_OPT)" ;; esac
@@ -300,6 +306,7 @@ def declared(l, k):
 g = ["--brain", brain]
 if r.get("bin_dir"): g += ["--bin-dir", r["bin_dir"]]
 if r.get("with_judgment_day"): g += ["--with-judgment-day"]
+if r.get("with_review_plugins"): g += ["--with-review-plugins"]
 if r.get("permissions"): g += ["--permissions", r["permissions"]]
 for l in (r.get("lanes") or [None]):
     a = list(g)
@@ -591,6 +598,19 @@ jd_report() {
     partial)  say "Judgment Day is only partly active in $CLAUDE_CFG — $INSTALL_CMD --brain $BRAIN_DIR --with-judgment-day completes it" ;;
     conflict) say "Judgment Day: a file of yours differs from this checkout's, so --with-judgment-day would refuse and overwrite nothing:"
               printf '%s\n' "$JD_PLAN" | awk -F'\t' '$1=="refuse" {print "        " $3}' ;;
+  esac
+}
+
+# ── The pinned review plugins: an optional copy into <brain>/plugins, never into an agent's config ──
+# setup/vendor/plugins/install verifies the pinned copies against their sha256 manifests and writes only
+# that directory. hw loads a plugin from there, and only into the executor whose brief declares plugins:.
+RP_INSTALLER="$SRC/setup/vendor/plugins/install"
+rp_report() {
+  if [ ! -f "$RP_INSTALLER" ]; then say "this checkout ships no pinned review plugins (setup/vendor/plugins), so --with-review-plugins is not available"; return 0; fi
+  case "$(bash "$RP_INSTALLER" --into "$BRAIN_DIR/plugins" --check)" in
+    installed) ok "the review plugins are installed in $BRAIN_DIR/plugins (loaded only by a brief's plugins:)" ;;
+    partial)   say "the review plugins are only partly installed in $BRAIN_DIR/plugins — $INSTALL_CMD --brain $BRAIN_DIR --with-review-plugins completes them" ;;
+    *)         say "the review plugins are not installed — optional pinned copies of thermo, ponytail and pstack for a brief's plugins:; install with: $INSTALL_CMD --brain $BRAIN_DIR --with-review-plugins" ;;
   esac
 }
 
@@ -906,6 +926,7 @@ fi
 # prints exactly what it printed before this option existed.
 if [ "$CHECK" = 1 ] || [ "$WITH_JD" = 1 ]; then jd_evaluate; fi
 if [ "$CHECK" = 1 ]; then printf '\nJudgment Day (optional)\n'; jd_report; fi
+if [ "$CHECK" = 1 ]; then printf '\nReview plugins (optional)\n'; rp_report; fi
 if [ "$CHECK" = 1 ] && [ "$missing" = 1 ]; then
   print_next_steps
   printf '\n--check: nothing written. A real run would stop at the MISSING lines above.\n'
@@ -1074,12 +1095,14 @@ if [ "$WITH_JD" = 1 ] && [ "$JD_STATE" = conflict ]; then
   die "nothing was written"
 fi
 [ "$WITH_JD" = 0 ] || [ "$JD_STATE" != absent ] || die "--with-judgment-day: this checkout ships no _skills/judgment-day or _agents/jd-*.md. Nothing was written"
+[ "$WITH_RP" = 0 ] || [ -f "$RP_INSTALLER" ] || die "--with-review-plugins: this checkout ships no setup/vendor/plugins. Nothing was written"
 ok "no collision with an existing brain, lane, link or settings entry"
 
 if [ "$CHECK" = 1 ]; then
   printf '\n--check: nothing written. A run would install into %s' "$BRAIN"
   [ -z "$LANE" ] || printf ', lane %s over %s (base %s)' "$LANE" "$REPO" "$BASE"
   [ "$WITH_JD" = 0 ] || printf ', and Judgment Day into %s' "$CLAUDE_CFG"
+  [ "$WITH_RP" = 0 ] || printf ', and the review plugins into %s/plugins' "$BRAIN"
   printf '\n'
   print_next_steps
   exit 0
@@ -1247,7 +1270,7 @@ else printf '%s\n' "$marker_new" > "$BRAIN/$MARKER"; chg "$MARKER (commit $src_s
 # The flags this install was run with, so `upgrade` can run it again exactly:
 # merged into what earlier runs recorded (a lane is replaced by name, the
 # switches only turn on), and left alone, date included, when nothing changed.
-RECORD_STATE="$(R_VERSION="$(install_version)" R_BIN_DIR="$([ "$BIN_DIR_GIVEN" = 0 ] || printf '%s' "$BIN_OUT")" R_JD="$WITH_JD" R_PERM="$PERMISSIONS_OPT" \
+RECORD_STATE="$(R_VERSION="$(install_version)" R_BIN_DIR="$([ "$BIN_DIR_GIVEN" = 0 ] || printf '%s' "$BIN_OUT")" R_JD="$WITH_JD" R_RP="$WITH_RP" R_PERM="$PERMISSIONS_OPT" \
   R_LATEST_URL="$DEFAULT_LATEST_URL" R_LANE="$LANE" R_REPO="$REPO" R_BASE="$BASE" R_VENDOR="$VENDOR" R_MODEL="$MODEL" R_OPERATOR="$OPERATOR" R_MIN_MODEL="$MIN_MODEL" R_REQ_BY="$REQ_BY" \
   python3 - "$BRAIN/$RECORD_REL" <<'PY'
 import datetime, json, os, sys
@@ -1261,11 +1284,12 @@ except Exception:
 # Only the install's own flags: what the lane's row declares is read from projects.json
 # when `upgrade` runs (replay_lines), so a hand edit there is never replayed back.
 OWN = ("base",)
-keys = ("latest_url", "bin_dir", "with_judgment_day", "permissions", "lanes")
+keys = ("latest_url", "bin_dir", "with_judgment_day", "with_review_plugins", "permissions", "lanes")
 flags = {
     "latest_url": e["R_LATEST_URL"],
     "bin_dir": e["R_BIN_DIR"] or old.get("bin_dir") or None,
     "with_judgment_day": bool(old.get("with_judgment_day")) or e["R_JD"] == "1",
+    "with_review_plugins": bool(old.get("with_review_plugins")) or e["R_RP"] == "1",
     "permissions": e["R_PERM"] or old.get("permissions") or None,
     "lanes": list(old.get("lanes") or []),
 }
@@ -1581,6 +1605,12 @@ if [ "$WITH_JD" = 1 ]; then
   jd_out="$(jd_python apply "$BRAIN/$JD_RECORD_NAME")" || die "could not install Judgment Day"
   if [ -z "$jd_out" ]; then ok "Judgment Day is already active (skills/judgment-day, agents/jd-*.md)"
   else printf '%s\n' "$jd_out" | while IFS=$'\t' read -r _ f; do chg "$f"; done; fi
+fi
+
+if [ "$WITH_RP" = 1 ]; then  # MUTATION-ANCHOR: 979-I04
+  printf '\nReview plugins → %s/plugins\n' "$BRAIN"
+  rp_out="$(bash "$RP_INSTALLER" --into "$BRAIN/plugins" 2>&1)" || die "could not install the review plugins: $rp_out"
+  ok "$rp_out (a brief's plugins: loads them into its own executor; nothing is written to ~/.claude or ~/.pi)"
 fi
 
 printf '\ninstalled: %s\n' "$BRAIN"

@@ -6,7 +6,6 @@ package main
 // lib/hw/done.sh pipes herdr's answers and the receipt through.
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"regexp"
@@ -35,15 +34,8 @@ func doneExit(err error) int {
 
 // doneTool runs a program with stderr discarded: its stdout and status.
 func doneTool(dir string, env []string, name string, args ...string) (string, int) {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	if env != nil {
-		cmd.Env = env
-	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	rc := doneExit(cmd.Run())
-	return out.String(), rc
+	r := extRun(extCall{Dir: dir, Env: env, Name: name, Args: args, Signal: true})
+	return r.Out, r.RC
 }
 
 func doneCmd(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
@@ -52,11 +44,8 @@ func doneLookPath(name string) (string, error) { return exec.LookPath(name) }
 
 // doneCapture is `_capture <cmd>`: stdout and stderr in one stream (`$(… 2>&1)`), and the status.
 func doneCapture(name string, args ...string) (string, int) {
-	cmd := exec.Command(name, args...)
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
-	rc := doneExit(cmd.Run())
-	return bashSub(buf.String()), rc
+	r := extRun(extCall{Name: name, Args: args, Merge: true, Signal: true})
+	return bashSub(r.Out), r.RC
 }
 
 // doneGit is `git -C <dir> <args> 2>/dev/null`: stdout and status.

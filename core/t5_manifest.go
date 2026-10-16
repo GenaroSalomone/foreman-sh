@@ -484,6 +484,7 @@ func (d *dsp) dispatchManifest(dir string) {
 		d.reuseMeasureAccount()
 		d.accountLine = d.reuseAccountFieldLine()
 		d.subagentModelLine = d.reuseSubagentModelFieldLine()
+		d.explorerLine = d.reuseExplorerFieldLine()
 		d.artifactsLine = "the REUSED session's own, fixed at ITS launch — hw next cannot add or remove a tool"
 		permissionsLine = "the REUSED session's own, fixed at ITS launch — --permissions cannot change a live session"
 		d.reuseModel = d.nextDispatchModel(d.reuseRundir)
@@ -542,11 +543,20 @@ func (d *dsp) dispatchManifest(dir string) {
 	if d.modelFloorLine != "" {
 		sb.WriteString("\n  floor       " + d.modelFloorLine)
 	}
+	if d.topTierLine != "" {
+		sb.WriteString("\n  ceiling     " + d.topTierLine)
+	}
 	sb.WriteString("\n")
 	sb.WriteString("  " + effortLine + "\n")
 	sb.WriteString("  agent       " + agentLine + "\n")
 	sb.WriteString("  account     " + d.accountLine + "\n")
 	sb.WriteString("  subagents   " + d.subagentModelLine + "\n")
+	if d.explorerLine != "" {
+		sb.WriteString("  explorer    " + d.explorerLine + "\n")
+	}
+	if pl := d.pluginsLines(); pl != "" {
+		sb.WriteString(pl[1:] + "\n")
+	}
 	sb.WriteString("  permissions " + permissionsLine + "\n")
 	sb.WriteString("  artifacts   " + d.artifactsLine + guardLine + "\n")
 	sb.WriteString("  provider    " + providerLine + "\n")

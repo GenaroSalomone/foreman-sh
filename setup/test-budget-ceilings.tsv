@@ -1,4 +1,2 @@
 # subject	ceiling seconds	cheapest split — a debt with a number on it; it only goes down
-825-el-contrato-de-status-y-worktrees.sh	800	shard by case range like tests/contract-hw/shard.sh
-871-las-anclas-de-los-verbos-t2.sh	900	shard the anchors by mutant like 844/848 (tests/contract-hw/subject-t5-anchors.sh)
-SUITE	3400	shard 871/825 and the 300-600 s anchors jobs; the estimate is budgeted seconds / 6 workers
+SUITE	2910	shard the 300-600 s anchors jobs and measure the real budgets; the estimate is budgeted seconds / 6 workers

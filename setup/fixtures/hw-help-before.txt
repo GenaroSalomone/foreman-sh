@@ -101,6 +101,16 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        agents the task cannot do without. hw refuses the
                        dispatch when the executor cannot reach one from its
                        work directory, instead of warning.
+    plugins: [<name>, …]  installed review plugins (thermo, ponytail, pstack)
+                       loaded into THIS executor only. They are an optional
+                       install step, off by default (setup/vendor/plugins/install
+                       or install.sh --with-review-plugins, into <brain>/plugins).
+                       claude: one --plugin-dir each, hooks running natively in
+                       that session (writes redirected to $HW_ARTIFACTS/plugin-state);
+                       pi: one -e <plugin dir> each (skills and extension);
+                       opencode and codex: NOT APPLIED. A name that is not
+                       installed refuses the dispatch before anything is built,
+                       naming the command that installs them.
     boundary: <what must never cross>
                        a build is not accepted as done without
                        $HW_ARTIFACTS/design-judgment.md naming it and ending
@@ -271,6 +281,9 @@ ADVANCED
     --below-floor-why <s>  the reason this dispatch runs below the lane's
                        model_floor (projects.json). Refused
                        without it; recorded in the manifest and the receipt.
+    --top-tier-why <s>  the reason a `kind: build` task runs on the top tier
+                       (opus, fable). Refused without it (flag or the brief's
+                       `top_tier_why:`); recorded in the manifest and receipt.
 
   THE GENTLE FLOW
     --sdd gentle       gentle-ai's ODD, only in a lane whose sdd_modes lists it
@@ -293,6 +306,13 @@ ADVANCED
   KEYCHAIN HANDLES
     --no-handle-check  skip the keychain-handle preflight
     hw handle <handle>...           does a keychain handle resolve?
+
+  BITWARDEN SECRETS (brief frontmatter  secrets: [item, ...] — items of the folder agents)
+    hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR ...] -- <cmd...>
+                                    the value reaches <cmd>'s environment only; never printed
+    hw secret check <item>...       present / absent, no value      hw secret status | ensure
+    secret-unlock --setup             once, a person: the master password into the Keychain (a LaunchAgent unlocks from it)
+    secret-unlock [--hours N|--lock]  an interactive unlock / lock
 
   THE ONE-SHOT ESCAPE
     hw human-boundary "<why>"       executor-only one-shot escape for a genuine

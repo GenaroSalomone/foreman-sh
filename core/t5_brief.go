@@ -480,6 +480,7 @@ func (d *dsp) checkTaskKind(kind, how string) {
 	if kind == "build" {
 		if how == "declared" {
 			d.brAppendDeclared("kind") // # MUTATION-ANCHOR: 844-A21
+			d.checkTopTierCeiling()
 		}
 		return
 	}
@@ -503,7 +504,8 @@ func (d *dsp) checkTaskKind(kind, how string) {
 
 var brKnownDecl = map[string]bool{"agent": true, "model": true, "sdd": true, "placement": true, "worktree": true, "database": true,
 	"invoker": true, "requires": true, "requires-agents": true, "kind": true, "base": true, "decision": true, "delivery": true,
-	"boundary": true, "deployed_check": true, "sandbox": true, "review": true, "requested_by": true, "asked": true, "authorizes": true}
+	"boundary": true, "deployed_check": true, "sandbox": true, "review": true, "plugins": true, "requested_by": true, "asked": true, "authorizes": true, "secrets": true,
+	"top_tier_why": true}
 
 // brNearestKnown is the `dist`/`near`/`listed` of _brief_declares' python: the known key nearest to <key> (edit
 // distance <= 2, "" when none is that close; the first of the sorted keys on a tie) and every known key, sorted,
@@ -752,6 +754,10 @@ func (d *dsp) checkBriefContract() {
 			d.checkCapabilities(val)
 			continue
 		}
+		if key == "plugins" { // # MUTATION-ANCHOR: 844-P08
+			d.checkPlugins()
+			continue
+		}
 		if key == "requires-agents" { // # MUTATION-ANCHOR: 844-A42
 			if !d.checkRequiredAgents(val) {
 				bad, requiredAgentBad = true, true
@@ -776,7 +782,7 @@ func (d *dsp) checkBriefContract() {
 			d.brAppendDeclared("sandbox") // # MUTATION-ANCHOR: 844-A48
 			continue
 		}
-		if key == "requested_by" || key == "asked" || key == "authorizes" { // # MUTATION-ANCHOR: 844-A49
+		if key == "requested_by" || key == "asked" || key == "authorizes" || key == "secrets" { // # MUTATION-ANCHOR: 844-A49
 			continue
 		}
 		if key == "delivery" {
@@ -807,6 +813,10 @@ func (d *dsp) checkBriefContract() {
 			} else {
 				d.warn("brief declares boundary: on a kind: " + d.briefKindForClose() + " task. A design judgment gates code, and this task writes none, so it is NOT recorded and done-invoker will not ask for one")
 			}
+			continue
+		}
+		if key == "top_tier_why" { // a reason, read by checkTopTierCeiling: here it only counts as declared
+			d.brAppendDeclared("top_tier_why")
 			continue
 		}
 		if key == "decision" {

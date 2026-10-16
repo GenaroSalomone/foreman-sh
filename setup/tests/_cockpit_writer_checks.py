@@ -356,7 +356,6 @@ def killed_writer():
     writer is watched until its tmp file appears (it exists only between the open and the rename)
     and killed that instant, so the window under test is the one that matters."""
     import glob as _glob
-    import signal
     w = cw.World(tmpdir())
     for i in range(30):
         w.executor(task="t%02d" % i, status="working")
@@ -373,7 +372,7 @@ def killed_writer():
         while p.poll() is None and time.time() < deadline and not _glob.glob(path + ".tmp.*"):
             pass
         if p.poll() is None:
-            p.send_signal(signal.SIGKILL)
+            p.kill()  # SIGKILL on POSIX, TerminateProcess on Windows
         p.wait()
         if _glob.glob(path + ".tmp.*"):
             killed_in_window += 1

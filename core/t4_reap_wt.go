@@ -65,6 +65,10 @@ func (r *reapApplyRun) disposition(main, wt, branch, base string) {
 		r.set("undetermined", "git status exited "+itoa(rc)+" in "+wt+" — "+trimTR(statusErr, 200)+". Empty output from a FAILED status is the same bytes as a clean tree; it is not a clean tree.")
 		return
 	}
+	statusOut, r.agentsBlock = statusWithoutAgentsBlock(statusOut, func() string {
+		o, _, _ := reapApplyGit(wt, "diff", "--no-color", "--no-ext-diff", "--unified=0", "--", "AGENTS.md")
+		return o
+	})
 	if status := bashSub(statusOut); status != "" { // # MUTATION-ANCHOR: 865-G11
 		r.set("dirty", itoa(strings.Count(status, "\n")+1)+" uncommitted tracked change(s)")
 		return

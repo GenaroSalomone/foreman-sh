@@ -57,6 +57,7 @@ A path OUTSIDE the trigger (a README, CLAUDE.md, an export overlay) never ran
 the gate and never makes it `all`: it adds only the subjects that name it by
 its exact repo-relative path — the ones that read that document.
 """
+import fnmatch
 import json
 import os
 import re
@@ -66,7 +67,7 @@ SUBJECT = re.compile(r"^setup/tests/[0-9][0-9]*-[^/]*\.sh$")
 # The runner and everything it loads: a change here can move any verdict.
 RUNNER = re.compile(
     r"^setup/(test-hw|test-hw-snapshot\.py|fast-gate-budget\.sh|test-budgets\.json"
-    r"|mutation-coverage|gate-select)$|^setup/tests/")
+    r"|mutation-coverage|gate-select|retired-subjects\.txt|go-test-core\.sh)$|^setup/tests/")
 GUARD = re.compile(
     r"^setup/guards/|^([^/]+/)?\.claude/hooks/deny-repo-writes\.py$"
     r"|^([^/]+/)?\.opencode/plugin/deny-repo-writes\.js$")
@@ -85,6 +86,23 @@ def read(path):
             return fh.read()
     except OSError:
         return ""
+
+
+def retired_globs(root):
+    """The globs of setup/retired-subjects.txt: subjects no gate runs (a missing file retires none).
+
+    The same format setup/test-hw reads: the first word of a line is a shell glob over the subject's file
+    name, the rest is why; blank and `#` lines are ignored."""
+    globs = []
+    for line in read(os.path.join(root, "setup", "retired-subjects.txt")).split("\n"):
+        words = line.split()
+        if words and not words[0].startswith("#"):
+            globs.append(words[0])
+    return globs
+
+
+def is_retired(name, globs):
+    return any(fnmatch.fnmatchcase(name, g) for g in globs)  # MUTATION-ANCHOR: 1013-M01
 
 
 def code_text(path):
@@ -238,9 +256,10 @@ def when_hits(root, changed):
     tests = os.path.join(root, "setup", "tests")
     budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
     hits = {}
+    gone = retired_globs(root)
     for n in budgets["files"]:
         path = os.path.join(tests, n)
-        if not os.path.isfile(path):
+        if not os.path.isfile(path) or is_retired(n, gone):
             continue
         spec = (header_value(path, "gate-when") or "").split(None, 1)
         if not spec:
@@ -258,8 +277,9 @@ def slow_hits(root, changed, trigger):
     tests = os.path.join(root, "setup", "tests")
     budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
     threshold = budgets["fast_gate_threshold_seconds"]
+    gone = retired_globs(root)
     slow = {n: v["seconds"] for n, v in budgets["files"].items()
-            if v["seconds"] > threshold and os.path.isfile(os.path.join(tests, n))}
+            if v["seconds"] > threshold and os.path.isfile(os.path.join(tests, n)) and not is_retired(n, gone)}
     top, helpers = common_parts(os.path.join(tests, "_common.sh"))
     stext = {n: subject_text(COMMENT.sub("", read(os.path.join(tests, n))), top, helpers)
              for n in slow}
@@ -327,8 +347,9 @@ def main(argv):
     tests = os.path.join(root, "setup", "tests")
     budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
     threshold = budgets["fast_gate_threshold_seconds"]
+    gone = retired_globs(root)
     fast = sorted(n for n, v in budgets["files"].items()
-                  if v["seconds"] <= threshold and os.path.isfile(os.path.join(tests, n)))
+                  if v["seconds"] <= threshold and os.path.isfile(os.path.join(tests, n)) and not is_retired(n, gone))
     top, helpers = common_parts(os.path.join(tests, "_common.sh"))
     stext = {n: subject_text(COMMENT.sub("", read(os.path.join(tests, n))), top, helpers)
              for n in fast}
@@ -339,6 +360,8 @@ def main(argv):
         triggered = trigger is None or trigger.search(path) is not None
         if SUBJECT.match(path):
             name = os.path.basename(path)
+            if is_retired(name, gone):
+                continue  # retired: no gate runs it, and it is not "deferred" to a full run that skips it too
             if name in stext:
                 chosen.setdefault(name, path)
             else:

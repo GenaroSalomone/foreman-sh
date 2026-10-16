@@ -585,6 +585,15 @@ func (d *dsp) reuseSubagentModelFieldLine() string {
 	return "the REUSED session's own: no CLAUDE_CODE_SUBAGENT_MODEL in " + base + "/env, so its subagents inherit the executor's model — --subagent-model cannot change a live session"
 }
 
+// reuseExplorerFieldLine is `_reuse_explorer_field_line`: the live session's own explorer, read from its receipt.
+func (d *dsp) reuseExplorerFieldLine() string {
+	base := path.Base(d.reuseRundir)
+	if v := nextReceiptValue(path.Join(d.reuseRundir, "receipt.jsonl"), "explorer"); v != "" && v != "null" {
+		return "the REUSED session's own: " + v + " (read from " + base + "/receipt.jsonl) — hw next cannot add or change an explorer"
+	}
+	return "the REUSED session's own: its receipt carries no explorer line, so it was launched without one — hw next cannot add one"
+}
+
 // ── the reuse route, after the manifest ─────────────────────────────────────
 
 // reuseRoute is the block of bin/hw that follows `_dispatch_manifest` on the reuse route: the session flags a

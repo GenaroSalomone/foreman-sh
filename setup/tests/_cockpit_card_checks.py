@@ -240,7 +240,10 @@ if __name__ == "__main__":
     finally:
         for p in PROCS:
             try:
-                os.killpg(p.pid, signal.SIGTERM)
+                if hasattr(os, "killpg"):
+                    os.killpg(p.pid, signal.SIGTERM)
+                else:
+                    p.terminate()  # no process groups on native Windows
                 p.wait(timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass

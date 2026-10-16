@@ -25,7 +25,7 @@
 unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR FOREMAN_SH_NO_CORE
 command -v go >/dev/null 2>&1 || { pass "993: no Go toolchain on this machine — the build arms need one (the no-Go arm is held by 993's stub in a machine that has it)"; exit 0; }
 [ -f "$ROOT/setup/build-core" ] && [ -d "$ROOT/core" ] || { pass "993: this tree carries no core/ to build"; exit 0; }
-export GOCACHE="${GOCACHE:-${TMPDIR:-/tmp}/hw-go-cache}"
+export GOCACHE="${GOCACHE:-$HW_GOCACHE_DEFAULT}"
 
 REPO="$HOME/code/app"
 ( mkdir -p "$REPO" && cd "$REPO" && git init -q -b trunk && git config user.email t@t \

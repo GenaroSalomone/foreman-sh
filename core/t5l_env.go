@@ -100,9 +100,15 @@ func (l *lch) checksGateApplies() bool {
 
 // opencodeConfigContent is `_opencode_config_content`: the --effort overlay and the engram proxy, deep-merged by jq.
 func (l *lch) opencodeConfigContent() (string, int) {
-	a, b := l.opencodeEffortOverlay, l.vdEngramOver
-	if a == "" && b == "" {
+	c, a, b := "", l.opencodeEffortOverlay, l.vdEngramOver
+	if l.agent == "opencode" {
+		c = l.explorer().opencodeOverlay() // THE CHEAP EXPLORER rides the same layer; merged FIRST, so the primary's effort still wins its key
+	}
+	if c == "" && a == "" && b == "" {
 		return "", 0
+	}
+	if c == "" {
+		c = "null"
 	}
 	if a == "" {
 		a = "null"
@@ -110,8 +116,12 @@ func (l *lch) opencodeConfigContent() (string, int) {
 	if b == "" {
 		b = "null"
 	}
-	out, rc := l.sh(cmdSpec{name: "jq", args: []string{"-nc", "--argjson", "a", a, "--argjson", "b", b, "($a // {}) * ($b // {})"}})
-	return trimNL(out), rc
+	out, rc := l.sh(cmdSpec{name: "jq", args: []string{"-nc", "--argjson", "c", c, "--argjson", "a", a, "--argjson", "b", b, "($c // {}) * ($a // {}) * ($b // {})"}})
+	if rc != 0 {
+		return trimNL(out), rc
+	}
+	// jq decoded the explorer's \u0020 back into spaces: spell them again, so the overlay stays ONE word.
+	return strings.ReplaceAll(trimNL(out), " ", `\u0020`), rc
 }
 
 // exportOpencodeOverlay is `_export_opencode_overlay`: the unset is as load-bearing as the export.
@@ -399,10 +409,11 @@ func (l *lch) applySdd(dir, mode string) bool {
 
 // ── claude_session_env_prep ──────────────────────────────────────────────────
 
-// claudeSessionEnvPrep is `claude_session_env_prep <pane>`: a claude launched by hw is never a child session. The
-// pane's shell is told to unset CLAUDE_CODE_CHILD_SESSION and to force session persistence before `agent start`.
+// claudeSessionEnvPrep is `claude_session_env_prep <pane> [<fn>]`: a claude launched by hw is never a child session. The
+// pane's shell is told to unset CLAUDE_CODE_CHILD_SESSION and to force session persistence before `agent start`, and
+// then runs fn (hw: the explorer's function) when there is one.
 // A pane that already runs an agent is left alone: typing into it would land in that agent's prompt.
-func (l *lch) claudeSessionEnvPrep(pane string) {
+func (l *lch) claudeSessionEnvPrep(pane, fn string) {
 	if pane == "" {
 		return
 	}
@@ -413,6 +424,9 @@ func (l *lch) claudeSessionEnvPrep(pane string) {
 	prep := "unset CLAUDE_CODE_CHILD_SESSION"
 	prep += "; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
 	prep += "; export CLAUDE_CODE_BASH_EDIT_DIFF=0"
+	if fn != "" { // # MUTATION-ANCHOR: 1007-G03
+		prep += "; " + fn
+	}
 	if _, rc := l.sh(cmdSpec{name: "herdr", args: []string{"pane", "run", pane, prep}, mut: true, merge: true}); rc != 0 { // # MUTATION-ANCHOR: 847-A1-17
 		l.errf("claude: could not clear CLAUDE_CODE_CHILD_SESSION in %s; Claude may report 'Transcript saving is off'.\n", pane)
 	}
@@ -597,6 +611,10 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 	}
 	// THE SUBAGENTS' MODEL, written for every vendor: "NOT APPLIED" and "inherit" are answers too.
 	l.receiptInto(dir, "subagent_model", l.subagentModelReceiptValue(), l.subagentModelReceiptSource())
+	// ONLY WHEN THE BRIEF DECLARES THEM: a run with no `plugins` receipt is a run that asked for none.
+	if len(l.pluginsDeclared()) > 0 { // # MUTATION-ANCHOR: 847-P-04
+		l.receiptInto(dir, "plugins", l.pluginsReceiptValue(), l.pluginsReceiptSource())
+	}
 	// ONLY WHEN IT RESOLVED: a receipt is a fact on disk and a blank one would be silence dressed as an answer.
 	if ref := l.env("HW_REVIEW_BASE_REF"); ref != "" { // # MUTATION-ANCHOR: 847-A1-24
 		l.receiptInto(dir, "review_base", ref,

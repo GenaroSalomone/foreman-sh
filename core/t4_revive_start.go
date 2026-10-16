@@ -76,8 +76,9 @@ func (a *app) reviveHerdrQuiet(args ...string) bool {
 	return rc == 0
 }
 
-// reviveClaudeSessionPrep is claude_session_env_prep: a claude launched by hw is never a child session.
-func (a *app) reviveClaudeSessionPrep(pane string) {
+// reviveClaudeSessionPrep is claude_session_env_prep: a claude launched by hw is never a child session. fn is what the
+// pane's shell runs after the settings (hw: the explorer's function), "" for none.
+func (a *app) reviveClaudeSessionPrep(pane, fn string) {
 	if pane == "" {
 		return
 	}
@@ -90,6 +91,9 @@ func (a *app) reviveClaudeSessionPrep(pane string) {
 	prep := "unset CLAUDE_CODE_CHILD_SESSION" // # MUTATION-ANCHOR: 863-G14
 	prep += "; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
 	prep += "; export CLAUDE_CODE_BASH_EDIT_DIFF=0"
+	if fn != "" {
+		prep += "; " + fn
+	}
 	if !a.reviveHerdrQuiet("pane", "run", pane, prep) {
 		a.err.Write([]byte("claude: could not clear CLAUDE_CODE_CHILD_SESSION in " + pane + "; Claude may report 'Transcript saving is off'.\n"))
 	}
@@ -239,6 +243,21 @@ func (a *app) reviveAgentStartSandboxed(st *reviveRunState, pane, name, kind str
 	return false
 }
 
+// reviveExplorerArm is _explorer_claude_arm for a revived run: the file goes to the run's own directory, and "" (with a
+// warning) when it cannot be written. Called only for claude, and only when the revive decided on the explorer.
+func (a *app) reviveExplorerArm(st *reviveRunState, pane string) string {
+	if !st.explorerArm {
+		return ""
+	}
+	file := explorerClaudeFile(st.rundir)
+	json := a.explorerFor(st.proj).claudeJSON()
+	if !explorerRundirOK(st.rundir) || json == "" || os.MkdirAll(st.rundir, 0o777) != nil || os.WriteFile(file, []byte(json+"\n"), 0o600) != nil {
+		a.warn("the cheap explorer could not be armed for " + pane + " (no run directory, or the role is unreadable): this executor starts without it")
+		return ""
+	}
+	return explorerClaudeFunction(file)
+}
+
 // reviveAgentStart is _agent_start: start an agent, retrying while the pane is still coming up.
 func (a *app) reviveAgentStart(st *reviveRunState, pane, name, kind string) bool {
 	if st.sandbox && st.sandboxArmed != pane {
@@ -246,7 +265,7 @@ func (a *app) reviveAgentStart(st *reviveRunState, pane, name, kind string) bool
 	}
 	h := a.reviveHerdr()
 	if kind == "claude" {
-		a.reviveClaudeSessionPrep(pane) // # MUTATION-ANCHOR: 863-G15
+		a.reviveClaudeSessionPrep(pane, a.reviveExplorerArm(st, pane)) // # MUTATION-ANCHOR: 863-G15
 	}
 	tries, registered := 0, false
 	for tries < 15 {

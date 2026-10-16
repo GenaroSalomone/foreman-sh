@@ -719,6 +719,14 @@ HW_LIB="$HW_BIN_DIR/../lib"
 # shellcheck source=../lib/hw/deps.sh
 [ -r "$HW_LIB/hw/deps.sh" ] || { printf 'hw: cannot load %s/hw/deps.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
 . "$HW_LIB/hw/deps.sh"
+# THE CHEAP EXPLORER every executor is handed and the tier table the prompt states (lib/hw/explorer.sh). Optional
+# for a stripped fixture tree (a copy of bin/ with no lib/hw/explorer.sh): without it nothing is injected and the
+# manifest says so, instead of hw refusing to start.
+# shellcheck source=../lib/hw/explorer.sh
+if [ -r "$HW_LIB/hw/explorer.sh" ]; then . "$HW_LIB/hw/explorer.sh"
+else _explorer_resolve() { EXPLORER_LINE="NOT INJECTED — this hw has no lib/hw/explorer.sh"; EXPLORER_INJECTED=0; EXPLORER_ARM=0; }; _explorer_tier_note() { :; }
+  _explorer_claude_json() { return 1; }; _explorer_opencode_overlay() { return 1; }; _explorer_codex_args() { return 1; }; _explorer_pi_agent_dir() { :; }
+fi
 # The project -> workspace-label table, shared with bin/brain so the two cannot
 # name the same space differently. See bin/project-spaces.sh.
 # shellcheck source=project-spaces.sh
@@ -2415,13 +2423,33 @@ _agent_start_sandboxed() {
   return 1
 }
 
+# claude's cheap explorer: the JSON goes to a file in the run directory and a shell function reading it is typed into
+# the pane (lib/hw/explorer.sh says why). Prints the function's text; exit 1, nothing written, when the role is
+# unreadable or $1 is not a run directory (`.hw/` is the one place hw writes that no repo tracks).
+_explorer_claude_arm() {  # $1 = run directory
+  local rundir="$1" json f
+  case "$rundir" in /*/.hw/?*) ;; *) return 1 ;; esac
+  json="$(_explorer_claude_json)" || return 1
+  f="$(_explorer_claude_file "$rundir")"
+  mkdir -p "$rundir" 2>/dev/null || return 1
+  ( umask 077; printf '%s\n' "$json" > "$f" ) 2>/dev/null || return 1
+  _explorer_claude_function "$f"
+}
+
 _agent_start() {
   local pane="$1" name="$2" kind="$3" out probe tries=0 registered=0
   [ "$kind" != pi ] || _pi_project_skills_prepare || return 1  # MUTATION-ANCHOR: 991-M11
   if [ "${SANDBOX:-0}" = 1 ] && [ "${_SANDBOX_ARMED:-}" != "$pane" ]; then
     _agent_start_sandboxed "$@"; return
   fi
-  [ "$kind" != claude ] || claude_session_env_prep "$pane"  # MUTATION-ANCHOR: 810-M02
+  # claude's cheap explorer rides in a file and a function typed with the session env (see lib/hw/explorer.sh): the
+  # launch line herdr types stays short. No arm (role unreadable, no run directory) is a launch without the explorer.
+  local explorer_fn=""
+  if [ "$kind" = claude ] && [ "${EXPLORER_ARM:-0}" = 1 ]; then  # MUTATION-ANCHOR: 1007-M01
+    explorer_fn="$(_explorer_claude_arm "${EXPLORER_RUNDIR:-${HW_WORKDIR:-}/.hw/${HW_RUN:-}}")" \
+      || warn "the cheap explorer could not be armed for $pane (no run directory, or the role is unreadable): this executor starts without it"
+  fi
+  [ "$kind" != claude ] || claude_session_env_prep "$pane" "$explorer_fn"  # MUTATION-ANCHOR: 810-M02
   while [ "$tries" -lt 15 ]; do
     if [ "$registered" = 1 ]; then
       # agent_not_ready keeps the registration. Poll that exact agent; a
@@ -2628,7 +2656,7 @@ _export_hw_env() {
     HW_PI_ASKED_MODEL="${MODEL:-}"
     if [ -n "$HW_PI_ASKED_MODEL" ]; then export HW_PI_ASKED_MODEL; else unset HW_PI_ASKED_MODEL; fi
     HW_PI_SUBAGENTS_DIR="$(_pi_subagents_dir)"; export HW_PI_SUBAGENTS_DIR  # MUTATION-ANCHOR: 986-M02
-    PI_SUBAGENT_EXTRA_AGENT_DIRS="$(_pi_extra_agent_dir "$1")"
+    PI_SUBAGENT_EXTRA_AGENT_DIRS="$(_pi_agent_dirs "$1")"
     if [ -n "$PI_SUBAGENT_EXTRA_AGENT_DIRS" ]; then export PI_SUBAGENT_EXTRA_AGENT_DIRS; else unset PI_SUBAGENT_EXTRA_AGENT_DIRS; fi
   else
     unset HW_PI_BRAIN_GUARD HW_PI_FALLBACK_MODEL HW_PI_FALLBACK_THINKING HW_PI_ASKED_MODEL HW_PI_SUBAGENTS_DIR PI_SUBAGENT_EXTRA_AGENT_DIRS
@@ -3088,7 +3116,7 @@ _hw_env() {
     [ -z "$(_pi_fallback_model)" ] || printf -- ' --env HW_PI_FALLBACK_MODEL=%s --env HW_PI_FALLBACK_THINKING=%s' "$(_pi_fallback_model)" "$PI_FALLBACK_THINKING"
     [ -z "${MODEL:-}" ] || printf -- ' --env HW_PI_ASKED_MODEL=%s' "$MODEL"
     printf -- ' --env HW_PI_SUBAGENTS_DIR=%s' "$(_pi_subagents_dir)"
-    [ -z "$(_pi_extra_agent_dir "$1")" ] || printf -- ' --env PI_SUBAGENT_EXTRA_AGENT_DIRS=%s' "$(_pi_extra_agent_dir "$1")"
+    [ -z "$(_pi_agent_dirs "$1")" ] || printf -- ' --env PI_SUBAGENT_EXTRA_AGENT_DIRS=%s' "$(_pi_agent_dirs "$1")"
   fi
   # Without this, engram derives its label from the working directory and every
   # single task invents a new one: `leadgogo-inventory` (4 obs) and
@@ -3250,6 +3278,7 @@ _write_run_env() {
   # "NOT APPLIED" and "inherit" are answers too: a receipt that is silent cannot
   # tell a dispatch that never had the field from one that chose nothing.
   _receipt_into "$dir" subagent_model "$(_subagent_model_receipt_value)" "$(_subagent_model_receipt_source)"  # MUTATION-ANCHOR: 232-M05
+  _plugins_receipt "$dir"
   # ONLY WHEN IT RESOLVED, because a receipt is a fact on disk and a blank one
   # would answer "what base was this judged against" with silence dressed as
   # an answer. A run with no review_base receipt is a run hw could not compute
@@ -3582,9 +3611,11 @@ except ValueError:
     raise SystemExit(0)
 known = {"agent", "model", "sdd", "placement", "worktree", "database", "invoker",
          "requires", "requires-agents", "kind", "base", "decision", "delivery",  # MUTATION-ANCHOR: 159-M04
-         "boundary", "deployed_check", "sandbox", "review"}
+         "boundary", "deployed_check", "sandbox", "review", "plugins"}
 # What was asked for, read by _check_requested rather than compared.
-known |= {"requested_by", "asked", "authorizes"}
+known |= {"requested_by", "asked", "authorizes", "secrets"}
+# The reason a kind: build task runs on the top tier, read by _check_top_tier_ceiling (not compared).
+known |= {"top_tier_why"}
 for raw in lines[1:end]:
     line = raw.strip()
     if not line or line.startswith("#"):
@@ -4153,6 +4184,15 @@ _check_required_agents() {  # $1 = comma-separated names
         continue
         ;;
     esac
+    # THE EXPLORER IS INJECTED BY hw, NOT FOUND ON DISK (lib/hw/explorer.sh): a brief that needs it by name is met
+    # when this dispatch put it in the launch (the manifest's explorer line), as a subagent only.
+    if [ "$required" = "${HW_EXPLORER_NAME:-cheap-explorer}" ] && [ "${EXPLORER_INJECTED:-0}" = 1 ]; then  # MUTATION-ANCHOR: 1003-M08
+      if [ "$role" = primary ]; then
+        warn "brief requires agent '$required' as primary, but the cheap explorer hw injects is a subagent"
+        bad=1
+      fi
+      continue
+    fi
     case "$AGENT" in
       opencode)
         project_agent="$(_opencode_project_agent "$required")" || {
@@ -4477,6 +4517,26 @@ _check_agent_name_free() {
   return 0
 }
 
+# THE CEILING OF THE MODEL FLOOR'S LADDER: a `kind: build` task refuses the top tier unless it says why. The floor
+# stops a dispatch going BELOW a lane's model; this stops one going ABOVE what building needs. Measured 2026-10-14:
+# a product lane's `road-pace-build` (`kind: build`) ran on opus and read the code itself, file by file, while no
+# lane had a cheap explorer. The reason is `--top-tier-why` or the brief's `top_tier_why:` (the flag wins), one line,
+# written to the manifest and the receipt. Only a DECLARED build: an undeclared brief is already defaulted to sonnet
+# (_apply_model_default), and a reused pane runs what it already runs, so neither is judged here.
+TOP_TIER_WHY=""; TOP_TIER_LINE=""
+_check_top_tier_ceiling() {
+  [ -n "${MODEL:-}" ] || return 0
+  [ -z "${_REUSE_PANE:-}" ] || return 0
+  model_is_top_tier "$MODEL" || return 0  # MUTATION-ANCHOR: 1003-M06
+  local why="${TOP_TIER_WHY:-}" src="--top-tier-why"
+  if [ -z "$why" ]; then why="$(_brief_fm_value top_tier_why "${BRIEF:-}")"; src="the brief's top_tier_why"; fi
+  [ -n "$why" ] || die "this task is declared kind=build and $MODEL is the top tier. A build implements what was already decided, and the top tier reading files itself is the cost this ceiling exists to stop (road-pace-build ran on opus, kind build, 2026-10-14). NOTHING was built. Launch with --model sonnet (or no --model: a claude executor runs sonnet), or, if this build really needs $MODEL, say why with --top-tier-why \"<reason>\" or a top_tier_why: line in the brief's frontmatter — it is written to the manifest and the receipt."
+  case "$why" in *$'\n'*) die "--top-tier-why must be one line so the manifest and the receipt stay parseable" ;; esac
+  TOP_TIER_WHY="$why"
+  TOP_TIER_LINE="$MODEL is top tier on kind build — allowed by $src: $why"
+  warn "model ceiling: $MODEL is the top tier on a kind=build task; launching on the stated reason: $why"
+}
+
 _check_task_kind() {  # $1 = kind, $2 = declared|inferred
   local kind="$1" how="$2"
   case "$kind" in
@@ -4488,7 +4548,7 @@ _check_task_kind() {  # $1 = kind, $2 = declared|inferred
   # `build` too: the reason reads the same either way, and a suggestion note
   # that silently omitted the kind on builds would be the harder bug to see.
   TASK_KIND="$kind"; TASK_KIND_SRC="$how"
-  case "$kind" in build) [ "$how" != declared ] || BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }kind"; return 0 ;; esac
+  case "$kind" in build) [ "$how" != declared ] || { BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }kind"; _check_top_tier_ceiling; }; return 0 ;; esac
   if [ -n "$MODEL" ] && model_is_build_only "$MODEL"; then
     if [ "$how" = declared ]; then
       die "this task is declared kind=$kind and $MODEL is a build model — its own runner labels every turn \"Build\". Exploration decides WHAT to build; handing it to the model meant for building the decision is how ten browser diagnoses ran on it on 2026-08-24/25 while the same lane ran the same class of task on opus. Nothing was built. Relaunch with a model that reasons: --agent claude --model opus, or --model opus if you keep this vendor."
@@ -4654,6 +4714,7 @@ _check_brief_contract() {
       __unknown__)   _warn_unknown_brief_key "$val" ; continue ;;
     esac
     if [ "$key" = requires ]; then _check_capabilities "$val"; continue; fi
+    if [ "$key" = plugins ]; then _check_plugins; continue; fi
     if [ "$key" = requires-agents ]; then
       _check_required_agents "$val" || { bad=1; required_agent_bad=1; }
       continue
@@ -4675,7 +4736,7 @@ _check_brief_contract() {
     # NOT DISPATCH FIELDS: they say what the operator asked for, and
     # _check_requested reads them after this loop. Comparing them against a
     # resolved value would refuse every brief that cites its request.
-    case "$key" in requested_by|asked|authorizes) continue ;; esac
+    case "$key" in requested_by|asked|authorizes|secrets) continue ;; esac
     # `delivery:` is read by the gentle gate, which refuses a bad value before
     # anything is built; under any other mode it fixes nothing and is ignored.
     if [ "$key" = delivery ]; then
@@ -4722,6 +4783,12 @@ _check_brief_contract() {
       else
         warn "brief declares boundary: on a kind: $(_brief_kind_for_close) task. A design judgment gates code, and this task writes none, so it is NOT recorded and done-invoker will not ask for one"
       fi
+      continue
+    fi
+    # `top_tier_why:` IS A REASON, NOT A DISPATCH FIELD: _check_top_tier_ceiling read it when `kind: build` was
+    # checked, so here it only counts as declared.
+    if [ "$key" = top_tier_why ]; then
+      BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }top_tier_why"
       continue
     fi
     if [ "$key" = decision ]; then
@@ -4919,6 +4986,67 @@ EOF
   BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }authorizes"
   return 0
 }
+
+# ── secrets: from Bitwarden, never as a value ───────────────────────────────
+#
+# A brief declares the Bitwarden items its executor needs:
+#
+#     secrets: [github-token, stripe-key.password]
+#
+# Names only. Each item lives in the Bitwarden FOLDER `agents`; the executor
+# reaches a value through `hw secret run <item> --as VAR -- <cmd>` (bin/hw-secret)
+# and never through bw itself (setup/guards/deny-bitwarden-secrets.py refuses it).
+# BEFORE anything is built: the vault must be unlocked (a locked one gets one
+# `secret-unlock --auto` try, the master password from the Keychain, before refusing) and every item present;
+# a missing item refuses the dispatch BY NAME. Under --dry-run nothing is opened:
+# a locked vault is said, not asked. `--no-handle-check` skips all of it, loudly.
+SECRETS=""
+_check_secrets() {
+  local decls key val raw item out rc=0 st=0 NL=$'\n'
+  local -a items=()
+  SECRETS=""
+  _load_brief_decls; decls="$BRIEF_DECLS"
+  while IFS="$(printf '\t')" read -r key val; do
+    [ "$key" = secrets ] || continue
+    raw="${val#\[}"; raw="${raw%\]}"
+    while IFS= read -r item; do
+      item="$(_auth_trim "$item")"; item="${item#\"}"; item="${item%\"}"; item="${item#\'}"; item="${item%\'}"
+      [ -n "$item" ] || continue
+      case "$item" in -*) die "the brief's secrets: names \"$item\", which is not a Bitwarden item name. NOTHING was built." ;; esac
+      items+=("$item")
+    done <<EOF
+$(printf '%s' "$raw" | tr ',' '\n')
+EOF
+  done <<EOF
+$decls
+EOF
+  [ ${#items[@]} -gt 0 ] || return 0
+  SECRETS="$(printf '%s, ' "${items[@]}")"; SECRETS="${SECRETS%, }"
+  [ "$BRIEF_DECLARED" != none ] || BRIEF_DECLARED=""
+  BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }secrets"
+  if [ "$CHECK_HANDLES" != 1 ]; then  # MUTATION-ANCHOR: 1011-M04
+    warn "the brief's secrets: ($SECRETS) were NOT checked (--no-handle-check): the executor may find the vault locked or an item missing"
+    return 0
+  fi
+  if [ "$DISPATCH_DRY" = 1 ]; then  # MUTATION-ANCHOR: 1011-M03
+    "$HW_BIN_DIR/hw-secret" status >/dev/null 2>&1 || st=$?
+    if [ "$st" != 0 ]; then
+      warn "the Bitwarden vault is LOCKED: a real dispatch tries \`secret-unlock --auto\` once. The items ($SECRETS) are NOT checked in this dry run."
+      return 0
+    fi
+  else
+    "$HW_BIN_DIR/hw-secret" ensure >&2 || die "the brief's secrets: ($SECRETS) need the Bitwarden vault unlocked and it is not. NOTHING was built. A person, once: secret-unlock --setup (the LaunchAgent then keeps it unlocked). Or pass --no-handle-check."  # MUTATION-ANCHOR: 1011-M02
+  fi
+  out="$("$HW_BIN_DIR/hw-secret" check "${items[@]}" 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || die "the brief's secrets: names Bitwarden items that do not resolve in the folder agents — NOTHING was built.${NL}${out}${NL}Store each in the folder agents (the item's name is the handle), or pass --no-handle-check."  # MUTATION-ANCHOR: 1011-M01
+  return 0
+}
+
+# The manifest's `secrets` line (printed only when the brief declares some): names, never values.
+_secrets_line() {
+  printf '%s  (Bitwarden folder agents; names only, values never leave hw secret run)' "$SECRETS"
+}
+
 
 # The manifest's `authorizes` field.
 _authorizes_line() {
@@ -5298,9 +5426,16 @@ _engram_proxy_args() {
 # The one OPENCODE_CONFIG_CONTENT an opencode executor gets: the --effort
 # overlay and the engram proxy, deep-merged. Empty when neither applies.
 _opencode_config_content() {
-  [ -n "${OPENCODE_EFFORT_OVERLAY:-}${OPENCODE_ENGRAM_OVERLAY:-}" ] || return 0
-  local a="${OPENCODE_EFFORT_OVERLAY:-}" b="${OPENCODE_ENGRAM_OVERLAY:-}"
-  jq -nc --argjson a "${a:-null}" --argjson b "${b:-null}" '($a // {}) * ($b // {})'
+  # THE CHEAP EXPLORER rides the same layer (lib/hw/explorer.sh): an `agent` entry, so a subagent call by its name
+  # reaches a cheap model. It is deep-merged FIRST, so the effort overlay of the primary agent still wins its own key.
+  local c="" a="${OPENCODE_EFFORT_OVERLAY:-}" b="${OPENCODE_ENGRAM_OVERLAY:-}"
+  [ "${AGENT:-}" != opencode ] || c="$(_explorer_opencode_overlay 2>/dev/null || true)"  # MUTATION-ANCHOR: 1003-M01
+  [ -n "$c$a$b" ] || return 0
+  local out
+  out="$(jq -nc --argjson c "${c:-null}" --argjson a "${a:-null}" --argjson b "${b:-null}" '($c // {}) * ($a // {}) * ($b // {})')" || return 1
+  # jq decoded the explorer's \u0020 back into spaces: spell them again, so the overlay stays ONE word (the --here
+  # --env list, the run env file and the crash restore all split on whitespace). The other overlays hold no space.
+  printf '%s' "${out// /\\u0020}"
 }
 
 # ── where an executor's claude.ai artifacts may land ────────────────────────
@@ -5382,6 +5517,15 @@ _pi_extra_agent_dir() {  # $1 = the work dir -> "<dir>/.pi/agents" when the lane
   [ -d "$co/.pi/agents" ] || return 0
   case "$1" in ""|*[[:space:]:]*) return 0 ;; esac
   printf '%s/.pi/agents' "$1"
+}
+# EVERY extra agent directory a pi executor gets, PATH-style: the lane's own `.pi/agents` (when it tracks one) and
+# hw's cheap-explorer directory (lib/hw/explorer.sh), which is the brain's and never the product repo's, and only
+# when pi-subagents is loaded (without it nothing could read it).
+_pi_agent_dirs() {  # $1 = the work dir
+  local lane exp=""
+  lane="$(_pi_extra_agent_dir "$1")"
+  ! _pi_subagents_ready || exp="$(_explorer_pi_agent_dir)"  # MUTATION-ANCHOR: 1003-M03
+  printf '%s' "${lane}${lane:+${exp:+:}}${exp}"
 }
 _pi_extension_args() {
   local pi_ext pi_herdr="$(_pi_agent_dir)/extensions/herdr-agent-state.ts" pi_sub
@@ -5490,10 +5634,100 @@ _pi_project_skills_prepare() {  # creates that directory and its symlinks; 0 als
   done < <(_pi_project_skills)
   return 0
 }
+# ── plugins: a brief loads installed code-quality plugins into ITS executor only ─────
+# `plugins: [thermo, ponytail, pstack]` in a brief's frontmatter. The pinned copies sit under
+# setup/vendor/plugins (UPSTREAM.md, PATCH.diff and MANIFEST.sha256 in each; complete: hooks, scripts and
+# pi extension included, no installed dependencies) and are an OPTIONAL install step, off by default: setup/vendor/plugins/install (or
+# install.sh --with-review-plugins) copies them, verified, into <brain>/plugins, and hw reads only
+# that directory. A brief that declares one that is not installed is refused, naming the command.
+# Nothing is global: claude gets one `--plugin-dir` per plugin (that session only; its hooks run natively there,
+# through <plugin>/hw/hook-env, which redirects what a hook writes to $HW_ARTIFACTS/plugin-state), pi one
+# `-e <plugin dir>` (that run only: the package's skills and extension). Neither writes to ~/.claude or ~/.pi.
+# A vendor that cannot load them (opencode, codex) is told so in the manifest (NOT APPLIED), never silently.
+_plugins_dir() { printf '%s/plugins' "$_brain_root"; }
+_plugins_installed() {  # one name per line, sorted: the directories that hold a .claude-plugin/plugin.json
+  local d
+  for d in "$(_plugins_dir)"/*/; do
+    if [ -f "${d}.claude-plugin/plugin.json" ]; then basename "$d"; fi
+  done | LC_ALL=C sort
+}
+_plugin_is_installed() { case " $(_plugins_installed | tr '\n' ' ') " in *" $1 "*) return 0 ;; esac; return 1; }
+_plugins_declared() {  # the names the brief declares: its order, once each, one per line
+  _load_brief_decls
+  printf '%s\n' "$BRIEF_DECLS" | awk -F'\t' '$1 == "plugins" { print $2; exit }' \
+    | awk '{ gsub(/\[/, ""); gsub(/\]/, ""); gsub(/"/, ""); gsub(/\047/, "")
+             n = split($0, a, /[ \t,]+/)
+             for (i = 1; i <= n; i++) if (a[i] != "" && !seen[a[i]]++) print a[i] }'  # MUTATION-ANCHOR: 979-M01
+}
+_plugins_declared_installed() { local n; for n in $(_plugins_declared); do if _plugin_is_installed "$n"; then printf '%s\n' "$n"; fi; done; }
+_plugins_names_line() { _plugins_declared | paste -sd, - | sed 's/,/, /g'; }
+# The refusal, before anything is built: a name that is not installed, or a path that cannot travel as one word.
+_check_plugins() {
+  local n bad="" have
+  [ -n "$(_plugins_declared)" ] || return 0
+  for n in $(_plugins_declared); do _plugin_is_installed "$n" || bad="$bad${bad:+, }$n"; done
+  have="$(_plugins_installed | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$bad" ] || die "the brief declares plugins: $bad, which are not installed here (installed: ${have:-none}). The pinned review plugins (thermo, ponytail, pstack) are an optional install step, off by default: run 'bash $_brain_root/setup/vendor/plugins/install' in a checkout, or 'install.sh --brain $_brain_root --with-review-plugins' for an installed brain. NOTHING was built — no worktree, no database, no pane."  # MUTATION-ANCHOR: 979-M02
+  case "$(_plugins_dir)" in *[[:space:]]*) die "the brief declares plugins:, and they cannot be passed as one word: the checkout path has whitespace ($_brain_root). NOTHING was built." ;; esac
+  BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }plugins"
+}
+# claude: one --plugin-dir per plugin, onto AGENT_ARGS after the guard's (the flag is repeatable).
+_plugins_args() {
+  [ "$AGENT" = claude ] || return 0  # MUTATION-ANCHOR: 979-M03
+  local n
+  _load_brief_decls  # here, not inside a $(...): a subshell's memo dies with it
+  for n in $(_plugins_declared_installed); do
+    AGENT_ARGS="${AGENT_ARGS:+$AGENT_ARGS }--plugin-dir $(_plugins_dir)/$n"  # MUTATION-ANCHOR: 979-M04
+  done
+  return 0
+}
+# THE LAUNCH LINE'S CEILING (see _pi_skill_args): a brief that adds plugins adds three paths at most, and a
+# truncated line is a pi that never starts. Refused with the number, before anything is built.
+_plugins_pi_line_check() {
+  if [ -n "$(_plugins_declared_installed)" ] && [ "${#AGENT_ARGS}" -gt 1000 ]; then  # MUTATION-ANCHOR: 979-M07
+    die "pi's launch line would be ${#AGENT_ARGS} bytes with the brief's plugins, and the tty herdr types it into holds 1024: the end would be dropped and pi would not start. Declare fewer plugins. NOTHING was built."
+  fi
+}
+_plugins_lines() {  # the manifest's plugins field, leading newline included; nothing when the brief declares none
+  local names n flags
+  names="$(_plugins_names_line)"
+  [ -n "$names" ] || return 0
+  if [ "${DISPATCH_ROUTE:-}" = reuse ]; then
+    printf '\n  plugins     %s  (brief plugins:) — NOT APPLIED: this dispatch re-tasks the live executor in %s, and a plugin is loaded when a session starts. Add --fresh to launch one that loads them.' "$names" "${_REUSE_PANE:-the reused pane}"
+    return 0
+  fi
+  case "$AGENT" in
+    claude) flags=""
+            for n in $(_plugins_declared); do flags="$flags${flags:+ }--plugin-dir $(_plugins_dir)/$n"; done
+            printf '\n  plugins     %s  (brief plugins:; installed pinned copies) — %s: this session only; the plugins'"'"' hooks run natively in it, through hw/hook-env, and what a hook writes goes to $HW_ARTIFACTS/plugin-state, never ~/.claude' "$names" "$flags" ;;
+    pi)     flags=""
+            for n in $(_plugins_declared); do flags="$flags${flags:+ }-e $(_plugins_dir)/$n"; done  # MUTATION-ANCHOR: 979-M09
+            printf '\n  plugins     %s  (brief plugins:; installed pinned copies) — %s: this run only (-ns stays); each is loaded as a pi package (its skills and, where it has one, its extension: pi has no Claude hooks, the extension is the equivalent), and what an extension writes goes to $HW_ARTIFACTS/plugin-state, never ~/.pi' "$names" "$flags" ;;
+    *)      printf '\n  plugins     %s  (brief plugins:) — NOT APPLIED: this executor is %s, and only claude (--plugin-dir) and pi (-e) load plugins. Its skills are whatever %s finds on its own.' "$names" "$AGENT" "$AGENT" ;;
+  esac
+}
+# ONLY WHEN THE BRIEF DECLARES THEM: a run with no `plugins` receipt is a run that asked for none.
+_plugins_receipt() {  # <run dir>
+  [ -n "$(_plugins_declared)" ] || return 0  # MUTATION-ANCHOR: 979-M06
+  _receipt_into "$1" plugins "$(_plugins_receipt_value)" "$(_plugins_receipt_source)"
+}
+_plugins_receipt_value() {
+  case "${AGENT:-}" in
+    claude|pi) _plugins_declared | paste -sd, - ;;  # MUTATION-ANCHOR: 979-M08
+    *) printf 'NOT APPLIED — %s does not load plugins (asked: %s)' "${AGENT:-unknown}" "$(_plugins_declared | paste -sd, -)" ;;
+  esac
+}
+_plugins_receipt_source() {
+  printf 'brief frontmatter plugins: at dispatch; installed pinned copies in %s (claude: --plugin-dir, hooks through hw/hook-env; pi: -e)' "$(_plugins_dir)"
+}
+
 _pi_skill_args() {
   local n d out="" pdir
   while read -r n d; do [ -z "$d" ] || out="$out --skill $d"; done < <(_pi_decided_skills)
   if pdir="$(_pi_project_skill_dir)"; then out="$out --skill $pdir"; fi  # MUTATION-ANCHOR: 991-M10
+  for n in $(_plugins_declared_installed); do
+    out="$out -e $(_plugins_dir)/$n"  # MUTATION-ANCHOR: 979-M05
+  done
   printf -- '-ns%s' "$out"  # MUTATION-ANCHOR: 986-M01
 }
 
@@ -5721,10 +5955,21 @@ _build_agent_args() {
       # with no write guard and no turn-end hook (Judgment Day, 2026-10-11).
       PI_EXT_ARGS="$(_pi_extension_args)" || exit 1  # MUTATION-ANCHOR: 986-M13
       AGENT_ARGS="$AGENT_ARGS $PI_EXT_ARGS $(_pi_skill_args)"
+      _plugins_pi_line_check
       ;;
   esac
   AGENT_ARGS="${AGENT_ARGS# }"
   [ -n "$AGENT_ARGS" ] && info "agent args: $AGENT_ARGS"
+  # THE CHEAP EXPLORER (lib/hw/explorer.sh), AFTER the line above so it stays the flags the operator chose: codex takes
+  # it on the command line; opencode through the OPENCODE_CONFIG_CONTENT overlay and pi through
+  # PI_SUBAGENT_EXTRA_AGENT_DIRS, which read it from disk where they are exported; claude through a file and a shell
+  # function (EXPLORER_ARM, acted on by _agent_start), because its JSON is 2KB and the launch line is typed. The
+  # manifest line is decided here either way.
+  case "$AGENT" in
+    codex)  AGENT_ARGS="${AGENT_ARGS:+$AGENT_ARGS}$(_explorer_codex_args 2>/dev/null || true)" ;;
+  esac
+  AGENT_ARGS="${AGENT_ARGS# }"
+  _explorer_resolve
   return 0
 }
 
@@ -6903,6 +7148,18 @@ _reuse_subagent_model_field_line() {
   fi
 }
 
+# The explorer of a live session, read from ITS receipt: --agent/--model of this dispatch cannot reach it, and
+# `hw next` cannot add one. A receipt with no explorer line is a session launched without one.
+_reuse_explorer_field_line() {
+  local v
+  v="$(jq -r 'select(.key=="explorer") | .value' "$_REUSE_RUNDIR/receipt.jsonl" 2>/dev/null | tail -1)" || v=""
+  if [ -n "$v" ] && [ "$v" != null ]; then
+    printf "the REUSED session's own: %s (read from %s/receipt.jsonl) — hw next cannot add or change an explorer" "$v" "$(basename "$_REUSE_RUNDIR")"
+  else
+    printf "the REUSED session's own: its receipt carries no explorer line, so it was launched without one — hw next cannot add one"
+  fi
+}
+
 _codex_validation_surface() {
   if _lane_is_product_repo "$PROJ"; then lane_checkout "$PROJ"
   else printf '%s/%s/%s' "$WORK" "$PROJ" "$TASK"; fi
@@ -7382,6 +7639,12 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
     # A named absence costs one line.
     preamble="$(printf '%s\n\nno specialists in this lane; ops-investigator / qa-tester are not available here' "$preamble")"  # MUTATION-ANCHOR: 702-M01
   fi
+  # DELEGATE BY MODEL TIER, ON EVERY VENDOR (lib/hw/explorer.sh): the explorer's exact name and which job goes to
+  # which tier. Empty when the explorer was not injected for this vendor, so the prompt never names an agent that
+  # is not there. Held by setup/tests/1003-cada-ejecutor-delega-por-modelo.sh.
+  local tier_note
+  tier_note="$(_explorer_tier_note "${HW_EXECUTOR_VENDOR:-${AGENT:-}}" 2>/dev/null || true)"  # MUTATION-ANCHOR: 1003-M04
+  [ -z "$tier_note" ] || preamble="$(printf '%s\n\n%s' "$preamble" "$tier_note")"
   # CODEX LOADS NO CLAUDE.md, so the executor rules of CLAUDE.shared.md that it
   # cannot see are stated here, one line each; the project on every mem_save and
   # the closing are already in the preamble above. Gated on the executor's
@@ -7531,6 +7794,13 @@ _brief_authorization() {
   printf '\nOnly these destinations and operations are authorized, and nothing beyond them:\nanother destination, another operation, or a credential or session not named\nhere stays unauthorized. Within them, act without asking; for anything else\nask-invoker, or report blocked. A handle is a resolver, never a value.'
 }
 
+# What the executor is told, once, beside the authorization block.
+_brief_secrets_note() {
+  [ -n "${SECRETS:-}" ] || return 0
+  printf 'SECRETS — delivered by hw from the brief frontmatter (secrets:): %s\n\n' "$SECRETS"
+  printf 'Each is an item of the Bitwarden folder agents. Reach a value ONLY as\n  hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR ...] -- <cmd>\nwhich puts it in <cmd>'"'"'s environment and nowhere else. Never call bw, never read\nthe session file, never print or write a value. Vault locked or session expired:\ndone-invoker --blocked naming the item; the brainer unlocks it.'
+}
+
 # ── the executor's own engram session, registered before it says a word ──
 #
 # MEASURED 2026-09-22: an executor's `mem_save` with no session of its own is
@@ -7622,7 +7892,7 @@ _send_brief() {
   _ledger_commit_brief
   [ -n "$BRIEF" ] || { _ledger_dispatch "$pane" 0; return 0; }
 
-  local preamble epistemic_safeguard authorization
+  local preamble epistemic_safeguard authorization secrets_note
   preamble="$(_brief_preamble)"
   BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$preamble" "$BRIEF_TEXT")"
 
@@ -7677,6 +7947,8 @@ _send_brief() {
   # cross the flow's entry point before the reader receives this instruction.
   authorization="$(_brief_authorization)"
   [ -z "$authorization" ] || BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$authorization" "$BRIEF_TEXT")"
+  secrets_note="$(_brief_secrets_note)"
+  [ -z "$secrets_note" ] || BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$secrets_note" "$BRIEF_TEXT")"
   BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$epistemic_safeguard" "$BRIEF_TEXT")"
 
   # THE SESSION ID IS RECORDED ON BOTH PATHS, and the delivery status is passed
@@ -9381,6 +9653,20 @@ cmd_revive() {
         *) AGENT_ARGS="$AGENT_ARGS --disallowedTools $HW_ARTIFACT_TOOLS" ;;
       esac
     fi
+    # And its cheap explorer: policy too, the recorded `--resume` never carried it. It goes to the revived run's own
+    # directory by file and function (_agent_start), not by argument; a recorded line that already carries --agents
+    # (hand-edited) is left alone rather than given the explorer twice.
+    EXPLORER_ARM=0; EXPLORER_RUNDIR="$rundir"
+    case " $AGENT_ARGS " in
+      *" --agents "*) ;;
+      *) if PROJ="$proj" _explorer_claude_json >/dev/null 2>&1; then EXPLORER_ARM=1; fi ;;  # MUTATION-ANCHOR: 1007-M02
+    esac
+  fi
+  if [ "$vendor" = codex ]; then
+    case " $AGENT_ARGS " in
+      *" -c agents.cheap-explorer."*) ;;
+      *) AGENT_ARGS="$AGENT_ARGS$(PROJ="$proj" AGENT=codex _explorer_codex_args 2>/dev/null || true)" ;;
+    esac
   fi
   if ! _agent_start "$pane" "$task" "$vendor"; then
     # _agent_start giving up is not proof the pane is dead — it gave up on ITS
@@ -10233,6 +10519,29 @@ json.dump(r, sys.stdout)' 2>"$err")" || ! d="$(python3 -c 'import os, sys; print
 WT_REGENERABLE='.agents .atl .claude .codex .opencode .hw .specify .venv .ruff_cache .pytest_cache .mypy_cache __pycache__ node_modules dist build .next .turbo .DS_Store AGENTS.md PROGRESS.md opencode.json local next-env.d.ts tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo .astro'
 WT_REGENERABLE="$WT_REGENERABLE ${HW_WT_REGENERABLE:-}"
 
+# A TRACKED AGENTS.md THAT `next dev` REWROTE IS REGENERABLE, ONLY WHILE THE DIFF IS ITS BLOCK.
+# MEASURED 2026-10-15 (a product lane, ~45 worktrees, e.g. slugs-reservados): the only change was ` M AGENTS.md`. That lane
+# TRACKS AGENTS.md, so WT_REGENERABLE (which only excuses what git ignores or does not track) never applied. The writer
+# is Next.js, not this toolchain: `next dev` appends a block between `<!-- BEGIN:nextjs-agent-rules -->` and
+# `<!-- END:nextjs-agent-rules -->` (its own text says so, naming node_modules/next/dist/server/lib/generate-agent-files.js).
+# The change is excused ONLY when the whole diff is ONE insertion that is exactly that block (blank lines around it
+# aside): a removed or edited line, a second hunk, a second block, text outside the markers, a mode change — any of
+# them leaves it dirty. UNESTABLISHED: a Next release that rewrites a block already committed shows as an edit and stays dirty.
+_wt_agents_block_only() {  # <wt> — 0 when the diff of AGENTS.md is exactly the block next dev injects
+  git -C "$1" diff --no-color --no-ext-diff --unified=0 -- AGENTS.md 2>/dev/null | awk '
+    BEGIN { st = 0; bad = 0; hunks = 0 }
+    st == 0 {
+      if ($0 ~ /^@@ -[0-9]+,0 \+[0-9]+(,[0-9]+)? @@/) { hunks++; st = 1 }
+      else if ($0 !~ /^(diff --git |index |--- |\+\+\+ )/) bad = 1
+      next
+    }
+    $0 !~ /^\+/ { bad = 1; next }
+    st == 1 { if ($0 == "+") next; if ($0 == "+<!-- BEGIN:nextjs-agent-rules -->") st = 2; else bad = 1; next }
+    st == 2 { if ($0 == "+<!-- END:nextjs-agent-rules -->") st = 3; else if ($0 == "+<!-- BEGIN:nextjs-agent-rules -->") bad = 1; next }
+    st == 3 { if ($0 != "+") bad = 1; next }
+    END { exit (st == 3 && !bad && hunks == 1) ? 0 : 1 }'
+}
+
 # ARCHIVABLE IS NOT REGENERABLE: these are a task's OUTPUT, unreproducible, and
 # that is exactly why they are moved rather than deleted. A merged, clean
 # worktree whose only ignored content is under these names reads `archivable`
@@ -10605,6 +10914,11 @@ _wt_disposition() {
     return 0
   fi
   [ "$status_err" = /dev/null ] || rm -f "$status_err"
+  WT_AGENTS_BLOCK=""
+  if [ -n "$status_out" ] && printf '%s\n' "$status_out" | grep -qxF ' M AGENTS.md' && _wt_agents_block_only "$wt"; then
+    WT_AGENTS_BLOCK=1
+    status_out="$(printf '%s\n' "$status_out" | grep -vxF ' M AGENTS.md' || true)"
+  fi
   if [ -n "$status_out" ]; then
     WT_VERDICT=dirty
     n="$(printf '%s\n' "$status_out" | wc -l | tr -d ' ')"
@@ -13070,7 +13384,7 @@ if [ "$_HW_CALLER_EXECUTOR" = 1 ]; then
       [ "${HW_DONE_ALLOW_BRAIN_LEAK:-0}" != 1 ] \
         || _executor_refuse "done (HW_DONE_ALLOW_BRAIN_LEAK=1)" "does not use the operator's leak-check exit"
       ;;
-    -*|help|status|receipt|handle|preflight|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|shadow|wait|wait-one|wait-monitor|gentle-home) ;;
+    -*|help|status|receipt|handle|secret|preflight|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|shadow|wait|wait-one|wait-monitor|gentle-home) ;;  # MUTATION-ANCHOR: 1011-M05
     *)        # anything else is `hw <project> <task> …`, a dispatch
               _executor_refuse "$1 …" "does not dispatch executors" ;;
   esac
@@ -13161,6 +13475,8 @@ if [ "${1:-}" = sweep ]; then shift; cmd_sweep "$@"; exit 0; fi
 if [ "${1:-}" = review-range ]; then shift; cmd_review_range "$@" || exit 1; exit 0; fi
 if [ "${1:-}" = review-delta ]; then shift; set +e; cmd_review_delta "$@"; _rc=$?; set -e; exit "$_rc"; fi
 if [ "${1:-}" = handle ]; then shift; cmd_handle "$@" || exit 1; exit 0; fi
+# `hw secret` is bin/hw-secret (read its header): the one path from Bitwarden to a command.
+if [ "${1:-}" = secret ]; then shift; exec "$HW_BIN_DIR/hw-secret" "$@"; fi
 if [ "${1:-}" = train ]; then shift; set +e; cmd_train "$@"; _rc=$?; set -e; exit "$_rc"; fi
 if [ "${1:-}" = gentle-home ]; then shift; cmd_gentle_home "$@" || exit 1; exit 0; fi
 if [ "${1:-}" = next ]; then
@@ -13382,6 +13698,16 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        agents the task cannot do without. hw refuses the
                        dispatch when the executor cannot reach one from its
                        work directory, instead of warning.
+    plugins: [<name>, …]  installed review plugins (thermo, ponytail, pstack)
+                       loaded into THIS executor only. They are an optional
+                       install step, off by default (setup/vendor/plugins/install
+                       or install.sh --with-review-plugins, into <brain>/plugins).
+                       claude: one --plugin-dir each, hooks running natively in
+                       that session (writes redirected to $HW_ARTIFACTS/plugin-state);
+                       pi: one -e <plugin dir> each (skills and extension);
+                       opencode and codex: NOT APPLIED. A name that is not
+                       installed refuses the dispatch before anything is built,
+                       naming the command that installs them.
     boundary: <what must never cross>
                        a build is not accepted as done without
                        $HW_ARTIFACTS/design-judgment.md naming it and ending
@@ -13615,6 +13941,9 @@ ADVANCED
     --below-floor-why <s>  the reason this dispatch runs below the lane's
                        model_floor (projects.json). Refused
                        without it; recorded in the manifest and the receipt.
+    --top-tier-why <s>  the reason a `kind: build` task runs on the top tier
+                       (opus, fable). Refused without it (flag or the brief's
+                       `top_tier_why:`); recorded in the manifest and receipt.
 USAGE
   local l a lines=""
   for l in $HW_LANES; do
@@ -13645,6 +13974,13 @@ USAGE
   KEYCHAIN HANDLES
     --no-handle-check  skip the keychain-handle preflight
     hw handle <handle>...           does a keychain handle resolve?
+
+  BITWARDEN SECRETS (brief frontmatter  secrets: [item, ...] — items of the folder agents)
+    hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR ...] -- <cmd...>
+                                    the value reaches <cmd>'s environment only; never printed
+    hw secret check <item>...       present / absent, no value      hw secret status | ensure
+    secret-unlock --setup             once, a person: the master password into the Keychain (a LaunchAgent unlocks from it)
+    secret-unlock [--hours N|--lock]  an interactive unlock / lock
 
   THE ONE-SHOT ESCAPE
     hw human-boundary "<why>"       executor-only one-shot escape for a genuine
@@ -13948,6 +14284,8 @@ while [ $# -gt 0 ]; do
     --requested-by) _need_val "$@"; REQUESTED_BY="$2"; REQUESTED_BY_SRC=flag; shift 2 ;;
     # The reason a dispatch runs below its lane's model_floor. Required there.
     --below-floor-why) _need_val "$@"; BELOW_FLOOR_WHY="$2"; shift 2 ;;
+    # The reason a `kind: build` dispatch runs on the top tier (_check_top_tier_ceiling). Required there.
+    --top-tier-why) _need_val "$@"; TOP_TIER_WHY="$2"; shift 2 ;;  # MUTATION-ANCHOR: 1003-M07
     --effort) _need_val "$@"; EFFORT="$2"; shift 2 ;;
     --sdd)    _need_val "$@"; SDD="$2";    shift 2 ;;
     # Print the dispatch and stop. The brainer that shipped a read-only task
@@ -14116,6 +14454,7 @@ hw_permissions_resolve "$PERMISSIONS_FLAG" || die "$PERMISSIONS_ERR"
 _build_agent_args
 _brain_guard_check
 _brain_guard_args
+_plugins_args
 _engram_proxy_args
 _artifacts_args
 _agent_tools_quiet "$PROJ" >&2
@@ -14125,6 +14464,7 @@ _check_brief_contract
 _check_sandbox
 _check_requested
 _check_authorizes
+_check_secrets
 _check_task "$TASK"
 _check_agent_name_free "$TASK"
 lane_known "$PROJ" || die "unknown project: $PROJ (expected: $(lane_names_bar))"
@@ -14749,6 +15089,7 @@ VERIFY_CMDS_EOF
     ACCOUNT_LINE="$(_reuse_account_field_line)"
     # The subagents' model is baked into the pane's environment like the account.
     SUBAGENT_MODEL_LINE="$(_reuse_subagent_model_field_line)"
+    EXPLORER_LINE="$(_reuse_explorer_field_line)"
     # Tools are fixed at the session's launch like its account: whatever this
     # command resolved cannot reach the live pane.
     ARTIFACTS_LINE="the REUSED session's own, fixed at ITS launch — hw next cannot add or remove a tool"
@@ -14849,16 +15190,20 @@ VERIFY_CMDS_EOF
   brain guard $guard_line"
   fi
 
+  local PLUGINS_LINES
+  PLUGINS_LINES="$(_plugins_lines)"
   DISPATCH_TEXT="$(cat <<EOF
 dispatch $PROJ:$TASK  run=$run_label
   route       $route_line
   framework   ${live:-<undetermined>}  ($sdd_src, from $surface)
   $model_line${MODEL_FLOOR_LINE:+
-  floor       $MODEL_FLOOR_LINE}
+  floor       $MODEL_FLOOR_LINE}${TOP_TIER_LINE:+
+  ceiling     $TOP_TIER_LINE}
   $effort_line
   agent       $agent_line
   account     $ACCOUNT_LINE
-  subagents   $SUBAGENT_MODEL_LINE${PI_LINES}
+  subagents   $SUBAGENT_MODEL_LINE${EXPLORER_LINE:+
+  explorer    $EXPLORER_LINE}${PI_LINES}${PLUGINS_LINES}
   permissions $PERMISSIONS_LINE
   artifacts   $ARTIFACTS_LINE$guard_line
   provider    $provider_line
@@ -14871,7 +15216,8 @@ dispatch $PROJ:$TASK  run=$run_label
   brief       ${BRIEF:-<none>}
   contract    ${BRIEF_DECLARED:-none}  (which dispatch fields the brief declared, and hw verified)
   requested   $(_requested_line)
-  authorizes  $(_authorizes_line)${DESIGN_LINE:+
+  authorizes  $(_authorizes_line)${SECRETS:+
+  secrets     $(_secrets_line)}${DESIGN_LINE:+
   design      $DESIGN_LINE}
   verify      $verify_line
   entry       $entry_line
@@ -15644,6 +15990,8 @@ _agent_step() {
     _receipt agent_ready "$(_agent_ready_state "$P_AGENT")" "herdr agent get $P_AGENT"
     _receipt pane "$P_AGENT" "layout.apply output"
     [ -z "$MODEL_FLOOR_LINE" ] || _receipt model_floor "$MODEL_FLOOR_LINE" "_check_model_floor against projects.json model_floor of $PROJ"
+    [ -z "$EXPLORER_LINE" ] || _receipt explorer "$EXPLORER_LINE" "_explorer_resolve (lib/hw/explorer.sh)"
+    [ -z "$TOP_TIER_LINE" ] || _receipt top_tier_why "$TOP_TIER_WHY" "--top-tier-why or the brief's top_tier_why (_check_top_tier_ceiling)"
     [ -z "$BELOW_FLOOR_WHY" ] || _receipt below_floor_why "$BELOW_FLOOR_WHY" "--below-floor-why"
     _receipt requested_by "$(_requested_line)" "_check_requested: ${REQUESTED_BY_SRC:-no citation}"
     [ -z "${HW_AGENT_ENDPOINT:-}" ] || _receipt endpoint "$HW_AGENT_ENDPOINT" "--port passed to opencode in _build_agent_args"

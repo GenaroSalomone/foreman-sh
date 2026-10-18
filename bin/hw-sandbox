@@ -204,7 +204,7 @@ cmd_profile() {
 }
 
 # ── the platform ────────────────────────────────────────────────────────────
-# HW_SANDBOX_UNAME exists for the refusal's own test; nothing else sets it.
+# HW_SANDBOX_UNAME exists for the tests: the refusal's own, and the contract world off macOS, which says Darwin.
 cmd_supported() {
   local os="${HW_SANDBOX_UNAME:-$(uname -s)}"
   [ "$os" = Darwin ] || { printf 'the sandbox is Seatbelt (sandbox-exec), which exists only on macOS; this is %s. Dispatch without --sandbox, or from a Mac.\n' "$os"; return 1; }

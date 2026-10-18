@@ -23,21 +23,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        include:
-          # Git Bash on Windows is the least-tested platform (see
-          # KNOWN-LIMITATIONS.md). It reports but does not block a merge until
-          # it has been green here for a while.
-          - os: windows-latest
-            experimental: true
-    continue-on-error: ${{ matrix.experimental == true }}
     defaults:
       run:
         shell: bash
     steps:
-      - name: Keep line endings as committed (Windows)
-        if: runner.os == 'Windows'
-        run: git config --global core.autocrlf false
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -58,11 +47,6 @@ jobs:
       - name: Tools (macOS)
         if: runner.os == 'macOS'
         run: brew install jq ripgrep fd sd
-
-      - name: Tools (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: choco install -y jq ripgrep fd sd-cli
 
       - name: Versions
         run: |

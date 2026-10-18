@@ -83,7 +83,6 @@ func t5FillLaneFields(t *table, home string) {
 		set("agents_from", str("agents_from", ""))
 		set("brief_note", str("brief_note", ""))
 		set("qa_target", flag(v, "qa_target"))
-		set("sdd_modes", joinStrs(field(v, "sdd_modes"), " "))
 		set("opencode_config_dir", expandHome(str("opencode_config_dir", ""), home))
 		set("deps_line", orDefault(sub("deps", "line"), ""))
 		set("deps_contention", flag(field(v, "deps"), "contention"))

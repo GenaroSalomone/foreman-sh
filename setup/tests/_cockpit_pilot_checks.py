@@ -6,6 +6,8 @@ import sys
 import tempfile
 import time
 
+# python3 -I ignores PYTHONDONTWRITEBYTECODE, so the flag is set here: a .pyc beside the tree under test is a change to it
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _cockpit_world import World, run_writer  # noqa: E402
 

@@ -45,7 +45,7 @@ var (
 
 var laneFields = []string{"product_repo", "hw_aliases", "brain_aliases", "space", "engram", "vendor", "model", "account", "artifacts", "repoless",
 	"checkout", "checkout_var", "base", "base_ref_prefix", "branch", "worktree_root", "worktree", "ports",
-	"hint_aliases", "build", "agents_from", "deps", "db", "devserver", "reap", "sweep", "brain_guard", "brief_note", "qa_target", "sdd_modes",
+	"hint_aliases", "build", "agents_from", "deps", "db", "devserver", "reap", "sweep", "brain_guard", "brief_note", "qa_target",
 	"model_floor", "model_pins", "subagent_model", "requested_by", "opencode_config_dir", "suite_lock"}
 
 var laneSub = map[string][]string{
@@ -227,17 +227,6 @@ func loadTable(file, home string) (*table, []string) {
 	inList := func(list ...string) func(*jval) bool {
 		return func(v *jval) bool { return v.kind == vStr && has(list, v.s) }
 	}
-	badmodes := collect("sdd_modes", func(v *jval) bool {
-		if v.kind != vArr {
-			return false
-		}
-		for _, e := range v.arr {
-			if !(e.kind == vStr && e.s == "gentle") {
-				return false
-			}
-		}
-		return true
-	})
 	badreq := collect("requested_by", inList("required", "warn"))
 	if len(badreq) > 0 {
 		return bad("requested_by is required or warn: " + strings.Join(badreq, ", "))
@@ -289,9 +278,6 @@ func loadTable(file, home string) (*table, []string) {
 	}
 	if len(badfloor) > 0 {
 		return bad("model_floor.tier is haiku, sonnet or opus, and accepts is a list of model ids: " + strings.Join(badfloor, ", "))
-	}
-	if len(badmodes) > 0 {
-		return bad("sdd_modes lists the modes a lane adds to speckit and none, and the only one is gentle: " + strings.Join(badmodes, ", "))
 	}
 	var top []string
 	for _, k := range sortedKeys(root) {
@@ -441,6 +427,9 @@ func loadTable(file, home string) (*table, []string) {
 		}
 		l.f["reap_copies"] = joinStrs(sub("reap", "copies"), "\n")
 		l.f["reap_copies_from"] = orDefault(sub("reap", "copies_from"), "")
+		l.f["reap_max_worktrees"] = orDefault(sub("reap", "max_worktrees"), "") // what `hw status` measures a lane against (_hygiene_quiet)
+		l.f["reap_max_disk_pct"] = orDefault(sub("reap", "max_disk_pct"), "")
+		l.f["reap_max_build_gb"] = orDefault(sub("reap", "max_build_gb"), "")
 		l.f["devserver"] = orDefault(sub("devserver", "start"), "")
 		l.f["devserver_line"] = orDefault(sub("devserver", "line"), "")
 		t.lanes[m.k] = l

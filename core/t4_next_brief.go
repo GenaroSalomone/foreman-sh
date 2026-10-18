@@ -2,13 +2,10 @@ package main
 
 // The brief `hw next` delivers, read the way bin/hw reads a launch's: its frontmatter (_brief_declares, the
 // Python reader, and the awk readers _brief_fm_value, _brief_kind_for_close, _brief_boundary), the
-// authorization it cites (_check_authorizes, _brief_authorization, _next_authorization), and gentle's gate
-// for a gentle pane (_gentle_brief_gate, _gentle_home_ready, gentle_home_dir). Dispatch helpers (T5), copied.
+// authorization it cites (_check_authorizes, _brief_authorization, _next_authorization), and the review it
+// chose (_brief_review_mode, _review_gate, _review_receipt). Dispatch helpers (T5), copied.
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"regexp"
 	"strings"
@@ -267,93 +264,38 @@ func nextDesignGate(path string) bool {
 }
 func nextChecksGate(path string) bool { return nextIsBuild(path) }
 
-// ── gentle ──────────────────────────────────────────────────────────────────
+// ── the review the brief chose ──────────────────────────────────────────────
 
-// nextGentleRead is _next_gentle_read: the NEW brief through gentle's per-task gate, and the home checked.
-func (a *app) nextGentleRead(s *nextState) {
-	if s.brief == "" {
-		a.die("hw next on a gentle pane REFUSED: ODD needs the next task as a brief (--brief <path>) that fixes its delivery strategy, because nobody answers in an executor's pane. Nothing was sent.")
-	}
-	decls := nextBriefDeclares(s.brief)
-	s.gDelivery = nextDecl(decls, "delivery")
-	switch s.gDelivery {
-	case "single-pr", "stacked-to-main", "feature-branch-chain":
-	case "":
-		a.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: the brief does not declare `delivery:` in its frontmatter. ODD asks for the delivery strategy before it slices work, and nobody answers in an executor's pane. Declare one: delivery: single-pr | stacked-to-main | feature-branch-chain. Nothing was built.")
-	default:
-		a.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: delivery: " + s.gDelivery + " is not one of single-pr, stacked-to-main, feature-branch-chain. Nothing was built.")
-	}
-	s.gReview = nextDecl(decls, "review")
-	switch s.gReview {
-	case "", "rdd":
-	default:
-		a.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: review: " + s.gReview + " is not rdd. RDD is the only opt-in (omit the key for Judgment Day). Nothing was built.")
-	}
-	dc, ok := nextGentleDeployedCheck(s.brief)
-	s.gDeployed = dc
+// nextReviewMode is `$(_brief_review_mode 2>/dev/null)` over the new brief: "" when it is not a mode hw knows.
+func nextReviewMode(brief string) string {
+	m, ok := reviewModeOf(reviewRawOf(nextFmValue("review", brief)))
 	if !ok {
-		a.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: deployed_check: " + dc + " is not a value hw accepts. The accepted forms are exactly three: the key absent or empty (the default, same as required); 'deployed_check: required'; or 'deployed_check: out-of-scope — <why>' with a non-empty reason (the separator may be —, – , - or :), e.g. 'deployed_check: out-of-scope — a docs-only change, nothing is deployed'. A bare 'out-of-scope' with no reason is refused too. Nothing was built.")
+		return ""
 	}
-	d := a.nextGentleHome()
-	if why, ready := a.nextGentleHomeReady(d); !ready {
-		a.die("hw next on a gentle pane REFUSED: gentle-ai's own home is not ready (" + why + "). Nothing was sent. Provision it with: hw gentle-home")
-	}
+	return m
 }
 
-var nextReOOS = regexp.MustCompile(`^[ \t\n\v\f\r]*(:|—|–|-)?[ \t\n\v\f\r]*`)
-
-// nextGentleDeployedCheck is _gentle_deployed_check.
-func nextGentleDeployedCheck(brief string) (string, bool) {
-	v := nextFmValue("deployed_check", brief)
-	switch {
-	case v == "" || v == "required":
-		return "required", true
-	case strings.HasPrefix(v, "out-of-scope"):
-		reason := nextReOOS.ReplaceAllString(strings.TrimPrefix(v, "out-of-scope"), "")
-		if reason == "" {
-			return v, false
-		}
-		return "out-of-scope: " + reason, true
-	}
-	return v, false
+// nextPluginsDeclared is _plugins_declared over the NEW brief (hw next reads it fresh, never a memo of another).
+func nextPluginsDeclared(brief string) []string {
+	return pluginsOfValue(nextDecl(nextBriefDeclares(brief), "plugins"))
 }
 
-// nextGentleHome is gentle_home_dir.
-func (a *app) nextGentleHome() string {
-	return a.nextEnvOr("HW_GENTLE_HOME", a.c.home+"/.local/share/hw/gentle-home")
+// nextReviewGate is `( BRIEF=<brief>; _review_gate )`: a bad value, or `plugins` with nothing to name, refuses the
+// re-task before anything is sent.
+func (a *app) nextReviewGate(brief string) {
+	reviewGateOf(reviewRawOf(nextFmValue("review", brief)), nextPluginsDeclared(brief), a.die, a.warn)
 }
 
-// nextGentleHomeRefusal is _gentle_home_refusal: why the destination may not be used, or "".
-func (a *app) nextGentleHomeRefusal(d string) (string, bool) {
-	if !strings.HasPrefix(d, "/") {
-		return "not an absolute path: " + d, true
+// nextReviewReceipt is `BRIEF=<brief> _review_receipt <run dir> <key>`: only when the brief declares review:.
+func (a *app) nextReviewReceipt(rundir, key, brief string) {
+	if nextFmValue("review", brief) == "" {
+		return
 	}
-	if strings.ContainsAny(d, " \t\n\v\f\r") {
-		return "the path has whitespace, and hw passes it as one word: " + d, true
+	mode, ok := reviewModeOf(reviewRawOf(nextFmValue("review", brief)))
+	if !ok {
+		return
 	}
-	d = strings.TrimSuffix(d, "/")
-	home := strings.TrimSuffix(a.c.home, "/")
-	if d == home {
-		return "it is HOME itself", true
-	}
-	for _, cfg := range []string{".claude", ".claude-personal", ".claude.json", ".config/opencode", ".codex", ".gentle-ai"} {
-		if strings.HasPrefix(d+"/", home+"/"+cfg+"/") {
-			return "it is inside ~/" + cfg + ", which another session reads", true
-		}
-	}
-	p := d
-	for !isDir(p) && p != "/" {
-		p = nextDirname(p)
-	}
-	if nextGit(p, "rev-parse", "--is-inside-work-tree") == nil && nextGit(p, "check-ignore", "-q", d) != nil {
-		top, _ := nextGitOut(p, "rev-parse", "--show-toplevel")
-		return "it is inside a git work tree (" + bashSub(top) + ") and not ignored there", true
-	}
-	return "", false
-}
-
-func nextGit(dir string, args ...string) error {
-	return extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...)}).errOf()
+	a.receiptInto(rundir, key, mode, reviewReceiptSource(brief, mode, nextPluginsDeclared(brief)))
 }
 
 func nextGitOut(dir string, args ...string) (string, error) {
@@ -361,160 +303,11 @@ func nextGitOut(dir string, args ...string) (string, error) {
 	return r.Out, r.errOf()
 }
 
-// nextGentleHomeReady is _gentle_home_ready: "" and true for a complete home of the pinned version.
-func (a *app) nextGentleHomeReady(d string) (string, bool) {
-	if why, refused := a.nextGentleHomeRefusal(d); refused {
-		return why, false
-	}
-	m := d + "/manifest.json"
-	if !isFile(m) {
-		return "no " + m, false
-	}
-	v, ok := nextJqFile(m, "version")
-	if !ok {
-		return m + " is not readable JSON", false
-	}
-	if v != "4.0.0" {
-		return m + " is not version 4.0.0", false
-	}
-	f := d + "/odd-block.md"
-	st, err := os.Stat(f)
-	if err != nil || st.Size() == 0 {
-		return "no ODD block at " + f, false
-	}
-	body, _ := os.ReadFile(f)
-	if !bytes.Contains(body, []byte("<!-- gentle-ai:agent-routing -->")) {
-		return f + " carries no gentle-ai agent-routing block", false
-	}
-	if bytes.Contains(body, []byte("<!-- gentle-ai:orchestrator -->")) {
-		return f + " carries the orchestrator block, and only the ODD protocol travels", false
-	}
-	sha, _ := nextJqFile(m, "odd_block_sha256")
-	if nextSha256(body) != sha {
-		return f + " changed after provisioning", false
-	}
-	if !isFile(d + "/plugin/gentle-odd/.claude-plugin/plugin.json") {
-		return "no plugin at " + d + "/plugin/gentle-odd", false
-	}
-	if !isFile(d + "/guard-settings.json") {
-		return "no " + d + "/guard-settings.json", false
-	}
-	task := d + "/bin/gentle-ai-task"
-	tb, terr := os.ReadFile(task)
-	if !nextExecutable(task) || terr != nil || !bytes.Contains(tb, []byte("rdd-log.jsonl")) {
-		return "no bin/gentle-ai-task that runs the native reviewer and logs it in " + d + " (re-provision: rm -rf " + d + " && hw gentle-home)", false
-	}
-	guard, ok := nextJqGuard(d + "/guard-settings.json")
-	if !ok {
-		return d + "/guard-settings.json is not readable JSON", false
-	}
-	if i := strings.LastIndexByte(guard, ' '); i >= 0 {
-		guard = guard[i+1:]
-	}
-	if guard == "" || !isFile(guard) {
-		g := guard
-		if g == "" {
-			g = "<none>"
-		}
-		return "the guard " + d + "/guard-settings.json names does not exist: " + g + " (re-provision from the brain checkout: rm -rf " + d + " && hw gentle-home)", false
-	}
-	if hs := d + "/home/.claude/settings.json"; isFile(hs) {
-		n, ok := nextJqHooksLen(hs)
-		if !ok {
-			return d + "/home/.claude/settings.json is not readable JSON", false
-		}
-		if n != "0" {
-			return d + "/home/.claude/settings.json carries hooks, and this mode runs none of gentle-ai's", false
-		}
-	}
-	return "", true
+func nextGit(dir string, args ...string) error {
+	return extRun(extCall{Name: "git", Args: append([]string{"-C", dir}, args...)}).errOf()
 }
 
 func nextExecutable(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir() && st.Mode()&0o111 != 0
-}
-
-// nextSha256 is `shasum -a 256 <file> | cut -d' ' -f1`.
-func nextSha256(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
-
-// nextJqFile is `jq -r '.<key> // empty' <file>`: false when jq would fail on the file.
-func nextJqFile(path, key string) (string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	vals, perrE := parseStream(data)
-	perr := perrE != nil
-	var outs []string
-	for _, v := range vals {
-		if v.kind != vObj && v.kind != vNull {
-			return "", false
-		}
-		if c, ok := v.get(key); ok && c.truthy() {
-			outs = append(outs, c.raw())
-		}
-	}
-	if perr {
-		return "", false
-	}
-	return bashSub(strings.Join(outs, "\n")), true
-}
-
-// nextJqGuard is `jq -r '.hooks.PreToolUse[0].hooks[0].command // empty' guard-settings.json`.
-func nextJqGuard(path string) (string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	vals, perrE := parseStream(data)
-	perr := perrE != nil
-	if perr {
-		return "", false
-	}
-	var outs []string
-	for _, v := range vals {
-		c, ok := nextPath(v, "hooks", "PreToolUse")
-		if !ok || c.kind != vArr || len(c.arr) == 0 {
-			continue
-		}
-		c, ok = c.arr[0].get("hooks")
-		if !ok || c.kind != vArr || len(c.arr) == 0 {
-			continue
-		}
-		if c, ok = c.arr[0].get("command"); ok && c.truthy() {
-			outs = append(outs, c.raw())
-		}
-	}
-	return bashSub(strings.Join(outs, "\n")), true
-}
-
-// nextJqHooksLen is `jq -r '.hooks // {} | length'`.
-func nextJqHooksLen(path string) (string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	vals, perrE := parseStream(data)
-	perr := perrE != nil
-	if perr || len(vals) == 0 {
-		return "", false
-	}
-	v := vals[len(vals)-1]
-	h, ok := v.get("hooks")
-	if !ok || !h.truthy() {
-		return "0", true
-	}
-	switch h.kind {
-	case vObj:
-		return itoa(len(h.obj)), true
-	case vArr:
-		return itoa(len(h.arr)), true
-	case vStr:
-		return itoa(len([]rune(h.s))), true
-	}
-	return "", false
 }

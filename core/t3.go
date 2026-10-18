@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,8 +33,8 @@ import (
 func t3NowUTC() time.Time { return time.Now().UTC() }
 
 // t3Verbs are the verbs of this train; the value is whether an executor may
-// run it (bin/hw's _executor_refuse gate: the shim sends the others to bash
-// when HW_TASK or HW_RUN is set, so the refusal text stays bash's).
+// run it (bin/hw's _executor_refuse gate, in Go since executor_gate.go: runWith refuses the others, with bash's words,
+// when HW_TASK or HW_RUN is set).
 var t3Verbs = map[string]bool{
 	"ruling": false, "human-boundary": true, "executor-turn-end": true,
 	"chaining-lease-start": true, "chaining-lease-expire": true,
@@ -78,7 +79,9 @@ func (f *fsx) watch(d string) {
 	}
 }
 
-// t3Listing is the regular files of a directory, one `name size mtime_ns` line each, sorted by name.
+// t3Listing is the regular files of a directory, one `name size mtime_ns crc` line each, sorted by name. The CRC of
+// the bytes (of a file up to 1 MiB; 0 above) is there because size and mtime alone miss a same-size rewrite: Linux
+// stamps a file from a coarse clock (a few ms), so `turns` going from `1` to `2` inside one tick kept both.
 func t3Listing(d string) string {
 	ents, _ := os.ReadDir(d)
 	var b strings.Builder
@@ -87,7 +90,13 @@ func t3Listing(d string) string {
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
-		fmt.Fprintf(&b, "%s %d %d\n", e.Name(), fi.Size(), fi.ModTime().UnixNano())
+		var sum uint32
+		if fi.Size() <= 1<<20 {
+			if data, err := os.ReadFile(filepath.Join(d, e.Name())); err == nil {
+				sum = crc32.ChecksumIEEE(data)
+			}
+		}
+		fmt.Fprintf(&b, "%s %d %d %08x\n", e.Name(), fi.Size(), fi.ModTime().UnixNano(), sum)
 	}
 	return b.String()
 }

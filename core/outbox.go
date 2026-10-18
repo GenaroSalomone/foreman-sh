@@ -121,7 +121,7 @@ func (a *app) outboxMetas(proj string) []string {
 				if depth > 0 && (name == "node_modules" || name == ".git") {
 					return filepath.SkipDir
 				}
-				if depth >= 3 && name != ".hw" && !strings.Contains(path, "/.hw/") {
+				if depth >= 3 && name != ".hw" && !strings.Contains(path, "/.hw/") { // # MUTATION-ANCHOR: 826-G29
 					return filepath.SkipDir
 				}
 				if depth >= 8 {

@@ -9,7 +9,7 @@ const NOT_A_DISPATCH = new Set([
   'status', 'receipt', 'log', 'outbox', 'reports', 'output', 'stage', 'train', 'done', 'preview',
   'ruling', 'next', 'wait', 'reap', 'unstick', 'handle', 'revive', 'help', 'preflight',
   'review-range', 'review-delta', 'cockpit-state', 'human-boundary', 'executor-turn-end', 'decisions',
-  'sweep', 'suite', 'worktrees', 'gentle-home', 'wait-one', 'wait-monitor', 'chaining-lease-start', 'chaining-lease-expire',
+  'sweep', 'suite', 'worktrees', 'wait-one', 'wait-monitor', 'chaining-lease-start', 'chaining-lease-expire',
 ])
 
 // Splits a command into words the way a shell would for plain quoting. Returns

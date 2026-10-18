@@ -114,7 +114,7 @@ pass "790: a lib/ without done.sh refuses loudly, naming the module"
 # (the reuse route), _next_run_dir, _next_load_invoker_lib, _run_env_value.
 NMOD="$ROOT/lib/hw/next.sh"
 [ -r "$NMOD" ] || fail "790: $NMOD does not exist"
-NFNS="cmd_next _next_authorization _next_autoclosed_run_for_pane _next_missing_pane_message _next_wait_from_run _next_busy_message _next_finished_stale_stuck _next_opencode_session_from_receipt _next_settled_message _next_message _next_gentle_read"
+NFNS="cmd_next _next_authorization _next_autoclosed_run_for_pane _next_missing_pane_message _next_wait_from_run _next_busy_message _next_finished_stale_stuck _next_opencode_session_from_receipt _next_settled_message _next_message"
 for f in $NFNS; do
   left="$(rg -n "^$f\\(\\)" "$HW" || true)"
   [ -z "$left" ] || fail "790: bin/hw still defines $f — $left"

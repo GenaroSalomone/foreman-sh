@@ -34,7 +34,6 @@ loop:
 		a.die(usage)
 	}
 	var rules []preflightRule
-	sdd := ""
 	first := ""
 	if len(av) > 0 {
 		first = av[0]
@@ -63,10 +62,7 @@ loop:
 					agent = av[i+1]
 				}
 				i++
-			case "--sdd":
-				if i+1 < len(av) {
-					sdd = av[i+1]
-				}
+			case "--sdd": // read by nothing now: gentle's dep row was the only reader
 				i++
 			}
 		}
@@ -93,19 +89,10 @@ loop:
 			r, _ := depsRow(rows, n.name)
 			switch {
 			case r.needs == "always", r.needs == "vendor:"+agent:
-			case r.needs == "sdd:gentle" && sdd == "gentle":
 			default:
 				continue
 			}
-			bin := ""
-			if r.name == "gentle-ai" {
-				g := a.getenv("HW_GENTLE_HOME")
-				if g == "" {
-					g = a.getenv("HOME") + "/.local/share/hw/gentle-home"
-				}
-				bin = g + "/bin/gentle-ai"
-			}
-			state, ver := a.depsStatus(r, bin)
+			state, ver := a.depsStatus(r, "")
 			level := ""
 			switch state {
 			case "below":
@@ -115,7 +102,7 @@ loop:
 			default:
 				continue
 			}
-			rules = append(rules, preflightRule{"dep-floor", level, cutRunes(depsMessage(a.depsUpdateFor(r, bin), state, ver), 240)})
+			rules = append(rules, preflightRule{"dep-floor", level, cutRunes(depsMessage(a.depsUpdateFor(r, ""), state, ver), 240)})
 		}
 	}
 	// nothing is written, created or launched above or below, but the version cache

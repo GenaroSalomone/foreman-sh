@@ -5,7 +5,7 @@
 # definitions. Moved VERBATIM from bin/hw (parent fcf6d56f): _next_authorization,
 # _next_autoclosed_run_for_pane, _next_missing_pane_message, _next_wait_from_run,
 # _next_busy_message, _next_finished_stale_stuck, _next_opencode_session_from_receipt,
-# _next_settled_message, _next_message, _next_gentle_read and cmd_next.
+# _next_settled_message, _next_message and cmd_next.
 # Stayed in bin/hw, each with a caller outside `hw next`: _next_dispatch_model and
 # _next_dispatch_effort (the reuse route), _next_run_dir (dispatch, revive, status
 # readers), _next_load_invoker_lib (dispatch, unstick), _run_env_value (many).
@@ -362,8 +362,8 @@ _next_message() {
     # lets _brief_preamble's one-lane-only policy line survive a
     # `hw next` re-task instead of silently dropping it.
     PROJ="$(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || true)"  # MUTATION-ANCHOR: 171-M07a
-    # Tasks of a gentle pane default to a required deployed check, as _brief_qa_override reads it.
-    if [ "$(_run_dispatch_framework "$rundir")" = gentle ]; then HW_GENTLE_PANE=1; else HW_GENTLE_PANE=0; fi
+    # The new brief is read fresh: a decls memo left by an earlier brief in this process says nothing about it.
+    BRIEF_DECLS_READ=0; BRIEF_DECLS=""
     # The engram session registered at launch, read back from the receipt. A
     # value starting with none is a failed registration, and says nothing.
     HW_ENGRAM_SESSION="$(jq -r 'select(.key=="engram_session") | .value' "$rundir/receipt.jsonl" 2>/dev/null | tail -1 || true)"
@@ -380,23 +380,6 @@ _next_message() {
   # reason _send_brief keeps its separators inside the format string.
   printf 'NEXT TASK (task %s of this session — the previous one is closed and reported).\nYour ask budget and your done-invoker are reset for it: report this one with\ndone-invoker when it is finished, exactly as you did the last.\n\n%s---\n\n%s\n\n---\n\n%s\n\n---\n\n%s' \
     "$nextseq" "$entry_line" "$epistemic" "$preamble" "$text"  # MUTATION-ANCHOR: 12-M03
-}
-
-# What a gentle pane's re-task is told, built from the NEW brief by the same
-# gate the launch runs (so a bad delivery:, review: or deployed_check: refuses
-# the re-task before anything is sent). Sets GENTLE_DELIVERY, GENTLE_REVIEW and
-# GENTLE_DEPLOYED_CHECK in the caller.
-_next_gentle_read() {  # $1 = run dir, $2 = brief path
-  local rundir="$1" nbrief="$2" why d
-  [ -n "$nbrief" ] \
-    || die "hw next on a gentle pane REFUSED: ODD needs the next task as a brief (--brief <path>) that fixes its delivery strategy, because nobody answers in an executor's pane. Nothing was sent."
-  BRIEF="$nbrief"; BRIEF_DECLS="$(_brief_declares "$nbrief")" || BRIEF_DECLS=""
-  _gentle_brief_gate
-  d="$(gentle_home_dir)"
-  why="$(_gentle_home_ready "$d")" \
-    || die "hw next on a gentle pane REFUSED: gentle-ai's own home is not ready ($why). Nothing was sent. Provision it with: hw gentle-home"
-  # RDD is native (gentle-ai 4.0.0 reviews in process): no plugin or settings ride
-  # on the launch args, so any gentle pane can be re-tasked into review: rdd.
 }
 
 cmd_next() {
@@ -453,9 +436,14 @@ cmd_next() {
   # the message this block is part of, and a refused authorization refuses both.
   local next_auth=""
   next_auth="$(_next_authorization "$brief")" || die "the re-task brief's authorization was refused above. NOTHING was sent."  # MUTATION-ANCHOR: 703-M02
+  # THE REVIEW THE NEW BRIEF CHOSE is checked here too, before anything is sent: a bad
+  # value, or `plugins` with nothing to name, refuses the re-task exactly as the launch does.
+  [ -z "$brief" ] || ( BRIEF="$brief"; BRIEF_DECLS_READ=0; BRIEF_DECLS=""; _review_gate ) || exit 1
   case "$next_sdd" in
-    ""|speckit|none|gentle) ;;
-    *) die "--sdd must be speckit, none or gentle (got: $next_sdd)" ;;
+    ""|speckit|none) ;;
+    # RETIRED SPELLING (gentle-ai left hw): warn and run none, as the launch does.
+    gentle) warn "hw next --sdd gentle is retired: gentle-ai is no longer part of hw. Running --sdd none."; next_sdd=none ;;
+    *) die "--sdd must be speckit or none (got: $next_sdd)" ;;
   esac
 
   _next_load_invoker_lib
@@ -517,26 +505,9 @@ cmd_next() {
   [ -z "$STALE_HOOKS_ALLOWED_FILES" ] || [ "${HW_CORE_READONLY:-}" = 1 ] \
     || _receipt_into "$rundir" stale_hooks_allowed "$STALE_HOOKS_ALLOWED_FILES" "--allow-stale-hooks (hw next)"
   prior_framework="$(_run_dispatch_framework "$rundir")"
-  # A GENTLE PANE STAYS GENTLE. ODD is in its system prompt for the whole
-  # session, so every task in it is an ODD task: what is per task (delivery, the
-  # RDD bullet, the deployed check) is read from the NEW brief and re-injected
-  # as the message's lead block. `--sdd gentle` on a pane that was not launched
-  # gentle cannot work (ODD enters only at launch), and another mode on one that
-  # was would leave ODD asking an unattended pane its questions.
-  local next_gentle=0
-  if [ "$prior_framework" = gentle ]; then
-    case "$next_sdd" in ""|gentle) next_gentle=1; next_sdd="" ;;  # MUTATION-ANCHOR: 781-M06
-      *) die "hw next --sdd $next_sdd REFUSED: $pane was launched --sdd gentle, so ODD is in its system prompt for the whole session and cannot be turned off for one task. Nothing was sent. Re-task it as gentle (omit --sdd) or launch a fresh executor." ;;
-    esac
-  elif [ "$next_sdd" = gentle ]; then
-    die "hw next --sdd gentle REFUSED: ODD enters Claude's system prompt at launch, and $pane was not launched --sdd gentle (its framework is ${prior_framework:-undetermined}). Nothing was sent. Launch it fresh: hw <project> <task> --sdd gentle --agent claude --keep-pane --why \"...\""
-  fi
-  local next_gentle_block=""
-  if [ "$next_gentle" = 1 ]; then
-    _next_gentle_read "$rundir" "$brief"
-    # PROJ is the RUN's lane (the RDD bullet names its base), never the brainer's.
-    next_gentle_block="$(PROJ="$(_run_env_value "$rundir" HW_PROJECT 2>/dev/null || true)"; _gentle_preamble)"
-  fi
+  # A pane launched --sdd gentle before gentle-ai left hw still carries ODD in its system
+  # prompt for the whole session; hw no longer adds anything to it and says so once.
+  [ "$prior_framework" != gentle ] || warn "$pane was launched --sdd gentle, which is retired: its session still carries ODD, and hw adds nothing of it to this task."
   _validate_sdd_vendor_pair "$vendor" "$next_sdd" "$next_wtdir" "$prior_framework"
   # A re-task cannot change the pane's model, so the launch record is the only
   # place the orchestrator's model exists by the time an SDD mode is applied to
@@ -634,10 +605,9 @@ cmd_next() {
       fi
     fi
     local nextseq_dry="$((seq + 1))"
-    [ "$next_gentle" = 0 ] || info "gentle pane: task $nextseq_dry carries ODD's per-task block from $brief — $(_gentle_rdd_word), delivery $GENTLE_DELIVERY, deployed check $GENTLE_DEPLOYED_CHECK"
     ok "dry run: $pane is reachable, on task $seq of $(basename "$rundir") — NOTHING was sent and the pane was not touched"
     info "route $route -> $target${endpoint:+ (endpoint $endpoint)}"
-    info "would create $rundir/t$nextseq_dry and deliver $(printf '%s' "$(_next_message "$nextseq_dry" "${next_gentle_block:+$next_gentle_block$'\n\n'}" "$text" "$rundir" "$brief" "$next_wtdir" "$next_auth")" | wc -c | tr -d ' ') bytes as task $nextseq_dry ($(printf '%s' "$text" | wc -c | tr -d ' ') of them the task text; the rest is the preamble hw prepends, minus any framework entry line)"
+    info "would create $rundir/t$nextseq_dry and deliver $(printf '%s' "$(_next_message "$nextseq_dry" "" "$text" "$rundir" "$brief" "$next_wtdir" "$next_auth")" | wc -c | tr -d ' ') bytes as task $nextseq_dry ($(printf '%s' "$text" | wc -c | tr -d ' ') of them the task text; the rest is the preamble hw prepends, minus any framework entry line)"
     [ "$next_reopened" = 0 ] || info "run was revived (reopened): hw revive is the authority for this re-task, so its spent chaining lease is not consulted; task $nextseq_dry gets its own done-invoker with no --retask"
     if [ -n "$chaining_seconds_dry" ] && [ "$next_reopened" = 0 ]; then
       info "this one use would be consumed only after successful delivery; dry-run lease state is volatile and was not touched"
@@ -786,11 +756,6 @@ cmd_next() {
     fi
   fi
 
-  # A gentle pane's lead block: what ODD fixes for THIS task, from its own brief.
-  # An assignment, not `$( )` around the whole thing: a trailing blank line is
-  # part of the block and command substitution strips it.
-  [ "$next_gentle" = 0 ] || entry_line="$next_gentle_block"$'\n\n'  # MUTATION-ANCHOR: 781-M04
-
   # The executor is told its own bookkeeping changed, because its budgets did —
   # and, since 2026-09-21, it is told the rest of what a launch tells one.
   local msg
@@ -888,11 +853,8 @@ cmd_next() {
     _receipt_into "$rundir" "checks_required_t$nextseq" required \
       "kind build (declared or undeclared) at hw next — done-invoker requires \$HW_ARTIFACTS/checks.md"
   fi
-  # THE DEPLOYED CHECK OF A GENTLE RE-TASK, keyed by task for the same reason.
-  if [ "$next_gentle" = 1 ]; then
-    local dc_src="brief frontmatter deployed_check: in $brief at hw next (required when absent) — done-invoker holds a done to it"
-    _receipt_into "$rundir" "deployed_check_t$nextseq" "$GENTLE_DEPLOYED_CHECK" "$dc_src"  # MUTATION-ANCHOR: 781-M05
-  fi
+  # THE REVIEW THE NEW BRIEF CHOSE, keyed by task like the boundary above.
+  if [ -n "$brief" ]; then BRIEF="$brief" _review_receipt "$rundir" "review_t$nextseq"; fi
   # MUTATION-ANCHOR: 37-M19
   printf '%s\n' "$nextseq" > "$rundir/task" \
     || { [ "$chaining_locked" = 0 ] || _chaining_lock_release; die "delivered, but could not write $rundir/task — the executor is on task $nextseq and its invokers still think $seq. Write that file by hand before it reports."; }

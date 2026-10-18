@@ -347,5 +347,69 @@ case "$(on win "$M14" "$FIX/half-named.sh")" in
   *) fail "M14 SURVIVED: with unnamed declarations ignored the half-named subject was still red" ;;
 esac
 
-printf 'mapping - C01↔M01 declaration · C01↔M02 evidence · C03↔M05 marker breadth · C05↔M04 comment exclusion · C06↔M03 unreadable input · C07↔M06,M07,M08,M09 catch-all shape · C08 no wolf · C09↔M10 helper form enforced · C11↔M11 empty output · C12,C15↔M12 native Windows only · C13↔M13 every arm listed · C17↔M14 an unnamed arm · C14,C16 names only\n'
-printf 'coverage - 18 behavior claims, 14 dedicated mutants killed\n'
+# ── C18/C19 / M15. the exemption keyed on security(1) being absent ───────────
+#
+# The platform is not the question here: a subject that drives the macOS Keychain cannot run its arms on a host
+# with no security(1). PATH decides, so one case has a PATH of symlinks that does not hold it and the other a stub.
+printf '%s\t%s\t%s\n' one-arm.sh M01 "needs security(1)" > "$TMP/mutation-exempt-no-security.tsv"
+mkdir -p "$TMP/bin-nosec" "$TMP/bin-sec"
+for t in bash env basename dirname grep awk sort uname sed tr cat wc head tail; do
+  p="$(command -v "$t")" && ln -sf "$p" "$TMP/bin-nosec/$t"
+done
+printf '#!/bin/sh\nexit 0\n' > "$TMP/bin-sec/security"; chmod +x "$TMP/bin-sec/security"
+nosec() { local o rc=0; o="$(PATH="$TMP/bin-nosec" "$2" "$3" "$FIX/out-silent" 2>&1)" || rc=$?; printf '%s %s' "$rc" "$o"; }
+withsec() { local o rc=0; o="$(PATH="$TMP/bin-sec:$TMP/os-mac:$PATH" "$1" "$2" "$FIX/out-silent" 2>&1)" || rc=$?; printf '%s %s' "$rc" "$o"; }
+
+r="$(nosec x "$TMP/cov.healthy" "$FIX/one-arm.sh")"
+case "$r" in "0 exempt - one-arm.sh M01 on a host with no security(1): needs security(1)") ;; *) fail "C18 a listed arm on a host with no security(1) was not exempt, or not named with its reason: $r" ;; esac
+pass "C18 on a host with no security(1) an arm listed by name with its reason is exempt, and the run prints it"
+
+r="$(nosec x "$TMP/cov.healthy" "$FIX/two-arms.sh")"
+case "$r" in "1 "*"exercised none"*) ;; *) fail "C18b a subject with an unlisted arm was exempt without security(1): $r" ;; esac
+r="$(withsec "$TMP/cov.healthy" "$FIX/one-arm.sh")"
+case "$r" in "1 "*"exercised none"*) pass "C19 where security(1) exists the list exempts nothing, and a subject with an unlisted arm stays red without it" ;; *) fail "C19 the no-security list exempted an arm on a host that has security(1): $r" ;; esac
+
+M15="$(mut m15)" || fail "M15 could not be built"
+mutate_anchor 46-M15 "$M15" 'if false; then' || fail "M15 could not be built"
+case "$(nosec x "$M15" "$FIX/one-arm.sh")" in
+  "1 "*"exercised none"*) pass "mutant killed: M15 never reading the no-security list leaves a Keychain subject red where security(1) is absent, which C18 refuses" ;;
+  *) fail "M15 SURVIVED: with the no-security list never read the subject was still exempt" ;;
+esac
+M15B="$(mut m15b)" || fail "M15b could not be built"
+mutate_anchor 46-M15 "$M15B" 'if true; then' || fail "M15b could not be built"
+case "$(withsec "$M15B" "$FIX/one-arm.sh")" in
+  "0 exempt - one-arm.sh M01 on a host with no security(1)"*) pass "mutant killed: M15b reading the list even where security(1) exists exempts a subject on the Mac, which C19 refuses" ;;
+  *) fail "M15b SURVIVED: with the security(1) test removed the list still exempted nothing" ;;
+esac
+
+# ── C20/C21 / M16. the exemption keyed on the host not being macOS ─────────
+#
+# A subject that holds a macOS-only mechanism (961: dirhelper) cannot run its arms elsewhere. uname decides: one case
+# says Linux, the other Darwin. The list exists only for these cases, so no claim above reads it.
+mkdir -p "$TMP/os-linux"; printf '#!/bin/sh\necho Linux\n' > "$TMP/os-linux/uname"; chmod +x "$TMP/os-linux/uname"
+printf '%s\t%s\t%s\n' one-arm.sh M01 "a macOS mechanism" > "$TMP/mutation-exempt-not-macos.tsv"
+# security(1) present (a stub), so the no-security list above is not what answers on a Linux host
+notmac() { local o rc=0; o="$(PATH="$TMP/bin-sec:$TMP/os-linux:$PATH" "$1" "$2" "$FIX/out-silent" 2>&1)" || rc=$?; printf '%s %s' "$rc" "$o"; }
+r="$(notmac "$TMP/cov.healthy" "$FIX/one-arm.sh")"
+case "$r" in "0 exempt - one-arm.sh M01 on a host that is not macOS: a macOS mechanism") ;; *) fail "C20 a listed arm on a host that is not macOS was not exempt, or not named with its reason: $r" ;; esac
+r="$(notmac "$TMP/cov.healthy" "$FIX/two-arms.sh")"
+case "$r" in "1 "*"exercised none"*) ;; *) fail "C20b a subject with an unlisted arm was exempt off macOS: $r" ;; esac
+pass "C20 off macOS an arm listed by name with its reason is exempt, the run prints it, and an unlisted arm stays red"
+r="$(withsec "$TMP/cov.healthy" "$FIX/one-arm.sh")"
+case "$r" in "1 "*"exercised none"*) pass "C21 on macOS the not-macOS list exempts nothing" ;; *) fail "C21 the not-macOS list exempted an arm on macOS: $r" ;; esac
+M16="$(mut m16)" || fail "M16 could not be built"
+mutate_anchor 46-M16 "$M16" 'if false; then' || fail "M16 could not be built"
+case "$(notmac "$M16" "$FIX/one-arm.sh")" in
+  "1 "*"exercised none"*) pass "mutant killed: M16 never reading the not-macOS list leaves a macOS-only subject red off macOS, which C20 refuses" ;;
+  *) fail "M16 SURVIVED: with the not-macOS list never read the subject was still exempt" ;;
+esac
+M16B="$(mut m16b)" || fail "M16b could not be built"
+mutate_anchor 46-M16 "$M16B" 'if true; then' || fail "M16b could not be built"
+case "$(withsec "$M16B" "$FIX/one-arm.sh")" in
+  "0 exempt - one-arm.sh M01 on a host that is not macOS"*) pass "mutant killed: M16b reading the list on macOS too exempts a subject on the Mac, which C21 refuses" ;;
+  *) fail "M16b SURVIVED: with the platform test removed the list still exempted nothing" ;;
+esac
+rm -f "$TMP/mutation-exempt-not-macos.tsv"
+
+printf 'mapping - C01↔M01 declaration · C01↔M02 evidence · C03↔M05 marker breadth · C05↔M04 comment exclusion · C06↔M03 unreadable input · C07↔M06,M07,M08,M09 catch-all shape · C08 no wolf · C09↔M10 helper form enforced · C11↔M11 empty output · C12,C15↔M12 native Windows only · C13↔M13 every arm listed · C17↔M14 an unnamed arm · C14,C16 names only · C18,C19↔M15 no security(1) · C20,C21↔M16 not macOS\n'
+printf 'coverage - 22 behavior claims, 17 dedicated mutants killed\n'

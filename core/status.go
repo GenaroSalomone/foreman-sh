@@ -94,6 +94,16 @@ func (a *app) laneNamesHint() string {
 }
 
 func (a *app) cmdStatus(project string, all bool) int {
+	rc, _ := a.statusTable(project, all)
+	return rc
+}
+
+// orphanLine is what `_orphans_quiet` reads of one entry of the orphans file: its key and why.
+type orphanLine struct{ key, why string }
+
+// statusTable prints the table half of `hw status` and hands back the orphan queue as the orphans file holds it, so a
+// caller that composes the whole of `hw status` (status_full.go) need not write that file to read it back.
+func (a *app) statusTable(project string, all bool) (int, []orphanLine) {
 	h := herdrClient{getenv: a.getenv}
 	d := &statusData{}
 	// what does not depend on herdr's lists starts now and is joined where it is used: the process holding
@@ -151,7 +161,22 @@ func (a *app) cmdStatus(project string, all bool) int {
 	for _, o := range auditCh() {
 		a.term.out.Write(o)
 	}
-	return 0
+	return 0, s.orphanLines(orphans)
+}
+
+// orphanLines is the (key, why) of each orphan, in the order writeOrphansJSON writes them.
+func (s *statusRun) orphanLines(orphans []*orphanRec) []orphanLine {
+	live := map[string]bool{}
+	for _, p := range s.d.panes {
+		if pyTruthy(p["pane_id"]) {
+			live[pyStr(p["pane_id"])] = true
+		}
+	}
+	var out []orphanLine
+	for _, o := range orphans {
+		out = append(out, orphanLine{o.key, orphanWhy(o, live)})
+	}
+	return out
 }
 
 // herdrServerStarted is _herdr_server_started: ps's lstart of the process holding the socket.

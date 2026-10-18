@@ -48,6 +48,9 @@ func brainRoot(getenv func(string) string) string {
 
 // run is main without the process: it returns the exit status.
 func run(args []string, stdout, stderr *os.File) (rc int) {
+	if len(args) > 0 && args[0] == "channel-send" { // the delivery transport (channel_send.go): raw bytes, no colour, no lane table
+		return runChannelSend(args[1:], stdout, stderr, realGetenv, os.Stdin, isTerminal(stdout), isTerminal(os.Stdin))
+	}
 	color := getenvColor(realGetenv, stdout, stderr)
 	if color {
 		enableVT(stdout)
@@ -78,13 +81,13 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		}
 	}()
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "hw-core: no verb (receipt, log, handle, help, status, worktrees, review-range, review-delta, preflight, outbox, reports, sweep, reap, wait, wait-one, wait-monitor, dispatch, done, next, revive, preview, and the T3 writers)")
+		fmt.Fprintln(stderr, "hw-core: no verb (receipt, log, handle, help, status, status-full, executor-gate, worktrees, review-range, review-delta, preflight, outbox, reports, sweep, reap, wait, wait-one, wait-monitor, dispatch, done, next, revive, preview, and the T3 writers)")
 		return 64
 	}
 	verb := args[0]
 	switch verb {
-	case "receipt", "log", "handle", "help", "status", "worktrees":
-	case "review-range", "review-delta", "preflight", "outbox", "reports", "sweep", "reap", "wait", "wait-one", "wait-monitor": // T2
+	case "receipt", "log", "handle", "help", "status", "worktrees", "executor-gate":
+	case "review-range", "review-delta", "preflight", "outbox", "reports", "sweep", "reap", "wait", "wait-one", "wait-monitor", "status-full": // T2; status-full is all of `hw status`
 		for _, tool := range []string{"herdr", "git", "jq"} { // bin/hw's `need herdr; need git; need jq`, before any verb
 			if _, err := exec.LookPath(tool); err != nil {
 				t.die("missing required command: " + tool)
@@ -105,13 +108,24 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		if isT4Verb(verb) { // train T4, the large writers (t4.go)
 			break
 		}
-		fmt.Fprintf(stderr, "hw-core: %s is not a verb of hw-core (receipt, log, handle, help, status, worktrees, review-range, review-delta, preflight, outbox, reports, sweep, reap, wait, wait-one, wait-monitor, dispatch, done, next, revive, preview, and the T3 writers: ruling, human-boundary, executor-turn-end, chaining-lease-start, chaining-lease-expire, outbox-flush, output, stage)\n", verb)
+		if isT6Verb(verb) { // train T6, the verbs that were bash-only (t6.go)
+			for _, tool := range []string{"herdr", "git", "jq"} { // bin/hw:696 `need herdr; need git; need jq`, before any verb
+				if _, err := exec.LookPath(tool); err != nil {
+					t.die("missing required command: " + tool)
+				}
+			}
+			break
+		}
+		fmt.Fprintf(stderr, "hw-core: %s is not a verb of hw-core (receipt, log, handle, help, status, status-full, executor-gate, worktrees, review-range, review-delta, preflight, outbox, reports, sweep, reap, wait, wait-one, wait-monitor, dispatch, done, next, revive, preview, and the T3 writers: ruling, human-boundary, executor-turn-end, chaining-lease-start, chaining-lease-expire, outbox-flush, output, stage)\n", verb)
 		return 64
 	}
 	if verb == "status" || verb == "worktrees" { // bin/hw's `need herdr`, not an empty "herdr unreachable: "
 		if _, err := exec.LookPath("herdr"); err != nil {
 			t.die("missing required command: herdr")
 		}
+	}
+	if verb == "-V" || verb == "--version" { // bin/hw:749, before the lane table: it answers from a brain whose table is broken
+		return cmdVersion(t, brainRoot(getenv))
 	}
 	home := getenv("HOME")
 	if home == "" && runtime.GOOS == "windows" {
@@ -135,6 +149,13 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 	}
 	a := &app{term: t, args: args[1:], getenv: getenv, stdin: stdin}
 	a.c = &ctx{t: tab, brain: brain, work: work, home: home, getenv: getenv}
+	// An executor does not have the brainer's verbs (bin/hw's gate, which comes after its lane table): refused here, in Go,
+	// for every verb hw-core answers, and for the ones it does not by the shim's `executor-gate` call (executor_gate.go).
+	if verb == "executor-gate" {
+		a.executorGate(a.args)
+		return 0
+	}
+	a.executorGate(gateArgv(verb, a.args))
 	switch verb {
 	case "receipt":
 		a.cmdReceiptArgs()
@@ -146,6 +167,8 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		a.cmdHelp()
 	case "status":
 		return a.cmdStatusArgs()
+	case "status-full":
+		return a.cmdStatusFull()
 	case "worktrees":
 		return a.cmdWorktrees()
 	case "review-range":
@@ -176,9 +199,12 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return a.cmdWait()
 	case "dispatch":
 		return a.cmdDispatch()
-	default: // a verb of T3 or T4 (checked above)
+	default: // a verb of T3, T4 or T6 (checked above)
 		if isT3Verb(verb) {
 			return a.cmdT3(verb)
+		}
+		if isT6Verb(verb) {
+			return a.cmdT6(verb)
 		}
 		return a.cmdT4(verb)
 	}

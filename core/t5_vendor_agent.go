@@ -144,10 +144,6 @@ func (d *dsp) buildAgentArgs() {
 			}
 			d.agentArgs += " --effort " + d.effort // # MUTATION-ANCHOR: 844-B45
 		}
-		if d.sdd == "gentle" {
-			gh := d.gentleHomeDir()
-			d.agentArgs += " --append-system-prompt-file " + gh + "/odd-block.md --plugin-dir " + gh + "/plugin/gentle-odd --settings " + gh + "/guard-settings.json"
-		}
 	case "opencode":
 		if d.model != "" {
 			if !strings.Contains(d.model, "/") { // # MUTATION-ANCHOR: 844-B46

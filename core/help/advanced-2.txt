@@ -1,9 +1,4 @@
 
-  THE GENTLE FLOW
-    --sdd gentle       gentle-ai's ODD, only in a lane whose sdd_modes lists it
-                       and only with --agent claude; see hw gentle-home.
-    hw gentle-home [--check|--path] provision gentle-ai's own HOME for --sdd gentle
-
   THE BRIEF AND THE LEDGER
     --no-brief         launch with no brief on purpose (without it a missing brief
                        dies, naming the path it looked for and the nearest names);

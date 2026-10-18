@@ -135,12 +135,10 @@ func (d *dsp) run(argv []string) {
 	}
 	switch d.sdd {
 	case "", "speckit", "none":
-	case "gentle":
-		d.validateSddGentle()
+	case "gentle": // RETIRED SPELLING: gentle-ai left hw (setup/decisions.md, 2026-10-16). Warn, run none.
+		d.warn("--sdd gentle is retired: gentle-ai is no longer part of hw. Running --sdd none.")
+		d.sdd = "none"
 	default:
-		if has(strings.Fields(d.c.t.get(d.proj, "sdd_modes")), "gentle") {
-			d.die("--sdd must be speckit, none or gentle (got: " + d.sdd + ")")
-		}
 		d.die("--sdd must be speckit or none (got: " + d.sdd + ")")
 	}
 	d.checkReusableExecutor(d.proj)
@@ -155,9 +153,6 @@ func (d *dsp) run(argv []string) {
 		} else {
 			d.routeForecastCheck(d.proj, d.task, d.routeNow, d.reuseLine)
 		}
-	}
-	if d.sdd == "gentle" && d.reusePane != "" {
-		d.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: a reusable executor is live in " + d.proj + " (" + d.reusePane + "), and ODD enters Claude's system prompt only at launch. Nothing was built. Pass --fresh.")
 	}
 	if d.reusePane == "" {
 		d.validateSddVendorPair(d.agent, d.sdd, d.codexValidationSurface())

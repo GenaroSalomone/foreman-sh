@@ -3,8 +3,7 @@ package main
 // Area A1 — the run's environment (bin/hw: _hw_env, _export_hw_env, _write_run_env, _trust_dir, _apply_sdd,
 // _ensure_artifacts_dir, _artifacts_dir_for, claude_session_env_prep from bin/project-spaces.sh), and the private
 // helpers they call that no other file of the port holds: _review_base_ref, _subagent_model_applies and its two
-// receipt words, _opencode_config_content, _export_opencode_overlay, _brain_guard_on, _checks_gate_applies,
-// _exclude_odd.
+// receipt words, _opencode_config_content, _export_opencode_overlay, _brain_guard_on, _checks_gate_applies.
 //
 // Every file write goes through l.fs (HW_CORE_READONLY records it); every program is run through l.sh.
 // ~/.claude.json is edited by python3 in bash (json.load / json.dump(indent=2) / os.replace): the Go below carries
@@ -161,24 +160,6 @@ func (l *lch) reviewBaseRef(wd string) string {
 	}
 	out, _ := l.git(false, wd, "merge-base", "HEAD", ref)
 	return trimNL(out)
-}
-
-// excludeOdd is `_exclude_odd <worktree>`: odd/ ignored in THIS worktree only, by an untracked odd/.gitignore.
-func (l *lch) excludeOdd(wt string) {
-	if _, rc := l.git(false, wt, "rev-parse", "--is-inside-work-tree"); rc != 0 {
-		return
-	}
-	if err := l.fs.mkdirAll(wt + "/odd"); err != nil {
-		l.warn("cannot create " + wt + "/odd; ODD's feature documents may show in git status")
-		return
-	}
-	if !fileExists(wt + "/odd/.gitignore") {
-		if err := l.fs.write(wt+"/odd/.gitignore", []byte("*\n"), 0o666); err != nil {
-			l.warn("cannot write " + wt + "/odd/.gitignore; ODD's feature documents may show in git status")
-			return
-		}
-	}
-	l.info("odd/ ignored in this worktree only (untracked odd/.gitignore), so ODD's feature documents never reach a commit")
 }
 
 // ── _hw_env ──────────────────────────────────────────────────────────────────
@@ -392,10 +373,6 @@ func (l *lch) ensureArtifactsDir(wt string) {
 // applySdd is `_apply_sdd <dir> <mode>`: true is bash's status 0.
 func (l *lch) applySdd(dir, mode string) bool {
 	l.sddAppliedDir = dir
-	if mode == "gentle" {
-		l.excludeOdd(dir) // gentle writes one untracked file: odd/.gitignore
-		return true
-	}
 	if mode != "speckit" { // # MUTATION-ANCHOR: 847-A1-14
 		return true
 	}
@@ -615,6 +592,7 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 	if len(l.pluginsDeclared()) > 0 { // # MUTATION-ANCHOR: 847-P-04
 		l.receiptInto(dir, "plugins", l.pluginsReceiptValue(), l.pluginsReceiptSource())
 	}
+	l.reviewReceipt(dir, "")
 	// ONLY WHEN IT RESOLVED: a receipt is a fact on disk and a blank one would be silence dressed as an answer.
 	if ref := l.env("HW_REVIEW_BASE_REF"); ref != "" { // # MUTATION-ANCHOR: 847-A1-24
 		l.receiptInto(dir, "review_base", ref,
@@ -628,13 +606,6 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 	if l.checksGateApplies() {
 		l.receiptInto(dir, "checks_required_t1", "required",
 			"kind build (declared or undeclared) at dispatch — done-invoker requires $HW_ARTIFACTS/checks.md")
-	}
-	// THE DEPLOYED CHECK done-invoker HOLDS AN ODD RUN TO; an unreadable value records nothing rather than a guess.
-	if l.sdd == "gentle" {
-		if dc, ok := l.rtGentleDeployedCheck(); ok { // # MUTATION-ANCHOR: 847-A1-25
-			l.receiptInto(dir, "deployed_check_t1", dc,
-				"brief frontmatter deployed_check: in "+orDefaultStr(l.brief, "<no brief>")+" at dispatch (required when absent) — done-invoker holds a done to it")
-		}
 	}
 	if l.reportToChosen {
 		l.receiptInto(dir, "report_route",

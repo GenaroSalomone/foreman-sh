@@ -196,7 +196,7 @@ func (d *dsp) depsLineFor(proj string) {
 }
 
 // cutChars is `cut -c1-N` per line: the system's own cut, so a UTF-8 locale counts characters and C counts bytes.
-func cutChars(s string, n int) string { return brCutChars(s, n) }
+func (d *dsp) cutChars(s string, n int) string { return brCutChars(s, n, d.vdUTF8()) }
 
 // dispatchManifest is `_dispatch_manifest`: builds the text, prints it, then runs every gate a launch would run
 // before anything is built, and on a dry run says so and ends.
@@ -211,12 +211,6 @@ func (d *dsp) dispatchManifest(dir string) {
 		switch d.sdd {
 		case "none":
 			sddSrc = "chosen (--sdd none) — the directory keeps its own mode, hw forces no entry"
-		case "gentle":
-			dv := d.gentleDeployedCheck
-			if dv == "" {
-				dv = "required"
-			}
-			sddSrc = "chosen (--sdd gentle) — gentle-ai " + d.gentleVersion + " ODD in Claude's system prompt from " + d.gentleHomeDir() + "; " + d.gentleRddWord() + ", no gentle-ai hooks; delivery: " + d.gentleDelivery + "; deployed check: " + dv
 		default:
 			sddSrc = "chosen (--sdd " + d.sdd + "), checked on disk below"
 		}
@@ -299,9 +293,6 @@ func (d *dsp) dispatchManifest(dir string) {
 		entryLine = d.frameworkEntry(strings.SplitN(live, " ", 2)[0])
 		if entryLine == "" {
 			entryLine = "<none: '" + live + "' has no single entry>"
-		}
-		if d.sdd == "gentle" {
-			entryLine = "none — ODD runs from the system prompt; the protocol has no entry command"
 		}
 	} else {
 		entryLine = "none (no framework flow for this task)"
@@ -503,7 +494,7 @@ func (d *dsp) dispatchManifest(dir string) {
 
 	designLine := ""
 	if d.designGateApplies() {
-		designLine = "judged before code — boundary: " + trimNL(cutChars(d.briefBoundary(), 96)) + "  (done-invoker refuses done without an APPROVED design-judgment.md)"
+		designLine = "judged before code — boundary: " + trimNL(d.cutChars(d.briefBoundary(), 96)) + "  (done-invoker refuses done without an APPROVED design-judgment.md)"
 	}
 
 	guardLine := ""
@@ -554,7 +545,7 @@ func (d *dsp) dispatchManifest(dir string) {
 	if d.explorerLine != "" {
 		sb.WriteString("  explorer    " + d.explorerLine + "\n")
 	}
-	if pl := d.pluginsLines(); pl != "" {
+	if pl := d.pluginsLines() + d.reviewLines(); pl != "" {
 		sb.WriteString(pl[1:] + "\n")
 	}
 	sb.WriteString("  permissions " + permissionsLine + "\n")

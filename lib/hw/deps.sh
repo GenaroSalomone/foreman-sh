@@ -2,7 +2,7 @@
 # shellcheck disable=SC2034  # DEPS_* are read by whoever sourced this file
 # The version floors of the outside tools, and the one check against them.
 #
-# Sourced by bin/hw (`hw preflight`, gentle-ai's pin), bin/brain (the cockpit's
+# Sourced by bin/hw (`hw preflight`), bin/brain (the cockpit's
 # claude floor) and install.sh (--check). The numbers live in deps.conf beside this
 # file; nothing else in the tree keeps one. Bash 3.2 (macOS): no associative
 # arrays, no ${x,,}.

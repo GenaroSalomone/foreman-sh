@@ -52,6 +52,39 @@ set -euo pipefail
 # file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
 case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
+# ── hw-core: this tool as a Go binary (core/channel_send*.go) ───────────────────────────────────────────
+# THE DEFAULT IS BASH, and the bash below is the rollback. HW_IMPL_CHANNEL_SEND (else HW_IMPL) = `go` execs
+# `hw-core channel-send` with the same argv, stdin and environment; anything else (bash, shadow, unset) runs the
+# bash below. The Go answers the same command line with the same stdout, stderr, exit codes and on-disk effects
+# (core/channel_send_test.go and setup/tests/05, 26, 41, 42, 66, 101, 111, 135 hold both). hw-core is HW_CORE,
+# else beside this file, else core/dist/<os>-<arch>/ (setup/build-core builds it). A hw-core not built says so
+# once and the bash answers.
+_cs_impl="${HW_IMPL_CHANNEL_SEND:-${HW_IMPL:-}}"
+if [ "$_cs_impl" = go ]; then
+  _cs_src="${BASH_SOURCE[0]}"
+  while [ -L "$_cs_src" ]; do
+    _cs_dir="$(cd -P "$(dirname "$_cs_src")" && pwd)"
+    _cs_src="$(readlink "$_cs_src")"
+    case "$_cs_src" in /*) ;; *) _cs_src="$_cs_dir/$_cs_src" ;; esac
+  done
+  _cs_bin="$(cd -P "$(dirname "$_cs_src")" && pwd)"
+  _cs_core=""
+  if [ -n "${HW_CORE:-}" ]; then
+    [ ! -x "$HW_CORE" ] || _cs_core="$HW_CORE"
+  else
+    _cs_os="$(uname -s | tr 'A-Z' 'a-z')"; _cs_arch="$(uname -m)"
+    case "$_cs_arch" in x86_64) _cs_arch=amd64 ;; aarch64) _cs_arch=arm64 ;; esac
+    for _cs_c in "$_cs_bin/hw-core" "$_cs_bin/../core/dist/$_cs_os-$_cs_arch/hw-core"; do
+      if [ -x "$_cs_c" ]; then _cs_core="$_cs_c"; break; fi
+    done
+  fi
+  if [ -n "$_cs_core" ]; then
+    HW_CORE_BIN_DIR="$_cs_bin" exec "$_cs_core" channel-send "$@"
+  fi
+  printf 'channel-send: hw-core is not built (HW_IMPL=go), so the bash implementation runs — setup/build-core builds it\n' >&2
+fi
+unset _cs_impl _cs_src _cs_dir _cs_bin _cs_core _cs_os _cs_arch _cs_c
+
 # ── THE EXIT CODE A PIPE SWALLOWS ───────────────────────────────────────────
 #
 # THE INCIDENT, twice, with this tool and in this exact shape. A brainer ran

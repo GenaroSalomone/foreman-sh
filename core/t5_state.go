@@ -110,9 +110,6 @@ type dsp struct {
 	routeNow                                                      string
 	dispatchRoute                                                 string // fresh | reuse
 
-	// ODD (--sdd gentle), read by the manifest
-	gentleVersion, gentleDelivery, gentleDeployedCheck string
-
 	// the manifest
 	dispatchText      string
 	dispatchFramework string

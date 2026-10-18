@@ -52,6 +52,8 @@ cp -R "$ROOT/setup/." "$root/setup/"
 rm -f "$root/setup/tests"/[0-9]*.sh
 # the copy carries the real setup/retired-subjects.txt, whose globs match none of the stubs below, and the runner refuses a glob that matches no subject
 rm -f "$root/setup/retired-subjects.txt"
+# nor the real time-budget gate: the runner asks setup/test-budget-gate only where the file exists ("a fixture with no gate asks nothing"), and a one-subject fixture estimates 0 s, so the real SUITE ceiling reads as stale and refuses a run this subject is not about
+rm -f "$root/setup/test-budget-gate" "$root/setup/test-budget-ceilings.tsv"
 cp "$broken" "$root/setup/tests/01-broken.sh"
 budget='{"fast_gate_threshold_seconds": 2.0, "files": {"01-broken.sh": {"exit": 0, "seconds": 0.05}}}'
 printf '%s\n' "$budget" > "$root/setup/test-budgets.json"

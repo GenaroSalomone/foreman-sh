@@ -70,7 +70,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ($names | all(word)) then . else error("a lane name is not a lowercase word: \($names | map(select(word | not)))") end
     | (["product_repo","hw_aliases","brain_aliases","space","engram","vendor","model","account","artifacts","repoless",
         "checkout","checkout_var","base","base_ref_prefix","branch","worktree_root","worktree","ports",
-        "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","qa_target","sdd_modes",
+        "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","qa_target",
         "model_floor","model_pins","subagent_model","requested_by","opencode_config_dir","suite_lock"]) as $fields
     | ({model_floor: ["tier","accepts"], deps: ["line","contention"], db: ["line","provisioned","no_worktree","no_db_inert"],
         devserver: ["start","line","off"], reap: ["copies","copies_from","max_worktrees","max_disk_pct","max_build_gb"]}) as $sub
@@ -80,8 +80,6 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ($badsub | length) == 0 then . else error("unknown lane field(s): \($badsub | join(", "))") end
     | ([$lanes | to_entries[] | .key as $l | (.value | keys[]) | select(. as $k | $fields | index([$k]) | not) | "\($l).\(.)"]) as $unknown
     | if ($unknown | length) == 0 then . else error("unknown lane field(s): \($unknown | join(", "))") end
-    | ([$lanes | to_entries[] | .key as $l | select(.value.sdd_modes != null) | .value.sdd_modes
-        | if type == "array" and all(. == "gentle") then empty else "\($l).sdd_modes" end]) as $badmodes
     | ([$lanes | to_entries[] | .key as $l | select(.value.requested_by != null)
         | if (.value.requested_by | IN("required", "warn")) then empty else "\($l).requested_by" end]) as $badreq
     | if ($badreq | length) == 0 then . else error("requested_by is required or warn: \($badreq | join(", "))") end
@@ -102,7 +100,6 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ($badsub | length) == 0 then . else error("subagent_model is inherit, a Claude alias (haiku, sonnet, opus, fable) or a claude-* id: \($badsub | join(", "))") end
     | if ($badpins | length) == 0 then . else error("model_pins maps an alias (haiku, sonnet, opus, fable) to a full claude-* id: \($badpins | join(", "))") end
     | if ($badfloor | length) == 0 then . else error("model_floor.tier is haiku, sonnet or opus, and accepts is a list of model ids: \($badfloor | join(", "))") end
-    | if ($badmodes | length) == 0 then . else error("sdd_modes lists the modes a lane adds to speckit and none, and the only one is gentle: \($badmodes | join(", "))") end
     | ((keys - ["comment","work","operator","metrics_direct","survey_order","retention","lanes"])) as $top
     | if ($top | length) == 0 then . else error("unknown top-level key(s): \($top | join(", "))") end
     | ((.retention // {}) as $r
@@ -155,7 +152,6 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
           emit($l; "agents_from"; $v.agents_from // ""),
           emit($l; "brief_note"; $v.brief_note // ""),
           emit($l; "qa_target"; if $v.qa_target == true then "1" else "" end),
-          emit($l; "sdd_modes"; ($v.sdd_modes // []) | join(" ")),
           emit($l; "opencode_config_dir"; $v.opencode_config_dir // "" | exp),
           emit($l; "deps_line"; $v.deps.line // ""),
           emit($l; "deps_contention"; if $v.deps.contention == true then "1" else "" end),
@@ -460,15 +456,6 @@ project_default_account() {
 project_artifacts() {
   local v; v="$(lane_get "$1" artifacts)" || v=""
   printf '%s' "${v:-default}"
-}
-
-# THE FRAMEWORK MODES A LANE ADDS to the two every lane has (speckit, none).
-# One exists: `gentle`, gentle-ai's ODD, enabled for one lane
-# (setup/decisions.md). A lane that lists nothing answers exactly
-# as it did before the mode existed.
-project_sdd_modes() {
-  local v; v="$(lane_get "$1" sdd_modes)" || v=""
-  printf '%s' "$v"
 }
 
 # The config directory an account name resolves to. Empty means "whatever this

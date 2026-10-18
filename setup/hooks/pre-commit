@@ -34,6 +34,37 @@ if printf '%s\n' "$staged" | grep -qE '/decisions\.md$'; then
   python3 "$(git rev-parse --show-toplevel)/setup/hooks/decisions-check.py" --staged
 fi
 
+# THE SUITE'S TIME BUDGET IS A GATE AT THE COMMIT THAT MAKES IT WORSE (2026-10-16: «un test de más de 10 min, o
+# una suite completa de más de 45, deja rojo el commit que lo hizo más lento y nombra qué test partir»).
+# setup/test-budget-gate answered that only when subject 965 ran in a full run, so a commit recording a 700 s
+# subject passed every gate it went through and was found at the next full run. It reads setup/test-budgets.json
+# and setup/test-budget-ceilings.tsv, in about a second, and none of those paths is in SUITE_TRIGGER_PATTERN, so
+# the gate below would not even start for them: it is asked here, over the STAGED blobs (a private index is what
+# is committed, not the working tree), whenever the commit touches the budget, its ceilings or the gate itself.
+tb_root="$(git rev-parse --show-toplevel)"
+if [ -f "$tb_root/setup/test-budget-gate" ] \
+   && printf '%s\n' "$staged" | grep -qE '^setup/(test-budgets\.json|test-budget-ceilings\.tsv|test-budget-gate)$' \
+   && git cat-file -e :setup/test-budgets.json 2>/dev/null; then
+  tb_dir="$(mktemp -d "${TMPDIR:-/tmp}/hw-precommit-budget.XXXXXX")"
+  git show :setup/test-budgets.json > "$tb_dir/test-budgets.json"
+  : > "$tb_dir/ceilings.tsv"
+  if git cat-file -e :setup/test-budget-ceilings.tsv 2>/dev/null; then git show :setup/test-budget-ceilings.tsv > "$tb_dir/ceilings.tsv"; fi
+  tb_rc=0
+  tb_out="$(python3 "$tb_root/setup/test-budget-gate" "$tb_dir/test-budgets.json" "$tb_dir/ceilings.tsv" 2>&1)" || tb_rc=$?  # MUTATION-ANCHOR: 966-M01
+  rm -rf "$tb_dir"
+  if [ "$tb_rc" -ne 0 ]; then
+    {
+      echo "pre-commit: this commit leaves the suite over its time budget (setup/test-budget-gate), so it is refused in seconds."
+      echo
+      printf '%s\n' "$tb_out" | sed 's/^/    /'
+      echo
+      echo "Split the subject it names (the line says how), or fix the measurement; ask again, cheaply:  python3 setup/test-budget-gate"
+      echo "If you are certain: git commit --no-verify"
+    } >&2
+    exit 1
+  fi
+fi
+
 tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|lib/|shell/|layouts/|setup/plans/|setup/hooks/|CLAUDE\.shared\.md|CLAUDE\.md$|README\.md|BRIEF-TEMPLATE\.md)' || true)"
 # THE LANES ARE A LIST IN setup/hooks/sweep-lanes, one per line, not a literal
 # here: which lanes a brain has is configuration, and this hook is mechanism.

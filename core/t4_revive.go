@@ -234,14 +234,6 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 	if cmdArgs == restS {
 		a.reviveDie("session_resume has no arguments after '" + cmdBin + "': " + resume)
 	}
-	gentleArgs := ""
-	if vendor == "claude" {
-		g, ok := a.reviveGentleArgs(rundir)
-		if !ok {
-			a.reviveDie(g)
-		}
-		gentleArgs = g
-	}
 	if cwd == "" {
 		a.reviveDie("session_resume has an empty cd target: " + resume)
 	}
@@ -291,9 +283,6 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 	}
 	a.printf("    session  %s\n", shownSid)
 	a.printf("    resume   %s %s\n", cmdBin, cmdArgs)
-	if gentleArgs != "" {
-		a.printf("    gentle   %s   (recomputed from the current gentle-home)\n", gentleArgs)
-	}
 	a.printf("    env      %d variables from %s\n", len(envShown), rundir+"/env")
 	for _, rec := range envShown {
 		a.printf("      %s\n", rec)
@@ -374,9 +363,6 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 	a.receiptInto(rundir, "revived_pane", pane, "herdr tab create reply .result.root_pane.pane_id")
 
 	st.agentArgs = cmdArgs
-	if gentleArgs != "" {
-		st.agentArgs += " " + gentleArgs
-	}
 	a.reviveResolvePermissions(st)
 	a.reviveFrameworkArgs(st, vendor, cmdArgs, rundir)
 	if !a.reviveAgentStart(st, pane, task, vendor) {

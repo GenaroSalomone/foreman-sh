@@ -16,8 +16,7 @@ lines for your shell profile: add them and open a new terminal.
 ```
 
 - macOS, or Linux (Debian/Ubuntu-class, bash 5; tested in a container, see
-  `KNOWN-LIMITATIONS.md` L1). Windows: WSL2, or native Windows under Git Bash,
-  measured on a CI runner and a Windows 11 VM (see [Windows](#windows) below).
+  `KNOWN-LIMITATIONS.md` L1). Windows is not supported (see [Windows](#windows) below).
 - `git`, `jq` 1.7 or newer, `python3`, `sd`, `fd` and `rg` (`hw` calls all three).
   On Linux (Debian: `apt install sd fd-find ripgrep`, then link `fdfind` as `fd`)
   also Node 22.7 or newer (the OpenCode guard plugin is an ES module in a `.js` file).
@@ -30,11 +29,13 @@ lines for your shell profile: add them and open a new terminal.
 - optional: [Go](https://go.dev/dl) 1.22 or newer, which lets the installer build `hw-core`, the Go half
   of `hw` (see [The Go core and the way back](#the-go-core-and-the-way-back)); without it `hw` runs in
   bash, and `--check` does not list it as missing
+- optional: the Bitwarden CLI (`npm i -g @bitwarden/cli`), only for a brief that declares `secrets:`
+  (see [Secrets](#secrets-bitwarden))
 - for an OpenCode lane: [OpenCode](https://opencode.ai) 1.18.31 or newer, and herdr's OpenCode
   integration: `herdr integration install opencode` (run `opencode` once first,
   so its config directory exists)
 
-Every version floor above (herdr, Claude Code, OpenCode, Node, jq, engram, and gentle-ai's pin)
+Every version floor above (herdr, Claude Code, OpenCode, Node, jq and engram)
 is one row of `lib/hw/deps.conf`. `--check` prints each installed version against its floor and
 refuses one below it with the command to update it; `hw preflight --json -- <dispatch>` does the
 same for the tools that dispatch uses (rule `dep-floor`). A tool that is not installed is reported
@@ -336,36 +337,23 @@ with another `--vendor` for the same lane is refused.
 
 ## Frameworks for `--sdd`
 
-`hw` asks `--sdd none|speckit|gentle` on every dispatch where a framework is in
-play. `none` needs nothing. The other two are third-party projects the installer
-does not install, and each is refused before anything is built when it is not
+`hw` asks `--sdd none|speckit` on every dispatch where a framework is in
+play. `none` needs nothing. `speckit` is a third-party project the installer
+does not install, and it is refused before anything is built when it is not
 there:
 
 | Mode | What the machine needs |
 |---|---|
 | `speckit` | [Spec Kit](https://github.com/github/spec-kit) (MIT), with a `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Claude Code only: Codex and OpenCode dispatches are refused. |
-| `gentle` | [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai) (MIT), through `hw gentle-home`, and `"sdd_modes": ["gentle"]` on the lane in `projects.json`, which you add by hand. Claude Code only. |
 
-foreman-sh is not part of either project and implies no endorsement by them.
+foreman-sh is not part of that project and implies no endorsement by it.
 
-`hw gentle-home` downloads the pinned gentle-ai release (4.0.0) from its GitHub
-releases, checks it against a sha256 pinned in `hw` for your platform (macOS or
-Linux, arm64 or amd64) and installs it for Claude Code only, with `HOME` pointed
-inside `~/.local/share/hw/gentle-home` (`HW_GENTLE_HOME` or `--dir` moves it).
-It is idempotent and writes nothing outside that directory. It refuses a
-directory inside your real `~/.claude`, `~/.config/opencode` or `~/.codex`, and
-a download whose checksum differs: that one is deleted and nothing is installed.
-
-```sh
-hw gentle-home --check   # complete? exits 1 if not; --path prints the directory
-hw gentle-home           # provision it
-rm -rf ~/.local/share/hw/gentle-home   # remove it; nothing else was touched
-```
-
-A gentle brief declares `delivery:` and may declare `review: rdd`, which makes
-gentle-ai's native RDD the task's only review; without it the task closes with
-Judgment Day (below). Provisioned by an older `hw`, a home fails `--check`:
-run `hw gentle-home` again.
+There is no other mode: `--sdd gentle` and `sdd: gentle` in a brief are gone and
+warn, then run `--sdd none`; `hw gentle-home` no longer exists; and the
+`sdd_modes` lane field is not a field any more, so a `projects.json` that still
+carries it fails to load (`unknown lane field(s)`): delete the key. A
+`review: rdd` brief warns and closes with Judgment Day. What a task closes with
+is the brief's `review:` (`judgment-day`, the default; `plugins`; `none`), below.
 
 ## Dispatching: briefs, the ledger and `hw preflight`
 
@@ -448,7 +436,9 @@ speed differs by verb (measured on one machine: `hw worktrees` about 0.5 s in Go
 - **The switch file.** The installer also writes `~/.config/hw/impl`
   (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured) containing `go`, only when
   that file does not exist. One that exists is never touched. With the file at
-  `go` and `hw-core` built, the ported verbs run in Go.
+  `go` and `hw-core` built, the ported verbs run in Go. **Without that file and
+  without `HW_IMPL`, `hw` runs bash:** the default in `bin/hw` is bash, and the Go
+  default of an installed machine comes from the file the installer wrote.
 - **The way back to bash.** `HW_IMPL=bash` switches every verb for that command or
   shell; `HW_IMPL_<VERB>=bash` switches one verb. To make it permanent, edit or
   remove the switch file. A `hw-core` that is missing, or older than the sources in
@@ -459,47 +449,56 @@ speed differs by verb (measured on one machine: `hw worktrees` about 0.5 s in Go
   counts as unreadable, with its own `NOTE`. A `hw-core` an earlier install left is removed. No switch file is written and `hw` runs in bash: same
   answers. `--check` never lists Go as missing. Install Go and run
   the installer again to move the ported verbs to Go.
-- **Which one runs.** The ported verbs run in Go when `hw-core` is built and the
-  switch file says `go` (or `HW_IMPL` does); otherwise, and for any verb set to
-  `bash`, they run in bash.
+- **Which one runs.** `HW_IMPL` takes `bash`, `go` or `shadow`; any other value
+  in the environment stops the command (in the switch file it warns and runs
+  bash). For one verb, the first of these that says something wins:
+  `HW_IMPL_<VERB>`, `HW_IMPL`, a `<verb>=<mode>` line of the switch file, the
+  file's one-word default, and then bash. The ported verbs run in Go when
+  `hw-core` is built and the answer is `go`; for any verb that answers `bash`
+  they run in bash. `shadow` runs both, prints bash's answer and logs every
+  difference to `~/.local/state/hw/shadow.jsonl` (`hw shadow --help`): a
+  diagnostic for whoever reports a difference, not a mode to live in.
 - **`--agent pi`.** A dispatch with `--agent pi` stays on bash and prints one line
   saying so. The export carries the builders of git-worktree lanes only; a lane
   hook of another name is sourced by bash.
 
+## Secrets (Bitwarden)
+
+A task that needs a credential names Bitwarden items in its brief
+(`secrets: [github-token, stripe-key.password]`, folder `agents`) instead of
+carrying a value. Before anything is built, `hw` checks that the vault is
+unlocked (a locked one gets one `secret-unlock --auto` try, which works only on
+macOS with the master password kept in the login Keychain) and that every item
+exists; a missing one refuses the dispatch by name. `--no-handle-check` skips
+the check and says so. The executor is told to reach a value only as
+
+```text
+hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR …] -- <cmd…>
+```
+
+which puts it in `<cmd>`'s environment: never printed, never written to disk,
+never in `argv`. `hw secret check <item>…` says present or absent, and
+`hw secret status` says locked or unlocked.
+
+What you set up: the `bw` CLI, logged in once (`bw login`), and a vault folder
+named `agents` that holds only what an agent may use. Then, in a terminal and
+once a day, `secret-unlock` (the master password is asked by `bw`; the session
+token goes to `~/.cache/hw/bw-session`, mode 0600, for 12 hours by default, and
+`secret-unlock --lock` drops it). On macOS, `secret-unlock --setup` stores the
+master password in the login Keychain so a dispatch can unlock by itself;
+nothing else here reads it.
+
+What this release does **not** ship: the global guard that refuses an agent's
+own `bw get|unlock|export|list|serve` and the unlock LaunchAgent installer.
+Without the guard, `hw secret run` is the sanctioned path and nothing forces an
+agent onto it, and the session token opens the whole vault, not just the folder.
+See `KNOWN-LIMITATIONS.md` L23.
+
 ## Windows
 
-Use **WSL2**: install a Linux distribution (`wsl --install`), and install and
-run everything — git, jq, python3, herdr, Claude Code and this installer —
-inside it, in its own filesystem (`~/`), not under `/mnt/c`.
-
-**Native Windows, under Git Bash (Git for Windows), runs the harness, measured
-on a CI runner and a Windows 11 VM.** What it needs (the installer checks the first two and
-names them before it writes anything):
-
-- **Windows Developer Mode** (Settings → System → For developers): `hw` and the
-  installer create symlinks, and Windows refuses them otherwise.
-- **Native Windows Python first on Git Bash's PATH** as `python3`. An MSYS2 or
-  Cygwin Python makes the read-only guard refuse every call, because it cannot
-  decide there. `jq`, `rg`, `fd` and `sd` as Windows builds; Git for Windows
-  ships none of them, and no `rsync` either (the installer does without it).
-- `git config --system core.autocrlf false`. Git for Windows ships it `true`,
-  which rewrites the harness's shell scripts with CRLF.
-
-What makes it work: every entry point in `bin/` loads `bin/msys-compat.sh`,
-and through it `bin/sitecustomize.py` in every Python it starts. That layer
-gives bash and Windows Python one spelling of a path and LF line ends, and it
-runs `#!` scripts through Git Bash's own bash. `hw` reaches herdr over its
-named pipe. The read-only guard decides on Windows: it folds `/c/x`, `C:/x`,
-`C:\x` and their case variants to one form, reads `~` from the account's
-profile, and when `python3` cannot start, the hook command exits 2, which
-Claude Code treats as a refusal.
-
-What has been run: the setup suite on a GitHub-hosted `windows-latest` runner
-in Git Bash and in WSL2, with herdr and the agents stubbed, plus this installer
-from an empty home with the real herdr binary and `bin/herdr-rpc` against a
-live headless herdr, and the exported installer on a Windows 11 ARM64 VM. Not verified: a real Windows machine with herdr's panes,
-Claude Code, a brainer and an executor reporting back. The numbers and every
-skip are in `KNOWN-LIMITATIONS.md`, L1b.
+Not supported. foreman-sh runs on macOS and Linux only; nothing is tested on
+Windows, native or under Git Bash. WSL2 is a Linux, so the Linux path may work
+there, but it is not tested either (`KNOWN-LIMITATIONS.md`, L1b).
 
 ## Judgment Day (optional)
 
@@ -532,6 +531,14 @@ written. `--check` says on one line whether Judgment Day is active, and with
 
 Then ask a session for "judgment day" over a diff. The judges use engram to
 recall context when it is registered (see Memory above).
+
+**Which review a build closes with is the brief's choice**, in every lane and
+every `--sdd` mode: `review: judgment-day` (the default when the key is absent)
+orders Judgment Day over the branch at the close; `review: plugins` names only
+the review skills of the brief's `plugins:` (`thermo`, `ponytail`, `pstack`) and
+no Judgment Day; `review: none` adds no review note. Any other value refuses the
+dispatch, naming those three. The choice is printed in the dispatch manifest and
+recorded in the run's receipt.
 
 ## Limits, stated
 

@@ -371,7 +371,7 @@ reconcile_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/hw-reconc
 # directly above is what pins it, and it is the assertion that means something.
 normalized="$(printf '%s\n' "$bin_lint_out" \
   | grep -v '^[0-9]* finding(s)' \
-  | sed -E "s#^$ROOT/lib/hw/[a-z]+\.sh:#$ROOT/bin/hw:#; s#^$ROOT/bin/([^:]+):[0-9]+:#bin/\\1:#" | sort)"
+  | sed -E "s#^$ROOT/lib/hw/[a-z]+\.sh:#$ROOT/bin/hw:#; s#^$ROOT/bin/([^:]+):[0-9]+:#bin/\\1:#" | LC_ALL=C sort)"
 actual_hash="$(printf '%s\n' "$normalized" | shasum -a 256 | cut -d ' ' -f1)"
 # 2026-10-07 (c): `hw done` moved to lib/hw/done.sh and took two of the nine hw findings with it. The
 #   scan now includes lib/hw/*.sh, counted as hw's; the hash is over the SORTED set (a moved finding changes
@@ -385,6 +385,8 @@ actual_hash="$(printf '%s\n' "$normalized" | shasum -a 256 | cut -d ' ' -f1)"
 #   lint-shell's summary line gaining "in M file(s) read"; with that line now
 #   excluded above, the old and new normalized texts hash identically. The hash
 #   below moved only because the exclusion changed what is hashed.
-[ "$actual_hash" = 14cb75e5096d220a862a5a387a442c73611c7183090e281dfefb1654ac7f389a ] \
+#   2026-10-18: `sort` became `LC_ALL=C sort` — Linux sorted the same 21 findings in another order and hashed
+#   d4273575…; the set did not change, only the collation that orders it. 14cb75e5… was macOS UTF-8 order.
+[ "$actual_hash" = fd2bbf67f2384d8c1fb7663cff0444eda4fca69f73c7b423548088c22b257480 ] \
   || fail "lint-shell: full-bin semantic finding set changed (sha256=$actual_hash) and needs fresh triage: $bin_lint_out"
 pass "lint-shell: full bin/* scan is automatic and its 21 active-errexit consumer findings are exact, not an untriaged dump"

@@ -1,8 +1,8 @@
 package main
 
 // Area C — the text of the executor's prompt (bin/hw: _brief_preamble, _brief_epistemic, _brief_authorization,
-// _gentle_preamble, _gentle_rdd_bullet, _rdd_only_review_line, _speckit_phase_note, _judgment_day_note,
-// _design_judgment_note, _rdd_closing_note, _checks_note, _specialist_agents, _brief_qa_override, _brief_fm_value).
+// _speckit_phase_note, _judgment_day_note, _plugins_review_note, _design_judgment_note, _checks_note,
+// _specialist_agents, _brief_qa_override, _brief_fm_value).
 // The prompt is the executor's whole contract and its sha256 is receipted: every byte is bash's.
 
 import (
@@ -27,21 +27,6 @@ func briefFmValue(key, path string) string {
          print; exit }`, path)
 	return bashSub(out)
 }
-
-// judgmentDayApplies is _judgment_day_applies: a base was computed and the task is a build.
-func (l *lch) judgmentDayApplies() bool {
-	if l.env("HW_REVIEW_BASE_REF") == "" { // # MUTATION-ANCHOR: 847-C-01
-		return false
-	}
-	switch l.briefKindForClose() {
-	case "", "build":
-		return true // # MUTATION-ANCHOR: 847-C-02
-	}
-	return false
-}
-
-// rddIsTheReview is _rdd_is_the_review.
-func (l *lch) rddIsTheReview() bool { return l.gentleReview == "rdd" } // # MUTATION-ANCHOR: 847-C-03
 
 const checksNote = `Before working, write $HW_ARTIFACTS/checks.md from the brief's ## Proof and
 ## Verification sections: a table, one row per requirement,
@@ -94,24 +79,9 @@ const judgmentDayNote = `Closing this code task: Judgment Day, then done-invoker
    separately, every severe finding only ONE judge raised (unconfirmed, so not
    fixed), each with its file:line.`
 
-const rddClosingNote = `Closing this code task: native RDD is its only review, then done-invoker, in this order:
-
-1. Commit per work unit as you go, on this branch, with Conventional Commit
-   messages — not one commit at the end. The review target is what you
-   committed; uncommitted work is not reviewed and is not delivered.
-2. Run the native RDD review of the RDD bullet above, on the clone, and act on
-   what it returns. That is the one review of this task: do NOT run the
-   judgment-day skill, hw review-range or any second reviewer over the same
-   candidate. Two verdicts on one candidate is the cost this mode removes.
-3. The done-invoker report carries the RDD outcome (approved, or what
-   correction_required left open) and no Judgment Day verdict.`
-
 // designJudgmentNote is _design_judgment_note "$boundary".
 func (l *lch) designJudgmentNote(boundary string) string {
-	end := "the code-mode Judgment Day"
-	if l.rddIsTheReview() {
-		end = "the native RDD review"
-	}
+	end := reviewDesignEnd(l.reviewMode())
 	return fmt.Sprintf(`Judge the design before the code. This brief declares a boundary:
 
     boundary: %s
@@ -128,8 +98,8 @@ $HW_ARTIFACTS/design-judgment.md with these lines:
     JUDGMENT: APPROVED            (or ESCALATED)
 
 An APPROVED verdict lists, one amendment: line each, the bypass classes both
-judges confirmed and the approach can close; your code closes them, and the
-%s at the end is where that is checked. done-invoker
+judges confirmed and the approach can close; your code closes them, and
+%s is where that is checked. done-invoker
 refuses a done report without an APPROVED verdict whose design still hashes to
 design_sha256. An ESCALATED design is a blocker, not a
 prompt to code anyway: report it with done-invoker --blocked, naming the
@@ -198,14 +168,8 @@ func (l *lch) briefQaOverride() string {
 	}
 	dc := briefFmValue("deployed_check", f)
 	if why == "" {
-		switch {
-		case dc == "required":
+		if dc == "required" {
 			why = "deployed_check: required"
-		case strings.HasPrefix(dc, "out-of-scope"):
-		case dc == "":
-			if l.sdd == "gentle" || l.env("HW_GENTLE_PANE") == "1" {
-				why = "a deployed check (the --sdd gentle default, deployed_check: required)" // # MUTATION-ANCHOR: 847-C-04
-			}
 		}
 	}
 	return why
@@ -297,7 +261,7 @@ every mem_search already reads all labels (all_projects is forced).`, binDir, bi
 	if l.proj != "" && l.c.t.get(l.proj, "qa_target") != "" && l.env("HW_PORT_WEB") != "" { // # MUTATION-ANCHOR: 847-C-08
 		preamble = bashSub(preamble + "\n\n" + "QA target: http://localhost:" + l.env("HW_PORT_WEB") + " — pass it as `pnpm qa <flow> --target <url>`, to qa-tester in its prompt, and to `harness open <url>`. Never staging, never :3001, unless the brief says so.")
 	}
-	if l.judgmentDayApplies() && !l.rddIsTheReview() { // # MUTATION-ANCHOR: 847-C-09
+	if l.judgmentDayApplies() { // # MUTATION-ANCHOR: 847-C-09
 		branch := orDefault2(l.env("HW_REVIEW_BASE_BRANCH"), "<unnamed>")
 		baseNote := bashSub(`The base a Judgment Day target is built against, computed by hw at dispatch:
 
@@ -333,11 +297,9 @@ done-invoker instead of judging it.`)
 		preamble = pjoin(preamble, l.designJudgmentNote(l.briefBoundary()))
 	}
 	if l.judgmentDayApplies() {
-		if l.rddIsTheReview() {
-			preamble = pjoin(preamble, rddClosingNote)
-		} else {
-			preamble = pjoin(preamble, judgmentDayNote)
-		}
+		preamble = pjoin(preamble, judgmentDayNote)
+	} else if l.pluginsReviewApplies() {
+		preamble = pjoin(preamble, reviewPluginsNote(l.pluginsDeclared()))
 	}
 	return preamble
 }
@@ -372,110 +334,5 @@ func (l *lch) briefAuthorization() string {
 		sb.WriteString("> authorized: destination: " + f[0] + " | operation: " + f[1] + " | credential handle: " + f[2] + "\n")
 	}
 	sb.WriteString("\nOnly these destinations and operations are authorized, and nothing beyond them:\nanother destination, another operation, or a credential or session not named\nhere stays unauthorized. Within them, act without asking; for anything else\nask-invoker, or report blocked. A handle is a resolver, never a value.")
-	return bashSub(sb.String())
-}
-
-// rddOnlyReviewLine is _rdd_only_review_line.
-func rddOnlyReviewLine() string {
-	return "NATIVE RDD IS THE ONLY REVIEW OF THIS TASK. Do NOT run the judgment-day" +
-		"\n     skill or any second reviewer over the same candidate, and do not report a" +
-		"\n     Judgment Day verdict: two reviews of one candidate are two verdicts and" +
-		"\n     twice the cost, and this brief chose RDD instead. (A design judgment the brief" +
-		"\n     asks for under `boundary:` is a separate gate, before the code, not this.)"
-}
-
-// gentleRddBullet is _gentle_rdd_bullet.
-func (l *lch) gentleRddBullet() string {
-	gh := l.gentleHomeDir()
-	base := l.brLaneGet(l.proj, "base_ref_prefix") + l.c.t.get(l.proj, "base")
-	return `- RECEIPT-DRIVEN DEVELOPMENT (RDD) IS ON for this task, natively, and only
-  this way. NEVER run gentle-ai with --cwd on this worktree or any repository
-  of the product: its review store is <git-common-dir>/gentle-ai, inside the
-  product repo, and that is forbidden. The binary is ` + gh + `/bin/gentle-ai-task (its
-  wrapper fixes its HOME to a private one); never any other, never install,
-  sync or upgrade.
-  1. When the work is committed, make a clone and review THAT:
-     git clone --no-hardlinks <this worktree> $HW_ARTIFACTS/rdd-clone ;
-     in the clone, git fetch origin refs/remotes/` + base + `:refs/remotes/` + base + `
-     (the review base is the lane's base, ` + base + `, never main). The clone's
-     HEAD is the candidate; commit nothing new in the product worktree for it.
-  2. ` + gh + `/bin/gentle-ai-task review mode enable --scope global --cwd
-     $HW_ARTIFACTS/rdd-home — the task's own copy of gentle-ai's home, made on
-     first use: RDD is on for this task only and there is nothing to turn off.
-     NEVER enable it through ` + gh + `/bin/gentle-ai (every executor shares that
-     home), and never --scope clone to turn it on: a clone setting can only
-     turn RDD off.
-  3. Drive the lifecycle, always through ` + gh + `/bin/gentle-ai-task, with
-     --cwd <the clone> --base-ref ` + base + ` --committed-only: review status
-     --contract gentle-ai.review-integration/v2 --agent claude-code
-     --next-transition. Run EXACTLY the operation and tokens each transition
-     returns, never rebuilt: START first (answer consent with its granted
-     invocation), then status again. THE REVIEW IS NATIVE: a returned
-     review capture-result carries --agent and no --input, and running it makes
-     gentle-ai materialize the immutable context and run its own tool-free
-     reviewer in process, then admit the result. NEVER launch a lens or any
-     subagent for it, NEVER assemble a reviewer prompt, NEVER add --input,
-     NEVER hand candidate bytes over through a file: the context can be over
-     100 KB and relaying it by hand was cut by an API safeguard. When one
-     collect carries several reviewer slots, start every returned capture
-     concurrently in the order returned (one Bash call, backgrounded) and wait
-     for all of them. A review can outlast a tool timeout: run them with
-     run_in_background (or a long timeout), and a timeout is not a failed
-     capture: ask STATUS again before concluding anything. Run the
-     acknowledge-approved transition it returns once
-     approved. On correction_required, re-enter only through the
-     status_continuation it returns.
-  4. If a capture fails (provider, budget, lens_context_budget_exceeded, no
-     login), report done-invoker --blocked with its exact output. Do not
-     relay, do not retry with another command shape.
-  5. ` + gh + `/bin/gentle-ai-task writes rdd-log.jsonl in $HW_ARTIFACTS for you,
-     locally, from each capture's own answer: role, verdict, findings,
-     duration. Telemetry is off; nothing leaves this machine.
-  6. ` + rddOnlyReviewLine() + "\n"
-}
-
-// gentlePreamble is _gentle_preamble.
-func (l *lch) gentlePreamble() string {
-	var delivery string
-	switch l.gentleDelivery {
-	case "single-pr":
-		delivery = "single-pr — one pull request; do not slice it into a chain"
-	case "stacked-to-main":
-		delivery = "a chain of pull requests, stacked-to-main"
-	case "feature-branch-chain":
-		delivery = "a chain of pull requests, feature-branch-chain"
-	}
-	var sb strings.Builder
-	sb.WriteString("THIS TASK RUNS IN GENTLE-AI ODD MODE (--sdd gentle) — chosen by your brainer.\nThe Organic Driven Development (ODD) protocol is in your system prompt: follow\nit, in its order, for this task. What this mode fixes for you:\n\n")
-	if l.gentleReview == "rdd" {
-		sb.WriteString(l.gentleRddBullet())
-	} else {
-		sb.WriteString("- Receipt-driven development (RDD) is OFF for this task. gentle-ai is NOT\n  installed for you and must not be run: no `gentle-ai review ...`, no\n  `gentle-ai install`, no `gentle-ai sync`. Where ODD says \"when RDD is\n  enabled\", it is not. Review is Judgment Day, as this dispatch says below.\n")
-	}
-	sb.WriteString("- SDD is not selected. Do not enter SDD phases or create SDD artifacts.\n" +
-		"- The feature document is `odd/tasks/<feature-name>.md`, as ODD says. `odd/`\n" +
-		"  is ignored in this worktree by an untracked odd/.gitignore: never commit it,\n" +
-		"  never force-add it, never delete that file. Mirror it to engram as ODD says,\n" +
-		"  passing project explicitly.\n" +
-		"- NOBODY ANSWERS IN THIS PANE. Every question ODD tells you to ask the user —\n" +
-		"  an ambiguous authorization, a real product decision, a delivery or chain\n" +
-		"  strategy — goes through `ask-invoker \"<one question>\"`, and you act on its\n" +
-		"  reply. Never end your turn waiting for an answer here.\n" +
-		"- Delivery strategy is fixed by the brief: " + delivery + ". Do not ask for it.\n")
-	dv := orDefault2(l.gentleDeployedCheck, "required")
-	if strings.HasPrefix(dv, "out-of-scope:") {
-		sb.WriteString("- DEPLOYED CHECK OUT OF SCOPE, declared by the brief (" + strings.TrimPrefix(dv, "out-of-scope: ") + ").\n" +
-			"  done-invoker opens your report with that line; do not claim a check against\n" +
-			"  what is deployed that you did not run.\n")
-	} else {
-		sb.WriteString("- THE CHECK AGAINST WHAT IS DEPLOYED IS PART OF DONE, not a pending line in\n" +
-			"  the feature document. done-invoker refuses a done until\n" +
-			"  $HW_ARTIFACTS/deployed-check.md holds three lines: `target: <the deployed\n" +
-			"  https URL you verified>` (never localhost), `evidence: <a file under\n" +
-			"  $HW_ARTIFACTS with the run's result>`, and `RESULT: PASSED`.\n" +
-			"  If it cannot run — no QA account, no seed, no session — that is a HOLD:\n" +
-			"  `ask-invoker` naming exactly what is missing, then wait for the reply. If it\n" +
-			"  ran and failed, or the hold cannot be lifted, report `done-invoker --blocked`.\n")
-	}
 	return bashSub(sb.String())
 }

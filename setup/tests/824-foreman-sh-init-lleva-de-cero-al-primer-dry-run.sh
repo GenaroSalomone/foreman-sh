@@ -160,6 +160,10 @@ pass "one init --yes run takes a machine without herdr through Homebrew to the d
 # `--with-recommended && init` line that cannot succeed. Now it names xcode-select and nothing else.
 NOGIT="$TMP/farm-nogit"; mkdir -p "$NOGIT"
 for _l in "$FARM"/*; do case "${_l##*/}" in git) ;; *) ln -s "$(readlink "$_l")" "$NOGIT/${_l##*/}" 2>/dev/null || true ;; esac; done
+# The Command Line Tools are a Mac's: the machine of this scenario says Darwin, as the one it was measured on did,
+# also where the suite runs on Linux (whose own hint, apt, init names there and 2d does not hold).
+_real_uname="$(type -P uname)"; rm -f "$NOGIT/uname"
+printf '#!/bin/sh\n[ "$1" = -s ] && [ "$#" = 1 ] && { echo Darwin; exit 0; }\nexec "%s" "$@"\n' "$_real_uname" > "$NOGIT/uname"; chmod +x "$NOGIT/uname"
 rm -f "$LOGS/brew-calls"
 rc=0; out="$(PATH="$STUBS:$NOGIT" init --yes)" || rc=$?
 [ "$rc" = 1 ] || fail "2d: init with only git missing must exit 1 (got $rc): $out"

@@ -290,6 +290,9 @@ func (d *doneRun) keepLease(proj, task, tab string) int {
 		by = "unknown"
 	}
 	untilH, ok := doneDate("-r", strconv.FormatInt(until, 10), "+%Y-%m-%dT%H:%M:%S%z")
+	if !ok { // GNU date reads -r as a file: the epoch goes through -d @N there
+		untilH, ok = doneDate("-d", "@"+strconv.FormatInt(until, 10), "+%Y-%m-%dT%H:%M:%S%z")
+	}
 	if !ok {
 		untilH = strconv.FormatInt(until, 10)
 	}

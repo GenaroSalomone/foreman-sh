@@ -11,7 +11,8 @@
 # written) inside the subject's own $TMP, so the mutants still hit every unmutated package and the whole lot is
 # removed with the subject. The shared cache then only grows by what is built from the real tree.
 #
-# The shared cache is also capped: at the end of a FULL run `gocache_trim` empties it when it is over the cap, and
+# The shared cache is also capped. EVERY run trims it at its START (`gocache_trim_start`, below: the oldest entries go
+# until it is under the cap, an entry in use never does); at the end of a FULL run `gocache_trim` empties it when it is over the cap, and
 # only when no other run holds the machine (the pool of test-hw). The default directory has its own name
 # (`hw-go-cache.v2`) so that the old, enormous one is never cloned; `gocache_trim` removes it the first time the
 # machine is quiet.
@@ -30,12 +31,24 @@ gocache_default() {
   printf '%s/hw-go-cache.v2' "$root"
 }
 
+# gocache_seed_plain <src> <dest> — the seed where `cp -c` (a copy-on-write clone) is not there: GNU cp has no -c, so the
+# copy is real, and a real copy of a cache of tens of GB (a full run on Linux leaves 15-20 GB, over its cap, until the trim
+# at the start of the next run) outlasted the 125 s ceiling of 960 and 962 — measured 2026-10-18 in the Linux container:
+# `cp -cR` dies with "invalid option -- 'c'" and `cp -R` then copies the whole cache. A cold build of core/ costs ~5 s, so
+# over HW_TEST_MUTSEED_MAX_MB (default 1024) the mutant gets an empty cache instead and builds what it needs.
+gocache_seed_plain() {
+  local kb; kb="$(du -sk "$1" 2>/dev/null | cut -f1)"
+  case "$kb" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$kb" -le $((${HW_TEST_MUTSEED_MAX_MB:-1024} * 1024)) ] || return 0   # MUTATION-ANCHOR: 1004-M14
+  cp -R "$1/." "$2/" 2>/dev/null || true
+}
+
 # gocache_seed_mutants <dir> — MUT_GOCACHE, a throwaway copy of the shared cache for the mutants of one subject.
 gocache_seed_mutants() {
   local dest="$1" src="${GOCACHE:-${HW_GOCACHE_DEFAULT:-}}"
   mkdir -p "$dest" || return 0
   if [ -d "$src" ]; then
-    cp -cR "$src/." "$dest/" 2>/dev/null || cp -R "$src/." "$dest/" 2>/dev/null || true   # MUTATION-ANCHOR: 1004-M01
+    cp -cR "$src/." "$dest/" 2>/dev/null || gocache_seed_plain "$src" "$dest"   # MUTATION-ANCHOR: 1004-M01
   fi
   MUT_GOCACHE="$dest"; export MUT_GOCACHE
 }
@@ -76,5 +89,51 @@ gocache_trim() {
     printf 'runner: go cache %s is %s MB, over its %s MB cap — emptied\n' "$cache" "$((kb / 1024))" "$cap" >&2
     GOCACHE="$cache" go clean -cache >/dev/null 2>&1 || rm -rf "$cache" 2>/dev/null || true
   fi
+  return 0
+}
+
+# gocache_trim_start <cache> <cap-mb> — EVERY run, at its start, brings <cache> under <cap-mb> by deleting its OLDEST
+# entries (mtime). Go does NOT touch an entry each time a build uses it: cmd/go refreshes an entry's mtime only when
+# it is more than an hour old (mtimeInterval = 1h in cmd/go/internal/cache), so an entry in constant use can show an
+# mtime up to 60 minutes old. MEASURED 2026-10-17: a threshold of 10 minutes deleted the stdlib entries a running
+# build was importing ("could not import os (open …/hw-go-cache.v2/15/…-d: no such file or directory)", m844-1/7/8,
+# m848-1). So the tiers below say "unused for N minutes" and the find threshold is N plus Go's 60-minute mtime
+# granularity (GOCACHE_MTIME_SLACK_MIN): an entry whose mtime is younger than 60+N minutes may be in use.
+# MEASURED 2026-10-16: the end-of-full-run trim above almost never fires (a whole quiet full run is rare), so
+# hw-go-cache.v2 reached 192 GB and filled the disk. Entries unused for GOCACHE_OLD_MIN (60) minutes go first; only
+# if that is not enough, those unused for GOCACHE_USED_MIN (10); anything younger is in use and is never deleted (the
+# cap is then soft). One trimmer at a time (a lock directory) and at most one look a minute (a stamp beside the
+# cache, so the ~40 go-test-core partitions of a gate do not each walk it). Never fails. Held by tests/1004
+# (S-claims `start:*`).
+gocache_trim_start() {
+  local cache="$1" cap="$2" stamp lock kb over tier min order=-n   # MUTATION-ANCHOR: 1004-M09
+  case "$cap" in ''|*[!0-9]*) cap=4096 ;; esac
+  [ -d "$cache" ] || return 0
+  stamp="$cache.trimmed"; lock="$cache.trimming"
+  if [ -f "$stamp" ] && [ -z "$(find "$stamp" -mmin +1 2>/dev/null)" ]; then return 0; fi
+  if ! mkdir "$lock" 2>/dev/null; then
+    [ -z "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || rmdir "$lock" 2>/dev/null || true   # a dead trimmer's lock
+    return 0
+  fi
+  : > "$stamp" 2>/dev/null || true
+  kb="$(du -sk "$cache" 2>/dev/null | cut -f1)" || kb=""
+  case "$kb" in ''|*[!0-9]*) rmdir "$lock" 2>/dev/null || true; return 0 ;; esac
+  if [ "$kb" -gt $((cap * 1024)) ]; then   # MUTATION-ANCHOR: 1004-M08
+    printf 'runner: go cache %s is %s MB, over its %s MB cap — deleting its oldest entries\n' "$cache" "$((kb / 1024))" "$cap" >&2
+    for tier in "${GOCACHE_OLD_MIN:-60}" "${GOCACHE_USED_MIN:-10}"; do   # MUTATION-ANCHOR: 1004-M10
+      over=$(( (kb - cap * 1024) * 1024 ))
+      min=$((tier + ${GOCACHE_MTIME_SLACK_MIN:-60}))   # MUTATION-ANCHOR: 1004-M13
+      # GNU stat first: it reads BSD's -f as --file-system and exits 0, so asking -f first fed the sort garbage on Linux
+      { stat -c '%Y %s %n' /dev/null >/dev/null 2>&1 && find "$cache" -type f -mmin "+$min" -exec stat -c '%Y %s %n' {} + 2>/dev/null \
+          || find "$cache" -type f -mmin "+$min" -exec stat -f '%m %z %N' {} + 2>/dev/null; } \
+        | sort "$order" \
+        | awk -v need="$over" '{ if (got >= need) exit; got += $2; sub(/^[0-9]+ [0-9]+ /, ""); printf "%s%c", $0, 0 }' \
+        | xargs -0 rm -f 2>/dev/null || true
+      kb="$(du -sk "$cache" 2>/dev/null | cut -f1)" || kb=""
+      case "$kb" in ''|*[!0-9]*) break ;; esac
+      [ "$kb" -gt $((cap * 1024)) ] || break
+    done
+  fi
+  rmdir "$lock" 2>/dev/null || true
   return 0
 }

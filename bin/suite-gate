@@ -97,7 +97,7 @@ _sg_alive() {
   pid="$(head -n1 "$d/owner.pid" 2>/dev/null || true)"
   start="$(head -n1 "$d/owner.start" 2>/dev/null || true)"
   if [ -z "$pid" ] || [ -z "$start" ]; then
-    age=$(( $(date +%s) - $(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0) ))
+    age=$(( $(date +%s) - $(stat -c %Y "$d" 2>/dev/null || stat -f %m "$d" 2>/dev/null || echo 0) ))
     [ "$age" -lt 60 ]; return
   fi
   kill -0 "$pid" 2>/dev/null || return 1
@@ -107,7 +107,7 @@ _sg_ticket_alive() { # <file>: pid on line 1, start on line 2
   local f="$1" pid start age
   pid="$(sed -n 1p "$f" 2>/dev/null || true)"; start="$(sed -n 2p "$f" 2>/dev/null || true)"
   if [ -z "$pid" ] || [ -z "$start" ]; then
-    age=$(( $(date +%s) - $(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0) ))
+    age=$(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0) ))
     [ "$age" -lt 60 ]; return
   fi
   kill -0 "$pid" 2>/dev/null || return 1

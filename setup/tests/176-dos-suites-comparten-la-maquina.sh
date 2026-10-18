@@ -171,9 +171,10 @@ race() {
   : > "$STAMPS"
   drive "$a" POOL_EXPECT="${RACE_EXPECT:-3}" > "$TMP/$tag-a.out" &
   pa=$!
-  # B starts once A's declared subject is running, so "together" is a fact,
-  # not luck: without the exclusive, B's own would start beside it.
-  while ! grep -q "start $tag-a:10-alone" "$STAMPS" && [ "$tries" -lt 150 ]; do sleep 0.2; tries=$((tries + 1)); done
+  # B starts once A's pool is running, so "together" is a fact, not luck. A's timing subject runs LAST
+  # (2026-10-16: always, idle machine or not), after its pool: the race it joins is the two suites' ends, where each
+  # one's timing subject must wait for the other's pool and for the other's timing subject.
+  while ! grep -q "start $tag-a:20-pool" "$STAMPS" && [ "$tries" -lt 150 ]; do sleep 0.2; tries=$((tries + 1)); done
   drive "$b" POOL_EXPECT="${RACE_EXPECT:-3}" > "$TMP/$tag-b.out" &
   pb=$!
   wait "$pa" && RACE_RC_A=0 || RACE_RC_A=$?
@@ -189,7 +190,7 @@ race "$ROOT/setup/test-hw" live
 case "$RACE_V" in *INCOMPLETE*) fail "race: $RACE_V" ;; esac
 case "$RACE_V" in
   *ALONE-OK*) pass "race: a declared timing subject never ran beside another job, from either suite" ;;
-  *) fail "race: a timing subject ran beside another job — $(printf '%s' "$RACE_V" | head -1)" ;;
+  *) fail "race: a timing subject ran beside another job — $(printf '%s' "$RACE_V" | head -1) | stamps: $(sort -k3 -n "$STAMPS" | awk '{printf "%s %s %s; ", $1, $2, $3}') | cut by a ceiling and retried: $(printf '%s\n%s' "$RACE_A" "$RACE_B" | grep -c 'retried after timeout')" ;;
 esac
 case "$RACE_V" in
   *TOGETHER*) pass "race: the two suites ran together — pooled work from both overlapped, neither waited for the other to finish" ;;
@@ -198,9 +199,12 @@ esac
 peak="$(printf '%s\n' "$RACE_V" | sed -n 's/^PEAK //p')"
 [ -n "$peak" ] && [ "$peak" -le 3 ] || fail "race: $peak jobs ran at once against a machine cap of 3"
 pass "race: together they never exceeded the machine's cap (peak $peak of 3)"
-case "$RACE_B" in
-  *"WAITING to run 10-alone.sh alone"*"pid "[0-9]*", worktree "*"live-a"*) pass "race: the waiter names who has the machine — pid and worktree" ;;
-  *) fail "race: the waiter did not name who holds the machine: $(printf '%s' "$RACE_B" | head -5)" ;;
+# The timing subjects run last now, so the suite that waits is no longer always B waiting to START its own: either
+# suite's pooled work can be held behind the other's timing subject ("a timing subject is running ALONE"), or its
+# own timing subject waits for the other ("WAITING to run 10-alone.sh alone"). Each names the holder, pid and worktree.
+case "$RACE_A$RACE_B" in
+  *"WAITING to run 10-alone.sh alone"*"pid "[0-9]*", worktree "*"live-"[ab]*|*"a timing subject is running ALONE on this machine: pid "[0-9]*", worktree "*"live-"[ab]*) pass "race: the waiter names who has the machine — pid and worktree" ;;
+  *) fail "race: the waiter did not name who holds the machine: $(printf '%s' "$RACE_A$RACE_B" | head -8)" ;;
 esac
 [ -z "$(ls -A "$POOL" 2>/dev/null)" ] || fail "race: the pool is not empty after two clean runs: $(ls -A "$POOL")"
 pass "race: nothing is left in the pool after both runs"

@@ -218,6 +218,18 @@ if [ "$HW_TEST_GATE" = fast ]; then
   [ -n "${HW_TEST_CHANGED:-}" ] || [ -n "${TEST_HW_NESTED:-}" ] || printf 'runner: the fast gate takes minutes (8-12 measured). An agent: run it with run_in_background and wait for the completion notification; never sleep-poll it past the 120 s tool timeout.\n' >&2  # MUTATION-ANCHOR: 995-M03
   BUDGETS="$HERE/test-budgets.json"
   [ -f "$BUDGETS" ] || { printf 'not ok - runner: %s is missing — run setup/measure-tests.sh before the fast gate can run\n' "$BUDGETS" >&2; exit 1; }
+  # THE TIME BUDGET IS A GATE AT THE COMMIT, not only when subject 965 runs (2026-10-16): the fast gate is the
+  # verify an executor runs before a commit-tree commit that no hook sees, so it asks setup/test-budget-gate
+  # first — about a second, over the budgets this run is about to read — and a subject over its limit, or an
+  # estimated suite over its ceiling, is red here, naming the subject to split. A fixture with no gate asks nothing.
+  if [ -f "$HERE/test-budget-gate" ]; then
+    _tb_rc=0; _tb_ceil="$HERE/test-budget-ceilings.tsv"; [ -f "$_tb_ceil" ] || _tb_ceil=""
+    _tb_out="$(python3 "$HERE/test-budget-gate" "$BUDGETS" "$_tb_ceil" 2>&1)" || _tb_rc=$?  # MUTATION-ANCHOR: 966-M02
+    if [ "$_tb_rc" -ne 0 ]; then
+      printf 'not ok - runner: the suite is over its time budget (setup/test-budget-gate), so the fast gate does not start:\n%s\n' "$_tb_out" >&2
+      exit 1
+    fi
+  fi
   _gate_py_rc=0
   _gate_py_out="$(python3 - "$BUDGETS" "$TESTS" <<'PY'
 import json, pathlib, sys
@@ -725,6 +737,9 @@ count_into() {
 # lane_config_load). The same directory, or the pool is two pools. A tree with
 # no readable table (a fixture runner) and no WORK takes no slot, and says so.
 [ ! -f "$SOURCE_ROOT/setup/gocache.sh" ] || . "$SOURCE_ROOT/setup/gocache.sh"
+# THE CAP IS HELD AT THE START OF EVERY RUN, fast gates included: the end-of-full-run trim almost never fires, and the
+# cache reached 192 GB (2026-10-16). Oldest entries first, none in use (setup/gocache.sh, tests/1004).
+if type gocache_trim_start >/dev/null 2>&1; then gocache_trim_start "${GOCACHE:-$(gocache_default)}" "${HW_TEST_GOCACHE_CAP_MB:-4096}" || true; fi   # MUTATION-ANCHOR: 1004-M11
 SUITE_WORK="${WORK:-}"
 if [ -z "$SUITE_WORK" ]; then
   SUITE_WORK="$(jq -r '.work // empty' "$SOURCE_ROOT/projects.json" 2>/dev/null || true)"
@@ -1917,23 +1932,23 @@ _i=0; while [ "$_i" -lt "$JOB_TOTAL" ]; do JOB_PID+=("0"); JOB_LAUNCHED+=("0"); 
 # for it to reach zero when they run LAST (below).
 NONEXCL_LEFT=$((JOB_TOTAL - EXCLUSIVE_OWED))
 
-# FIRST OR LAST, decided once, from what the machine is doing when this run
-# starts. On an idle machine the subjects that run alone go FIRST, as they
-# always have: nothing has to drain for them. On a machine where other suites
-# are already mid-run, going first would stop every one of them from starting
-# anything new until their longest job ended — the guard mutation arm is ~170s —
-# so this run does its pooled work beside them and asks for the machine at its
-# END instead, when they are likelier to be done.
-EXCL_PHASE=first
+# THE SUBJECTS THAT NEED THE MACHINE ALONE RUN LAST, ALWAYS (goal of 2026-10-16:
+# "sus tests que necesitan la máquina sola corren al final"). They used to go FIRST
+# on an idle machine, so a pooled subject that was red waited behind minutes of
+# timing subjects, and a fast gate arriving mid-run flipped the order after the
+# fact. Now every pooled subject runs and reports first, and the timing subjects
+# take the machine alone once NONEXCL_LEFT reaches zero (see _top_up). The `#run`
+# record still carries the field, now always `last`.
+EXCL_PHASE=last
 if [ "$POOL_ON" = 1 ] && [ "$EXCLUSIVE_OWED" -gt 0 ]; then
   for _d in "$POOL_DIR"/slot.*; do
     [ -e "$_d" ] || continue
-    if _pool_dir_alive "$_d"; then EXCL_PHASE=last; break; fi
+    if _pool_dir_alive "$_d"; then
+      printf 'runner: other suites are mid-run on this machine, so this run'"'"'s %s timing subject(s) will run alone at its end\n' \
+        "$EXCLUSIVE_OWED" >&2
+      break
+    fi
   done
-  if [ "$EXCL_PHASE" = last ]; then
-    printf 'runner: other suites are mid-run on this machine, so this run'"'"'s %s timing subject(s) will run alone at its end, not its start\n' \
-      "$EXCLUSIVE_OWED" >&2
-  fi
 fi
 
 _launch_job() {
@@ -2013,21 +2028,10 @@ _reap() {
 _top_up() {
   local idx
   [ "$ABORTED" -eq 0 ] || return 0
-  # R2: a fast gate arrived while this full run was going to take the machine FIRST: its timing
-  # subjects go to the end, so the pooled work runs (and frees workers) in the meantime. ONLY WHEN NO JOB
-  # IS RUNNING: the flip while a timing subject runs would let pooled jobs start beside it (Judgment Day,
-  # 2026-10-14, both judges) — a running subject finishes alone, and _reap hands the exclusive back at its
-  # end when the waiter is still there.
-  _flip=0
-  [ "$EXCL_PHASE" = first ] && [ "$POOL_ON" = 1 ] && [ "$POOL_MODE" = full ] && [ "$EXCLUSIVE_OWED" -gt 0 ] && [ "$NONEXCL_LEFT" -gt 0 ] && [ "$RUNNING" -eq 0 ] && _pool_fast_waiting quiet && _flip=1  # MUTATION-ANCHOR: 964-M05
-  if [ "$_flip" = 1 ]; then
-    EXCL_PHASE=last; _pool_excl_release
-    printf 'runner: a fast gate needs a worker, so this run'"'"'s %s timing subject(s) move to its end\n' "$EXCLUSIVE_OWED" >&2
-  fi
-  # ALONE MEANS ALONE, and it means first. Anything still running would make the
+  # ALONE MEANS ALONE, and it means last. Anything still running would make the
   # exclusive job's own timing readings wrong, which is the only reason it is in
   # this lane; anything started after it would be measuring a machine it shares.
-  if [ "$EXCLUSIVE_OWED" -gt 0 ] && { [ "$EXCL_PHASE" = first ] || [ "$NONEXCL_LEFT" -eq 0 ]; }; then
+  if [ "$EXCLUSIVE_OWED" -gt 0 ] && [ "$NONEXCL_LEFT" -eq 0 ]; then  # MUTATION-ANCHOR: 964-M06
     if [ "$RUNNING" -eq 0 ]; then
       for idx in $SCHED_ORDER; do
         if [ "${JOB_LANE[$idx]}" = exclusive ] && [ "${JOB_LAUNCHED[$idx]}" = 0 ]; then
@@ -2280,8 +2284,16 @@ for _d in $TIMEOUT_DEFER; do
   f="${JOB_PATH[$_d]}"; _name="$(basename "$f")"; _i="$_d"
   read -r _to_el _to_cap < "$JOBDIR/$_d.timeout.first"
   rm -f "$JOBDIR/$_d.timeout.first" "$JOBDIR/$_d.timeout" "$JOBDIR/$_d.out" "$JOBDIR/$_d.err"
+  # ALONE MEANS ALONE ON THE MACHINE, not only inside this run (2026-10-16): the timing subjects run last now, so
+  # another suite's timing subject is likelier to be running when this run reaches its retries, and a retry that
+  # took no part in the pool ran beside it (176, ALONE-BROKEN: a cut and retried pooled subject against the other
+  # suite's `10-alone`). The retry takes the machine's exclusive like any timing subject, and gives it back.
+  if [ "$POOL_ON" = 1 ]; then
+    until _pool_excl_step "$_d"; do sleep 0.5; done  # MUTATION-ANCHOR: 851-M03
+  fi
   rc=0; fg_time_cmd "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" fg_capped "$HERE/test-budgets.json" "$_name" "$JOBDIR/$_d.timeout" bash "$f" || rc=$?
   _retry_wall="$FG_WALL_MS"
+  [ "$POOL_ON" != 1 ] || _pool_excl_release
   cat "$JOBDIR/$_d.out"
   cat "$JOBDIR/$_d.out" >> "$TALLY"
   [ ! -s "$JOBDIR/$_d.err" ] || cat "$JOBDIR/$_d.err" >&2

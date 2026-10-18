@@ -409,8 +409,8 @@ func brIsASCII(s string) bool {
 	return true
 }
 
-// brTaskHasOtherChars is `case "$1" in *[!A-Za-z0-9._-]*)`: ASCII decided here, anything else asked of bash
-// (under a UTF-8 locale a range like A-Z holds accented letters, and which ones is the platform's).
+// brTaskHasOtherChars is `case "$1" in *[![:alpha:][:digit:]._-]*)`: ASCII decided here, anything else asked of bash
+// (which characters are the locale's letters is the C library's table).
 func brTaskHasOtherChars(task string) bool {
 	for i := 0; i < len(task); i++ {
 		c := task[i]
@@ -421,7 +421,7 @@ func brTaskHasOtherChars(task string) bool {
 	if brIsASCII(task) {
 		return false
 	}
-	_, rc := brBashEval(`case "$1" in *[!A-Za-z0-9._-]*) exit 1 ;; esac`, task)
+	_, rc := brBashEval(`case "$1" in *[![:alpha:][:digit:]._-]*) exit 1 ;; esac`, task)
 	return rc != 0
 }
 
@@ -433,7 +433,7 @@ func (d *dsp) checkTask(task string) {
 	if strings.HasPrefix(task, "-") { // # MUTATION-ANCHOR: 844-A12
 		d.die("<task> must not start with a dash: " + task)
 	}
-	if brTaskHasOtherChars(task) { // case "$1" in *[!A-Za-z0-9._-]*) // # MUTATION-ANCHOR: 844-A13
+	if brTaskHasOtherChars(task) { // case "$1" in *[![:alpha:][:digit:]._-]*) // # MUTATION-ANCHOR: 844-A13
 		d.die("<task> may only contain letters, digits, dot, underscore and dash: " + task)
 	}
 	if task == "." || task == ".." { // # MUTATION-ANCHOR: 844-A14
@@ -616,7 +616,7 @@ func brBriefDeclares(path string) string {
 }
 
 // loadBriefDecls is _load_brief_decls: the frontmatter read once, BRIEF_DECLS returned (no trailing newline).
-// Area C reads it for `delivery`, `review` and `sdd` (the gentle gate and the sdd model gate).
+// Area C reads it for `sdd` (the sdd model gate).
 func (d *dsp) loadBriefDecls() string {
 	if !d.brDeclsRead {
 		d.brDecls = brBriefDeclares(d.brief)
@@ -785,26 +785,16 @@ func (d *dsp) checkBriefContract() {
 		if key == "requested_by" || key == "asked" || key == "authorizes" || key == "secrets" { // # MUTATION-ANCHOR: 844-A49
 			continue
 		}
-		if key == "delivery" {
-			if d.sdd == "gentle" { // # MUTATION-ANCHOR: 844-A50
-				d.brAppendDeclared("delivery")
-			}
+		if key == "delivery" { // was the gentle gate's; with gentle gone it fixes nothing and is ignored
 			continue
 		}
-		if key == "review" {
-			if d.sdd == "gentle" { // # MUTATION-ANCHOR: 844-A51
-				d.brAppendDeclared("review")
-			} else {
-				d.warn("brief declares review: on a --sdd " + orDefaultStr(d.sdd, "<lane default>") + " dispatch. Only --sdd gentle reads it, so it is NOT recorded here")
-			}
+		if key == "review" { // fixes no dispatch field: it picks the closing review, in every lane and every --sdd mode
+			d.reviewGate()
+			d.brAppendDeclared("review")
 			continue
 		}
-		if key == "deployed_check" {
-			if d.sdd == "gentle" { // # MUTATION-ANCHOR: 844-A52
-				d.brAppendDeclared("deployed_check")
-			} else {
-				d.warn("brief declares deployed_check: on a --sdd " + orDefaultStr(d.sdd, "<lane default>") + " dispatch. Only --sdd gentle holds a report to it, so it is NOT recorded here")
-			}
+		if key == "deployed_check" { // was the gentle gate's, and done-invoker no longer holds a report to it
+			d.warn("brief declares deployed_check: it is no longer held by done-invoker (it only widens the QA note), so it is NOT recorded here")
 			continue
 		}
 		if key == "boundary" {
@@ -830,6 +820,10 @@ func (d *dsp) checkBriefContract() {
 			d.warn("brief declares base=" + val + " but " + d.proj + " has no repository, so there is no base branch to build on")
 			bad = true
 			continue
+		}
+		if key == "sdd" && val == "gentle" { // RETIRED SPELLING: `sdd: gentle` is read as `sdd: none` (gentle-ai left hw)
+			d.warn("brief declares sdd: gentle, which is retired (gentle-ai left hw): read as sdd: none")
+			val = "none"
 		}
 		if key == "sdd" {
 			d.ensureSddEffectiveForContract()
@@ -916,7 +910,7 @@ func (d *dsp) requestedLine() string {
 		if d.brAsked != "" { // # MUTATION-ANCHOR: 844-A68
 			asked = ", asked: " + d.brAsked
 		}
-		return brCutChars(d.requestedBy, 96) + "  (" + d.requestedBySrc + asked + ")" // # MUTATION-ANCHOR: 844-A69
+		return brCutChars(d.requestedBy, 96, d.vdUTF8()) + "  (" + d.requestedBySrc + asked + ")" // # MUTATION-ANCHOR: 844-A69
 	}
 	switch d.brLaneGet(d.proj, "requested_by") {
 	case "required":
@@ -927,16 +921,25 @@ func (d *dsp) requestedLine() string {
 	return "none — not checked in " + d.proj // # MUTATION-ANCHOR: 844-A70
 }
 
-// brCutChars is `printf '%s' "$s" | cut -c1-N` inside `$(…)`, as the system's cut counts characters.
-func brCutChars(s string, n int) string {
-	out, rc := brExec(s, "cut", "-c1-"+brItoa(n))
-	if rc == 0 {
-		return brSub(out)
+// brCutChars is `printf '%s' "$s" | _cut_chars N` inside `$(…)`: the first N characters of every line (bytes outside a
+// UTF-8 locale, as bash's ${l:0:N} counts). It asked the system's `cut -c` before, which counts characters on macOS and
+// BYTES with GNU coreutils: on Linux a citation of accented words came out shorter, and could end in half a character.
+func brCutChars(s string, n int, utf8 bool) string {
+	lines := strings.Split(s, "\n")
+	if strings.HasSuffix(s, "\n") {
+		lines = lines[:len(lines)-1]
 	}
-	if r := []rune(s); len(r) > n {
-		s = string(r[:n])
+	for i, l := range lines {
+		if utf8 {
+			if r := []rune(l); len(r) > n {
+				l = string(r[:n])
+			}
+		} else if len(l) > n {
+			l = l[:n]
+		}
+		lines[i] = l
 	}
-	return s
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n") // what $(…) leaves
 }
 
 // brAuthTrim is _auth_trim: [[:space:]] off both ends (bash's own answer for anything outside ASCII).

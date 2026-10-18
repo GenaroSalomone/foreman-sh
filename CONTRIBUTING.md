@@ -20,8 +20,7 @@ A vulnerability is not an issue: see [`SECURITY.md`](SECURITY.md).
    HW_TEST_GATE=fast bash setup/test-hw
    ```
 
-   CI runs the same gate on Linux and macOS (and Windows under Git Bash, which
-   reports but does not block). On a CI host (`CI=true` or
+   CI runs the same gate on Linux and macOS. On a CI host (`CI=true` or
    `GITHUB_ACTIONS=true`) every per-subject time budget of the fast gate is
    multiplied by 3, and the runner prints that it is: a shared runner cannot
    judge wall-clock time. `HW_TEST_BUDGET_FACTOR=<n>` sets the factor

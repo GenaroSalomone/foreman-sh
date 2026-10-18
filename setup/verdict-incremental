@@ -34,31 +34,27 @@ If all of them pass, verify-for-push caches a FULL verdict for T2 that names T1
 (`base_tree=`, `incremental=1`, `chain_depth=`) AND leaves T2's own record, so the
 next tree can start from T2 instead of paying a new full run (2026-10-14: every
 merge after the brainer's full run forced another 2h30 once the diff to that run
-passed the caps below). A record is either a real full run (depth 0) or a green
-incremental one whose rows are its base's, overlaid by the jobs it re-ran
+passed the caps that existed then: they are gone, see below). A record is either a
+real full run (depth 0) or a green incremental one whose rows are its base's, overlaid by the jobs it re-ran
 (`kind=incremental`, `base_tree=`, `root_tree=` the real full run, `chain_depth=`
 hops from it). THE CHAIN IS CAPPED at HW_VERDICT_MAX_CHAIN hops (3): a hop onto an
 incremental verdict compounds gate-select's one blind spot (a path built at
 runtime names nothing) — a job a diff reached only that way keeps the row it had
-— and the cap is what bounds how many diffs can hide behind one full run. Past it,
-or on any fall back below, the next run is a real full run and the chain starts
-over. The release cut stays at ONE hop (`chain`): a release claims "the whole suite
-passed on these bytes".
+— and the cap is what bounds how many diffs can hide behind one full run. A
+record at the cap is no base: the plan starts from the nearest record that is,
+the real full run, and gate-selects the WHOLE diff since it (2026-10-16: it used to
+become a full run, 2h30 for a diff gate-select can answer). The release cut stays
+at ONE hop (`chain`): a release claims "the whole suite passed on these bytes".
 
 IT FALLS BACK TO A FULL RUN, saying why, when any of these holds:
 
   · `--full` (or HW_VERDICT_FULL=1);
-  · no usable record, or the record's run had a red that belongs to no job;
+  · no usable record (none at all, or every one at the hop cap or with a red that
+    belongs to no job);
   · the diff touches the runner or anything it loads — the list is READ from
     setup/test-hw (every `$HERE/<file>` and `$SOURCE_ROOT/<file>` it names,
     plus what those scripts source), not kept by hand — or anything under
     setup/tests/ that is not a subject (_common.sh, lib*);
-  · more than MAX_FILES files changed (30): gate-select over-selects with the
-    diff, and measured 2026-10-07 on 15 sampled commits a diff of 14+ paths or
-    one in the runner's machinery already reached `all`;
-  · T1 is more than MAX_COMMITS commits away (25): the 0.3.7 train made 6 runs
-    in ~5 hours with 1-2 commits between them, so 25 is >10 times that and past
-    it the diff is a new change, not a fix;
   · gate-select FAILS (an error is not an answer).
 
 A path gate-select cannot map (`all`: built at runtime, named by no fast
@@ -68,6 +64,13 @@ on 20 sampled commits, 7 answered `all`, mostly a bin/ script only slow
 subjects name; falling back to the full suite for those would leave most fixes
 paying it. The blind spot is gate-select's own and is the same one the fast gate
 carries; the full run it feeds is still a full run for every job it did not skip.
+
+SIZE IS NOT A REASON (2026-10-16). It used to fall back to a full run for more than
+30 files, more than 25 commits from the base, or a chain past 3 hops. The first two
+guarded gate-select's over-selection, which only makes the plan run more, never less;
+the third is the base choice above. A big diff gets a big incremental plan: the whole
+fast gate plus what the diff names, which still costs less than the full suite, and
+the blind spot is the same one every incremental plan carries.
 
 A fall back is the old behaviour exactly. Nothing here can cache a verdict
 cheaper than the full run's unless every named job passed.
@@ -85,8 +88,6 @@ import time
 
 # gate-select is IMPORTED below; a .pyc beside it would be an untracked file in the checkout.
 sys.dont_write_bytecode = True
-MAX_FILES = int(os.environ.get("HW_VERDICT_MAX_FILES", "30"))
-MAX_COMMITS = int(os.environ.get("HW_VERDICT_MAX_COMMITS", "25"))
 MAX_CHAIN = int(os.environ.get("HW_VERDICT_MAX_CHAIN", "3"))
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 GUARD_JOBS = ("test-deny-repo-writes.mjs", "test-deny-repo-writes-filesystem.mjs",
@@ -453,13 +454,9 @@ def cmd_plan(root, full, out, expect_tree=None):
             best = (key, base, rec, files, dist)
     if best is None:
         return fallback("no recorded full run to start from%s" % (" (skipped: %s)" % ", ".join(skipped[:3]) if skipped else ""))
-    _, base, rec, changed, dist = best
+    _, base, rec, changed, dist = best  # MUTATION-ANCHOR: 820-M11
     if dist is None:
         return fallback("the recorded run %s names a commit this repository does not have, so its distance is unknown" % base[:9])
-    if dist > MAX_COMMITS:
-        return fallback("the nearest recorded verdict (%s) is %d commits away, over %d" % (base[:9], dist, MAX_COMMITS))
-    if len(changed) > MAX_FILES:
-        return fallback("%d files changed since the nearest recorded verdict (%s), over %d" % (len(changed), base[:9], MAX_FILES))
     marked = set()  # runner paths changed only by anchor markers: not code, so not a reason for a full run
     for p in changed:
         if not is_runner_path(p, shared):

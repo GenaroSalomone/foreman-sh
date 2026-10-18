@@ -44,14 +44,17 @@ func (d *dsp) pluginIsInstalled(n string) bool { return has(d.pluginsInstalled()
 
 // pluginsDeclared is _plugins_declared: the names the brief's first `plugins:` line holds, in its order, once each.
 // Brackets and quotes are dropped, then the value splits on spaces, tabs and commas.
-func (d *dsp) pluginsDeclared() []string {
+func (d *dsp) pluginsDeclared() []string { return pluginsOfValue(d.briefDecl("plugins")) }
+
+// pluginsOfValue is the awk half of _plugins_declared, over the value of the `plugins` declaration.
+func pluginsOfValue(decl string) []string {
 	v := strings.Map(func(r rune) rune {
 		switch r {
 		case '[', ']', '"', '\'':
 			return -1
 		}
 		return r
-	}, d.briefDecl("plugins"))
+	}, decl)
 	var out []string
 	seen := map[string]bool{}
 	for _, n := range strings.FieldsFunc(v, func(r rune) bool { return r == ' ' || r == '\t' || r == ',' }) {

@@ -18,10 +18,10 @@ Go binary").
 stay bash until a later train. `worktrees --quiet`, the audit `hw status` runs, goes through the same switch. In `shadow`,
 `worktrees --migrate` is never run twice: bash answers alone.
 
-Train T2 adds the read verbs that depend on T1: `reap` and `sweep` (dry runs), `reports --no-repair`, `review-range`,
+Train T2 adds the read verbs that depend on T1: `reap` and `sweep` (dry runs), `reports`, `review-range`,
 `review-delta`, `preflight --json`, `outbox list`, and the `wait` family (`wait`, `wait-one`, `wait-monitor`, exit
 contract 2/5/6/7/8). The shim sends only the READ half of a verb to hw-core: `reap --apply`, `sweep --apply`,
-`outbox flush` (T3, below) and a `reports` that repairs are not T2's, and under `shadow` a real wait is answered by bash alone
+`outbox flush` (T3, below) are not T2's (a `reports` that repairs is T6's, and under `shadow` it is bash alone), and under `shadow` a real wait is answered by bash alone
 (running it twice would wait twice); a `--dry-run` wait is a reader and runs in both. `HW_IMPL_<VERB>` names are
 the verb upper-cased with `-` as `_` (HW_IMPL_REAP, _SWEEP, _REPORTS, _REVIEW_RANGE, _REVIEW_DELTA, _PREFLIGHT,
 _OUTBOX, _WAIT, _WAIT_ONE, _WAIT_MONITOR). What is not byte for byte is listed in `setup/contracts/hw-t2.md`.
@@ -123,7 +123,7 @@ in one line, and lets the export leave the pilot out with one `exclude core/` (`
     pyport.go    the Python behaviours status.sh leans on (int, float, %g, repr, json.dump, glob, realpath)
     reap.go      reap (dry run): worktrees by disposition, loose work dirs, orphan branches, the database ledger, build output
     sweep.go     sweep (dry run), with markers.go: the done / reopened / blocked markers and the leases of a run
-    reports.go   reports --no-repair; review.go review-range and review-delta; outbox.go outbox list; preflight.go preflight --json
+    reports.go   reports; review.go review-range and review-delta; outbox.go outbox list; preflight.go preflight --json
     wait.go      wait, wait-one, wait-monitor: the exit contract (rcTimeout 2, rcSettled 5, rcHuman 6, rcStranded 7, rcRefused 8)
     sortlocale.go the locale order bash sorts and globs by, asked of `sort` itself
     handle.go    handle
@@ -135,3 +135,29 @@ in one line, and lets the export leave the pilot out with one `exclude core/` (`
     t5*.go       the dispatch's dry run: t5.go (flow, flags), t5_state.go, t5_manifest.go, t5_lanefields.go,
                  t5_brief*.go, t5_vendor*.go, t5_reuse*.go, t5_sdd*.go
     contract.go  the run directory and the env file
+
+## The verbs that were bash-only (T6)
+
+`train`, `suite`, `unstick`, `ledger` and `briefs` run in Go (`t6_<verb>.go`), as do the repairing form of
+`reports` and `worktrees --migrate` (which only lacked a shim route), `cockpit-state` and `secret` (hw-core runs
+`bin/cockpit-state` and `bin/hw-secret` as its child with the same stdio, as bash `exec`'d them) and `-V`/`--version`
+(answered before the lane table loads). The switch is the same (`HW_IMPL`, `HW_IMPL_<VERB>`; `HW_IMPL_VERSION` for `-V`),
+and `lib/hw/core-t6.sh` — sourced by `bin/hw` right after the T2 switch — holds it, so adding it moved no line of `bin/hw`
+that `setup/contracts/hw.md` cites. Under `shadow` these verbs answer in bash alone (they write: a merge, a restarted pane,
+an archived brief), and an executor (HW_TASK/HW_RUN set) goes to bash for `train`, `unstick` and `briefs`, where
+`_executor_refuse` words the refusal. The mutation anchors of their bash stay registered on the bash source: the Go ports
+are held by `TestT6*` (in-process, `core/t6_*_test.go`), and a Go-side anchor would be a second marker of an id the registry
+keeps once.
+
+## channel-send (the delivery transport)
+
+`hw-core channel-send <args>` is `bin/channel-send` in Go (`channel_send*.go`): the same command line, stdout, stderr,
+exit codes (0, 1, 4, 5, 6 — the table `--help` prints) and on-disk effects (the delivery lock, the reply hold, the
+task transcript). `bin/channel-send` keeps its bash as the rollback and execs hw-core when `HW_IMPL_CHANNEL_SEND` (else
+`HW_IMPL`) is `go`; `shadow` and unset run the bash. The programs it ran it still runs (`herdr`, `herdr-rpc`,
+`holdfacts`, `claude-delivery-receipt.py`, `claude`, `codex`, `ps`, `find`); what it did with `jq`, two `python3`
+heredocs and two `node` scripts is native here. `setup/tests/1015` runs both on the same inputs and diffs them;
+`setup/tests/1016` kills a mutant of each mutation anchor (named `<n>-G<nn>`, the bash's `<n>-M<nn>`) with
+`channel_send_test.go`. Not byte for byte, and said so: the message of an unparseable JSON body (node's own parser
+text, imitated for the two common shapes) and the order of the session ids in the opencode-tui busy refusal
+(the endpoint's in node, sorted here).

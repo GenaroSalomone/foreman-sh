@@ -51,17 +51,14 @@ case "$out" in *'done-invoker --blocked "<the unresolved question and what would
   printf 'mapping - C01↔M01 ask-cap legal exit\n'
   printf 'coverage - 1 behavior claim, 1 dedicated ask-cap mutant killed\n'
 
-# Under gentle the phase-1 approval rides an ask, so the cap is 4 there and
-# stays 3 everywhere else. OLD binary (cap 3 always) refuses the 4th under
-# gentle; the new one accepts it. The stub channel-send exits 99, so an
-# accepted ask surfaces as something other than the cap message.
+# The cap is 3 for every run. It was 4 under gentle (the phase-1 approval rode an ask) until gentle
+# left hw (setup/decisions.md, 2026-10-16): a run whose dispatch record still says gentle is capped
+# at 3 like any other, and the 4th ask is refused.
 printf '  framework   gentle  (chosen)\n' > "$WORK/.hw/run/dispatch"
+printf '3' > "$WORK/.hw/run/ask-count"
 gout="$(run_cap "$HARNESS/bin/ask-invoker")" && grc=0 || grc=$?
-case "$gout" in *'already asked the brainer'*) fail "G01 gentle run refused its 4th ask: $gout" ;; *) pass "G01 gentle run accepts the 4th ask (rc=$grc)" ;; esac
-printf '4' > "$WORK/.hw/run/ask-count"
-gout="$(run_cap "$HARNESS/bin/ask-invoker")" && grc=0 || grc=$?
-case "$gout" in *'already asked the brainer 4 times on this task (limit 4)'*) pass "G02 gentle run is capped at 4" ;; *) fail "G02 gentle 5th ask not capped: $gout" ;; esac
+case "$gout" in *'already asked the brainer 3 times on this task (limit 3)'*) pass "G01 a run recorded as gentle is capped at 3 (rc=$grc)" ;; *) fail "G01 the retired gentle cap of 4 is still honoured: $gout" ;; esac
 printf '  framework   none  (chosen)\n' > "$WORK/.hw/run/dispatch"
 printf '3' > "$WORK/.hw/run/ask-count"
 nout="$(run_cap "$HARNESS/bin/ask-invoker")" && nrc=0 || nrc=$?
-case "$nout" in *'already asked the brainer 3 times on this task (limit 3)'*) pass "G03 non-gentle cap stays 3" ;; *) fail "G03 non-gentle cap moved: $nout" ;; esac
+case "$nout" in *'already asked the brainer 3 times on this task (limit 3)'*) pass "G02 a none run stays capped at 3" ;; *) fail "G02 the cap moved: $nout" ;; esac

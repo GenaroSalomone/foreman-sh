@@ -1231,7 +1231,7 @@ else
   drop_core "this run builds none"   # MUTATION-ANCHOR: 993-M04
 fi
 put "$SRC/lanes/git-worktree.sh" "$BRAIN/lanes/git-worktree.sh"
-for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py deny-gentle-real-home.py specialist_roster.py lane_housekeeping.py; do  # MUTATION-ANCHOR: 819-M01
+for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py specialist_roster.py lane_housekeeping.py; do
   put "$SRC/setup/guards/$g" "$BRAIN/setup/guards/$g"
 done
 # The brain guard: a product lane's executor is not launched without it, so it

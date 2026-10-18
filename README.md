@@ -57,9 +57,8 @@ foreman-sh answers each one with a mechanism:
 
 ## Requirements
 
-- **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts). On
-  Windows, use WSL2; native Git Bash is covered by CI only
-  ([details](INSTALL.md#windows)).
+- **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts).
+  Windows is not supported ([details](INSTALL.md#windows)).
 - **[herdr](https://herdr.dev)**, running, with its Claude Code integration:
   `herdr integration install claude`.
 - **[Claude Code](https://claude.com/claude-code)**, with its first run
@@ -69,12 +68,16 @@ foreman-sh answers each one with a mechanism:
   leaves them on ([INSTALL.md](INSTALL.md#permissions-skip-recommended-or-ask)).
 - `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`. On Linux, also
   Node 22.7 or newer.
-- Optional: **Go 1.22 or newer**. `install.sh` builds `hw`'s Go core with it,
-  and the ported verbs run there by default. Without Go nothing is built,
-  `install.sh` says so in one line, and `hw` runs its bash implementation, which
-  answers the same. `HW_IMPL=bash` (all verbs) or
-  `HW_IMPL_<VERB>=bash` (one verb) goes back to bash on purpose. `--agent pi`
-  dispatches stay on bash and print one line saying so: pi is not in the Go core
+- Optional: **Go 1.22 or newer**. `hw-core`, the Go half of `hw`, ships in this
+  repository and `install.sh` builds it when Go is on PATH. `hw` picks the
+  implementation of each verb from `HW_IMPL` (`bash`, `go` or `shadow`), then
+  from the switch file `~/.config/hw/impl`, and runs bash when neither names
+  one. The installer writes that file with `go` when you have none, so a
+  machine installed with Go runs the ported verbs in Go. `HW_IMPL=bash` (all
+  verbs) or `HW_IMPL_<VERB>=bash` (one verb) goes back to bash on purpose.
+  Without Go nothing is built, `install.sh` says so in one line, and `hw` runs
+  its bash implementation, which answers the same. `--agent pi` dispatches stay
+  on bash and print one line saying so: pi is not in the Go core
   ([INSTALL.md](INSTALL.md#the-go-core-and-the-way-back),
   [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) L16).
 
@@ -96,6 +99,9 @@ two more tools are optional:
 - **Judgment Day** is a blind review of a diff by two judges. Required only by
   a brief that declares `boundary:`. Install it with
   `./install.sh --brain ~/brain --with-judgment-day`.
+- **Bitwarden CLI (`bw`)**, `npm i -g @bitwarden/cli`, only for a brief that
+  declares `secrets:`: a credential reaches an executor as a Bitwarden item,
+  never as a value in a brief or a prompt (see *Secrets* below).
 - **[OpenCode](https://opencode.ai)** 1.18.31 or newer, with
   `herdr integration install opencode`, can run a lane's executors:
   `./install.sh … --vendor opencode`.
@@ -103,7 +109,7 @@ two more tools are optional:
   can run a task's executor: `hw <lane> <task> --agent pi --model <provider/id> --sdd none`.
   In a `product_repo` lane it also guards the main checkout and sibling worktrees. The
   installer does not set pi up, its guards are string-level, and it is not at parity
-  on user and plugin skills or on `--sdd gentle` (L3b).
+  on user and plugin skills (L3b).
 
 ## Quickstart
 
@@ -248,6 +254,8 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 | `hw` | With no arguments, an [fzf](https://github.com/junegunn/fzf) picker over every lane's briefs, plus a `+ new brief` row. Needs `fzf`. |
 | `hw status` | What is running, what reported and what is left over. |
 | `hw ledger [<lane>] [--brief <path>\|--task <t>] [--state <s>] [--json]` | Every brief as never-dispatched, in-progress or done, from the ledger `hw` writes at each dispatch. When the brain is a git repository on `main` (the installer does not make it one), `hw` also commits the brief at dispatch if it is untracked or changed. `hw <lane> <task>` with no brief is refused, naming the path it looked for; `--no-brief` launches without one on purpose. |
+| brief frontmatter `review: judgment-day\|plugins\|none` | The review the task's close names, in every lane and `--sdd` mode. `judgment-day` (the default when absent) orders Judgment Day over the branch; `plugins` names only the review skills of the brief's `plugins:` and no Judgment Day; `none` adds no review note. Any other value refuses the dispatch, naming the three; `rdd` is retired and warns into `judgment-day`. The dry run prints it in a `review` line and the run's receipt records it. |
+| brief frontmatter `secrets: [<item>[.<field>], …]` | Bitwarden items the task needs, by name (folder `agents`). Before anything is built `hw` checks that the vault is unlocked and each item exists, and refuses naming what is missing. The executor reaches a value only through `hw secret run <item>[.<field>] --as VAR -- <cmd>`, which puts it in `<cmd>`'s environment and nowhere else. See *Secrets* below. |
 | brief frontmatter `plugins: [<name>, …]` | Load installed review plugins (an optional install step, off by default: `install.sh --with-review-plugins`) into that executor only: Claude Code gets one `--plugin-dir` each, pi one `-e <plugin dir>` each (the plugins' hooks run natively in that executor only), and the dry run says `NOT APPLIED` for opencode and codex. Nothing is installed globally; what a hook writes goes to `$HW_ARTIFACTS/plugin-state`, never `~/.claude` or `~/.pi`, and a name that is not installed refuses the dispatch, naming the command that installs it. The export ships no plugin (KNOWN-LIMITATIONS L22). |
 | `hw briefs archive <lane> [--apply]` | Move the lane's finished briefs to `briefs/archive/<yyyy-mm>/` (a plan unless `--apply`). An archived task does not launch: `hw` names the archived path and `hw briefs restore <lane> <task>`; `hw briefs unarchive <lane> --manifest <file>` undoes a whole run. |
 | `hw log <lane> <task>` | What a task asked and reported. |
@@ -255,7 +263,6 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
 | `hw next <pane> --brief <path>` | Give the next task to an executor launched with `--keep-pane`. |
 | `hw done <lane> <task>` | Run the brief's verification and close the task's tab. Waits up to 60 s for the report's own turn to end. A merged, clean task is then reaped like `hw reap --apply`. |
 | `hw preflight --json -- <hw argv>` | Read-only verdict on a dispatch you have not run: `{"level":"ok\|warn\|block","rules":[…]}`. Two rules today: an `--account` other than the lane's, and a release cut holding the suite. Exits 0 whatever the level; only a malformed call exits 1. |
-| `hw gentle-home` | Provision gentle-ai's own home for `--sdd gentle` (below). |
 | `brain relaunch (--all\|<lane>…) [--dry-run]` | Reopen idle Claude Code brainers with the cockpit, keeping each one's conversation, pane and account. A working pane is skipped and named. |
 | `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove. `--apply` removes them, archiving `.artifacts`/`qa-report` to `archive/<lane>/<task>/` beside the work directory first. Dirty, unmerged or occupied work is never removed. Also lists executors kept after a `--blocked` report and left unanswered for 24h; `--apply` closes them. |
 | `hw train add <lane> <task>` | Merge a reported task's branch into `train-<lane>`. Only a `setup/test-budgets.json` conflict is resolved; any other is named. |
@@ -273,30 +280,28 @@ methodology your repository already has, name it in the brief.
 |---|---|---|
 | `none` | Read-only, measurement, audit and operational work; the brief is the whole contract. | Nothing. |
 | `speckit` | A task that should go through Spec Kit's phases. | A `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Without one, `hw` refuses before building anything. Claude Code only. |
-| `gentle` | A task that should go through gentle-ai's ODD flow. | `hw gentle-home`, and a lane that lists `gentle` in `sdd_modes`. Claude Code only. |
 
-`gentle` also needs a brief that declares `delivery:` (`single-pr`,
-`stacked-to-main` or `feature-branch-chain`) and refuses `--here`. A
-`deployed_check:` is either `required` or `out-of-scope — <reason>`.
-`review: rdd` makes gentle-ai's native RDD the only review of the task; omit it
-and the task closes with Judgment Day. Outside `gentle`, `review:` only warns.
+There is no other mode. `--sdd gentle` (and `sdd: gentle` in a brief) is gone:
+it warns and runs `--sdd none`.
+Spec Kit is a third-party project that foreman-sh integrates with, under its
+own licence. foreman-sh is not part of it, and no endorsement is implied:
 
-`hw gentle-home [--dir <dir>] [--check | --path]` provisions gentle-ai's home:
-the pinned release (4.0.0), checked against a pinned sha256 for your platform,
-installed for Claude Code only with `HOME` pointed inside the directory
-(`~/.local/share/hw/gentle-home`, or `$HW_GENTLE_HOME`). It is idempotent.
-`--check` exits 1 when the home is incomplete, `--path` prints it, and it
-refuses a directory inside your real Claude Code, OpenCode or Codex config.
-Nothing outside the directory is written, so removing it is
-`rm -rf <dir>`. The download comes from gentle-ai's GitHub release; a checksum
-mismatch deletes it and installs nothing.
-
-Both frameworks are third-party projects that foreman-sh integrates with, each
-under its own licence. foreman-sh is not part of either, and no endorsement is
-implied:
-
-- [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), MIT licence.
 - [Spec Kit](https://github.com/github/spec-kit), MIT licence.
+
+### Secrets (Bitwarden)
+
+A credential an executor needs is a Bitwarden item in the folder `agents`, named
+in the brief's `secrets: [item, …]`; its value is never in the brief, the prompt
+or an argument list. `hw` refuses the dispatch before building anything when the
+vault is locked or an item is missing. The executor runs
+`hw secret run <item>[.<field>] --as VAR -- <cmd>`: the value lands in `<cmd>`'s
+environment and is not printed or written. A person unlocks the vault with
+`secret-unlock`; on macOS the master password can stay in the login Keychain so
+`hw` unlocks it for you (INSTALL.md, *Secrets*). It needs the `bw` CLI. This
+release does not ship the guard that refuses an agent's own `bw` calls, so the
+boundary is a convention here, not an enforced one: read
+[KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) L23 before you put a secret in
+the folder.
 
 ### Delegating by model tier
 
@@ -389,7 +394,7 @@ A fix to a ported verb goes to `core/`; the bash of that verb is frozen.
 `hw`, `brain` and the invokers read it once per process, and a lane you add
 there needs no change to `bin/`. An unknown key, or a value of a shape the
 loader checks (`requested_by`, `suite_lock`, `artifacts`, `model_floor`,
-`model_pins`, `sdd_modes`, `ports`), makes the whole file fail to load:
+`model_pins`, `ports`), makes the whole file fail to load:
 nothing is read from it. Other values are not checked.
 `hw help lanes` prints this table in short form.
 
@@ -411,7 +416,6 @@ name and `{task}` the task name.
 | `requested_by` | string | `required` refuses a dispatch whose brief cites no request; `warn` says so and launches. | off |
 | `brief_note` | string | Text `hw` appends to the preamble of every executor prompt of this lane. See below. | none |
 | `qa_target` | boolean | `true`: when `hw` allocates the executor a web port, its prompt (and `hw next`) names `http://localhost:<port>` as the QA target. | off |
-| `sdd_modes` | array | Frameworks the lane adds to `speckit` and `none`. The only one is `gentle`. | none |
 | `suite_lock` | string | `none` lets `hw suite` and a task's close verification run at once; `lane` serializes them. | `lane` |
 | `checkout` | path | The lane's repository checkout. | none: no checkout |
 | `checkout_var` | string | An upper-case environment variable that overrides `checkout` when set. | none |
@@ -487,7 +491,7 @@ What foreman-sh adds on top of isolation:
 
 ## Learn more
 
-- [`INSTALL.md`](INSTALL.md): every install option, OpenCode, engram and Windows.
+- [`INSTALL.md`](INSTALL.md): every install option, OpenCode and engram.
 - [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md): what a brief can contain.
 - [`THREAT-MODEL.md`](THREAT-MODEL.md): what the guards stop, what they do not
   stop and the opt-in macOS `--sandbox`.

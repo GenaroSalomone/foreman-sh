@@ -6,7 +6,7 @@
 #
 #   agent:     claude | opencode | codex
 #   model:     the vendor's own form (opencode needs provider/model)
-#   sdd:       speckit | none | gentle (gentle: only where the lane declares it)
+#   sdd:       speckit | none (gentle is retired: it warns and runs none)
 #   base:      the branch the worktree is built on — declare it on any task
 #              whose result is measured
 #   requested_by: "<who, date: the request, quoted>"  and  asked: investigate | build
@@ -33,13 +33,11 @@
 #   requires-agents: [primary:|subagent:]<name>, …
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
-#   deployed_check: (--sdd gentle only) what hw holds the report to, exactly one of
-#              (absent or empty)  same as required
-#              required           done needs $HW_ARTIFACTS/deployed-check.md with a
-#                                 deployed https target, evidence and RESULT: PASSED
-#              out-of-scope — <why>   non-empty reason; the separator may be —, –, - or :
-#                                 e.g.  deployed_check: out-of-scope — docs-only, nothing is deployed
-#              Anything else is refused before anything is built.
+#   review:    judgment-day | plugins | none — the review the close names, in every lane
+#              and --sdd mode. judgment-day (the default when absent) orders Judgment Day
+#              over the branch; plugins names only the review skills of `plugins:` (below)
+#              and no Judgment Day; none adds no review note. Any other value is refused
+#              before anything is built (rdd is retired: it warns and runs judgment-day).
 #   plugins:   [thermo, ponytail, pstack]  (any subset)
 #              Review plugins (pinned, complete: their hooks run in THIS executor only) loaded
 #              into it: claude gets one --plugin-dir each (hook writes go to $HW_ARTIFACTS/plugin-state),

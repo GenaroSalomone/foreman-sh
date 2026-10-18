@@ -328,7 +328,9 @@ _check_task() {
     -*) die "<task> must not start with a dash: $1" ;;
   esac
   case "$1" in
-    *[!A-Za-z0-9._-]*) die "<task> may only contain letters, digits, dot, underscore and dash: $1" ;;
+    # [:alpha:], not A-Za-z: a range is collation order, so whether `é` is inside a-z was the platform's (macOS yes,
+    # bash 5 on Linux no) and the same task got two different refusals. A class is the locale's letters on both.
+    *[![:alpha:][:digit:]._-]*) die "<task> may only contain letters, digits, dot, underscore and dash: $1" ;;
   esac
   case "$1" in
     .|..) die "<task> must not be . or .." ;;
@@ -626,11 +628,9 @@ cmd_preflight() {
       deps_row "$dep" || continue
       case "$DEPS_NEEDS" in
         always|"vendor:$AGENT") ;;
-        sdd:gentle) [ "$sdd" = gentle ] || continue ;;
         *) continue ;;
       esac
-      if [ "$dep" = gentle-ai ]; then deps_status "$dep" "$(gentle_home_dir)/bin/gentle-ai" || true
-      else deps_status "$dep" || true; fi
+      deps_status "$dep" || true
       case "$DEPS_STATE" in
         below)   a=block ;;
         unknown) a=warn ;;
@@ -681,6 +681,10 @@ fi
 ok()   { printf "  ${C_OK}✓${C_0} %s\n" "$*"; }
 info() { printf "  ${C_DIM}·${C_0} %s\n" "$*"; }
 warn() { printf "  ${C_WARN}!${C_0} %s\n" "$*" >&2; }
+# _cut_chars N: the first N characters of every line of stdin. Not `cut -c`: GNU cut counts BYTES, so on Linux a line
+# of accented words came out shorter than on macOS and could end in half a character. ${l:0:N} counts characters
+# under a UTF-8 locale (bytes outside one, as cut does) with every bash this runs on.
+_cut_chars() { local l; while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "${l:0:$1}"; done; }
 # ONE FAILURE-GLYPH SITE, and the suite audits that by grepping for the glyph —
 # so do not write it in a comment either. The glyph means "this command is over
 # and it is not a success" — a refusal that could print it and then return 0
@@ -714,11 +718,14 @@ HW_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 # beside it (the suite's fixtures). It never overrides a lib/ that is there.
 HW_LIB="$HW_BIN_DIR/../lib"
 [ -r "$HW_LIB/hw/reap.sh" ] || HW_LIB="${HW_LIB_DIR:-$HW_LIB}"
-# THE VERSION FLOORS (lib/hw/deps.conf) and the one check against them: gentle-ai's
-# pin below, and `hw preflight`'s dep-floor rule. No number of this kind lives in this file.
+# THE VERSION FLOORS (lib/hw/deps.conf) and the one check against them, `hw preflight`'s
+# dep-floor rule. No number of this kind lives in this file.
 # shellcheck source=../lib/hw/deps.sh
 [ -r "$HW_LIB/hw/deps.sh" ] || { printf 'hw: cannot load %s/hw/deps.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
 . "$HW_LIB/hw/deps.sh"
+# A lib/ with no deps.conf is a broken install, and every floor check would pass over it in silence: hw
+# dies at start, naming the floor it looked for (setup/tests/930).
+deps_row claude || { printf 'hw: lib/hw/deps.conf has no claude row\n' >&2; exit 1; }
 # THE CHEAP EXPLORER every executor is handed and the tier table the prompt states (lib/hw/explorer.sh). Optional
 # for a stripped fixture tree (a copy of bin/ with no lib/hw/explorer.sh): without it nothing is injected and the
 # manifest says so, instead of hw refusing to start.
@@ -746,7 +753,7 @@ case "$_src" in
 esac
 BRAIN="${HW_BRAIN_ROOT:-$_brain_root}"
 # --version needs no lane table: it must answer from a brain whose table is broken.
-case "${1:-}" in -V|--version) printf 'hw %s\n' "$(cli_version "$BRAIN")"; exit 0 ;; esac
+case "${1:-}" in -V|--version) _hw_v=1 ;; esac  # answered below, after the T6 switch (lib/hw/core-t6.sh), still before the lane table
 
 # ── hw-core: the verbs that run as a Go binary (T0: receipt, log, handle, help; T1: worktrees and the table of status) ──
 # THE DEFAULT IS BASH, AND NOTHING BELOW RUNS UNLESS HW_IMPL (or HW_IMPL_<VERB>) IS
@@ -1086,6 +1093,15 @@ _core_inline() {
   fi
   "$fn" "$@"
 }
+# AN EXECUTOR DOES NOT HAVE THE BRAINER'S VERBS, and under HW_IMPL=go hw-core is the one that says so (core/executor_gate.go,
+# the port of `_executor_refuse` below). It is asked FIRST, for every call an executor makes: what it refuses never reaches
+# the bash, and what it lets through goes on, to hw-core's own verbs or to the bash ones that are not ported yet.
+_core_mode=bash
+if [ -n "${HW_TASK:-}${HW_RUN:-}" ]; then _core_mode="$(_core_impl_for executor-gate)"; fi
+if [ "$_core_mode" = go ] && _core_usable executor-gate; then
+  export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+  "$_core_bin" executor-gate "$@" || exit $?
+fi
 case "${1:-}" in
   receipt|log|handle|help|worktrees)
     if [ "$1" = log ] && { [ -n "${HW_TASK:-}" ] || [ -n "${HW_RUN:-}" ]; }; then
@@ -1180,7 +1196,7 @@ _core_t2_call() {  # <argv…> — succeeds when hw-core answers THIS call of a 
     # the executor gate (below, in bash) refuses `outbox` to an executor and `--apply` in ANY position of sweep/reap:
     # hw-core has no gate of its own, so a call the gate would refuse never reaches it
     outbox) [ "${2:-}" != flush ] && [ -z "${HW_TASK:-}" ] && [ -z "${HW_RUN:-}" ]; return ;;
-    reports) for x in "$@"; do [ "$x" != --no-repair ] || return 0; done; return 1 ;;
+    reports) return 0 ;;  # the repairing form too: hw-core writes the same receipts (a shadow run of it is bash alone, below)
     sweep|reap) for x in "$@"; do case "$x" in --apply|-h|--help) return 1 ;; esac; done; return 0 ;;
   esac
   return 1
@@ -1190,7 +1206,7 @@ case "${1:-}" in
     if _core_t2_call "$@"; then
       _core_mode="$(_core_impl_for "$1")"
       if [ "$_core_mode" = shadow ]; then
-        case "$1" in wait|wait-one|wait-monitor) _core_mode=bash; for _core_a in "$@"; do [ "$_core_a" != --dry-run ] || _core_mode=shadow; done ;; esac
+        case "$1" in wait|wait-one|wait-monitor) _core_mode=bash; for _core_a in "$@"; do [ "$_core_a" != --dry-run ] || _core_mode=shadow; done ;; reports) _core_mode=bash; for _core_a in "$@"; do [ "$_core_a" != --no-repair ] || _core_mode=shadow; done ;; esac
       fi
       if [ "$_core_mode" != bash ] && _core_usable "$1"; then
         export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
@@ -1199,7 +1215,7 @@ case "${1:-}" in
       fi
     fi
     ;;
-esac
+esac; [ ! -r "$HW_LIB/hw/core-t6.sh" ] || . "$HW_LIB/hw/core-t6.sh"; [ -z "${_hw_v:-}" ] || { printf 'hw %s\n' "$(cli_version "$BRAIN")"; exit 0; }
 lane_config_load "$BRAIN" || die "the lane table did not load, so no lane is known — fix $BRAIN/projects.json (the reason is above)"
 # ── hw-core, train T4: the large writers (done, next, revive, preview, reap --apply, sweep --apply) ──
 # Same switch as above. A writer that touches git, herdr and a database is NEVER run twice: under `shadow`
@@ -1209,7 +1225,7 @@ lane_config_load "$BRAIN" || die "the lane table did not load, so no lane is kno
 case "${1:-}" in
   done|next|revive|preview|reap|sweep)
     _core_mode="$(_core_impl_for "$1")"
-    { [ -z "${HW_TASK:-}" ] && [ -z "${HW_RUN:-}" ]; } || _core_mode=bash
+    { [ -z "${HW_TASK:-}" ] && [ -z "${HW_RUN:-}" ]; } || [ "$_core_mode" = go ] || _core_mode=bash   # under go the gate above has refused what an executor may not run
     case "$1" in
       reap|sweep) case " $* " in *" --apply "*) ;; *) _core_mode=bash ;; esac ;;
     esac
@@ -1511,7 +1527,7 @@ _ruling_resume_blocked() {  # <pane> <rundir> <seq> <text> <dry>
   marker="$taskdir/blocked-waiting"
   if [ "$dry" = 1 ]; then
     printf '  would RESUME %s: task %s reported BLOCKED and is waiting for a ruling (since %s); the ruling is sent to it now, the task reopens in the same session, and it reports again with its own done-invoker. Nothing is sent by this dry run\n' \
-      "$pane" "$seq" "$(date -r "$(_blocked_field "$marker" since)" '+%d %b %H:%M' 2>/dev/null || echo '?')"
+      "$pane" "$seq" "$(since="$(_blocked_field "$marker" since)"; date -r "$since" '+%d %b %H:%M' 2>/dev/null || date -d "@$since" '+%d %b %H:%M' 2>/dev/null || echo '?')"
     return 0
   fi
   claim="$taskdir/.blocked-waiting.resuming.$$"
@@ -3279,6 +3295,7 @@ _write_run_env() {
   # tell a dispatch that never had the field from one that chose nothing.
   _receipt_into "$dir" subagent_model "$(_subagent_model_receipt_value)" "$(_subagent_model_receipt_source)"  # MUTATION-ANCHOR: 232-M05
   _plugins_receipt "$dir"
+  _review_receipt "$dir"
   # ONLY WHEN IT RESOLVED, because a receipt is a fact on disk and a blank one
   # would answer "what base was this judged against" with silence dressed as
   # an answer. A run with no review_base receipt is a run hw could not compute
@@ -3299,17 +3316,6 @@ _write_run_env() {
   if _checks_gate_applies; then
     _receipt_into "$dir" checks_required_t1 required \
       "kind build (declared or undeclared) at dispatch — done-invoker requires \$HW_ARTIFACTS/checks.md"
-  fi
-  # THE DEPLOYED CHECK done-invoker HOLDS AN ODD RUN TO. Task 1 here; `hw next`
-  # writes deployed_check_t<N> for a re-task. _validate_sdd_gentle
-  # already refused an unreadable value; if one gets here anyway it records
-  # nothing rather than a guess.
-  if [ "${SDD:-}" = gentle ]; then
-    local deployed_check
-    if deployed_check="$(_gentle_deployed_check)"; then
-      _receipt_into "$dir" deployed_check_t1 "$deployed_check" \
-        "brief frontmatter deployed_check: in ${BRIEF:-<no brief>} at dispatch (required when absent) — done-invoker holds a done to it"
-    fi
   fi
   if [ "${REPORT_TO_CHOSEN:-0}" = 1 ]; then
     _receipt_into "$dir" report_route \
@@ -3941,7 +3947,7 @@ _check_capabilities() {
         # and hw-executor.ts makes the write guard a REQUIRED child extension, so
         # its children are guarded too. The warning stays for the vendor that has
         # none (codex) and for a pi whose pi-subagents is not installed.
-        [ "$AGENT" = opencode ] || [ "$AGENT" = claude ] || { [ "$AGENT" = pi ] && _pi_subagents_ready; } || bad="$bad $want(hw enables OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS only for opencode, pi needs pi-subagents installed under $(_pi_subagents_dir) with its required-child-extension API, and $AGENT has no subagent tool hw can name)" ;;  # MUTATION-ANCHOR: 781-M07
+        [ "$AGENT" = opencode ] || [ "$AGENT" = claude ] || { [ "$AGENT" = pi ] && _pi_subagents_ready; } || bad="$bad $want(hw enables OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS only for opencode, pi needs pi-subagents installed under $(_pi_subagents_dir) with its required-child-extension API, and $AGENT has no subagent tool hw can name)" ;;
       repo)
         [ "${WANT_WT:-1}" = 1 ] || bad="$bad $want(this dispatch has --worktree none, so there is no checkout)" ;;
       database)
@@ -4642,7 +4648,7 @@ _model_suggestion_note() {
 # One manifest line, so a paragraph pasted into `decision:` does not push the
 # fields that follow it off the reader'"'"'s screen.
 _model_why_short() {
-  printf '%s' "$MODEL_WHY" | tr '\n' ' ' | cut -c1-72
+  printf '%s' "$MODEL_WHY" | tr '\n' ' ' | _cut_chars 72
 }
 
 BRIEF_DECLARED=""
@@ -4737,30 +4743,19 @@ _check_brief_contract() {
     # _check_requested reads them after this loop. Comparing them against a
     # resolved value would refuse every brief that cites its request.
     case "$key" in requested_by|asked|authorizes|secrets) continue ;; esac
-    # `delivery:` is read by the gentle gate, which refuses a bad value before
-    # anything is built; under any other mode it fixes nothing and is ignored.
-    if [ "$key" = delivery ]; then
-      [ "$SDD" != gentle ] || BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }delivery"
-      continue
-    fi
-    # `review:` is read by the gentle gate (rdd or nothing) and fixes no
-    # dispatch field; outside gentle it is ignored with a word.
+    # `delivery:` was the gentle gate's; with gentle gone it fixes nothing and is ignored.
+    if [ "$key" = delivery ]; then continue; fi
+    # `review:` fixes no dispatch field: it picks the closing review, in every
+    # lane and every --sdd mode (_brief_review_mode). _review_gate refuses a bad value.
     if [ "$key" = review ]; then
-      if [ "$SDD" = gentle ]; then
-        BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }review"
-      else
-        warn "brief declares review: on a --sdd ${SDD:-<lane default>} dispatch. Only --sdd gentle reads it, so it is NOT recorded here"
-      fi
+      _review_gate
+      BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }review"
       continue
     fi
-    # `deployed_check:` likewise: the gentle gate reads and validates it, and
-    # _write_run_env records it for done-invoker. Outside gentle, nothing.
+    # `deployed_check:` was the gentle gate's, and done-invoker no longer holds a
+    # report to it: it is only read by _brief_qa_override, so it is NOT recorded here.
     if [ "$key" = deployed_check ]; then
-      if [ "$SDD" = gentle ]; then
-        BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }deployed_check"
-      else
-        warn "brief declares deployed_check: on a --sdd ${SDD:-<lane default>} dispatch. Only --sdd gentle holds a report to it, so it is NOT recorded here"
-      fi
+      warn "brief declares deployed_check: it is no longer held by done-invoker (it only widens the QA note), so it is NOT recorded here"
       continue
     fi
     # `decision:` IS NOT A DISPATCH FIELD, so it is not compared against
@@ -4802,6 +4797,11 @@ _check_brief_contract() {
     if [ "$key" = base ] && [ -z "$(_lane_base "${PROJ:-}")" ] && [ -z "$BASE_OVERRIDE" ]; then
       warn "brief declares base=$val but $PROJ has no repository, so there is no base branch to build on"
       bad=1; continue
+    fi
+    # RETIRED SPELLING: `sdd: gentle` is read as `sdd: none` (gentle-ai left hw).
+    if [ "$key" = sdd ] && [ "$val" = gentle ]; then
+      warn "brief declares sdd: gentle, which is retired (gentle-ai left hw): read as sdd: none"
+      val=none
     fi
     [ "$key" != sdd ] || _ensure_sdd_effective_for_contract
     actual="$(_dispatch_actual "$key")"
@@ -5057,7 +5057,7 @@ _authorizes_line() {
 # The manifest's `requested` field: the citation, or why there is none.
 _requested_line() {
   if [ -n "$REQUESTED_BY" ]; then
-    printf '%s  (%s%s)' "$(printf '%s' "$REQUESTED_BY" | cut -c1-96)" "$REQUESTED_BY_SRC" "${ASKED:+, asked: $ASKED}"
+    printf '%s  (%s%s)' "$(printf '%s' "$REQUESTED_BY" | _cut_chars 96)" "$REQUESTED_BY_SRC" "${ASKED:+, asked: $ASKED}"
   else
     case "$(project_requested_by_mode "$PROJ")" in
       required) printf 'none — REQUIRED in %s' "$PROJ" ;;
@@ -5352,7 +5352,7 @@ _brain_guard_check() {
 }
 
 # _brain_guard_args — the Claude half onto AGENT_ARGS, after _build_agent_args.
-# `--plugin-dir` is repeatable, so it composes with gentle's.
+# `--plugin-dir` is repeatable, so it composes with any other.
 _brain_guard_args() {
   if [ "$AGENT" = claude ] && _brain_guard_on; then
     AGENT_ARGS="${AGENT_ARGS:+$AGENT_ARGS }--plugin-dir $(_brain_guard_claude_plugin)"
@@ -5787,14 +5787,6 @@ _build_agent_args() {
           *) die "--effort must be one of: low medium high xhigh max (got: $EFFORT)" ;;
         esac
       fi
-      # --sdd gentle: ODD, its two skills and the guard, for THIS session only.
-      # The gate already proved the home complete and its path one word.
-      if [ "$SDD" = gentle ]; then
-        local gh; gh="$(gentle_home_dir)"
-        AGENT_ARGS="$AGENT_ARGS --append-system-prompt-file $gh/odd-block.md --plugin-dir $gh/plugin/gentle-odd --settings $gh/guard-settings.json"
-        # `review: rdd` adds nothing to the launch: 4.0.0 reviews natively, with its own
-        # tool-free reviewer in process, so there is no lens plugin and no hook to load.
-      fi
       ;;
     opencode)
       if [ -n "$MODEL" ]; then
@@ -6009,10 +6001,6 @@ _apply_sdd() {
   # `none` touches nothing: it cannot remove skills already on disk, it only
   # stops hw forcing an entry command. Said plainly in the prompt, see
   # _send_brief, so the executor does not have to infer it.
-  # `gentle` writes one untracked file: ODD's feature documents land in odd/
-  # at the worktree root, and odd/.gitignore keeps them out of every commit
-  # of this worktree alone (see _exclude_odd).
-  if [ "$mode" = gentle ]; then _exclude_odd "$dir"; return 0; fi
   [ "$mode" = speckit ] || return 0
   local where
   if where="$(_speckit_on_disk "$dir")"; then
@@ -6021,657 +6009,6 @@ _apply_sdd() {
   fi
   warn "--sdd speckit, but no speckit-* skill is on disk under $dir/.claude/skills or $HOME/.claude/skills"
   return 1
-}
-
-# ── --sdd gentle: gentle-ai's ODD, for one lane, on Claude, from its own HOME
-#
-# A NEW MODE, NOT THE ONE RETIRED EARLIER. That one installed gentle-ai
-# into the machine's agent configs, entered SDD, gated on RDD consent and hid
-# odd/ for every lane. This one is the operator's decision, recorded in
-# setup/decisions.md:
-#
-#   · gentle-ai lives in ONE directory of its own, GENTLE_HOME, outside every
-#     repository and every agent config. `hw gentle-home` provisions it: the
-#     pinned release, its checksum, `install --preset custom` for Claude Code
-#     only, run with HOME pointed at GENTLE_HOME/home. Nothing else on the
-#     machine has gentle-ai on its PATH.
-#   · The executor gets ODD as a flag, not as a file it finds: Claude's
-#     `--append-system-prompt-file GENTLE_HOME/odd-block.md`, the two
-#     skills ODD resolves by name through `--plugin-dir`, and a guard hook
-#     through `--settings`. A session hw did not start with those flags loads
-#     nothing of gentle-ai — that is the whole isolation, and it is why only
-#     Claude can run it: opencode has no per-launch system-prompt file here.
-#   · No RDD and no gentle-ai hooks. `--preset custom` installs no hook, the
-#     home's review mode is switched off, and the prompt says RDD is off.
-#     Review stays Judgment Day.
-#   · Only the lanes whose `sdd_modes` lists it (projects.json).
-#
-# REVERSIBLE: `rm -rf "$(hw gentle-home --path)"` leaves the machine as it was;
-# the mode then refuses to launch, naming the provisioning command.
-deps_row gentle-ai && GENTLE_VERSION="$DEPS_MIN" || { printf 'hw: lib/hw/deps.conf has no gentle-ai row\n' >&2; exit 1; }
-GENTLE_REPO="Gentleman-Programming/gentle-ai"
-
-# The checksums published with the release (checksums.txt), pinned here so a
-# download that does not match them never runs.
-_gentle_pinned_sha256() {
-  case "$1" in
-    darwin_arm64) printf 'd2159caf6d68f367b18830ece6af71ef26963d5f5320d7df6a794773f45cc7e9' ;;
-    darwin_amd64) printf 'b5b74f22b38ec3339b38e8c68f797dc76ff12ed6580826a6e425d5c718da80c1' ;;
-    linux_arm64)  printf '1383b040c95cfc69206660d73c21907b14ad70ab913f410917c54f43d3147e57' ;;
-    linux_amd64)  printf '5f4417cf29c969c86da4799942fd673368840901be1bb09c779a12d7ed6096ea' ;;
-    *) return 1 ;;
-  esac
-}
-
-_gentle_platform() {
-  local os arch
-  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  arch="$(uname -m)"
-  case "$arch" in x86_64|amd64) arch=amd64 ;; arm64|aarch64) arch=arm64 ;; esac
-  printf '%s_%s' "$os" "$arch"
-}
-
-# XDG data, not config: nothing an agent reads by default lives under it.
-gentle_home_dir() {
-  printf '%s' "${HW_GENTLE_HOME:-$HOME/.local/share/hw/gentle-home}"
-}
-
-# THE DESTINATION IS CHECKED, because the one thing this mode must never do is
-# write where another session reads. Prints why, and fails, for a directory that
-# is not absolute, has whitespace (AGENT_ARGS is a word list), is HOME itself,
-# sits inside an agent config, or sits inside a git work tree.
-_gentle_home_refusal() {
-  local d="$1" p cfg
-  case "$d" in /*) ;; *) printf 'not an absolute path: %s' "$d"; return 0 ;; esac
-  case "$d" in *[[:space:]]*) printf 'the path has whitespace, and hw passes it as one word: %s' "$d"; return 0 ;; esac
-  d="${d%/}"
-  [ "$d" != "${HOME%/}" ] || { printf 'it is HOME itself'; return 0; }
-  for cfg in .claude .claude-personal .claude.json .config/opencode .codex .gentle-ai; do
-    case "$d/" in "${HOME%/}/$cfg/"*) printf 'it is inside ~/%s, which another session reads' "$cfg"; return 0 ;; esac
-  done
-  p="$d"
-  while [ ! -d "$p" ] && [ "$p" != / ]; do p="$(dirname "$p")"; done
-  # An IGNORED directory inside a work tree is fine — git never offers it for a
-  # commit; that is what $HW_ARTIFACTS is, and where a test home lives.
-  if git -C "$p" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-     && ! git -C "$p" check-ignore -q "$d" 2>/dev/null; then
-    printf 'it is inside a git work tree (%s) and not ignored there' "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null)"
-    return 0
-  fi
-  return 1
-}
-
-# _gentle_home_ready <dir> — succeeds when <dir> is a complete home of the
-# pinned version; otherwise prints what is missing and fails. Read by the
-# launch gate, so it reads files only: it never runs gentle-ai.
-_gentle_home_ready() {
-  local d="$1" why m f
-  if why="$(_gentle_home_refusal "$d")"; then printf '%s' "$why"; return 1; fi
-  m="$d/manifest.json"
-  [ -f "$m" ] || { printf 'no %s' "$m"; return 1; }
-  local v n
-  v="$(jq -r '.version // empty' "$m")" || { printf '%s is not readable JSON' "$m"; return 1; }
-  [ "$v" = "$GENTLE_VERSION" ] || { printf '%s is not version %s' "$m" "$GENTLE_VERSION"; return 1; }
-  f="$d/odd-block.md"
-  [ -s "$f" ] || { printf 'no ODD block at %s' "$f"; return 1; }
-  grep -q '<!-- gentle-ai:agent-routing -->' "$f" \
-    || { printf '%s carries no gentle-ai agent-routing block' "$f"; return 1; }
-  # 4.0.0 puts a 45 KB orchestrator block (a COORDINATOR identity and the RDD
-  # lifecycle, which names gentle-ai commands the executor does not have) in
-  # front of the routing block. Only the ODD protocol travels.
-  ! grep -q '<!-- gentle-ai:orchestrator -->' "$f" \
-    || { printf '%s carries the orchestrator block, and only the ODD protocol travels' "$f"; return 1; }
-  [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$(jq -r '.odd_block_sha256 // empty' "$m")" ] \
-    || { printf '%s changed after provisioning' "$f"; return 1; }
-  [ -f "$d/plugin/gentle-odd/.claude-plugin/plugin.json" ] \
-    || { printf 'no plugin at %s/plugin/gentle-odd' "$d"; return 1; }
-  [ -f "$d/guard-settings.json" ] || { printf 'no %s/guard-settings.json' "$d"; return 1; }
-  [ -x "$d/bin/gentle-ai-task" ] && grep -q 'rdd-log.jsonl' "$d/bin/gentle-ai-task" 2>/dev/null \
-    || { printf 'no bin/gentle-ai-task that runs the native reviewer and logs it in %s (re-provision: rm -rf %s && hw gentle-home)' "$d" "$d"; return 1; }
-  # THE GUARD IS NAMED BY ABSOLUTE PATH, the brain checkout that provisioned
-  # the home. If that checkout is gone, `python3 <missing>` exits 2 and Claude
-  # reads a PreToolUse exit 2 as "block": every Bash call of the executor would
-  # be refused, by a home this check had called complete.
-  local guard
-  guard="$(jq -r '.hooks.PreToolUse[0].hooks[0].command // empty' "$d/guard-settings.json")" \
-    || { printf '%s/guard-settings.json is not readable JSON' "$d"; return 1; }
-  guard="${guard##* }"
-  [ -n "$guard" ] && [ -f "$guard" ] \
-    || { printf 'the guard %s/guard-settings.json names does not exist: %s (re-provision from the brain checkout: rm -rf %s && hw gentle-home)' "$d" "${guard:-<none>}" "$d"; return 1; }
-  if [ -f "$d/home/.claude/settings.json" ]; then
-    n="$(jq -r '.hooks // {} | length' "$d/home/.claude/settings.json")" \
-      || { printf '%s/home/.claude/settings.json is not readable JSON' "$d"; return 1; }
-    [ "$n" = 0 ] || { printf '%s/home/.claude/settings.json carries hooks, and this mode runs none of gentle-ai'"'"'s' "$d"; return 1; }
-  fi
-  return 0
-}
-
-# The wrapper is the ONLY gentle-ai anything runs, hw included: it fixes HOME
-# to the home's own, strips the caller's environment, turns telemetry off and
-# gives engram a private port and data dir (never 7437, never ~/.engram).
-# Whatever it is asked, it cannot reach the real ~/.claude.
-_gentle_write_wrapper() {
-  local d="$1"
-  mkdir -p "$d/bin" "$d/tmp" "$d/engram-data" || return 1
-  cat > "$d/bin/gentle-ai" <<WRAP || return 1
-#!/bin/sh
-# Written by \`hw gentle-home\`. gentle-ai only ever runs against its own HOME.
-exec env -i HOME='$d/home' PATH='/usr/bin:/bin:/usr/sbin:/sbin' TMPDIR='$d/tmp' TERM=dumb \\
-  DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0 GENTLE_AI_INSTALL_SCOPE=global \\
-  ENGRAM_PORT=9 ENGRAM_DATA_DIR='$d/engram-data' \\
-  '$d/libexec/gentle-ai' "\$@"
-WRAP
-  chmod 755 "$d/bin/gentle-ai" || return 1
-  # An empty wrapper exits 0 and installs nothing, so "it ran" proves nothing.
-  grep -q "libexec/gentle-ai" "$d/bin/gentle-ai" || return 1
-  # The per-task twin, for `review: rdd`. gentle-ai keeps its global RDD switch
-  # in HOME/.gentle-ai/state.json and a clone-scope setting can only turn RDD
-  # OFF (measured 2026-10-06, 4.0.0), so the only way to turn it ON without
-  # touching what every other executor shares is a HOME of the task's own,
-  # seeded from this home and living in $HW_ARTIFACTS.
-  cat > "$d/bin/gentle-ai-task" <<WRAP || return 1
-#!/bin/bash
-# Written by \`hw gentle-home\`. gentle-ai against a HOME private to this task.
-: "\${HW_ARTIFACTS:?gentle-ai-task runs only inside an hw task (HW_ARTIFACTS unset)}"
-case "\$1" in install|sync|uninstall|upgrade|restore) echo "gentle-ai-task: install, sync, uninstall, upgrade and restore are not for this wrapper" >&2; exit 2 ;; esac
-h="\$HW_ARTIFACTS/rdd-home"
-if [ ! -d "\$h" ]; then mkdir -p "\$HW_ARTIFACTS/rdd-tmp" "\$HW_ARTIFACTS/rdd-engram" && rm -rf "\$h.seed" && cp -R '$d/home' "\$h.seed" && mv "\$h.seed" "\$h" || exit 1; fi
-# The reviewer is NATIVE: gentle-ai runs its own tool-free \`claude --print\` as a child of this process
-# (measured 2026-10-06, 4.0.0), with the child's environment, so the child needs what any claude needs to
-# log in under a private HOME: the claude binary on PATH, the executor's CLAUDE_CONFIG_DIR, USER/LOGNAME, and
-# the login keychain FILE, reached through a link inside the private HOME for the length of one capture. gentle-ai state stays private.
-# Only a capture gets the login: every other verb keeps the plain private env (a bypassed sync still writes only the private HOME).
-PLAIN=(env -i HOME="\$h" PATH='/usr/bin:/bin:/usr/sbin:/sbin' TMPDIR="\$HW_ARTIFACTS/rdd-tmp" TERM=dumb \\
-  DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0 GENTLE_AI_INSTALL_SCOPE=global \\
-  ENGRAM_PORT=9 ENGRAM_DATA_DIR="\$HW_ARTIFACTS/rdd-engram" \\
-  '$d/libexec/gentle-ai')
-# Every capture is logged HERE, from gentle-ai's own answer: the native reviewer runs inside gentle-ai,
-# so no hook can see it. gentle-ai records role and verdict, not the model or the time, so the model is
-# said to be the account default and the duration is measured around the call.
-case "\$1 \$2" in
-  "review capture-result") ;;
-  *) exec "\${PLAIN[@]}" "\$@" ;;
-esac
-rh="\$HOME"; c="\$(command -v claude 2>/dev/null || true)"; cdir="\${c%/*}"
-# ONLY the login keychain FILE is linked, inside a real Keychains dir. Captures of one task run CONCURRENTLY (a
-# reviewer group is four at once, sharing this HOME), so the link is reference-counted: the count is the list of LIVE
-# capture pids in kc.pids, kept under a mkdir lock (a dead holder's lock is stale and is taken over). The link is made
-# on 0 -> 1 and removed on 1 -> 0, so between captures the private HOME holds no path to the user's keychain. A capture
-# killed with -9 never decrements: its pid is dead, the next acquire or release prunes it, so the count resets itself.
-kc="\$h/Library/Keychains"; rkc="\$rh/Library/Keychains/login.keychain-db"; kl="\$kc/login.keychain-db"
-kd="\$HW_ARTIFACTS/rdd-tmp"; lk="\$kd/kc.lock"; pf="\$kd/kc.pids"; live=""
-[ ! -L "\$kc" ] || rm -f "\$kc"
-kc_lock() {
-  local i=0 p
-  until mkdir "\$lk" 2>/dev/null; do
-    p=""; [ ! -f "\$lk/pid" ] || p="\$(<"\$lk/pid")"
-    [ "\$p" != "\$\$" ] || return 0
-    if [ -n "\$p" ] && ! kill -0 "\$p" 2>/dev/null; then rm -rf "\$lk"; continue; fi
-    i=\$((i + 1)); [ "\$i" -le 200 ] || { rm -rf "\$lk"; i=0; continue; }
-    sleep 0.05
-  done
-  echo "\$\$" > "\$lk/pid"
- }
-kc_unlock() { rm -rf "\$lk"; }
-kc_prune() {  # \$1 = a pid to drop as well; leaves the live capture pids in \$live
-  local p; live=""
-  [ ! -f "\$pf" ] || for p in \$(<"\$pf"); do
-    [ "\$p" != "\$1" ] || continue
-    kill -0 "\$p" 2>/dev/null || continue  # MUTATION-ANCHOR: 780-M07
-    live="\$live \$p"
-  done
- }
-kc_acquire() {
-  kc_lock; kc_prune ""
-  echo "\$live \$\$" > "\$pf"
-  mkdir -p "\$kc" && { [ ! -f "\$rkc" ] || [ -L "\$kl" ] || ln -s "\$rkc" "\$kl"; }  # MUTATION-ANCHOR: 780-M02
-  kc_unlock
- }
-kc_release() {
-  kc_lock
-  kc_prune "\$\$"  # MUTATION-ANCHOR: 780-M06
-  echo "\$live" > "\$pf"
-  [ -n "\${live// /}" ] || rm -f "\$kl"  # MUTATION-ANCHOR: 780-M05
-  kc_unlock
- }
-trap 'kc_release' EXIT  # MUTATION-ANCHOR: 780-M03
-trap 'exit 143' TERM; trap 'exit 130' INT HUP
-mkdir -p "\$kd"; kc_acquire
-ENVV=(env -i HOME="\$h" USER="\${USER:-\$(id -un)}" LOGNAME="\${USER:-\$(id -un)}" \${CLAUDE_CONFIG_DIR:+CLAUDE_CONFIG_DIR="\$CLAUDE_CONFIG_DIR"} PATH="\${cdir:+\$cdir:}/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="\$HW_ARTIFACTS/rdd-tmp" TERM=dumb \\
-  DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0 GENTLE_AI_INSTALL_SCOPE=global \\
-  ENGRAM_PORT=9 ENGRAM_DATA_DIR="\$HW_ARTIFACTS/rdd-engram" \\
-  '$d/libexec/gentle-ai')
-lens=""; prev=""; for a in "\$@"; do case "\$a" in --lens=*) lens="\${a#--lens=}" ;; *) [ "\$prev" != --lens ] || lens="\$a" ;; esac; prev="\$a"; done
-out="\$HW_ARTIFACTS/rdd-tmp/capture.\$\$.out"; t0="\$(date +%s)"
-"\${ENVV[@]}" "\$@" > "\$out"; rc=\$?
-cat "\$out"
-# MUTATION-ANCHOR: 780-M01
-jq -c --arg at "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg role "\$lens" --argjson d "\$(( \$(date +%s) - t0 ))" --argjson rc "\$rc" '
-  ((.reviewer_results // []) | map(select(.lens == \$role))) as \$m
-  | (if (\$m | length) > 0 then \$m else (.reviewer_results // []) end) as \$r
-  | [\$r[]?.findings[]?.severity] as \$sev
-  | {at: \$at, role: \$role, duration_s: \$d, exit: \$rc, lineage: (.lineage_id // null), state: (.state // .code // "unknown"),
-     verdict: (if .code then "error" elif (\$sev | length) == 0 then "clean"
-               else (["BLOCKER","CRITICAL","WARNING","SUGGESTION"] | map(select(. as \$k | \$sev | index(\$k))) | .[0]) end),
-     findings: (\$sev | length), model: "account default (gentle-ai does not record it)", source: "gentle-ai review capture-result"}' "\$out" \\
-  >> "\$HW_ARTIFACTS/rdd-log.jsonl" 2>/dev/null \\
-  || jq -nc --arg at "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg role "\$lens" --argjson rc "\$rc" '{at: \$at, role: \$role, exit: \$rc, state: "unparsed", verdict: "unparsed", source: "gentle-ai review capture-result"}' >> "\$HW_ARTIFACTS/rdd-log.jsonl" 2>/dev/null
-# MUTATION-ANCHOR-END: 780-M01
-rm -f "\$out"
-exit "\$rc"
-WRAP
-  chmod 755 "$d/bin/gentle-ai-task" && grep -q "rdd-home" "$d/bin/gentle-ai-task"
-}
-
-cmd_gentle_home() {
-  local d mode=provision
-  d="$(gentle_home_dir)"
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --dir)   _need_val "$@"; d="$2"; shift 2 ;;
-      --check) mode=check; shift ;;
-      --path)  mode=path; shift ;;
-      -h|--help)
-        cat <<'HELP'
-hw gentle-home [--dir <dir>] [--check | --path]
-
-Provisions gentle-ai's own HOME for `--sdd gentle`: the pinned release,
-checksum-verified, installed with --preset custom for Claude Code only, with
-HOME pointed inside <dir>. Idempotent. Default <dir>:
-$HW_GENTLE_HOME, else ~/.local/share/hw/gentle-home.
-
-  --check   say whether <dir> is a complete home; exit 1 if not
-  --path    print <dir>
-
-Undo: rm -rf <dir>. Nothing outside it is written.
-HELP
-        return 0 ;;
-      *) die "hw gentle-home: unknown option: $1" ;;
-    esac
-  done
-  local why
-  if why="$(_gentle_home_refusal "$d")"; then die "hw gentle-home REFUSED: $d — $why"; fi
-  case "$mode" in
-    path)  printf '%s\n' "$d"; return 0 ;;
-    check)
-      if why="$(_gentle_home_ready "$d")"; then ok "gentle-ai $GENTLE_VERSION home is complete: $d"; return 0; fi
-      warn "gentle-ai home is not ready: $why"; return 1 ;;
-  esac
-  if _gentle_home_ready "$d" >/dev/null; then
-    # The guard runs from a COPY inside the home, so a fix to the source never
-    # reached a home that was already complete (Judge warning on 0.3.4): refresh
-    # the copy when the source differs.
-    if ! cmp -s "$BRAIN/setup/guards/deny-gentle-real-home.py" "$d/guards/deny-gentle-real-home.py"; then  # MUTATION-ANCHOR: 783-M01
-      cp "$BRAIN/setup/guards/deny-gentle-real-home.py" "$d/guards/" \
-        || die "hw gentle-home: could not refresh the guard copy in $d/guards"
-      ok "gentle-ai $GENTLE_VERSION home already provisioned: $d (guard copy refreshed from the source)"
-      info "undo: rm -rf $d"
-      return 0
-    fi
-    ok "gentle-ai $GENTLE_VERSION home already provisioned: $d (nothing changed)"
-    info "undo: rm -rf $d"
-    return 0
-  fi
-
-  local plat name want tarball got
-  plat="$(_gentle_platform)"
-  want="${HW_GENTLE_SHA256:-$(_gentle_pinned_sha256 "$plat" || true)}"
-  [ -n "$want" ] || die "hw gentle-home: gentle-ai $GENTLE_VERSION has no pinned checksum for $plat"
-  name="gentle-ai_${GENTLE_VERSION}_${plat}.tar.gz"
-  mkdir -p "$d/cache" "$d/libexec" "$d/home" || die "hw gentle-home: cannot create $d"
-  tarball="${HW_GENTLE_TARBALL:-$d/cache/$name}"
-  if [ -z "${HW_GENTLE_TARBALL:-}" ] && [ ! -f "$tarball" ]; then
-    step "gentle-home  download $name"
-    curl -fsSL -o "$tarball.part" "https://github.com/$GENTLE_REPO/releases/download/v$GENTLE_VERSION/$name" \
-      || { rm -f "$tarball.part"; die "hw gentle-home: download failed: $name"; }
-    mv "$tarball.part" "$tarball"
-  fi
-  got="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
-  if [ "$got" != "$want" ]; then
-    [ -n "${HW_GENTLE_TARBALL:-}" ] || rm -f "$tarball"
-    die "hw gentle-home REFUSED: $name has sha256 $got, and the pinned checksum is $want. Nothing was installed."
-  fi
-  ok "checksum verified: $name ($got)"
-  tar -xzf "$tarball" -C "$d/libexec" gentle-ai || die "hw gentle-home: $name holds no gentle-ai binary"
-  chmod 755 "$d/libexec/gentle-ai"
-  _gentle_write_wrapper "$d" || die "hw gentle-home: could not write the wrapper $d/bin/gentle-ai"
-
-  step "gentle-home  install into $d/home (Claude Code only, --preset custom)"
-  ( cd "$d/home" && "$d/bin/gentle-ai" install --agent claude-code --preset custom ) >"$d/install.log" 2>&1 \
-    || die "hw gentle-home: gentle-ai install failed — see $d/install.log"
-  grep -q '<!-- gentle-ai:agent-routing -->' "$d/home/.claude/CLAUDE.md" 2>/dev/null \
-    || die "hw gentle-home: gentle-ai install exited 0 but wrote no ODD block at $d/home/.claude/CLAUDE.md — see $d/install.log"
-  grep -q '<!-- /gentle-ai:agent-routing -->' "$d/home/.claude/CLAUDE.md" \
-    || die "hw gentle-home: the ODD block at $d/home/.claude/CLAUDE.md is not closed — see $d/install.log"
-  # The two skills ODD resolves by name. `--components skills` does not touch
-  # the block the preset wrote; the check below proves it.
-  local block_sha hooks_removed=''
-  block_sha="$(shasum -a 256 "$d/home/.claude/CLAUDE.md" 2>/dev/null | cut -d' ' -f1)"
-  ( cd "$d/home" && "$d/bin/gentle-ai" install --agent claude-code --components skills ) >>"$d/install.log" 2>&1 \
-    || die "hw gentle-home: gentle-ai skills install failed — see $d/install.log"
-  [ "$(shasum -a 256 "$d/home/.claude/CLAUDE.md" | cut -d' ' -f1)" = "$block_sha" ] \
-    || die "hw gentle-home: installing the skills rewrote the ODD block; refusing a home whose block is not the preset's"
-  ( cd "$d/home" && "$d/bin/gentle-ai" review mode disable --scope global --cwd "$d/home" \
-      && "$d/bin/gentle-ai" telemetry disable ) >>"$d/install.log" 2>&1 \
-    || warn "gentle-ai could not record RDD or telemetry as off in its own home (see $d/install.log); the prompt still says RDD is off, and gentle-ai is not on the executor's PATH"
-  # PROVEN OFF FROM THE HOME'S OWN STATE, not from the wrapper's environment:
-  # the wrapper sets DO_NOT_TRACK, which would answer "disabled" by itself.
-  env -i HOME="$d/home" PATH=/usr/bin:/bin "$d/libexec/gentle-ai" telemetry status 2>&1 | grep -q 'telemetry: disabled (source: state)' \
-    || die "hw gentle-home: telemetry is not off in gentle-ai's own state (source must be 'state', not the environment) — see $d/install.log"
-  # 4.0.0's --preset custom writes five hooks (review stop-hook, telemetry
-  # runtime, skill-registry) into the HOME's settings.json. Nothing loads that
-  # file — the executor runs with the real HOME and only the flags below — so
-  # they never run; they are removed anyway, so that "this mode runs none of
-  # gentle-ai's hooks" stays a fact of the file and not only of the launch.
-  if [ -f "$d/home/.claude/settings.json" ]; then
-    hooks_removed="$(jq -r '[.hooks // {} | to_entries[] | .key] | join(",")' "$d/home/.claude/settings.json")" \
-      || die "hw gentle-home: $d/home/.claude/settings.json is not readable JSON"
-    jq 'del(.hooks)' "$d/home/.claude/settings.json" > "$d/home/.claude/settings.json.new" \
-      && mv "$d/home/.claude/settings.json.new" "$d/home/.claude/settings.json" \
-      || die "hw gentle-home: could not remove gentle-ai's hooks from its own home"
-  fi
-  # Only the ODD protocol travels (see _gentle_home_ready).
-  sed -n '/<!-- gentle-ai:agent-routing -->/,/<!-- \/gentle-ai:agent-routing -->/p' "$d/home/.claude/CLAUDE.md" > "$d/odd-block.md" \
-    || die "hw gentle-home: could not extract the ODD protocol block"
-
-  local s
-  rm -rf "$d/plugin"
-  mkdir -p "$d/plugin/gentle-odd/.claude-plugin" "$d/plugin/gentle-odd/skills"
-  for s in work-unit-commits chained-pr; do
-    [ -f "$d/home/.claude/skills/$s/SKILL.md" ] || die "hw gentle-home: gentle-ai installed no $s skill"
-    cp -R "$d/home/.claude/skills/$s" "$d/plugin/gentle-odd/skills/$s"
-  done
-  printf '{"name":"gentle-odd","version":"%s","description":"The two skills gentle-ai ODD resolves by name, for hw --sdd gentle"}\n' \
-    "$GENTLE_VERSION" > "$d/plugin/gentle-odd/.claude-plugin/plugin.json"
-  # The hooks run from COPIES inside the home, never from $BRAIN: provisioned from
-  # a task worktree, settings that named $BRAIN/setup/guards dangled the day that
-  # worktree was removed (the real home's settings did). The guard is a
-  # stdlib-only single file, so the home carries it.
-  mkdir -p "$d/guards"
-  cp "$BRAIN/setup/guards/deny-gentle-real-home.py" "$d/guards/" \
-    || die "hw gentle-home: could not copy the guards into $d/guards"
-  jq -n --arg guard "$d/guards/deny-gentle-real-home.py" --arg home "$d" \
-    '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: ("HW_GENTLE_HOME=" + $home + " python3 " + $guard)}]}]}}' \
-    > "$d/guard-settings.json"
-  # RDD, opt-in per brief (`review: rdd`), is NATIVE: for Claude, gentle-ai runs its own
-  # tool-free reviewer in process on every `review capture-result --agent` it is
-  # told to run, so there are no reviewer roles to provision, no plugin and no hook
-  # (measured 2026-10-06, 4.0.0; the 4.0.0 orchestrator says it: never relay, never a
-  # lens subagent, never --input). What hw adds is gentle-ai-task, which logs each capture.
-  jq -n --arg v "$GENTLE_VERSION" --arg t "$got" --arg p "$plat" \
-    --arg b "$(shasum -a 256 "$d/odd-block.md" | cut -d' ' -f1)" \
-    --arg pinned "$([ -n "${HW_GENTLE_SHA256:-}" ] && echo override || echo pinned)" \
-    --arg hr "${hooks_removed:-}" \
-    '{version: $v, platform: $p, tarball_sha256: $t, checksum: $pinned, odd_block_sha256: $b, home_hooks_removed: $hr}' > "$d/manifest.json"
-  if why="$(_gentle_home_ready "$d")"; then
-    ok "gentle-ai $GENTLE_VERSION home provisioned: $d ($(wc -c < "$d/odd-block.md" | tr -d ' ') bytes of ODD block)"
-    info "undo: rm -rf $d"
-    return 0
-  fi
-  die "hw gentle-home: provisioned, but the home is not complete: $why"
-}
-
-# _exclude_odd <worktree> — odd/ ignored in THIS worktree and nowhere else.
-#
-# NOT the exclude file: for a linked worktree `--git-path info/exclude` is the
-# COMMON one, so a line there hides odd/ in every worktree of the repo and in
-# its main checkout, for good. A per-worktree `$GIT_DIR/info/exclude` is not
-# read (measured, git 2.50.1), and a per-worktree core.excludesFile needs
-# `extensions.worktreeConfig`, which is shared config. What is left, and what
-# this writes: an UNTRACKED odd/.gitignore holding `*`, which ignores the
-# directory's contents and itself — one worktree, no config, nothing versioned.
-_exclude_odd() {
-  local wt="$1"
-  git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  mkdir -p "$wt/odd" || { warn "cannot create $wt/odd; ODD's feature documents may show in git status"; return 0; }
-  [ -e "$wt/odd/.gitignore" ] || printf '*\n' > "$wt/odd/.gitignore" \
-    || { warn "cannot write $wt/odd/.gitignore; ODD's feature documents may show in git status"; return 0; }
-  info "odd/ ignored in this worktree only (untracked odd/.gitignore), so ODD's feature documents never reach a commit"
-  return 0
-}
-
-GENTLE_DELIVERY=""
-GENTLE_DEPLOYED_CHECK=""
-GENTLE_REVIEW=""
-
-# ── the deployed check: an ODD run that did not verify what is deployed ─────
-#
-# MEASURED 2026-09-28/29, the 8 runs of the salón release: the empirical
-# check against staging never ran (no staging QA account,
-# session_reauth_failed, tenant_seed_missing), ODD recorded it as pending, as
-# its close step allows, and every run reported done (fase 4's feature
-# document; setup/decisions.md, 2026-09-29). So under gentle a done is held to it:
-#
-#   deployed_check: required               the DEFAULT, also when absent
-#   deployed_check: out-of-scope <reason>  the brief takes it out, and the
-#                                          report says so in its first line
-#
-# `required` is closed by $HW_ARTIFACTS/deployed-check.md (target, evidence,
-# RESULT: PASSED), HELD on an ask-invoker naming what is missing, or reported
-# --blocked. done-invoker enforces it; this is the one reader.
-# One key of a brief's frontmatter, key matched case-insensitively, value
-# unquoted and trimmed; nothing when absent or when the brief has no fence.
-_brief_fm_value() {  # $1 = key, $2 = brief path
-  [ -f "${2:-}" ] || return 0
-  awk -v want="$1" 'NR==1 { if ($0 != "---") exit; next }
-       $0 == "---" { exit }
-       tolower($0) ~ "^[[:space:]]*" want "[[:space:]]*:" {
-         sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
-         if ($0 ~ /^".*"$/ || $0 ~ /^'"'"'.*'"'"'$/) $0 = substr($0, 2, length($0) - 2);
-         print; exit }' "$2" 2>/dev/null || true
-}
-
-_brief_deployed_check() {  # $1 = brief path (default: $BRIEF)
-  local f="${1:-${BRIEF:-}}"
-  [ -f "$f" ] || return 0
-  awk 'NR==1 { if ($0 != "---") exit; next }
-       $0 == "---" { exit }
-       tolower($0) ~ /^[[:space:]]*deployed_check[[:space:]]*:/ {  # MUTATION-ANCHOR: 701-M03
-         sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
-         if ($0 ~ /^".*"$/ || $0 ~ /^'"'"'.*'"'"'$/) $0 = substr($0, 2, length($0) - 2);
-         print; exit }' "$f" 2>/dev/null || true
-}
-
-# Prints `required` or `out-of-scope: <reason>`; returns 1, printing the raw
-# value, when it is neither.
-_gentle_deployed_check() {
-  local v reason
-  v="$(_brief_deployed_check)"
-  case "$v" in
-    ""|required) printf 'required'; return 0 ;;
-    out-of-scope*)
-      reason="$(printf '%s' "${v#out-of-scope}" | sed -E 's/^[[:space:]]*(:|—|–|-)?[[:space:]]*//')"
-      [ -n "$reason" ] || { printf '%s' "$v"; return 1; }
-      printf 'out-of-scope: %s' "$reason"; return 0 ;;
-    *) printf '%s' "$v"; return 1 ;;
-  esac
-}
-
-# THE LAUNCH GATE, run right after the mode is parsed and before reuse
-# discovery, the worktree, the database or a port. A lane that does not list
-# the mode answers exactly what it answered before the mode existed.
-_validate_sdd_gentle() {
-  case " $(project_sdd_modes "$PROJ") " in
-    *" gentle "*) ;;
-    *) die "--sdd must be speckit or none (got: gentle)" ;;
-  esac
-  # pi's reason is NOT "no per-launch system prompt": pi has `--append-system-prompt`. MEASURED 2026-10-12
-  # (second pi parity task; gentle home 4.0.0): the mode is the ODD block PLUS a PreToolUse Bash hook
-  # (`--settings guard-settings.json` -> deny-gentle-real-home.py, which keeps the run off the real home)
-  # PLUS two skills from a Claude plugin dir. hw wires none of the last two into pi, and no pi run of ODD
-  # has been observed: a prompt block without its guard is not the mode. UNESTABLISHED: whether a pi port
-  # (block via --append-system-prompt, skills via --skill, the guard in the adapter's tool_call) would hold.
-  if [ "$AGENT" = pi ]; then  # MUTATION-ANCHOR: 991-M01
-    die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code. pi can take the ODD block (--append-system-prompt), but hw wires neither of its other two parts into pi: the guard hook that keeps the run off the real home (guard-settings.json, a Claude --settings file) and the two skills (a Claude plugin dir), and no pi run of ODD has been observed. pi runs ${PROJ:-this lane} with --sdd none. Nothing was built. Use --sdd none, or --agent claude for gentle."
-  fi
-  [ "$AGENT" = claude ] \
-    || die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code, because ODD enters the executor's system prompt through Claude's --append-system-prompt-file and $AGENT has no per-launch equivalent here. Nothing was built. Add --agent claude."
-  [ "$HERE" != 1 ] \
-    || die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --here runs in your own directory, and ODD writes odd/ where it runs. Nothing was built. Give it its own worktree (drop --here)."
-  # --keep-pane IS ALLOWED (it was refused until 2026-10-06, friction 7): ODD
-  # stays in the live session's system prompt, and `hw next` re-injects what is
-  # per task (delivery, the RDD bullet, the deployed check) from the NEW brief.
-  [ -n "$BRIEF" ] \
-    || die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: it needs a brief, and the brief must fix the delivery strategy ODD would otherwise stop to ask for. Nothing was built."
-  _load_brief_decls
-  _gentle_brief_gate
-  local d why
-  d="$(gentle_home_dir)"
-  why="$(_gentle_home_ready "$d")" \
-    || die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: gentle-ai's own home is not ready ($why). Nothing was built. Provision it with: hw gentle-home"
-  return 0
-}
-
-# The part of the gate that reads ONE BRIEF (BRIEF_DECLS, BRIEF): the launch
-# runs it on the dispatch brief, `hw next` on the brief of the next task, so the
-# per-task facts below cannot be read two ways.
-_gentle_brief_gate() {
-  GENTLE_DELIVERY="$(printf '%s\n' "$BRIEF_DECLS" | awk -F'\t' '$1 == "delivery" { print $2; exit }')"
-  case "$GENTLE_DELIVERY" in
-    single-pr|stacked-to-main|feature-branch-chain) ;;
-    "") die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: the brief does not declare \`delivery:\` in its frontmatter. ODD asks for the delivery strategy before it slices work, and nobody answers in an executor's pane. Declare one: delivery: single-pr | stacked-to-main | feature-branch-chain. Nothing was built." ;;
-    *) die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: delivery: $GENTLE_DELIVERY is not one of single-pr, stacked-to-main, feature-branch-chain. Nothing was built." ;;
-  esac
-  GENTLE_REVIEW="$(printf '%s\n' "$BRIEF_DECLS" | awk -F'\t' '$1 == "review" { print $2; exit }')"
-  case "$GENTLE_REVIEW" in
-    ""|rdd) ;;
-    *) die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: review: $GENTLE_REVIEW is not rdd. RDD is the only opt-in (omit the key for Judgment Day). Nothing was built." ;;
-  esac
-  GENTLE_DEPLOYED_CHECK="$(_gentle_deployed_check)" \
-    || die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: deployed_check: $GENTLE_DEPLOYED_CHECK is not a value hw accepts. The accepted forms are exactly three: the key absent or empty (the default, same as required); 'deployed_check: required'; or 'deployed_check: out-of-scope — <why>' with a non-empty reason (the separator may be —, – , - or :), e.g. 'deployed_check: out-of-scope — a docs-only change, nothing is deployed'. A bare 'out-of-scope' with no reason is refused too. Nothing was built."  # MUTATION-ANCHOR: 781-M02
-}
-
-# What the dispatch SAYS about RDD, from the one value the launch is built on.
-_gentle_rdd_word() {  # MUTATION-ANCHOR: 781-M01
-  if [ "${GENTLE_REVIEW:-}" = rdd ]; then printf 'RDD on (native)'; else printf 'RDD off'; fi
-}
-
-# The sentence that makes native RDD the only review of an `review: rdd` task.
-_rdd_only_review_line() {  # MUTATION-ANCHOR: 786-M02
-  printf '%s\n     %s\n     %s\n     %s\n     %s' \
-    'NATIVE RDD IS THE ONLY REVIEW OF THIS TASK. Do NOT run the judgment-day' \
-    'skill or any second reviewer over the same candidate, and do not report a' \
-    'Judgment Day verdict: two reviews of one candidate are two verdicts and' \
-    'twice the cost, and this brief chose RDD instead. (A design judgment the brief' \
-    'asks for under `boundary:` is a separate gate, before the code, not this.)'
-}  # MUTATION-ANCHOR-END: 786-M02
-
-# `review: rdd`: native RDD, run on a LOCAL CLONE. gentle-ai keeps its review
-# authority in <git-common-dir>/gentle-ai/review-transactions, which for this
-# worktree is the product repo's own .git: measured 2026-10-06, a START with
-# writes allowed only to gentle-home fails (operation_outcome_unknown), and
-# with the repo writable it lands there. So the executor never points gentle-ai
-# at the worktree; it clones it under $HW_ARTIFACTS and reviews the clone.
-_gentle_rdd_bullet() {
-  local gh base
-  gh="$(gentle_home_dir)"; base="$(lane_get "$PROJ" base_ref_prefix)$(lane_get "$PROJ" base)"
-  cat <<EOF
-- RECEIPT-DRIVEN DEVELOPMENT (RDD) IS ON for this task, natively, and only
-  this way. NEVER run gentle-ai with --cwd on this worktree or any repository
-  of the product: its review store is <git-common-dir>/gentle-ai, inside the
-  product repo, and that is forbidden. The binary is $gh/bin/gentle-ai-task (its
-  wrapper fixes its HOME to a private one); never any other, never install,
-  sync or upgrade.
-  1. When the work is committed, make a clone and review THAT:
-     git clone --no-hardlinks <this worktree> \$HW_ARTIFACTS/rdd-clone ;
-     in the clone, git fetch origin refs/remotes/$base:refs/remotes/$base
-     (the review base is the lane's base, $base, never main). The clone's
-     HEAD is the candidate; commit nothing new in the product worktree for it.
-  2. $gh/bin/gentle-ai-task review mode enable --scope global --cwd
-     \$HW_ARTIFACTS/rdd-home — the task's own copy of gentle-ai's home, made on
-     first use: RDD is on for this task only and there is nothing to turn off.
-     NEVER enable it through $gh/bin/gentle-ai (every executor shares that
-     home), and never --scope clone to turn it on: a clone setting can only
-     turn RDD off.
-  3. Drive the lifecycle, always through $gh/bin/gentle-ai-task, with
-     --cwd <the clone> --base-ref $base --committed-only: review status
-     --contract gentle-ai.review-integration/v2 --agent claude-code
-     --next-transition. Run EXACTLY the operation and tokens each transition
-     returns, never rebuilt: START first (answer consent with its granted
-     invocation), then status again. THE REVIEW IS NATIVE: a returned
-     review capture-result carries --agent and no --input, and running it makes
-     gentle-ai materialize the immutable context and run its own tool-free
-     reviewer in process, then admit the result. NEVER launch a lens or any
-     subagent for it, NEVER assemble a reviewer prompt, NEVER add --input,
-     NEVER hand candidate bytes over through a file: the context can be over
-     100 KB and relaying it by hand was cut by an API safeguard. When one
-     collect carries several reviewer slots, start every returned capture
-     concurrently in the order returned (one Bash call, backgrounded) and wait
-     for all of them. A review can outlast a tool timeout: run them with
-     run_in_background (or a long timeout), and a timeout is not a failed
-     capture: ask STATUS again before concluding anything. Run the
-     acknowledge-approved transition it returns once
-     approved. On correction_required, re-enter only through the
-     status_continuation it returns.
-  4. If a capture fails (provider, budget, lens_context_budget_exceeded, no
-     login), report done-invoker --blocked with its exact output. Do not
-     relay, do not retry with another command shape.
-  5. $gh/bin/gentle-ai-task writes rdd-log.jsonl in \$HW_ARTIFACTS for you,
-     locally, from each capture's own answer: role, verdict, findings,
-     duration. Telemetry is off; nothing leaves this machine.
-  6. $(_rdd_only_review_line)
-EOF
-}
-
-# What the prompt says in this mode, ahead of the brief. Every line answers a
-# measured failure: without the ask-invoker line an executor ended its turn
-# asking in the pane and wrote nothing.
-_gentle_preamble() {
-  local delivery_text
-  case "$GENTLE_DELIVERY" in
-    single-pr)            delivery_text="single-pr — one pull request; do not slice it into a chain" ;;
-    stacked-to-main)      delivery_text="a chain of pull requests, stacked-to-main" ;;
-    feature-branch-chain) delivery_text="a chain of pull requests, feature-branch-chain" ;;
-  esac
-  cat <<EOF
-THIS TASK RUNS IN GENTLE-AI ODD MODE (--sdd gentle) — chosen by your brainer.
-The Organic Driven Development (ODD) protocol is in your system prompt: follow
-it, in its order, for this task. What this mode fixes for you:
-
-EOF
-  if [ "${GENTLE_REVIEW:-}" = rdd ]; then
-    _gentle_rdd_bullet
-  else
-    cat <<'EOF'
-- Receipt-driven development (RDD) is OFF for this task. gentle-ai is NOT
-  installed for you and must not be run: no `gentle-ai review ...`, no
-  `gentle-ai install`, no `gentle-ai sync`. Where ODD says "when RDD is
-  enabled", it is not. Review is Judgment Day, as this dispatch says below.
-EOF
-  fi
-  cat <<EOF
-- SDD is not selected. Do not enter SDD phases or create SDD artifacts.
-- The feature document is \`odd/tasks/<feature-name>.md\`, as ODD says. \`odd/\`
-  is ignored in this worktree by an untracked odd/.gitignore: never commit it,
-  never force-add it, never delete that file. Mirror it to engram as ODD says,
-  passing project explicitly.
-- NOBODY ANSWERS IN THIS PANE. Every question ODD tells you to ask the user —
-  an ambiguous authorization, a real product decision, a delivery or chain
-  strategy — goes through \`ask-invoker "<one question>"\`, and you act on its
-  reply. Never end your turn waiting for an answer here.
-- Delivery strategy is fixed by the brief: $delivery_text. Do not ask for it.
-EOF
-  case "${GENTLE_DEPLOYED_CHECK:-required}" in
-    out-of-scope:*)
-      cat <<EOF
-- DEPLOYED CHECK OUT OF SCOPE, declared by the brief (${GENTLE_DEPLOYED_CHECK#out-of-scope: }).
-  done-invoker opens your report with that line; do not claim a check against
-  what is deployed that you did not run.
-EOF
-      ;;
-    *)
-      cat <<'EOF'
-- THE CHECK AGAINST WHAT IS DEPLOYED IS PART OF DONE, not a pending line in
-  the feature document. done-invoker refuses a done until
-  $HW_ARTIFACTS/deployed-check.md holds three lines: `target: <the deployed
-  https URL you verified>` (never localhost), `evidence: <a file under
-  $HW_ARTIFACTS with the run's result>`, and `RESULT: PASSED`.
-  If it cannot run — no QA account, no seed, no session — that is a HOLD:
-  `ask-invoker` naming exactly what is missing, then wait for the reply. If it
-  ran and failed, or the hold cannot be lifted, report `done-invoker --blocked`.
-EOF
-      ;;
-  esac
 }
 
 # ── the account the executor will actually run under ────────────────────────
@@ -6805,8 +6142,8 @@ _validate_sdd_vendor_pair() {  # MUTATION-ANCHOR: 164-M05
   case "$vendor:$SDD_EFFECTIVE_MODE" in
     codex:""|codex:none|opencode:""|opencode:none|pi:""|pi:none|claude:*) return 0 ;;
     pi:*)
-      # pi is none-mode only (setup/briefs/pi-vendor-v1.md, V1): no Spec Kit or
-      # gentle entry exists for it, the same posture codex started from.
+      # pi is none-mode only (setup/briefs/pi-vendor-v1.md, V1): no Spec Kit
+      # entry exists for it, the same posture codex started from.
       # In a lane whose checkout carries speckit-* skills (a product lane) an UNTYPED --sdd resolves to speckit
       # from the disk (_resolve_effective_sdd_mode): say so, or the refusal names a flag nobody passed.
       local sdd_why=""
@@ -6815,9 +6152,6 @@ _validate_sdd_vendor_pair() {  # MUTATION-ANCHOR: 164-M05
       ;;
     codex:speckit)
       die "Codex framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd $SDD_EFFECTIVE_MODE requires a demonstrated native entry and completed flow, but that capability is unverified. Nothing was built. Use --sdd none for direct delivery, or validate Codex framework execution before re-dispatching."
-      ;;
-    opencode:gentle|codex:gentle)
-      die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code. Nothing was built."
       ;;
     opencode:speckit)
       die "OpenCode framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd $SDD_EFFECTIVE_MODE is Spec Kit, but this machine exposes Spec Kit only as Claude Code skills. Nothing was built. Use --agent claude for Spec Kit, or --sdd none for direct delivery."
@@ -7328,37 +6662,113 @@ _brief_kind_for_close() {
     "$BRIEF" 2>/dev/null || true
 }
 
+# THE REVIEW A BUILD CLOSES WITH IS THE BRIEF'S CHOICE, in every lane and every --sdd mode:
+#
+#     review: judgment-day   the Judgment Day closing (DEFAULT, also when absent)
+#     review: plugins        the review skills of the brief's `plugins:`, and no Judgment Day
+#     review: none           no review note at all
+#
+# One reader, for the same reason _brief_boundary is one: the launch, the manifest,
+# the receipt and `hw next` read ONE answer. `rdd` is the retired spelling of the
+# gentle-ai review (gentle-ai left hw, setup/decisions.md 2026-10-16): it warns and
+# falls back to judgment-day. Prints the mode; returns 1, printing the raw value,
+# when it is not one hw knows.
+_brief_review_mode() {  # $1 = brief path (default: $BRIEF)
+  local f="${1:-${BRIEF:-}}" v
+  v="$(_brief_fm_value review "$f" | tr 'A-Z' 'a-z' | sed -E 's/[[:space:]]*#.*$//')"
+  case "$v" in
+    ""|rdd|judgment-day) printf 'judgment-day' ;;  # MUTATION-ANCHOR: 1020-M01
+    plugins)             printf 'plugins' ;;  # MUTATION-ANCHOR: 1020-M02
+    none)                printf 'none' ;;  # MUTATION-ANCHOR: 1020-M03
+    *) printf '%s' "$v"; return 1 ;;
+  esac
+}
+
+# The review skills each pinned plugin carries (setup/vendor/plugins), in the order a
+# brief declares the plugins, once each. A plugin with no review skill names none.
+_review_skills_of_plugin() {
+  case "$1" in
+    thermo)   printf '%s\n' thermo-nuclear-code-quality-review ;;
+    ponytail) printf '%s\n' ponytail-review ;;
+    pstack)   printf '%s\n' thermo-nuclear-review thermo-nuclear-code-quality-review ;;
+  esac
+}
+_review_skills_declared() {  # the skills of $BRIEF's declared plugins: one per line, deduplicated
+  local n
+  for n in $(_plugins_declared); do _review_skills_of_plugin "$n"; done | awk '!seen[$0]++'
+}
+
+# Raised where the brief is read (the launch's contract check, `hw next`): dies on a value
+# that is not one of the three, warns on the retired `rdd`, and refuses `plugins` with no
+# plugins to name — a review that names nothing is no review.
+_review_gate() {
+  local raw mode skills
+  raw="$(_brief_fm_value review "${BRIEF:-}" | tr 'A-Z' 'a-z' | sed -E 's/[[:space:]]*#.*$//')"
+  mode="$(_brief_review_mode)" \
+    || die "the brief declares review: $mode — it takes judgment-day, plugins or none. NOTHING was built."
+  [ "$raw" != rdd ] || warn "brief declares review: rdd, which is retired (gentle-ai left hw): running review: judgment-day instead"
+  if [ "$mode" = plugins ]; then
+    skills="$(_review_skills_declared)"
+    [ -n "$skills" ] \
+      || die "the brief declares review: plugins, but its plugins: names no plugin with a review skill (thermo, ponytail, pstack). NOTHING was built."
+  fi
+}
+
+# Only when the brief DECLARES review:, like plugins: a run with no `review` receipt asked for
+# the default. What the manifest prints and the receipt records are the one answer.
+_review_declared() { [ -n "$(_brief_fm_value review "${BRIEF:-}")" ]; }
+_review_effect() {  # the words after the mode, for the manifest and the receipt
+  case "$1" in
+    plugins) printf "the closing names the review skills of the brief's plugins (%s) and no Judgment Day" "$(_review_skills_declared | paste -sd, - | sed 's/,/, /g')" ;;
+    none)    printf 'no review note at the close' ;;
+    *)       printf 'the Judgment Day closing' ;;
+  esac
+}
+_review_lines() {  # the manifest's review field, leading newline included; nothing when the brief declares none
+  _review_declared || return 0
+  local mode; mode="$(_brief_review_mode 2>/dev/null)" || return 0
+  printf '\n  review      %s  (brief review:) — %s' "$mode" "$(_review_effect "$mode")"
+}
+_review_receipt() {  # <run dir> [<key>]
+  _review_declared || return 0
+  local mode; mode="$(_brief_review_mode 2>/dev/null)" || return 0
+  _receipt_into "$1" "${2:-review}" "$mode" "brief frontmatter review: in ${BRIEF:-<no brief>} — $(_review_effect "$mode")"
+}
+
+# The review a close names. A build with a base gets the Judgment Day closing (and its base
+# note); every other mode, and every non-build, gets none of the two.
 _judgment_day_applies() {
   [ -n "${HW_REVIEW_BASE_REF:-}" ] || return 1
+  case "$(_brief_review_mode)" in plugins|none) return 1 ;; esac  # MUTATION-ANCHOR: 1020-M04
   case "$(_brief_kind_for_close)" in
     ""|build) return 0 ;;
     *)        return 1 ;;
   esac
 }
 
-# `--sdd gentle` with `review: rdd`: native RDD is the ONLY review. Measured
-# 2026-10-07 (gentle friction 12): all 5 gentle executors
-# reported "Native RDD approved" AND "Judgment Day APPROVED". Nothing in the
-# ODD block or the gentle-home asked for the second one; this file did, in the
-# closing every build gets (_judgment_day_note, and the base note ahead of it).
-# GENTLE_REVIEW is set only by _gentle_brief_gate, which only a gentle launch
-# or a gentle `hw next` runs, so any other mode is unchanged.
-_rdd_is_the_review() {
-  [ "${GENTLE_REVIEW:-}" = rdd ]  # MUTATION-ANCHOR: 786-M01
+# `review: plugins` closes a build with the plugins' review skills, base or no base: the
+# skills read the diff themselves, so they need no frozen range.
+_plugins_review_applies() {
+  [ "$(_brief_review_mode)" = plugins ] || return 1  # MUTATION-ANCHOR: 1020-M05
+  case "$(_brief_kind_for_close)" in
+    ""|build) return 0 ;;
+    *)        return 1 ;;
+  esac
 }
 
-_rdd_closing_note() {
-  printf 'Closing this code task: native RDD is its only review, then done-invoker, in this order:
+_plugins_review_note() {
+  printf 'Closing this code task: the review this brief chose, then done-invoker, in this order:
 
 1. Commit per work unit as you go, on this branch, with Conventional Commit
    messages — not one commit at the end. The review target is what you
    committed; uncommitted work is not reviewed and is not delivered.
-2. Run the native RDD review of the RDD bullet above, on the clone, and act on
-   what it returns. That is the one review of this task: do NOT run the
-   judgment-day skill, hw review-range or any second reviewer over the same
-   candidate. Two verdicts on one candidate is the cost this mode removes.
-3. The done-invoker report carries the RDD outcome (approved, or what
-   correction_required left open) and no Judgment Day verdict.'
+2. Before done-invoker, run these review skills over your committed diff, the
+   ones of the plugins this brief declares: %s. A skill that is not among your
+   available skills is not installed: say so in the report and close normally.
+   Do NOT run the judgment-day skill: this brief chose its review, and two
+   verdicts on one candidate is the cost it removes.
+3. The done-invoker report names each review skill you ran and what it left
+   open.' "$(_review_skills_declared | paste -sd, - | sed 's/,/, /g')"
 }
 
 _judgment_day_note() {
@@ -7454,10 +6864,13 @@ file is missing, has no rows, or has a row with an empty verdict.'
 }
 
 _design_judgment_note() {  # $1 = the declared boundary
-  # Under `review: rdd` the design is still judged first (done-invoker holds it),
-  # but the review at the end is native RDD, not a second Judgment Day.
-  local _dz_end="the code-mode Judgment Day"
-  ! _rdd_is_the_review || _dz_end="the native RDD review"
+  # The design is judged first whatever the brief chose to review with
+  # (done-invoker holds it); the end of the task is named by that choice.
+  local _dz_end="the code-mode Judgment Day at the end"
+  case "$(_brief_review_mode)" in
+    plugins) _dz_end="the closing review at the end" ;;
+    none)    _dz_end="the end of the task" ;;
+  esac
   printf 'Judge the design before the code. This brief declares a boundary:
 
     boundary: %s
@@ -7474,8 +6887,8 @@ $HW_ARTIFACTS/design-judgment.md with these lines:
     JUDGMENT: APPROVED            (or ESCALATED)
 
 An APPROVED verdict lists, one amendment: line each, the bypass classes both
-judges confirmed and the approach can close; your code closes them, and the
-%s at the end is where that is checked. done-invoker
+judges confirmed and the approach can close; your code closes them, and
+%s is where that is checked. done-invoker
 refuses a done report without an APPROVED verdict whose design still hashes to
 design_sha256. An ESCALATED design is a blocker, not a
 prompt to code anyway: report it with done-invoker --blocked, naming the
@@ -7493,7 +6906,7 @@ your brainer'"'"'s call.' "$1" "$_dz_end"
 # same flow starting over.
 #
 # THE FRESH ANALYZE IS ON TRIAL, not established. Approved 2026-09-24 as the
-# equivalent of gentle's fresh design gate; the defect it would catch was never
+# equivalent of the fresh design gate gentle once had; the defect it would catch was never
 # measured. The ruling that admits it, and what removes it, is in
 # setup/decisions.md under "The fresh analyze gate".
 _speckit_phase_note() {
@@ -7533,8 +6946,19 @@ CRITICAL does not stop the flow.'
 # What, if anything, in THIS brief (BRIEF) asks for a browser or a check against
 # what is deployed — the two things the lane note about staging-only QA reads as
 # banned. Prints the declaration in words, nothing when the brief asks for
-# neither. A gentle task defaults to a required deployed check, so it counts
-# unless its brief took the check out of scope.
+# neither.
+# One key of a brief's frontmatter, key matched case-insensitively, value
+# unquoted and trimmed; nothing when absent or when the brief has no fence.
+_brief_fm_value() {  # $1 = key, $2 = brief path
+  [ -f "${2:-}" ] || return 0
+  awk -v want="$1" 'NR==1 { if ($0 != "---") exit; next }
+       $0 == "---" { exit }
+       tolower($0) ~ "^[[:space:]]*" want "[[:space:]]*:" {
+         sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
+         if ($0 ~ /^".*"$/ || $0 ~ /^'"'"'.*'"'"'$/) $0 = substr($0, 2, length($0) - 2);
+         print; exit }' "$2" 2>/dev/null || true
+}
+
 _brief_qa_override() {
   local f="${BRIEF:-}" req dc why=""
   [ -f "$f" ] || return 0
@@ -7544,8 +6968,6 @@ _brief_qa_override() {
   if [ -z "$why" ]; then
     case "$dc" in
       required) why="deployed_check: required" ;;
-      out-of-scope*) ;;
-      "") if [ "${SDD:-}" = gentle ] || [ "${HW_GENTLE_PANE:-}" = 1 ]; then why="a deployed check (the --sdd gentle default, deployed_check: required)"; fi ;;
     esac
   fi
   printf '%s' "$why"
@@ -7683,7 +7105,7 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
     # either one says so in the line after it, and the brief wins.
     local qa_override
     qa_override="$(_brief_qa_override)"
-    [ -z "$qa_override" ] || preamble="$(printf '%s\n\nTHIS BRIEF OVERRIDES THE LANE NOTE ABOVE ON BROWSERS AND QA: it declares %s. What the brief asks you to verify in a browser or against what is deployed IS your task, not the brainer'"'"'s; the sentence about staging-only QA describes the lane default and does not apply to it.' "$preamble" "$qa_override")"  # MUTATION-ANCHOR: 781-M08
+    [ -z "$qa_override" ] || preamble="$(printf '%s\n\nTHIS BRIEF OVERRIDES THE LANE NOTE ABOVE ON BROWSERS AND QA: it declares %s. What the brief asks you to verify in a browser or against what is deployed IS your task, not the brainer'"'"'s; the sentence about staging-only QA describes the lane default and does not apply to it.' "$preamble" "$qa_override")"
   fi
   # MUTATION-ANCHOR-END: 171-M03
   # THE QA TARGET OF A LANE WITH `qa_target` IS ITS OWN SERVER: `pnpm qa`
@@ -7705,7 +7127,7 @@ every mem_search already reads all labels (all_projects is forced).' "$HW_BIN_DI
   # careful.
   # GATED BY KIND TOO, like the closing below: an audit has no diff to judge, so
   # a paragraph about the range a judge would read is noise to it.
-  if _judgment_day_applies && ! _rdd_is_the_review; then
+  if _judgment_day_applies; then
     local base_note
     base_note="$(printf 'The base a Judgment Day target is built against, computed by hw at dispatch:
 
@@ -7760,11 +7182,9 @@ not after the merge.')" ;;
   fi
   # THE CLOSING OF A CODE TASK, gated by _judgment_day_applies above.
   if _judgment_day_applies; then
-    if _rdd_is_the_review; then
-      preamble="$(printf '%s\n\n%s' "$preamble" "$(_rdd_closing_note)")"
-    else
-      preamble="$(printf '%s\n\n%s' "$preamble" "$(_judgment_day_note)")"
-    fi
+    preamble="$(printf '%s\n\n%s' "$preamble" "$(_judgment_day_note)")"
+  elif _plugins_review_applies; then
+    preamble="$(printf '%s\n\n%s' "$preamble" "$(_plugins_review_note)")"
   fi
   printf '%s' "$preamble"
 }
@@ -7923,10 +7343,7 @@ _send_brief() {
     info "prompt states the flow is deliberately not entered ($DISPATCH_FRAMEWORK mode, --sdd none)"
   fi
 
-  if [ "$SDD" = gentle ]; then
-    BRIEF_TEXT="$(printf '%s\n\n---\n\n%s' "$(_gentle_preamble)" "$BRIEF_TEXT")"
-    info "prompt states the gentle-ai ODD mode: $(_gentle_rdd_word), questions through ask-invoker, delivery $GENTLE_DELIVERY"
-  elif [ "$DISPATCH_IN_PLAY" = 1 ]; then
+  if [ "$DISPATCH_IN_PLAY" = 1 ]; then
     entry="$(_framework_entry "$DISPATCH_FRAMEWORK")"
     if [ -n "$entry" ]; then
       # The phase note goes AFTER the entry line, inside the same block: the
@@ -9380,27 +8797,6 @@ cmd_log() {
 # without this its executor would need `--retask` and `hw status` would show a
 # closed run with a live pane. `reopened` beside `done` means: the old report
 # stands, a new one is owed, and done-invoker accepts it plainly.
-# THE FRAMEWORK ARGS A GENTLE RUN WAS LAUNCHED WITH, RECOMPUTED FOR A REVIVE.
-# MEASURED 2026-10-06 (friction 9, run 20261006-153531-98770): `claude --resume
-# <sid>` is all a receipt records, so a revived gentle executor lost ODD's system
-# prompt, the ODD plugin and the guard settings. They are rebuilt from the
-# CURRENT gentle-home, never replayed from recorded paths (a stale path would
-# also keep a revived run off the home's later fixes). Whether the run was
-# gentle is the dispatch's `framework` line. RDD is native and adds nothing to
-# the launch args, so a `review: rdd` revive carries exactly the ODD args. Prints the args, nothing for
-# a run that was not gentle; returns 1, printing why, when the home is not complete.
-_revive_gentle_args() {  # $1 = run dir
-  local rundir="$1" fw gh why args
-  fw="$(_run_dispatch_framework "$rundir")"
-  [ "$fw" = gentle ] || return 0
-  gh="$(gentle_home_dir)"
-  if ! why="$(_gentle_home_ready "$gh")"; then
-    printf "gentle-ai's own home is not ready (%s), and this run was launched --sdd gentle: reviving it without ODD would resume it with the protocol silently gone. Check it with: hw gentle-home --check" "$why"
-    return 1
-  fi
-  args="--append-system-prompt-file $gh/odd-block.md --plugin-dir $gh/plugin/gentle-odd --settings $gh/guard-settings.json"  # MUTATION-ANCHOR: 781-M03
-  printf '%s' "$args"  # MUTATION-ANCHOR: 782-M01
-}
 
 _revive_die() { printf '%shw revive REFUSED:%s %s\n' "$C_ERR" "$C_0" "$*" >&2; exit 1; }
 
@@ -9481,10 +8877,6 @@ cmd_revive() {
   [ "$cmd_bin" = "$vendor" ] \
     || _revive_die "session_resume runs '$cmd_bin' but session_vendor says '$vendor' — two recorded facts disagree, and hw will not pick one"
   [ "$cmd_args" != "$rest" ] || _revive_die "session_resume has no arguments after '$cmd_bin': $resume"
-  local gentle_args=""
-  if [ "$vendor" = claude ]; then
-    gentle_args="$(_revive_gentle_args "$rundir")" || _revive_die "$gentle_args"
-  fi
   [ -n "$cwd" ] || _revive_die "session_resume has an empty cd target: $resume"
   [ -d "$cwd" ] \
     || _revive_die "the session survives — $vendor keeps ${sid:-it} — but its directory does not: $cwd is gone. That is what \`git worktree remove\` produces, and hw revive does not rebuild a worktree: a rebuilt directory would give the session a tree it never worked in."
@@ -9515,7 +8907,6 @@ cmd_revive() {
   printf '    vendor   %s\n' "$vendor"
   printf '    session  %s\n' "${sid:-<not in receipt>}"
   printf '    resume   %s %s\n' "$cmd_bin" "$cmd_args"
-  [ -z "$gentle_args" ] || printf '    gentle   %s   (recomputed from the current gentle-home)\n' "$gentle_args"
   printf '    env      %s variables from %s\n' "${#env_shown[@]}" "$rundir/env"
   for rec in "${env_shown[@]}"; do printf '      %s\n' "$rec"; done
   printf '\n'
@@ -9577,7 +8968,6 @@ cmd_revive() {
   _receipt_into "$rundir" revived_pane "$pane" "herdr tab create reply .result.root_pane.pane_id"
 
   AGENT_ARGS="$cmd_args"
-  [ -z "$gentle_args" ] || AGENT_ARGS="$AGENT_ARGS $gentle_args"
   hw_permissions_resolve "" || _revive_die "$PERMISSIONS_ERR"
   # INJECTED, NOT REPLAYED. `session_resume` records IDENTITY of this run —
   # `--resume <sid>` and nothing else (see _receipt_session) — never the
@@ -9932,7 +9322,7 @@ _lease_write() {  # $1=rundir $2=seconds $3=why
   local until; until=$(( $(date +%s) + $2 ))
   {
     printf 'until=%s\n' "$until"
-    printf 'until_h=%s\n' "$(date -r "$until" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || printf '%s' "$until")"
+    printf 'until_h=%s\n' "$(date -r "$until" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d "@$until" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || printf '%s' "$until")"
     printf 'why=%s\n' "$3"
     printf 'by=%s\n' "${HERDR_PANE_ID:-unknown}"
     printf 'at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -10024,7 +9414,7 @@ cmd_chaining_lease_start() {
     # MUTATION-ANCHOR: 37-M11
     # MUTATION-ANCHOR: 37-M12
     printf 'token=%s\ntask=%s\nuntil=%s\nuntil_h=%s\nreason=%s\nholder=%s\nby=%s\ncreated=%s\nstate=live\n' \
-      "$token" "$seq" "$until" "$(date -r "$until" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || printf '%s' "$until")" \
+      "$token" "$seq" "$until" "$(date -r "$until" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d "@$until" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || printf '%s' "$until")" \
       "$reason" "$holder" "${HERDR_PANE_ID:-unknown}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     # MUTATION-ANCHOR-END: 37-M06
     # MUTATION-ANCHOR-END: 37-M07
@@ -10175,7 +9565,7 @@ _snapshot_done_report() { # run directory
   if [ "$seq" != 1 ] && [ ! -f "$marker" ]; then
     local dat tat
     dat="$(printf '%s' "$tokens" | jq -r '.done_at // empty | fromdateiso8601? // empty' 2>/dev/null || true)"
-    tat="$(stat -f %m "$rundir/task" 2>/dev/null || stat -c %Y "$rundir/task" 2>/dev/null || true)"
+    tat="$(stat -c %Y "$rundir/task" 2>/dev/null || stat -f %m "$rundir/task" 2>/dev/null || true)"
     if [ -n "$dat" ] && [ -n "$tat" ] && [ "$dat" -lt "$tat" ]; then  # MUTATION-ANCHOR: 700-M03
       _receipt_into "$rundir" completion_marker \
         "absent — task $seq has not reported; the pane's report tokens (done_at $(printf '%s' "$tokens" | jq -r '.done_at')) predate its dispatch, so they are an earlier task's and were not copied" \
@@ -10337,7 +9727,7 @@ _blocked_field() {  # <marker> <key>
 _blocked_seconds_left() {  # <marker>
   local since now left
   since="$(_blocked_field "$1" since)"
-  case "$since" in ''|*[!0-9]*) since="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s)" ;; esac
+  case "$since" in ''|*[!0-9]*) since="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || date +%s)" ;; esac
   now="${HW_ST_NOW:-}"; case "$now" in ''|*[!0-9]*) now="$(date +%s)" ;; esac   # the shadow's ONE clock per pair, setup/tests/960 # MUTATION-ANCHOR: 960-M01
   left=$(( since + $(_blocked_wait_hours) * 3600 - now ))
   [ "$left" -gt 0 ] || left=0
@@ -11682,7 +11072,10 @@ _report_evidence_explain() {  # $1=pane $2=verdict $3=marker-path
 # brainers avoid. HW_ROUTE_FORECAST_TTL is the window, in seconds.
 HW_ROUTE_FORECAST_TTL="${HW_ROUTE_FORECAST_TTL:-3600}"
 _route_forecast_path() {  # $1=project $2=task
-  local key; key="$(printf '%s__%s' "$1" "$2" | tr -c 'A-Za-z0-9_.-' '_')"
+  # Not `tr -c`: GNU tr maps BYTES, so on Linux `é` became `__` where macOS's tr and hw-core write one `_`, and the two
+  # named the same forecast two ways. printf -v keeps a trailing newline, which `tr` mapped too.
+  local key; printf -v key '%s__%s' "$1" "$2"
+  key="${key//[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]/_}"
   printf '%s/hw-route-forecast-%s' "${TMPDIR:-/tmp}" "$key"
 }
 # Written ONLY on a dry run that reached its own success line: a dry run that
@@ -13165,7 +12558,7 @@ done < <(_hw_run_dirs)
 # `hw next` lives in lib/hw/next.sh: _next_authorization, _next_autoclosed_run_for_pane,
 # _next_missing_pane_message, _next_wait_from_run, _next_busy_message,
 # _next_finished_stale_stuck, _next_opencode_session_from_receipt,
-# _next_settled_message, _next_message, _next_gentle_read, cmd_next.
+# _next_settled_message, _next_message, cmd_next.
 # shellcheck source=../lib/hw/next.sh
 [ -r "$HW_LIB/hw/next.sh" ] || { printf 'hw: cannot load %s/hw/next.sh — its lib/ is missing from this install\n' "$HW_LIB" >&2; exit 1; }
 . "$HW_LIB/hw/next.sh"
@@ -13384,7 +12777,7 @@ if [ "$_HW_CALLER_EXECUTOR" = 1 ]; then
       [ "${HW_DONE_ALLOW_BRAIN_LEAK:-0}" != 1 ] \
         || _executor_refuse "done (HW_DONE_ALLOW_BRAIN_LEAK=1)" "does not use the operator's leak-check exit"
       ;;
-    -*|help|status|receipt|handle|secret|preflight|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|shadow|wait|wait-one|wait-monitor|gentle-home) ;;  # MUTATION-ANCHOR: 1011-M05
+    -*|help|status|receipt|handle|secret|preflight|suite|human-boundary|review-range|review-delta|output|executor-turn-end|chaining-lease-start|chaining-lease-expire|reports|stage|worktrees|shadow|wait|wait-one|wait-monitor) ;;  # MUTATION-ANCHOR: 1011-M05
     *)        # anything else is `hw <project> <task> …`, a dispatch
               _executor_refuse "$1 …" "does not dispatch executors" ;;
   esac
@@ -13402,6 +12795,13 @@ fi
 # "no information" rows that visually dominate everything actionable. Scoped by
 # project, and the dead history collapses to a count unless --all asks for it.
 if [ "$1" = status ]; then
+  # HW_IMPL=go: hw-core answers ALL of it — the table and every quiet check after it (core/status_full.go). Under bash or
+  # shadow the table is hw-core's and the checks below are bash's, held to each other by the shadow.
+  _core_mode="$(_core_impl_for status)"
+  if [ "$_core_mode" = go ] && _core_usable status; then
+    export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
+    exec "$_core_bin" status-full "${@:2}"
+  fi
   shift
   HW_STATUS_PROJECT=""; HW_STATUS_ALL=0
   while [ $# -gt 0 ]; do
@@ -13478,7 +12878,6 @@ if [ "${1:-}" = handle ]; then shift; cmd_handle "$@" || exit 1; exit 0; fi
 # `hw secret` is bin/hw-secret (read its header): the one path from Bitwarden to a command.
 if [ "${1:-}" = secret ]; then shift; exec "$HW_BIN_DIR/hw-secret" "$@"; fi
 if [ "${1:-}" = train ]; then shift; set +e; cmd_train "$@"; _rc=$?; set -e; exit "$_rc"; fi
-if [ "${1:-}" = gentle-home ]; then shift; cmd_gentle_home "$@" || exit 1; exit 0; fi
 if [ "${1:-}" = next ]; then
   # `next` is dispatched before the global help scan below. Its help is the
   # `commands` topic, where its syntax lives; cmd_next's own parser is unchanged.
@@ -13698,6 +13097,13 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        agents the task cannot do without. hw refuses the
                        dispatch when the executor cannot reach one from its
                        work directory, instead of warning.
+    review: judgment-day|plugins|none
+                       the review the close names, in every lane and --sdd
+                       mode. judgment-day (default when absent) is the Judgment
+                       Day closing; plugins names only the review skills of the
+                       brief's plugins: and no Judgment Day; none adds no review
+                       note. Another value refuses the dispatch. `rdd` is
+                       retired: it warns and runs judgment-day.
     plugins: [<name>, …]  installed review plugins (thermo, ponytail, pstack)
                        loaded into THIS executor only. They are an optional
                        install step, off by default (setup/vendor/plugins/install
@@ -13897,7 +13303,7 @@ LANES (projects.json)
 
     identity    space (required), engram, hw_aliases, brain_aliases, hint_aliases
     agent       vendor, model, model_floor, model_pins, account, artifacts,
-                requested_by, sdd_modes, suite_lock, opencode_config_dir, brain_guard
+                requested_by, suite_lock, opencode_config_dir, brain_guard
     repository  checkout, checkout_var, base, base_ref_prefix, branch,
                 worktree_root, worktree, build, repoless, product_repo, agents_from
     resources   deps, db, devserver, ports
@@ -13952,11 +13358,6 @@ USAGE
   done
   [ -z "$lines" ] || printf '    lanes whose own default account is not `default`: %s\n' "$lines"
   cat <<'USAGE'
-
-  THE GENTLE FLOW
-    --sdd gentle       gentle-ai's ODD, only in a lane whose sdd_modes lists it
-                       and only with --agent claude; see hw gentle-home.
-    hw gentle-home [--check|--path] provision gentle-ai's own HOME for --sdd gentle
 
   THE BRIEF AND THE LEDGER
     --no-brief         launch with no brief on purpose (without it a missing brief
@@ -14401,11 +13802,9 @@ fi
 case "$AGENT" in claude|opencode|codex|pi) ;; *) die "--agent must be claude, opencode, codex or pi (got: $AGENT)" ;; esac
 case "$SDD" in
   ""|speckit|none) ;;
-  gentle) _validate_sdd_gentle ;;
-  *) case " $(project_sdd_modes "$PROJ") " in
-       *" gentle "*) die "--sdd must be speckit, none or gentle (got: $SDD)" ;;
-       *)            die "--sdd must be speckit or none (got: $SDD)" ;;
-     esac ;;
+  # RETIRED SPELLING: gentle-ai left hw (setup/decisions.md, 2026-10-16). Warn, run none.
+  gentle) warn "--sdd gentle is retired: gentle-ai is no longer part of hw. Running --sdd none."; SDD=none ;;
+  *) die "--sdd must be speckit or none (got: $SDD)" ;;
 esac
 # BEFORE the reuse discovery below and before anything is built: a posture the
 # lane never delegated is a refusal, not a warning, and it must cost nothing.
@@ -14428,9 +13827,6 @@ if [ "$DISPATCH_DRY" != 1 ]; then
     _route_forecast_check "$PROJ" "$TASK" "$_ROUTE_NOW" "$_REUSE_LINE"
   fi
 fi
-# ODD enters at launch, as a flag; a live session cannot be handed it.
-[ "$SDD" != gentle ] || [ -z "$_REUSE_PANE" ] \
-  || die "gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: a reusable executor is live in $PROJ ($_REUSE_PANE), and ODD enters Claude's system prompt only at launch. Nothing was built. Pass --fresh."
 [ -n "$_REUSE_PANE" ] || { _validate_sdd_vendor_pair "$AGENT" "$SDD" "$(_codex_validation_surface)"; _validate_sdd_model_pair "$MODEL"; }
 HW_EXECUTOR_VENDOR="$AGENT"; export HW_EXECUTOR_VENDOR
 _resolve_invoker_context
@@ -14731,8 +14127,6 @@ _dispatch_manifest() {
       # Not "applied": nothing is written to the surface. Saying "applied"
       # would claim a change that did not happen.
       sdd_src="chosen (--sdd none) — the directory keeps its own mode, hw forces no entry"
-    elif [ "$SDD" = gentle ]; then
-      sdd_src="chosen (--sdd gentle) — gentle-ai $GENTLE_VERSION ODD in Claude's system prompt from $(gentle_home_dir); $(_gentle_rdd_word), no gentle-ai hooks; delivery: $GENTLE_DELIVERY; deployed check: ${GENTLE_DEPLOYED_CHECK:-required}"
     else
       sdd_src="chosen (--sdd $SDD), checked on disk below"
     fi
@@ -14837,7 +14231,6 @@ VERIFY_CMDS_EOF
   if [ "$in_play" = 1 ]; then
     entry_line="$(_framework_entry "${live%% *}")"
     [ -n "$entry_line" ] || entry_line="<none: '$live' has no single entry>"
-    [ "$SDD" != gentle ] || entry_line="none — ODD runs from the system prompt; the protocol has no entry command"
   else
     entry_line="none (no framework flow for this task)"
   fi
@@ -15136,7 +14529,7 @@ VERIFY_CMDS_EOF
   # byte-identical manifest (the lane goldens hold that).
   local DESIGN_LINE=""
   if _design_gate_applies; then
-    DESIGN_LINE="judged before code — boundary: $(_brief_boundary | cut -c1-96)  (done-invoker refuses done without an APPROVED design-judgment.md)"
+    DESIGN_LINE="judged before code — boundary: $(_brief_boundary | _cut_chars 96)  (done-invoker refuses done without an APPROVED design-judgment.md)"
   fi
 
   # pi's own fields, only for pi: every other vendor's manifest stays byte-identical.
@@ -15192,6 +14585,7 @@ VERIFY_CMDS_EOF
 
   local PLUGINS_LINES
   PLUGINS_LINES="$(_plugins_lines)"
+  PLUGINS_LINES="$PLUGINS_LINES$(_review_lines)"
   DISPATCH_TEXT="$(cat <<EOF
 dispatch $PROJ:$TASK  run=$run_label
   route       $route_line

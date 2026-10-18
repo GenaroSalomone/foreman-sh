@@ -101,6 +101,13 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        agents the task cannot do without. hw refuses the
                        dispatch when the executor cannot reach one from its
                        work directory, instead of warning.
+    review: judgment-day|plugins|none
+                       the review the close names, in every lane and --sdd
+                       mode. judgment-day (default when absent) is the Judgment
+                       Day closing; plugins names only the review skills of the
+                       brief's plugins: and no Judgment Day; none adds no review
+                       note. Another value refuses the dispatch. `rdd` is
+                       retired: it warns and runs judgment-day.
     plugins: [<name>, …]  installed review plugins (thermo, ponytail, pstack)
                        loaded into THIS executor only. They are an optional
                        install step, off by default (setup/vendor/plugins/install
@@ -285,11 +292,6 @@ ADVANCED
                        (opus, fable). Refused without it (flag or the brief's
                        `top_tier_why:`); recorded in the manifest and receipt.
 
-  THE GENTLE FLOW
-    --sdd gentle       gentle-ai's ODD, only in a lane whose sdd_modes lists it
-                       and only with --agent claude; see hw gentle-home.
-    hw gentle-home [--check|--path] provision gentle-ai's own HOME for --sdd gentle
-
   THE BRIEF AND THE LEDGER
     --no-brief         launch with no brief on purpose (without it a missing brief
                        dies, naming the path it looked for and the nearest names);
@@ -347,7 +349,7 @@ LANES (projects.json)
 
     identity    space (required), engram, hw_aliases, brain_aliases, hint_aliases
     agent       vendor, model, model_floor, model_pins, account, artifacts,
-                requested_by, sdd_modes, suite_lock, opencode_config_dir, brain_guard
+                requested_by, suite_lock, opencode_config_dir, brain_guard
     repository  checkout, checkout_var, base, base_ref_prefix, branch,
                 worktree_root, worktree, build, repoless, product_repo, agents_from
     resources   deps, db, devserver, ports

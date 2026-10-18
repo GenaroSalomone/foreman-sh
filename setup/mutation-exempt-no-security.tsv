@@ -1,0 +1,10 @@
+# A host with no security(1) (the Linux image, Git Bash): setup/mutation-coverage reads this file there and
+# nowhere else. One row per arm, by its exact name, tab-separated:
+#   <subject file>	<arm>	<one-line reason>
+# No wildcards. A subject is exempt only when every arm it declares is listed.
+1012-la-master-password-se-carga-sola.sh	M01	drives the macOS Keychain through security(1), which this host does not have: the subject skips itself and its arms run on the Mac
+1012-la-master-password-se-carga-sola.sh	M02	drives the macOS Keychain through security(1), which this host does not have: the subject skips itself and its arms run on the Mac
+1012-la-master-password-se-carga-sola.sh	M03	drives the macOS Keychain through security(1), which this host does not have: the subject skips itself and its arms run on the Mac
+1012-la-master-password-se-carga-sola.sh	M04	drives the macOS Keychain through security(1), which this host does not have: the subject skips itself and its arms run on the Mac
+1012-la-master-password-se-carga-sola.sh	M05	drives the macOS Keychain through security(1), which this host does not have: the subject skips itself and its arms run on the Mac
+1012-la-master-password-se-carga-sola.sh	M06	drives the macOS Keychain through security(1), which this host does not have: the subject skips itself and its arms run on the Mac

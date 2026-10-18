@@ -194,7 +194,7 @@ if grep -Eq "$MARKER" "$OUTPUT"; then
 fi
 # MUTATION-ANCHOR-END: 46-M02
 
-# THE ONE EXEMPTION, AND IT IS NARROW (2026-10-02). Some arms cannot mean
+# THE FIRST EXEMPTION, AND IT IS NARROW (2026-10-02). Some arms cannot mean
 # anything on native Windows: 186's run the pre-fix guards, which have no
 # Windows path model, so their allow there is noise, not the old behaviour
 # (windows.yml 37084055355). On native Windows ONLY (uname, not $OSTYPE, which
@@ -204,9 +204,10 @@ fi
 # exactly: there is no wildcard. Each exempt arm is printed, so the run says
 # what it did not exercise. Anywhere else the list is never read.
 SUBJECT_NAME="$(basename "$SUBJECT")"
-case "$(uname -s 2>/dev/null)" in
-  MINGW*|MSYS*|CYGWIN*) # MUTATION-ANCHOR: 46-M12
-    EXEMPT_LIST="$(dirname "$0")/mutation-exempt-native-windows.tsv"
+# exempt_arms <list> <where> — passes (exit 0, printing each exempt arm) when EVERY arm the source declares is listed
+# in <list> by name with a reason; otherwise returns, and the caller goes on to the red below.
+exempt_arms() {
+    EXEMPT_LIST="$1"
     # Every id on every declaring line; a declaring line with none is an arm
     # the list cannot name, so it can never be exempt (Judgment Day, both
     # judges: `pass "mutant killed: <prose>"`, a name on the next line).
@@ -221,7 +222,7 @@ case "$(uname -s 2>/dev/null)" in
         reason="$(awk -F '\t' -v s="$SUBJECT_NAME" -v a="$arm" \
           '$1 !~ /^#/ && $1 == s && $2 == a && $3 ~ /[^[:space:]]/ { print $3; exit }' "$EXEMPT_LIST")"
         if [ -n "$reason" ]; then
-          exempt="$exempt$(printf 'exempt - %s %s on native Windows: %s' "$SUBJECT_NAME" "$arm" "$reason")
+          exempt="$exempt$(printf 'exempt - %s %s on %s: %s' "$SUBJECT_NAME" "$arm" "$2" "$reason")
 "
         else
           missing="$missing $arm" # MUTATION-ANCHOR: 46-M13
@@ -231,10 +232,28 @@ case "$(uname -s 2>/dev/null)" in
         printf '%s' "$exempt"
         exit 0
       fi
-      printf 'mutation-coverage: %s: on native Windows the arms%s are not in %s, so their absence is not exempt\n' \
-        "$SUBJECT_NAME" "$missing" "$(basename "$EXEMPT_LIST")" >&2
-    fi ;;
+      printf 'mutation-coverage: %s: on %s the arms%s are not in %s, so their absence is not exempt\n' \
+        "$SUBJECT_NAME" "$2" "$missing" "$(basename "$EXEMPT_LIST")" >&2
+    fi
+}
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) # MUTATION-ANCHOR: 46-M12
+    exempt_arms "$(dirname "$0")/mutation-exempt-native-windows.tsv" "native Windows" ;;
 esac
+# THE SECOND EXEMPTION, KEYED ON THE CAPABILITY, NOT THE OS (2026-10-18). A subject whose arms drive the macOS
+# Keychain through security(1) cannot run them where that binary does not exist (the Linux image, Git Bash): it says so
+# and exits, and its arms are exercised on the Mac. Listed by name with a reason in mutation-exempt-no-security.tsv;
+# where security(1) is on PATH the list is never read.
+if ! command -v security >/dev/null 2>&1; then # MUTATION-ANCHOR: 46-M15
+  exempt_arms "$(dirname "$0")/mutation-exempt-no-security.tsv" "a host with no security(1)"
+fi
+
+# THE THIRD, KEYED ON THE PLATFORM ITSELF (2026-10-18). A subject that holds a macOS mechanism no other system has
+# (961: dirhelper, the daily cleaner of /var/folders) says so off macOS and exits; its arms run on the Mac. Listed by
+# name with a reason in mutation-exempt-not-macos.tsv; on macOS the list is never read.
+if [ "$(uname -s 2>/dev/null)" != Darwin ]; then # MUTATION-ANCHOR: 46-M16
+  exempt_arms "$(dirname "$0")/mutation-exempt-not-macos.tsv" "a host that is not macOS"
+fi
 
 printf 'mutation-coverage: %s declares mutation arms and this run exercised none\n' \
   "$SUBJECT_NAME" >&2

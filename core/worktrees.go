@@ -273,8 +273,8 @@ func (a *app) cmdWorktrees() int {
 				continue
 			}
 			if migrate { // # MUTATION-ANCHOR: 826-G15
-				mv := exec.Command("git", "-C", main, "worktree", "move", path, target)
-				if mv.Run() == nil {
+				// `git -C main worktree move path target 2>/dev/null`, through the seam the in-process tests hook
+				if mv := extRun(extCall{Name: "git", Args: []string{"-C", main, "worktree", "move", path, target}}); mv.RC == 0 {
 					a.ok("moved into " + target)
 					moved++
 				} else {

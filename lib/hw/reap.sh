@@ -275,7 +275,7 @@ _wt_build_idle() {  # <proj> <wt> — 0 when its build output is idle past the w
     act="$(find "$d" -type f -mtime "-$win" -print -quit 2>/dev/null)" && [ -z "$act" ] || return 1  # MUTATION-ANCHOR: 761-M04
     dirs="$dirs$d"$'\n'
     kb=$((kb + $(du -sk "$d" 2>/dev/null | awk '{print $1 + 0}')))
-    m="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null)" || return 1
+    m="$(stat -c %Y "$d" 2>/dev/null || stat -f %m "$d" 2>/dev/null)" || return 1   # GNU first: GNU stat reads -f as --file-system and exits 0
     [ "$m" -le "$newest" ] || newest="$m"
   done < <(fd -H -I -t d -d 4 -E node_modules '^\.(next|turbo)$' "$wt" 2>/dev/null)
   [ -n "$dirs" ] || return 1

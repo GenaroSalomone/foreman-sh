@@ -55,10 +55,7 @@ func (l *lch) buildBriefText() {
 		l.info("prompt states the flow is deliberately not entered (" + l.dispatchFramework + " mode, --sdd none)")
 	}
 
-	if l.sdd == "gentle" { // # MUTATION-ANCHOR: 847-C-14
-		l.briefText = psep(l.gentlePreamble(), l.briefText)
-		l.info("prompt states the gentle-ai ODD mode: " + l.gentleRddWord() + ", questions through ask-invoker, delivery " + l.gentleDelivery)
-	} else if l.dispatchInPlay {
+	if l.dispatchInPlay {
 		entry := l.frameworkEntry(l.dispatchFramework)
 		if entry != "" { // # MUTATION-ANCHOR: 847-C-15
 			// The phase note goes AFTER the entry line, inside the same block.

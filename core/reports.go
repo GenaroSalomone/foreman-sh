@@ -141,10 +141,6 @@ func (a *app) cmdReports() int {
 			task = arg
 		}
 	}
-	if repair {
-		a.errf("hw-core: reports without --no-repair re-reads live panes into receipt.jsonl, which writes; the bash implementation answers it\n")
-		return 64
-	}
 	if task != "" { // naming a task IS the filter: you asked for one thing, so you get all of it
 		full = true
 	}
@@ -184,6 +180,11 @@ func (a *app) cmdReports() int {
 					rundir := dir + "/.hw/" + run
 					if !readableFile(rundir+"/receipt.jsonl") && !isFile(rundir+"/done") {
 						continue
+					}
+					// READING REPAIRS. While the executor pane is still alive its tokens are the only copy of a report
+					// that went to the wrong brainer, and this is idempotent: it returns once a summary exists.
+					if repair {
+						a.snapshotDoneReport(rundir)
 					}
 					n++
 					laneRows++
@@ -299,7 +300,9 @@ func (a *app) cmdReports() int {
 		}
 		a.info("one line per task. For the report text: hw reports " + p + " <task>, or --full for the whole lane")
 	}
-	a.info("--no-repair: nothing was re-read from live panes, so a still-live stranded report was not rescued")
+	if !repair {
+		a.info("--no-repair: nothing was re-read from live panes, so a still-live stranded report was not rescued")
+	}
 	if stranger != 0 {
 		a.warn("a report routed outside its lane is only in the receiving session; `hw reports` cannot invent it, and this is what the launch guard now refuses")
 	}

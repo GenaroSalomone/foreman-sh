@@ -27,6 +27,13 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        agents the task cannot do without. hw refuses the
                        dispatch when the executor cannot reach one from its
                        work directory, instead of warning.
+    review: judgment-day|plugins|none
+                       the review the close names, in every lane and --sdd
+                       mode. judgment-day (default when absent) is the Judgment
+                       Day closing; plugins names only the review skills of the
+                       brief's plugins: and no Judgment Day; none adds no review
+                       note. Another value refuses the dispatch. `rdd` is
+                       retired: it warns and runs judgment-day.
     plugins: [<name>, …]  installed review plugins (thermo, ponytail, pstack)
                        loaded into THIS executor only. They are an optional
                        install step, off by default (setup/vendor/plugins/install

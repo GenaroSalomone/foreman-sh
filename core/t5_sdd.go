@@ -3,8 +3,7 @@ package main
 // Train T5, area C (sdd): the framework mode of a dispatch, from bin/hw `_speckit_skills_in`, `_speckit_on_disk`,
 // `_sdd_live_mode`, `_framework_entry`, `_run_dispatch_framework`, `_resolve_effective_sdd_mode`,
 // `_validate_sdd_vendor_pair`, `_sdd_model_is_below_orchestrator`, `_validate_sdd_model_pair`,
-// `_codex_validation_surface`, `_next_dispatch_model` and `_next_dispatch_effort`. The gentle (ODD) gate is in
-// t5_sdd_gentle.go.
+// `_codex_validation_surface`, `_next_dispatch_model` and `_next_dispatch_effort`.
 
 import (
 	"os"
@@ -14,8 +13,7 @@ import (
 
 // rtState is what area C keeps for itself (the bash globals only its functions read).
 type rtState struct {
-	gentleReview      string // GENTLE_REVIEW: "" or rdd, set by _gentle_brief_gate
-	rtInvokerExported bool   // _resolve_invoker_context reached its `export` (HW_INVOKER_VENDOR/SESSION/ENDPOINT)
+	rtInvokerExported bool // _resolve_invoker_context reached its `export` (HW_INVOKER_VENDOR/SESSION/ENDPOINT)
 }
 
 // rtSpeckitSkillsDir is bin/hw `_speckit_skills_in`: the skills directory holding a speckit-* entry.
@@ -182,8 +180,6 @@ func (d *dsp) rtValidateSddVendorPair(vendor, requested, surface, inherited stri
 		return
 	case "codex:speckit": // # MUTATION-ANCHOR: 844-R149
 		d.die("Codex framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd " + d.sddEffectiveMode + " requires a demonstrated native entry and completed flow, but that capability is unverified. Nothing was built. Use --sdd none for direct delivery, or validate Codex framework execution before re-dispatching.")
-	case "opencode:gentle", "codex:gentle":
-		d.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code. Nothing was built.")
 	case "opencode:speckit": // # MUTATION-ANCHOR: 844-R150
 		d.die("OpenCode framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd " + d.sddEffectiveMode + " is Spec Kit, but this machine exposes Spec Kit only as Claude Code skills. Nothing was built. Use --agent claude for Spec Kit, or --sdd none for direct delivery.")
 	}

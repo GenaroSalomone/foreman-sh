@@ -1,4 +1,4 @@
-# Known limitations — 0.1.0-rc.4
+# Known limitations — 0.4.0
 
 This is the register of what this pre-release does not do, or does only
 partly. Each entry says its **scope** (where it applies), its **impact**, its
@@ -16,7 +16,7 @@ release candidate.
 
 ## Platform
 
-### L1. Platforms: macOS and Linux; Windows through WSL2 or native Git Bash (L1b)
+### L1. Platforms: macOS and Linux only (Windows: L1b)
 - **Scope:** every command.
   - **macOS:** developed and tested here.
   - **Linux:** the installer accepts it and the whole test suite runs green in a
@@ -28,74 +28,20 @@ release candidate.
     launched with that check skipped and a warning that the handle was not
     verified. `jq` older than 1.7 (Debian 12, Ubuntu 22.04 ship 1.6) is refused
     by the installer, because 1.6 reports empty input as success under `jq -e`.
-  - **Windows:** see L1b. Through WSL2 the Linux path applies; native Git Bash
-    is measured on a CI runner and, for the install, on a Windows 11 VM.
+  - **Windows:** not supported (L1b).
 - **Impact:** on Linux, first-run behaviour with a real herdr and a real agent is
   unmeasured; expect to be the first to find what a container cannot.
-- **Evidence:** macOS and Linux (container) `measured`; Windows in L1b.
-- **Workaround:** on Windows, use WSL2 (L1b).
+- **Evidence:** macOS and Linux (container) `measured`.
+- **Workaround:** none on Windows (L1b).
 
-### L1b. Windows: WSL2, or native Git Bash measured on a CI runner and a VM
-- **Scope:** Windows. Two ways in: WSL2, which is Linux, and native Windows
-  under Git Bash (Git for Windows), the shell Claude Code uses there.
-- **Impact:** under WSL2 the harness behaves as on Linux (L1). Under native Git
-  Bash it runs through `bin/msys-compat.sh` and `bin/sitecustomize.py`, which
-  give bash and Windows Python one spelling of a path and LF line ends; `hw`
-  reaches herdr over its named pipe; and the read-only guard decides there,
-  folding `/c/x`, `C:/x`, `C:\x` and their case variants to one form, reading
-  `~` from the account's profile, and refusing (exit 2) when `python3` cannot
-  start. What it needs: Windows Developer Mode (symlinks), a native Windows
-  `python3` first on Git Bash's PATH (an MSYS2 or Cygwin Python makes the guard
-  refuse every call), and `git config --system core.autocrlf false`
-  (INSTALL.md, Windows).
-- **0.3.0-rc.2, measured 2026-10-02:** on the maintainer's suite, a full run
-  (not one subject at a time) is green on Linux (container) and on WSL2, and
-  red on native Git Bash: four subjects fail there (a load-only timing subject,
-  two whose Windows arms are skipped because herdr is not on Git Bash's PATH,
-  and the reap's process kill), and the run outlives the CI step's 150 minutes.
-  The stable 0.3.0 waits for Git Bash green.
-- **Evidence:** the maintainer's full setup suite (a superset of the one this
-  repository ships; the subject numbers below are its own) on a GitHub-hosted `windows-latest` runner,
-  herdr and the agents stubbed as everywhere in the suite, every subject file
-  run one by one (survey mode). Git Bash: 188 of 188 pass, the guard's vector
-  suites included, in 57 minutes. WSL2 (Ubuntu 24.04), same commit: 185 of
-  188, and 207 passes since. The two left are not WSL2-specific: 69 needs the
-  maintainer's live brain checkout above the tree and says so; and the
-  OpenCode guard's vector suite, whose symlink cases point at product repos
-  the runner does not have. That run found a real gap: the JavaScript half did
-  not follow a symlink whose target is missing, so a write through it into a
-  protected repository was allowed where the Python half refused it.
-  Release 0.1.0-rc.2 closed it (the JavaScript half follows the dangling link, with
-  the Python half's verdict); the fix is `measured` on macOS, on Linux
-  (Ubuntu 24.04 under WSL2) and on Windows under Git Bash: in one CI run the
-  OpenCode guard's vector suite passes 1722 of 1722 on both, 250 lines that
-  name a symlink (100 of them dangling) included, Python, JavaScript and
-  parity halves alike, with the filesystem suite at 42 of 42. There is no
-  native-Linux workflow: the Linux figure is WSL2's. That run predates the
-  case-variant change (0.1.0-rc.2), the shell reading (0.1.0-rc.3) and the
-  spellings closed in 0.1.0-rc.4 in the same guards (L5); the guards as shipped
-  are `measured` on macOS and `unverified` on WSL2 and Git Bash. The export itself, installed on a
-  Windows 11 ARM64 VM under Git Bash from an empty home with the real herdr
-  and Claude Code: `--check`, an install, a second identical run that writes
-  nothing, and `hw <lane> probe --dry-run`, `measured`. An install from an empty home
-  with the real herdr binary, and `bin/herdr-rpc` against a live headless herdr
-  over its pipe, `measured`. Skipped by name on Git Bash, each with its reason
-  in the subject's output: the pseudo-terminal arms (no pty in Git for Windows
-  or native Python: 66, and the terminal arms of 207), the chmod arms (NTFS
-  under Git Bash is noacl, so `chmod 000`/`a-w` locks nothing: 18, 91, 92),
-  the historic-guard comparisons (186), the committed per-lane settings that
-  were rendered for another home (88, 184), and the zsh pane-shell restore
-  (199: no zsh there, and herdr's pane shell is PowerShell). Mutation coverage
-  exempts on Git Bash only arms listed by name, each with its reason and printed
-  in the run: 186's four, whose pre-fix guards have no Windows path model.
-  The live herdr subject (650: hw against a real herdr) stops on Git Bash once
-  it has found herdr: in the pane hw builds the agent never starts and the pane
-  opens outside the workdir, so its mutant is listed there too.
-  `unverified`: Claude Code's
-  `Edit`/`Write` deny rules on Windows paths; `brain --reset` detaching
-  against a live herdr; and use on a real Windows machine — herdr's panes,
-  Claude Code, a brainer and an executor reporting back.
-- **Workaround:** use WSL2 where a measured end-to-end path matters.
+### L1b. Windows is not supported
+- **Scope:** Windows, native, under Git Bash or under WSL2.
+- **Impact:** from 0.4.0-rc.5 CI runs on Linux and macOS only, and nothing is
+  tested on Windows. The Git Bash compatibility layer (`bin/msys-compat.sh`,
+  `bin/sitecustomize.py`) still ships and is no longer maintained. WSL2 is a
+  Linux, so L1's Linux path may work there; it is `unverified`.
+- **Evidence:** none kept current; the last Windows CI job (0.4.0-rc.4) was red.
+- **Workaround:** use a macOS or Linux machine.
 
 ### L2. herdr is a hard requirement
 - **Scope:** launching any brainer or executor. Each is a herdr pane, and `hw`
@@ -148,6 +94,11 @@ release candidate.
 ### L16. The ported verbs run in Go; pi launches and everything not ported stay on bash
 - **Scope:** every `hw` verb, through the switch in `bin/hw`.
 - **Impact:**
+  - **The switch.** `HW_IMPL` (or `HW_IMPL_<VERB>` for one verb) takes `bash`,
+    `go` or `shadow`; `shadow` runs both and prints bash's answer. The switch
+    file `~/.config/hw/impl` says the same for every pane and hook. With neither,
+    `bin/hw` runs bash: Go is the default of a machine the installer set up, not
+    of the code. An unknown `HW_IMPL` stops the command.
   - **What runs in Go.** `install.sh` builds `hw-core` when Go 1.22 or newer is on
     PATH and writes `~/.config/hw/impl` as `go` when that file is absent (an
     existing one is left as it is). The ported verbs then run in `hw-core`:
@@ -230,10 +181,8 @@ it leaves the brain directory, is unguarded even with the hook registered.
     worktree that points into the main checkout is not seen. `--sandbox` is what
     contains it: under the profile the OS refuses every write outside the
     worktree, its artifacts and the temporary directories.
-  - **`--sdd gentle` (and `speckit`) is refused for pi**, before anything is
-    built, with its reason: gentle's guard hook and its plugin skills are wired
-    into Claude Code only (L14), and nothing carries them to pi. pi runs
-    `--sdd none`.
+  - **`--sdd speckit` is refused for pi**, before anything is built, with its
+    reason (L14). pi runs `--sdd none`; `--sdd gentle` is retired and runs as it.
   - Everything else the V1 list named is closed (processed-proof delivery,
     pi-subagents with the guard as a required child extension, model and thinking
     readers, sandbox, the brain guard on product lanes, cockpit context tokens,
@@ -372,22 +321,18 @@ it leaves the brain directory, is unguarded even with the hook registered.
   (`requires-agents: subagent:cheap-explorer`) and check the transcript; for a build that needs
   the top tier, pass `--top-tier-why`.
 
-### L14. `--sdd speckit` and `--sdd gentle` are Claude Code only, and gentle needs a download
-- **Scope:** dispatches with `--sdd speckit` or `--sdd gentle`, and `hw gentle-home`.
-- **Impact:** `hw` refuses both modes for a Codex or OpenCode executor before
-  building anything. `gentle` also refuses `--here`, needs a lane that lists it
-  in `sdd_modes` (added by hand to `projects.json`) and needs the home that
-  `hw gentle-home` downloads from gentle-ai's GitHub releases. Only macOS and
-  Linux on arm64 or amd64 have a pinned checksum; any other platform has no
-  gentle home. The pin is gentle-ai 4.0.0. The installer copies
-  `setup/guards/deny-gentle-real-home.py` into the brain, where `hw gentle-home`
-  takes it from (setup test 819); the live download and everything after it have
-  not been run from an installed brain. The cockpit is a separate gate:
-  it needs Claude Code 2.1.289 or newer, and `brain` opens without it below that.
-- **Evidence:** `measured` for the gentle refusals and the checksum check by the
-  setup suite (`setup/tests/190`), for the Spec Kit refusals by `75` and `64`
-  and for the cockpit floor by `803`, all from a checkout's `bin/hw`;
-  the suite feeds `hw gentle-home` a local tarball (`HW_GENTLE_TARBALL`), so the live download is `unverified`.
+### L14. `--sdd speckit` is Claude Code only
+- **Scope:** dispatches with `--sdd speckit`.
+- **Impact:** `hw` refuses the mode for a Codex or OpenCode executor before
+  building anything. `--sdd gentle` and `sdd: gentle` are gone: they warn and run
+  `--sdd none`, and `review: rdd` warns and closes with Judgment Day. The
+  `sdd_modes` lane field went with them: a `projects.json` that still has it
+  fails to load, naming the field, until you delete the key.
+  The cockpit is a separate gate: it needs Claude Code 2.1.289 or newer, and
+  `brain` opens without it below that.
+- **Evidence:** `measured` for the Spec Kit refusals by `75` and `64`, for the
+  retired spellings by `165`, and for the cockpit floor by `803`, all from a
+  checkout's `bin/hw`.
 - **Workaround:** use `--sdd none` with the methodology named in the brief.
 
 ### L17. A Claude Code session started before bashEditDiff was turned off keeps showing other lanes' changes
@@ -488,13 +433,22 @@ it leaves the brain directory, is unguarded even with the hook registered.
   that the agent user cannot write, if you need a hard boundary.
 
 ### L23. Bitwarden secrets: the session token and the master password sit where the user's own processes can read them
-- **Scope:** `secrets:` in a brief, `hw secret run|check|ensure`, `secret-unlock`
-  and the global guard `deny-bitwarden-secrets.py` (Claude, Codex, OpenCode).
+- **Scope:** `secrets:` in a brief, `hw secret run|check|status|ensure`,
+  `secret-unlock` and, where it is installed, the global guard
+  `deny-bitwarden-secrets.py` (Claude, Codex, OpenCode). **This export ships
+  `hw secret`, `secret-unlock` and the `secrets:` preflight, and does not ship the
+  guard or the LaunchAgent installer** (`setup/install-bw-unlock-agent.sh`): on a
+  machine installed from it nothing refuses an agent's own `bw` call, so
+  `hw secret run` is the sanctioned path and not an enforced one, and the vault
+  is unlocked by a person with `secret-unlock`. The Keychain half
+  (`secret-unlock --setup|--auto`, which a dispatch tries once on a locked vault)
+  is macOS only; elsewhere the vault has to be unlocked before the dispatch.
+  Needs the `bw` CLI, which the installer does not install.
 - **Impact:** the master password (`secret-unlock --setup`) is kept in the login
   Keychain as the service `hw-bw-master`, readable by any process of the user that
   passes the item's ACL, and a LaunchAgent unlocks from it at load and every 11 h.
-  The guard cuts AGENTS (a Keychain read of it, `secret-unlock --auto|--setup`), not
-  a process made on purpose. `~/.cache/hw/bw-session` (0600) holds a
+  Where the guard is installed it cuts AGENTS (a Keychain read of it,
+  `secret-unlock --auto|--setup`), not a process made on purpose. `~/.cache/hw/bw-session` (0600) holds a
   token that opens the WHOLE vault, not only the folder `agents`: `hw secret run`
   refuses items outside that folder, but a process running as the same user can
   read the file and ask bw for anything. The guard refuses `bw get|unlock|export|
@@ -503,7 +457,8 @@ it leaves the brain directory, is unguarded even with the hook registered.
   in a child's environment and printed on purpose (`hw secret run … -- sh -c 'echo
   $V'`) are not caught. Like L5 it is a tripwire for the careless, not a sandbox,
   and a quoted mention (a commit message spelling `bw get`) is refused too: write
-  it through a heredoc. Codex and Claude settings carry the registration by hand.
+  it through a heredoc. Codex and Claude settings carry the registration by hand,
+  and a machine without the guard has none of this tripwire.
   `hw next` re-tasks and the Go core (`HW_IMPL=go|shadow`, L16) do not run the
   `secrets:` preflight.
 - **Evidence:** the resolver, the guard and the preflight are `measured` against a
@@ -694,15 +649,14 @@ it leaves the brain directory, is unguarded even with the hook registered.
 
 ### L15. Version floors: two of them are a baseline, not a measurement
 - **Scope:** `install.sh --check` and `hw preflight`, for herdr, Claude Code, OpenCode,
-  Node, gentle-ai, engram and jq. The floors are rows of `lib/hw/deps.conf`, the one
+  Node, engram and jq. The floors are rows of `lib/hw/deps.conf`, the one
   place any script reads them from.
 - **Impact:** a tool below its floor is refused (`MISSING … Install: <update command>`
   by `--check`; a `dep-floor` rule at level `block` from `hw preflight`, only for the
   tools the dispatch uses). `hw <lane> <task>` itself does not check them: the
   preflight is what a brainer, or the cockpit's rule band, runs first. Claude Code
-  2.1.289, OpenCode 1.18.31, Node 22.7, jq 1.7 and gentle-ai 4.0.0 were already
-  demanded by a script and moved there unchanged (gentle-ai is an exact pin: a newer one
-  is refused too). herdr 0.9.1 and engram 3.0.0 are the versions that were installed when
+  2.1.289, OpenCode 1.18.31, Node 22.7 and jq 1.7 were already
+  demanded by a script and moved there unchanged. herdr 0.9.1 and engram 3.0.0 are the versions that were installed when
   the manifest was written, because nothing had named a floor for them.
 - **Evidence:** `measured` by `setup/tests/900-los-pisos-de-dependencias-viven-en-un-manifiesto.sh`
   (old and new preflight against a stub below the floor, five mutants). `unverified`: that
@@ -737,8 +691,11 @@ it leaves the brain directory, is unguarded even with the hook registered.
 
 ### L19. A chained incremental verdict compounds gate-select's blind spot, and fast gates outrank a full run
 - **Scope:** `setup/verdict-incremental` + `setup/verify-for-push` (a green incremental run leaves its own record, so
-  the next tree can start from it, up to `HW_VERDICT_MAX_CHAIN` = 3 hops off a real full run) and the pool in
-  `setup/test-hw` (a fast gate's worker request outranks a full run's next subject and its timing subjects).
+  the next tree can start from it, up to `HW_VERDICT_MAX_CHAIN` = 3 hops off a real full run; a record at the cap
+  is no base, the plan re-anchors on the real full run over the whole diff, and a big diff or a far base is no
+  reason for a full run any more) and the pool in
+  `setup/test-hw` (a fast gate's worker request outranks a full run's next subject, and a full run's timing subjects
+  always run last, alone).
 - **Impact:** (1) a job a diff reached only through a path built at runtime (gate-select's blind spot) keeps the
   row it had; with a chain that row can be inherited across up to three diffs instead of one. The release cut
   still takes ONE hop (`verdict-incremental chain`), so a release is never built on a chain. (2) While fast gates

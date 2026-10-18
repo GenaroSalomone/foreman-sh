@@ -26,20 +26,13 @@ func (a *app) nextDryRun(s *nextState, nextSeq string, waitMS int64) int {
 			a.die(nextLeaseIneligible(st, s.seq, s.rundir))
 		}
 	}
-	if s.gentle {
-		a.info("gentle pane: task " + nextSeq + " carries ODD's per-task block from " + s.brief + " — " + nextGentleRDDWord(s.gReview) + ", delivery " + s.gDelivery + ", deployed check " + s.gDeployed)
-	}
 	a.ok("dry run: " + s.pane + " is reachable, on task " + s.seq + " of " + nextBasename(s.rundir) + " — NOTHING was sent and the pane was not touched")
 	ep := ""
 	if s.endpoint != "" {
 		ep = " (endpoint " + s.endpoint + ")"
 	}
 	a.info("route " + s.route + " -> " + s.target + ep)
-	entry := ""
-	if s.gentleBlock != "" {
-		entry = s.gentleBlock + "\n\n"
-	}
-	msg := bashSub(a.nextMessage(s, nextSeq, entry))
+	msg := bashSub(a.nextMessage(s, nextSeq, ""))
 	a.info("would create " + s.rundir + "/t" + nextSeq + " and deliver " + nextWc(msg) + " bytes as task " + nextSeq + " (" + nextWc(s.text) + " of them the task text; the rest is the preamble hw prepends, minus any framework entry line)")
 	if s.reopened {
 		a.info("run was revived (reopened): hw revive is the authority for this re-task, so its spent chaining lease is not consulted; task " + nextSeq + " gets its own done-invoker with no --retask")
@@ -114,9 +107,6 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 			entry = bashSub("Framework mode for this task: " + s.nextSDD + ". hw forces no entry command.\n\n")
 		}
 	}
-	if s.gentle {
-		entry = s.gentleBlock + "\n\n" // # MUTATION-ANCHOR: 862-G21
-	}
 	msg := bashSub(a.nextMessage(s, nextSeq, entry))
 
 	// The lease: held under the run's lock across delivery, consumption and the counter.
@@ -184,9 +174,9 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 		a.receiptInto(s.rundir, "checks_required_t"+nextSeq, "required",
 			"kind build (declared or undeclared) at hw next — done-invoker requires $HW_ARTIFACTS/checks.md")
 	}
-	if s.gentle {
-		a.receiptInto(s.rundir, "deployed_check_t"+nextSeq, s.gDeployed,
-			"brief frontmatter deployed_check: in "+s.brief+" at hw next (required when absent) — done-invoker holds a done to it")
+	// THE REVIEW THE NEW BRIEF CHOSE, keyed by task like the boundary above.
+	if s.brief != "" {
+		a.nextReviewReceipt(s.rundir, "review_t"+nextSeq, s.brief)
 	}
 	if err := os.WriteFile(s.rundir+"/task", []byte(nextSeq+"\n"), 0o666); err != nil { // # MUTATION-ANCHOR: 862-G24
 		release()
@@ -206,8 +196,7 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 	return 0
 }
 
-// nextApplySDD is _apply_sdd for the two modes `hw next` can apply (gentle never reaches here: a gentle pane's
-// --sdd is cleared, and --sdd gentle on any other pane is refused).
+// nextApplySDD is _apply_sdd for the two modes `hw next` can apply.
 func (a *app) nextApplySDD(dir, mode string) bool {
 	if mode != "speckit" {
 		return true
@@ -261,8 +250,6 @@ func (a *app) nextValidateSDDVendor(vendor, requested, surface, inherited string
 	switch vendor + ":" + mode {
 	case "codex:speckit":
 		a.die("Codex framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd " + mode + " requires a demonstrated native entry and completed flow, but that capability is unverified. Nothing was built. Use --sdd none for direct delivery, or validate Codex framework execution before re-dispatching.")
-	case "opencode:gentle", "codex:gentle":
-		a.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code. Nothing was built.")
 	case "opencode:speckit": // # MUTATION-ANCHOR: 862-G26
 		a.die("OpenCode framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd " + mode + " is Spec Kit, but this machine exposes Spec Kit only as Claude Code skills. Nothing was built. Use --agent claude for Spec Kit, or --sdd none for direct delivery.")
 	}

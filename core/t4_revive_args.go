@@ -40,8 +40,6 @@ func (a *app) reviveValidateSDD(vendor, requested, surface string) {
 		return
 	case "codex:speckit":
 		a.die("Codex framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd " + mode + " requires a demonstrated native entry and completed flow, but that capability is unverified. Nothing was built. Use --sdd none for direct delivery, or validate Codex framework execution before re-dispatching.") // # MUTATION-ANCHOR: 863-G10
-	case "opencode:gentle", "codex:gentle":
-		a.die("gentle-ai ODD dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd gentle runs only on Claude Code. Nothing was built.")
 	case "opencode:speckit":
 		a.die("OpenCode framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd " + mode + " is Spec Kit, but this machine exposes Spec Kit only as Claude Code skills. Nothing was built. Use --agent claude for Spec Kit, or --sdd none for direct delivery.")
 	}

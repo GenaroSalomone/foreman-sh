@@ -19,6 +19,8 @@ import tempfile
 import threading
 import time
 
+# python3 -I ignores PYTHONDONTWRITEBYTECODE, so the flag is set here: a .pyc beside the tree under test is a change to it
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _cockpit_world as cw  # noqa: E402
 
@@ -314,13 +316,12 @@ def atomic():
     w.publish()
     path = w.state_path()
     assert cw.run_writer(w, BIN, "--once").returncode == 0
-    stop, bad, seen, inodes = threading.Event(), [], [0], set()
+    stop, bad, seen = threading.Event(), [], [0]
 
     def reader():
         while not stop.is_set():
             try:
                 raw = open(path, "rb").read()
-                inodes.add(os.stat(path).st_ino)
             except OSError:
                 continue
             seen[0] += 1
@@ -333,16 +334,22 @@ def atomic():
 
     th = threading.Thread(target=reader)
     th.start()
-    writes = 0
+    writes, moved = 0, 0
     while writes < 120 or (seen[0] < 1000 and writes < 800):  # at least 120 writes and 1000 concurrent reads
-        assert cw.run_writer(w, BIN, "--once").returncode == 0
+        # An inode is only unique while some file holds it: ext4 and overlayfs hand a freed one to the very next
+        # file (3 distinct numbers in 120 writes on Linux), APFS does not. So the old file is held open across the
+        # write, and a replace has to leave the path on another inode while an in-place rewrite keeps this one.
+        with open(path, "rb") as held:
+            before = os.fstat(held.fileno()).st_ino
+            assert cw.run_writer(w, BIN, "--once").returncode == 0
+            moved += os.stat(path).st_ino != before
         writes += 1
     stop.set()
     th.join()
     assert seen[0] >= 1000, "only %d reads happened during %d writes" % (seen[0], writes)
     assert not bad, "a reader saw a partial file: %s (after %d reads)" % (bad[:3], seen[0])
-    assert len(inodes) > 20, "the file was rewritten in place (%d inodes in %d writes)" % (len(inodes), writes)       # 797-M01
-    sys.stderr.write("  atomic: %d concurrent reads over %d writes, %d inodes, none partial\n" % (seen[0], writes, len(inodes)))
+    assert moved == writes, "the file was rewritten in place (%d of %d writes left it on its inode)" % (writes - moved, writes)       # 797-M01
+    sys.stderr.write("  atomic: %d concurrent reads over %d writes, %d moved to a new inode, none partial\n" % (seen[0], writes, moved))
     seqs = []
     for _ in range(3):
         cw.run_writer(w, BIN, "--once")

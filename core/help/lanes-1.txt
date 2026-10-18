@@ -5,7 +5,7 @@ LANES (projects.json)
 
     identity    space (required), engram, hw_aliases, brain_aliases, hint_aliases
     agent       vendor, model, model_floor, model_pins, account, artifacts,
-                requested_by, sdd_modes, suite_lock, opencode_config_dir, brain_guard
+                requested_by, suite_lock, opencode_config_dir, brain_guard
     repository  checkout, checkout_var, base, base_ref_prefix, branch,
                 worktree_root, worktree, build, repoless, product_repo, agents_from
     resources   deps, db, devserver, ports

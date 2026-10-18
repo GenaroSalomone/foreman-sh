@@ -4,7 +4,7 @@ package main
 //
 // The helpers cmd_next reaches in bin/hw, lib/hw/ledger.sh, bin/invoker-common.sh and bin/state-witness.sh are
 // in t4_next_*.go under next… names (see t4_next_util.go): the gate (witness_wait, the question modal, the
-// route), the message (the preamble, the epistemic safeguard, the authorization, gentle's block), the brief
+// route), the message (the preamble, the epistemic safeguard, the authorization, the brief
 // (its frontmatter), the run (env, markers, lease, receipt, ledger) and the refusals. The external commands
 // are the bash's, in the bash's order, with the bash's argv: herdr, herdr-rpc, curl, git, channel-send,
 // security, python3 (the two walks bash runs in Python, run verbatim), bin/runenv for a damaged env.
@@ -24,13 +24,8 @@ type nextState struct {
 	rundir, wtdir, prior      string
 	reopened                  bool
 	reopenedMarker            string
-	gentle                    bool
-	gentleBlock               string
 	auth                      string
 	seq, marker               string
-
-	// set by _gentle_brief_gate on a gentle pane
-	gDelivery, gReview, gDeployed string
 
 	route, target, endpoint string
 	snd                     nextSender
@@ -120,10 +115,18 @@ loop:
 		a.die("the re-task brief's authorization was refused above. NOTHING was sent.")
 	}
 	s.auth = auth
+	// THE REVIEW THE NEW BRIEF CHOSE is checked here too, before anything is sent: a bad value, or `plugins` with
+	// nothing to name, refuses the re-task exactly as the launch does.
+	if s.brief != "" {
+		a.nextReviewGate(s.brief)
+	}
 	switch s.nextSDD {
-	case "", "speckit", "none", "gentle":
+	case "", "speckit", "none":
+	case "gentle": // RETIRED SPELLING (gentle-ai left hw): warn and run none, as the launch does.
+		a.warn("hw next --sdd gentle is retired: gentle-ai is no longer part of hw. Running --sdd none.")
+		s.nextSDD = "none"
 	default:
-		a.die("--sdd must be speckit, none or gentle (got: " + s.nextSDD + ")")
+		a.die("--sdd must be speckit or none (got: " + s.nextSDD + ")")
 	}
 
 	// _next_load_invoker_lib: the invoker library and the state witness, beside bin/hw
@@ -187,24 +190,10 @@ loop:
 		a.receiptInto(s.rundir, "stale_hooks_allowed", files, "--allow-stale-hooks (hw next)")
 	}
 	s.prior = nextDispatchFramework(s.rundir)
+	// A pane launched --sdd gentle before gentle-ai left hw still carries ODD in its system prompt for the whole
+	// session; hw no longer adds anything to it and says so once.
 	if s.prior == "gentle" {
-		switch s.nextSDD {
-		case "", "gentle":
-			s.gentle = true // # MUTATION-ANCHOR: 862-G06
-			s.nextSDD = ""
-		default:
-			a.die("hw next --sdd " + s.nextSDD + " REFUSED: " + s.pane + " was launched --sdd gentle, so ODD is in its system prompt for the whole session and cannot be turned off for one task. Nothing was sent. Re-task it as gentle (omit --sdd) or launch a fresh executor.")
-		}
-	} else if s.nextSDD == "gentle" {
-		p := s.prior
-		if p == "" {
-			p = "undetermined"
-		}
-		a.die("hw next --sdd gentle REFUSED: ODD enters Claude's system prompt at launch, and " + s.pane + " was not launched --sdd gentle (its framework is " + p + "). Nothing was sent. Launch it fresh: hw <project> <task> --sdd gentle --agent claude --keep-pane --why \"...\"")
-	}
-	if s.gentle {
-		a.nextGentleRead(s)
-		s.gentleBlock = bashSub(a.nextGentlePreamble(s, a.nextEnvVal(s.rundir, "HW_PROJECT")))
+		a.warn(s.pane + " was launched --sdd gentle, which is retired: its session still carries ODD, and hw adds nothing of it to this task.")
 	}
 	effective := a.nextValidateSDDVendor(s.vendor, s.nextSDD, s.wtdir, s.prior)
 	a.nextValidateSDDModel(nextDispatchModel(s.rundir), effective, "this pane was launched with that model; hw next cannot change it")

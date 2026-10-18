@@ -1,0 +1,46 @@
+Deliver one message with the requested receiver-owned receipt, or use Herdr's gate.
+
+EXIT CODES, because callers branch on them:
+  0  delivered (and processed, if --require processed)
+  1  NOT delivered — nothing landed, nothing was lost, retry is free
+  4  delivered and provably in the receiver's session; its TURN failed.
+     Do not resend and do not re-task: the receiver has the message.
+  5  ADMITTED or terminal-submitted, receiver ingestion/persistence
+     UNCONFIRMED. An OpenCode HTTP 204 may be awaiting persistence; a held
+     answer/ruling sent through the raw blocked-pane fallback may still be in
+     a modal the receiver has not consumed. This is NOT the same fact as 1:
+     the receiver may yet have the message. Do NOT blind-retry. A held reply
+     keeps its hold so reconciliation/escalation can recover it; retrying can
+     duplicate a response if the receiver consumes the already-submitted input.
+  6  RECEIVER UNUSABLE (opencode route only) — the endpoint's merged config
+     selects a default agent that the endpoint does not resolve, so every
+     prompt dies in `prompt_async` before the message is persisted. Detected
+     BEFORE the POST: nothing was sent and nothing landed. Retrying cannot
+     succeed — the receiver's config has to be fixed and the receiver
+     restarted. Not 1, because 1 promises "retry is free"; not 5, because 5
+     hedges that the message may have landed, and here provably nothing did.
+
+NOT AN EXIT CODE: `witness_wait` returns 5 and 6 of its own (state cannot
+change / a person is being waited on). Those are internal to the gate and both
+surface here as exit 1 with different text — nothing was sent either way, so
+the caller's contract does not change. Do not read the two numberings across.
+
+BEING KILLED: SIGTERM and SIGINT are reported, not swallowed, in three
+states — nothing sent yet is exit 1 with a diagnosis naming the caller's own
+timeout; already delivered is exit 0 saying so; killed with the send in flight
+is exit 5, whose existing meaning ("may be in the receiver, do not
+blind-retry") is exactly the fact that is true there.
+
+THE MESSAGE MAY BE '-' INSTEAD OF ARGV WORDS, read whole from stdin. This is
+the SAME sentinel the endpoint slot already documents (`<endpoint|->`), not a
+new one: pass a lone '-' where the message words go and pipe or redirect the
+text in. Use it for anything a shell would touch if it sat in a double-quoted
+argv word — backticks, `$`, embedded quotes, newlines — by writing it with a
+single-quoted heredoc, which the shell does not expand:
+  channel-send claude "$PANE" - - <<'EOF'
+  the fix touches `deny-repo-writes.py`; cost is $0 either way
+  EOF
+MEASURED 2026-09-11: a ruling containing backticked identifiers reached its
+receiver with every one of them missing, because the SENDER's shell expanded
+them as command substitution before this tool ever ran — quoting could not
+have prevented it; only not putting the text on argv can.

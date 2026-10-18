@@ -161,7 +161,7 @@ while [ -L "$_src" ]; do
   _src="$(readlink "$_src")"
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
-INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+INVOKER_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"; _inv_prog=done-invoker; [ ! -r "$INVOKER_BIN_DIR/invoker-go.sh" ] || . "$INVOKER_BIN_DIR/invoker-go.sh"
 # INSIDE THE SANDBOX (hw --sandbox) herdr is out of reach by design: the hard
 # profile denies every unix socket. The call is handed, argv only, to the
 # broker outside, which runs THIS invoker with the dispatch's own environment
@@ -400,87 +400,6 @@ if [ "$STATUS" = done ]; then
   fi
 fi
 
-# -- AN ODD RUN CLOSES ON A CHECK AGAINST WHAT IS DEPLOYED ------------------
-#
-# MEASURED 2026-09-28/29: the 8 `--sdd gentle` runs of the salón release
-# never verified against staging (no QA account, session_reauth_failed,
-# tenant_seed_missing), ODD wrote it down as pending, and every one reported
-# done (setup/decisions.md, 2026-09-29). hw records `deployed_check_t<task>` for a gentle run:
-#
-#   required               a DONE needs $ARTIFACTS_ROOT/deployed-check.md with
-#                          a non-local `target:`, an `evidence:` file that
-#                          exists, and `RESULT: PASSED`. Otherwise the run is a
-#                          HOLD (ask-invoker naming what is missing) or --blocked.
-#   out-of-scope: <why>    the brief took it out; the report is prefixed with
-#                          that line here, so no executor can leave it out.
-#
-# NOT GATED: `--blocked`. NOT CHECKABLE HERE: that the run in `evidence:` is the
-# one that produced PASSED. The file makes the claim explicit and names its
-# proof; it cannot replay it.
-if [ "$STATUS" = done ]; then
-  _dc="$(jq -r --arg k "deployed_check_t$(invoker_task_seq)" 'select(.key==$k) | .value' "$(invoker_run_dir)/receipt.jsonl" 2>/dev/null | tail -1 || true)"
-  case "$_dc" in
-    "") ;;
-    out-of-scope:*)
-      SUMMARY="DEPLOYED CHECK OUT OF SCOPE (brief: ${_dc#out-of-scope: }).
-$SUMMARY" ;;
-    *)
-      _dc_file="$ARTIFACTS_ROOT/deployed-check.md"
-      _dc_how="Write $_dc_file with the lines  target: <the deployed https URL you verified>  /  evidence: <file under $ARTIFACTS_ROOT with the run's result>  /  RESULT: PASSED. If the check cannot run (no QA account, no seed, no session), this run is a HOLD: ask-invoker naming exactly what is missing, and wait for the reply. If it cannot be lifted, report done-invoker --blocked. NOTHING was sent or marked."
-      [ -f "$_dc_file" ] \
-        || die "this is an ODD run (--sdd gentle) and its brief did not take the deployed check out of scope, and there is no $_dc_file: nothing deployed was verified, so this is not a done. $_dc_how"
-      _dc_field() { sed -n "s/^$1:[[:space:]]*//p" "$_dc_file" | tail -1 | sed 's/[[:space:]]*$//'; }
-      _dc_target="$(_dc_field target)"
-      _dc_host="$(printf '%s' "$_dc_target" | sed -nE 's#^[Hh][Tt][Tt][Pp][Ss]?://([^/?#]*).*#\1#p' | sed -E 's/^[^@]*@//' | tr '[:upper:]' '[:lower:]')"
-      case "$_dc_host" in
-        \[*) _dc_host="$(printf '%s' "$_dc_host" | sed -E 's/^\[([^]]*)\].*/\1/')" ;;
-        *)   _dc_host="${_dc_host%%:*}" ;;
-      esac
-      # A denylist of spellings leaks (`localhost.`, `0`, `::ffff:127.0.0.1` all reach
-      # the loopback), so the host is normalised and judged by what it IS: a
-      # trailing dot is dropped; any IPv4 spelling but a canonical dotted quad
-      # outside 0/8 and 127/8 (`0`, `127.1`, `0x7f.1`, `2130706433`) is refused; an
-      # IPv6 literal is refused when it is unspecified, loopback or v4-mapped.
-      while [ "${_dc_host%.}" != "$_dc_host" ]; do _dc_host="${_dc_host%.}"; done
-      _dc_local=0
-      case "$_dc_host" in
-        ""|localhost|*.localhost) _dc_local=1 ;;
-        *:*)
-          _dc_host="${_dc_host%%\%*}"
-          case "$_dc_host" in
-            *[!0-9a-f:.]*) _dc_local=1 ;;
-            *) if printf '%s' "$_dc_host" | grep -Eq '^[0:]*:0*ffff:'; then _dc_local=1; fi ;;
-          esac
-          case "$_dc_host" in
-            *) [ -z "$(printf '%s' "$_dc_host" | tr -d '0:')" ] && _dc_local=1
-               [ -z "$(printf '%s' "$_dc_host" | sed -E 's/^[0:]*:0*1$//')" ] && _dc_local=1 ;;
-          esac ;;
-        *)
-          if printf '%s' "$_dc_host" | grep -Eq '^(0x[0-9a-f]+|[0-9]+)(\.(0x[0-9a-f]+|[0-9]+))*$'; then
-            if printf '%s' "$_dc_host" | grep -Eq '^([1-9][0-9]{0,2}|0)(\.([1-9][0-9]{0,2}|0)){3}$'; then
-              case "$_dc_host" in 0.*|127.*) _dc_local=1 ;; esac
-            else
-              _dc_local=1
-            fi
-          fi ;;
-      esac
-      case "$_dc_local" in
-        1)
-          die "deployed-check.md names target '${_dc_target:-<none>}', which is not a deployed target: a check against a local server proves the code, not the deploy. $_dc_how" ;;
-      esac
-      _dc_verdict="$(_dc_field RESULT)"
-      case "$_dc_verdict" in
-        PASSED*) ;;
-        FAILED*) die "the deployed check against $_dc_target is FAILED ('$_dc_verdict'). That is not a done: fix it and re-run the check, or report done-invoker --blocked naming the failure. NOTHING was sent or marked." ;;
-        *) die "deployed-check.md has no 'RESULT: PASSED' line (last verdict: '${_dc_verdict:-none}'). $_dc_how" ;;
-      esac
-      _dc_ev="$(_dc_field evidence)"
-      case "$_dc_ev" in ""|/*) ;; *) _dc_ev="$ARTIFACTS_ROOT/$_dc_ev" ;; esac
-      [ -n "$_dc_ev" ] && [ -f "$_dc_ev" ] \
-        || die "deployed-check.md names no evidence file that exists ('$(_dc_field evidence)'). A PASSED with nothing on disk behind it is the pending line again. $_dc_how" ;;
-  esac
-fi
-
 # -- A BUILD CLOSES ON `checks.md`: ONE ROW PER REQUIREMENT, WITH ITS VERDICT --
 #
 # hw records `checks_required_t<task>` for a build (declared or undeclared kind)
@@ -498,8 +417,10 @@ if [ "$STATUS" = done ]; then  # MUTATION-ANCHOR: 818-M05
     _ck_file="$ARTIFACTS_ROOT/checks.md"
     _ck_how="Write $_ck_file as a table, one row per requirement of the brief's Proof and Verification:  requirement | verdict | evidence | correction  (verdict: pass, fail or unresolved). NOTHING was sent or marked."
     [ -f "$_ck_file" ] || die "this is a build and there is no $_ck_file. $_ck_how"  # MUTATION-ANCHOR: 818-M01
-    # header and separator rows are skipped; the verdict is the 2nd column
-    _ck_sum="$(awk '
+    # header and separator rows are skipped; the verdict is the 2nd column. A file that is not UTF-8 is no table:
+    # macOS's awk aborts on its first invalid byte (no rows), and GNU awk read on and named a row, so on Linux the
+    # refusal was another one. iconv answers that question the same way on both, before awk is asked anything.
+    _ck_sum="$(iconv -f UTF-8 -t UTF-8 "$_ck_file" >/dev/null 2>&1 && awk '
       { l = $0; gsub(/^[ \t]+|[ \t]+$/, "", l) }
       l !~ /\|/ || l ~ /^[|: \t-]+$/ { next }
       { sub(/^\|/, "", l); n = split(l, c, "|"); v = tolower(c[2]); gsub(/^[ \t`*]+|[ \t`*]+$/, "", v); gsub(/^[ \t]+|[ \t]+$/, "", c[1])

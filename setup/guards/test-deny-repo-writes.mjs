@@ -204,22 +204,58 @@ function realEntry({ hook, stdin, env, cwd }) {
 // Every request in ONE `hook-batch.py` process, answered in order. A process that
 // ends before answering leaves the rest as a crash (status null), which every
 // reader above turns into a failing assertion rather than a silent allow.
-function runBatch(requests, env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("python3", [`${root}/setup/guards/hook-batch.py`], { env: env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
-    let out = "", err = "";
+//
+// THE ANSWERS ARE READ AS THEY ARRIVE, not after the last one: the process works
+// while this one judges, and `answer(i)` resolves as soon as request `i` has
+// been answered. `first` are the requests that run first (the real-entry sample's
+// twins), so the sample is judged before the rest has been decided; the rest keep
+// their order. A fail-fast stop therefore costs the vectors up to the failing one,
+// not the whole batch, and `kill()` ends the process behind it.
+let killBatch = () => {};
+function runBatch(requests, first = [], env) {
+  const head = new Set(first);
+  const order = [...head, ...Array.from(requests.keys()).filter((i) => !head.has(i))];
+  const waiting = requests.map(() => { const w = {}; w.promise = new Promise((resolve) => { w.resolve = resolve; }); return w; });
+  const child = spawn("python3", [`${root}/setup/guards/hook-batch.py`], { env: env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
+  let buf = "", err = "", next = 0;
+  const crashRest = (why) => {
+    for (; next < order.length; next++) {
+      waiting[order[next]].resolve({ status: null, stdout: "", stderr: `hook-batch.py ended (${why}) before answering request ${order[next]}: ${err}` });
+    }
+  };
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (d) => {
+    buf += d;
+    for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (line && next < order.length) waiting[order[next++]].resolve(JSON.parse(line));
+    }
+  });
+  child.stderr.on("data", (d) => { err += d; });
+  child.stdin.on("error", () => {});
+  child.on("error", (e) => crashRest(String(e)));
+  child.on("close", (code) => crashRest(code));
+  child.stdin.end(order.map((i) => JSON.stringify(requests[i])).join("\n") + "\n");
+  killBatch = () => child.kill();
+  return { answer: (i) => waiting[i].promise };
+}
+
+// The same request on a real interpreter, asynchronously: the sample's ~50
+// spawns run side by side instead of one after the other.
+function realEntryAsync({ hook, stdin, env, cwd }) {
+  return new Promise((resolve) => {
+    let stdout = "", stderr = "";
+    const child = spawn("python3", [hook], { env: env ?? process.env, cwd: cwd ?? undefined, stdio: ["pipe", "pipe", "pipe"] });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (d) => { out += d; });
-    child.stderr.on("data", (d) => { err += d; });
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
     child.stdin.on("error", () => {});
-    child.on("error", reject);
-    child.on("close", (code) => {
-      const lines = out.split("\n").filter(Boolean);
-      resolve(requests.map((_, i) => lines[i] ? JSON.parse(lines[i])
-        : { status: null, stdout: "", stderr: `hook-batch.py ended (${code}) before answering request ${i}: ${err}` }));
-    });
-    child.stdin.end(requests.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    child.on("error", (e) => resolve({ status: null, stdout, stderr: `${stderr}${e}` }));
+    child.on("close", (code) => resolve({ status: code, stdout, stderr }));
+    child.stdin.end(stdin);
   });
 }
 
@@ -268,6 +304,7 @@ const notOk = (name, detail = "") => {
   fail++;
   console.log(`not ok - ${name}${detail ? ` :: ${detail}` : ""}`);
   if (FAIL_FAST) {
+    killBatch();
     rmSync(base, { recursive: true, force: true });
     console.log(`\n${pass} passed, ${fail} failed (DENY_GUARD_FAIL_FAST: stopped at the first failure)`);
     process.exit(1);
@@ -380,20 +417,22 @@ try {
       requests.push(py, cx);
     }
   }
-  const answers = await runBatch(requests);
+  const batch = runBatch(requests, [...sampleOf.values()].map((s) => s.at));
+  const reals = await Promise.all([...sampleOf.values()].map((s) => realEntryAsync(s.request)));
 
   // ── THE SAMPLE: THE REAL PROCESS ENTRY, FIRST ───────────────────────────
   // Runs before every other assertion on purpose: a batch entry that answers
   // wrongly for every vector (wired to allow, say) is named here, as a batch
   // that disagrees with the real entry, before the vectors blame the guard.
+  let sampled = 0;
   for (const [key, s] of sampleOf) {
-    const real = realEntry(s.request);
-    const batch = answers[s.at];
+    const real = reals[sampled++];
+    const answered = await batch.answer(s.at);
     const [laneName, runtime] = key.split("|");
-    const same = real.status === batch.status && real.stdout === batch.stdout && real.stderr === batch.stderr;
+    const same = real.status === answered.status && real.stdout === answered.stdout && real.stderr === answered.stderr;
     if (same) ok(`sample ${key} (${s.vector.id}): the batch answer equals the real entry's`);
     else notOk(`sample ${key} (${s.vector.id}): the batch answer equals the real entry's`,
-      `real=${JSON.stringify(real).slice(0, 300)} batch=${JSON.stringify(batch).slice(0, 300)}`);
+      `real=${JSON.stringify(real).slice(0, 300)} batch=${JSON.stringify(answered).slice(0, 300)}`);
     judge(`sample ${key} (${s.vector.id}) real entry`, runtime, s.vector, s.wanted,
       (s.claudeShape ? claudeResult : codexResult)(real));
   }
@@ -408,9 +447,9 @@ try {
       (expected[vector.id] ??= Object.create(null))[laneName] = expect;
       const codexUnguarded = laneName === "brain" && !underBrain(cwd);
       const results = [
-        ["python", claudeResult(answers[at++]), expect, ""],
+        ["python", claudeResult(await batch.answer(at++)), expect, ""],
         ["javascript", await javascript(jsPath, laneDir, command, cwd), expect, ""],
-        ["codex", codexResult(answers[at++]),
+        ["codex", codexResult(await batch.answer(at++)),
           codexUnguarded ? "allow" : expect,
           codexUnguarded ? " (by design: a brain-root session is guarded only from a cwd inside brain)" : ""],
       ];

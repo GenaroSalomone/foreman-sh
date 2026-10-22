@@ -4,6 +4,28 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.5.0-rc.2] — 2026-10-22
+
+### Added
+- A suite job runs only when what it reads changed: a content-keyed verdict cache replays a green job
+  whose inputs are unchanged, and a mutant already killed is not run again until its code moves.
+  `HW_TEST_NO_CACHE=1` runs everything cold.
+- `setup/heavy --short` runs a short job beside the one heavy run instead of queueing behind it.
+
+### Changed
+- Each mutant corpus compiles one shared test binary that switches mutants at run time, instead of one
+  compile per mutant; an anchor that cannot be switched keeps its own compile.
+- A merge commit skips the fast gate and the lane sweep at pre-commit; the Python guard vectors are
+  decided in one process.
+
+### Fixed
+- The in-process tests build a fresh `hw-core` when the checkout has none, so a clean checkout no longer
+  reads the "hw-core is not built" warning as a contract difference.
+- The mutant-binary cache trims to its cap on Linux too: it sums file sizes instead of `du`, which counts
+  the directory's own block there.
+- `go test` with the in-process switch and no partition marker is refused, so a bare run cannot skip
+  the partitions.
+
 ## [0.5.0-rc.1] — 2026-10-20
 
 ### Added

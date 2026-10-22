@@ -57,19 +57,21 @@ gocache_seed_mutants() {
 # ~11 MB each and a full run keeps ~300-500: over <cap-mb> the least recently used go first (a hit refreshes the mtime). Unlike the go cache, an
 # entry in use may go at any time: a binary is copied out whole, and an open file survives its removal. Never fails.
 gocache_trim_mutants() {
-  local dir="$1" cap="$2" kb over
+  local dir="$1" cap="$2" list total over
   case "$cap" in ''|*[!0-9]*) cap=4096 ;; esac
   [ -d "$dir" ] || return 0
-  kb="$(du -sk "$dir" 2>/dev/null | cut -f1)" || kb=""
-  case "$kb" in ''|*[!0-9]*) return 0 ;; esac
-  [ "$kb" -gt $((cap * 1024)) ] || return 0
-  over=$(( (kb - cap * 1024) * 1024 ))
-  { stat -c '%Y %s %n' /dev/null >/dev/null 2>&1 && find "$dir" -type f -exec stat -c '%Y %s %n' {} + 2>/dev/null \
-      || find "$dir" -type f -exec stat -f '%m %z %N' {} + 2>/dev/null; } \
-    | sort -n \
+  # Sizes are the files' own, not `du -sk` of the directory: on Linux du also counts the directory's own block (4 KB),
+  # which APFS does not, so five 1 MB files over a 3 MB cap read as 2.004 MB over and a third file went (1103a, MEASURED Linux 2026-10-22).
+  # GNU stat first: it reads BSD's -f as --file-system and exits 0.
+  list="$({ stat -c '%Y %s %n' /dev/null >/dev/null 2>&1 && find "$dir" -type f -exec stat -c '%Y %s %n' {} + 2>/dev/null \
+      || find "$dir" -type f -exec stat -f '%m %z %N' {} + 2>/dev/null; } | sort -n)" || list=""
+  total="$(printf '%s\n' "$list" | awk '{ t += $2 } END { print t + 0 }')"
+  over=$(( total - cap * 1024 * 1024 ))
+  [ "$over" -gt 0 ] || return 0
+  printf '%s\n' "$list" \
     | awk -v need="$over" '{ if (got >= need) exit; got += $2; sub(/^[0-9]+ [0-9]+ /, ""); printf "%s%c", $0, 0 }' \
     | xargs -0 rm -f 2>/dev/null || true
-  printf 'runner: mutant binaries %s were %s MB, over their %s MB cap — least recently used removed\n' "$dir" "$((kb / 1024))" "$cap" >&2
+  printf 'runner: mutant binaries %s were %s MB, over their %s MB cap — least recently used removed\n' "$dir" "$((total / 1048576))" "$cap" >&2
   return 0
 }
 

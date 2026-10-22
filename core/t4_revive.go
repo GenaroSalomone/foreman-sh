@@ -194,10 +194,7 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 		a.reviveDie("run " + filepath.Base(rundir) + " recorded no session_resume — its executor published no session id in time (see the session_id receipt line, if any), so the conversation is not addressable and hw will not guess at it by title. 58 of setup's 143 receipts are in this state; this is one of them.")
 	}
 	switch vendor {
-	case "claude", "opencode", "codex":
-	case "pi":
-		// bash revives a pi session; hw-core does not know pi yet, and refusing says so where a half-answer would not
-		a.reviveDie("session_vendor is 'pi', which hw-core does not revive yet: run it with HW_IMPL=bash")
+	case "claude", "opencode", "codex", "pi": // # MUTATION-ANCHOR: 863-G29
 	default:
 		shown := vendor
 		if shown == "" {

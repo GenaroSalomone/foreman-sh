@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cache: never — it loads the cockpit mod in the REAL claude installed here (or skips when there is none): the answer is the installed claude's, which no file of the checkout holds, so it always runs (setup/verdict-cache).
 # The cockpit card shows how a task is going, not hw's internals
 #
 # cockpit/hooks/view.tsx draws each executor as below (task/cockpit-rediseno: a capture of 2026-10-08

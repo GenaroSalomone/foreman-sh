@@ -176,8 +176,10 @@ func (d *dsp) validateSddVendorPair(agent, sdd, surface string) {
 func (d *dsp) rtValidateSddVendorPair(vendor, requested, surface, inherited string) { // # MUTATION-ANCHOR: 844-164-M05
 	d.resolveEffectiveSddMode(requested, surface, inherited)
 	switch vendor + ":" + d.sddEffectiveMode {
-	case "codex:", "codex:none", "opencode:", "opencode:none":
+	case "codex:", "codex:none", "opencode:", "opencode:none", "pi:", "pi:none":
 		return
+	case "pi:" + d.sddEffectiveMode: // every other mode: pi is none-mode only (t6_pi.go)
+		d.piRefuseSdd(requested, surface)
 	case "codex:speckit": // # MUTATION-ANCHOR: 844-R149
 		d.die("Codex framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd " + d.sddEffectiveMode + " requires a demonstrated native entry and completed flow, but that capability is unverified. Nothing was built. Use --sdd none for direct delivery, or validate Codex framework execution before re-dispatching.")
 	case "opencode:speckit": // # MUTATION-ANCHOR: 844-R150

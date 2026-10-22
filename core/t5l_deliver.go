@@ -74,13 +74,16 @@ func (l *lch) buildBriefText() {
 	if authorization := l.briefAuthorization(); authorization != "" {
 		l.briefText = psep(authorization, l.briefText)
 	}
+	if note := l.briefSecretsNote(); note != "" {
+		l.briefText = psep(note, l.briefText)
+	}
 	l.briefText = psep(epistemic, l.briefText)
 }
 
-// _vendor_has_native_transport: claude and codex have none that hw can address.
+// _vendor_has_native_transport: claude, codex and pi have none that hw can address.
 func vendorHasNativeTransport(v string) bool {
 	switch v {
-	case "", "claude", "codex":
+	case "", "claude", "codex", "pi":
 		return false // # MUTATION-ANCHOR: 847-C-16
 	}
 	return true
@@ -110,7 +113,7 @@ func (l *lch) invokerResolveSender(pane string) {
 		if port := rtOpencodePort(bashSub(process)); port != "" {
 			l.invEndpoint = "http://127.0.0.1:" + port
 		}
-	case "claude", "codex":
+	case "claude", "codex", "pi": // pi: herdr is its route too — no address is invented
 		l.invEndpoint = "-"
 	}
 }
@@ -404,9 +407,6 @@ func (l *lch) nextLoadInvokerLib() {
 	if !brReadable(l.binDir() + "/invoker-common.sh") {
 		l.die("cannot find invoker-common.sh beside " + l.binDir() + " — this brain/bin is incomplete")
 	}
-	if !brReadable(l.binDir() + "/state-witness.sh") {
-		l.die("cannot find state-witness.sh beside " + l.binDir() + " — this brain/bin is incomplete, and a gate with no cross-check would wait out its whole budget on a state that cannot change")
-	}
 }
 
 // deliverBrief is _deliver_brief: ONE DELIVERY PATH FOR BRIEFS AND RE-TASKS. 0 = delivered.
@@ -439,6 +439,11 @@ func (l *lch) deliverBrief(pane string) int {
 			l.redeliverHerdrLine(pane)
 			return 1
 		}
+	}
+
+	// pi: the same second look as codex's, immediately before anything is typed.
+	if paneVendor == "pi" && l.piDialogBeforeDelivery(pane) {
+		return 1
 	}
 
 	l.nextLoadInvokerLib()
@@ -514,6 +519,10 @@ func (l *lch) deliverBrief(pane string) int {
 	}
 
 	// herdr route. --wait --until working turns "the text was typed" into "a turn opened".
+	piBase := 0
+	if paneVendor == "pi" {
+		piBase = l.piInputsCount()
+	}
 	timeout := orDefault2(l.env("HW_TURN_WAIT_MS"), "45000")
 	pout, prc := l.sh(cmdSpec{name: "herdr", args: []string{"agent", "prompt", pane, l.briefText, "--wait", "--until", "working", "--timeout", timeout}, mut: true, merge: true})
 	pout = bashSub(pout)
@@ -523,6 +532,12 @@ func (l *lch) deliverBrief(pane string) int {
 				return 0
 			}
 			l.codexUnproven(pane, "", c)
+			return 1
+		}
+		if paneVendor == "pi" {
+			if l.piAdmit(pane, "a turn opened", nbytes, piBase) {
+				return 0
+			}
 			return 1
 		}
 		l.ok("brief IN THE CONVERSATION on " + pane + " (" + nbytes + " bytes, from " + l.brief + ") — a turn opened")
@@ -557,6 +572,12 @@ func (l *lch) deliverBrief(pane string) int {
 				return 0
 			}
 			l.codexUnproven(pane, orDefault2(c.unprovenReason, "replay outcome could not be established"), c)
+			return 1
+		}
+		if paneVendor == "pi" && rRC == 0 && l.turnOpened(pane) {
+			if l.piAdmit(pane, "replayed once over "+rRoute, nbytes, piBase) {
+				return 0
+			}
 			return 1
 		}
 		if rRC == 0 && l.turnOpened(pane) { // # MUTATION-ANCHOR: 847-C-24

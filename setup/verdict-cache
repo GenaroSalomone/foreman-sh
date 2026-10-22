@@ -1,0 +1,534 @@
+#!/usr/bin/env python3
+"""verdict-cache — a job of setup/test-hw runs only when what it reads changed.
+
+    verdict-cache dir                        where the verdicts live
+    verdict-cache key  <job>                 the key of a job (`176-x.sh`, `go-test-core.sh:t4-1`, `go-test-core.sh:+a,b`), or `never`
+    verdict-cache plan <jobs-file> <outdir>  the runner's one call: for every `idx<TAB>kind<TAB>path<TAB>arg` line print
+                                             `idx<TAB>hit|miss|never<TAB>key`, and write a hit's stored log to <outdir>/<idx>.out
+    verdict-cache hit  <key>                 the stored log on stdout, exit 0; exit 1 on a miss
+    verdict-cache put  <key> <rc> <log> [job]   store a GREEN verdict (rc 0); a red is refused (exit 3) and nothing is written
+    verdict-cache forget <key>               drop one
+
+THE KEY IS CONTENT, NEVER A NAME OR A COMMIT. sha256 over: the job's id; its own file; the bytes of every file it reads (a subject:
+setup/subject-deps.txt, MEASURED by setup/measure/subject-deps.py with the access-time method of go-test-deps.py; a go-test partition:
+setup/go-test-deps.txt, measured the same way, through the same rules `go-test-core.sh --affected` applies); the machinery every job rides
+on (the runner, the mutation-coverage check and its tables); the NAMES of each directory a read file lives in (a file ADDED to one moves the
+key — a subject that globs would read it); the toolchain (go, bash, python, the herdr binary's bytes, the platform); and an allowlist of
+HW_* knobs that change what a job checks. A subject nobody measured is keyed to the WHOLE tree: it misses on any change anywhere, which is
+today's behaviour, never a smaller one.
+
+ONLY GREENS ARE STORED, AND ATOMICALLY (decided 2026-09-09: no cache keyed by commit, validated by the file existing, or written with `>`).
+An entry is written beside its name and renamed in; it carries the sha256 of its own log, and one that does not verify is a miss.
+
+`# cache: never — <why>` in a subject's header block (the reading rules of `# suite-lane:`) keeps it out: it always runs. HW_TEST_NO_CACHE=1
+makes every lookup a miss and every put a no-op (a cold run). HW_VERDICT_CACHE=<dir> moves the store; `off` disables it.
+"""
+import hashlib
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+ROOT = os.path.dirname(HERE)
+GO_CORE = "setup/go-test-core.sh"
+TABLE = "setup/go-test-partitions.txt"
+DEPS_GO = "setup/go-test-deps.txt"
+DEPS_SUBJECT = "setup/subject-deps.txt"
+# what every job rides on: a change here is a change to what a green means
+COMMON_FILES = ["setup/test-hw", "setup/mutation-coverage", "setup/mutation-anchors.tsv", "setup/mutation-exceptions.tsv",
+                "setup/mutation-exempt-native-windows.tsv", "setup/mutation-exempt-no-security.tsv", "setup/mutation-exempt-not-macos.tsv"]
+# the HW_* knobs that change WHAT a job checks (which implementation, which in-process switch), not how fast or where it runs
+ENV_ALLOW = re.compile(r"^HW_(IMPL_|INPROC_|CONTRACT_|C[0-9]+_)[A-Z0-9_]*$")
+RUN_STATE = {".hw", ".artifacts"}
+RUN_STATE_PREFIXES = (".hw-reap-", ".hw-db-ledger-")
+NOISE = {".git", "__pycache__", ".DS_Store"}
+KEEP_DAYS = 30
+
+
+def run_state(name):
+    return name in RUN_STATE or name.startswith(RUN_STATE_PREFIXES)
+
+
+def cache_dir():
+    d = os.environ.get("HW_VERDICT_CACHE", "")
+    if d in ("off", "-"):
+        return ""
+    if d:
+        return d
+    return os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hw-test-%d" % os.getuid(), "verdicts.v1")
+
+
+def disabled():
+    return os.environ.get("HW_TEST_NO_CACHE", "") not in ("", "0")
+
+
+# ── files ────────────────────────────────────────────────────────────────────
+
+_memo = {}
+
+
+def file_digest(rel):
+    """sha256 of a file's bytes ("absent" when it is not there; a symlink is its target string)"""
+    if rel in _memo:
+        return _memo[rel]
+    p = os.path.join(ROOT, rel)
+    try:
+        if os.path.islink(p):
+            d = "link:" + os.readlink(p)
+        else:
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            d = h.hexdigest()
+    except OSError:
+        d = "absent"
+    _memo[rel] = d
+    return d
+
+
+def all_files():
+    """every file of the checkout the runner is looking at (ignored and untracked ones too: the runner works on a snapshot with no .git)"""
+    if "all" in _memo:
+        return _memo["all"]
+    out = []
+    for parent, dirs, files in os.walk(ROOT, followlinks=False):
+        at_root = os.path.realpath(parent) == os.path.realpath(ROOT)
+        dirs[:] = sorted(d for d in dirs if d not in NOISE and not (at_root and run_state(d)))
+        for f in files:
+            if f in NOISE or f.endswith(".pyc") or (at_root and run_state(f)):
+                continue
+            out.append(os.path.relpath(os.path.join(parent, f), ROOT))
+    out.sort()
+    _memo["all"] = out
+    return out
+
+
+def listing(rel_dir, recursive=False):
+    """the names in a directory (recursively, for a mapped one): what a glob, `ls` or `find` of it would see"""
+    k = ("ls", rel_dir, recursive)
+    if k in _memo:
+        return _memo[k]
+    top = os.path.join(ROOT, rel_dir) if rel_dir else ROOT
+    names = []
+    if recursive:
+        for parent, dirs, files in os.walk(top, followlinks=False):
+            dirs[:] = sorted(d for d in dirs if d not in NOISE)
+            for f in files:
+                if f not in NOISE and not f.endswith(".pyc"):
+                    names.append(os.path.relpath(os.path.join(parent, f), ROOT))
+    else:
+        try:
+            names = sorted(n for n in os.listdir(top) if n not in NOISE and not n.endswith(".pyc")
+                           and not (not rel_dir and run_state(n)))
+        except OSError:
+            names = ["<absent>"]
+    names.sort()
+    h = hashlib.sha256(("\n".join(names) + "\n").encode()).hexdigest()
+    _memo[k] = h
+    return h
+
+
+def tree_digest():
+    if "tree" not in _memo:
+        h = hashlib.sha256()
+        for rel in all_files():
+            h.update(("%s\0%s\n" % (rel, file_digest(rel))).encode())
+        _memo["tree"] = h.hexdigest()
+    return _memo["tree"]
+
+
+def sh_out(cmd, **kw):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=20, **kw)
+        return (r.stdout + r.stderr).strip()
+    except (OSError, subprocess.SubprocessError):
+        return "none"
+
+
+def toolchain():
+    if "tool" in _memo:
+        return _memo["tool"]
+    herdr = shutil.which("herdr")
+    hd = "none"
+    if herdr:
+        try:
+            h = hashlib.sha256()
+            with open(herdr, "rb") as f:   # the binary's bytes, not `herdr --version`: nothing here talks to a live herdr
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            hd = h.hexdigest()
+        except OSError:
+            hd = "unreadable"
+    env = dict(os.environ, GOTOOLCHAIN="local")
+    parts = [
+        "go=" + (sh_out(["go", "version"], env=env) if shutil.which("go") else "none"),
+        "bash=" + sh_out(["bash", "-c", "echo $BASH_VERSION"]),
+        "python=" + sys.version.replace("\n", " "),
+        "herdr=" + hd,
+        "platform=%s-%s" % (sys.platform, platform.machine()),
+    ]
+    _memo["tool"] = "\n".join(parts)
+    return _memo["tool"]
+
+
+def env_knobs():
+    return "\n".join("%s=%s" % (k, v) for k, v in sorted(os.environ.items()) if ENV_ALLOW.match(k))
+
+
+# ── a subject's reads (setup/subject-deps.txt) ───────────────────────────────
+
+def parse_subject_deps():
+    """measured subject -> its read paths; a subject with no SUBJECT line was never measured"""
+    if "sdeps" in _memo:
+        return _memo["sdeps"]
+    measured, reads = set(), {}
+    try:
+        lines = open(os.path.join(ROOT, DEPS_SUBJECT)).read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("SUBJECT\t"):
+            measured.add(line.split("\t", 1)[1])
+            continue
+        if "\t" not in line:
+            continue
+        path, names = line.split("\t", 1)
+        for n in names.split():
+            if n != "-":
+                reads.setdefault(n, set()).add(path)
+    _memo["sdeps"] = (measured, reads)
+    return _memo["sdeps"]
+
+
+def never_declared(rel):
+    """`# cache: never` in the header block, read like `# suite-lane:`: only the comment block before the first command declares"""
+    try:
+        for i, line in enumerate(open(os.path.join(ROOT, rel), errors="replace")):
+            if i == 0 and line.startswith("#!"):
+                continue
+            if line.startswith("#"):
+                if re.match(r"^# cache: never([^A-Za-z0-9_-]|$)", line):
+                    return True
+                continue
+            if line.strip() == "":
+                continue
+            return False
+    except OSError:
+        pass
+    return False
+
+
+# ── a go-test partition's reads (setup/go-test-deps.txt + the table), the rules of `go-test-core.sh --affected` ──
+
+def posix_ere(rx):
+    return rx.replace("[[:space:]]", r"\s").replace("[[:alpha:]]", "[A-Za-z]").replace("[[:digit:]]", "[0-9]").replace("[[:alnum:]]", "[A-Za-z0-9]")
+
+
+def partitions():
+    """{partition: sorted files it reads}, or None when the table or the map cannot be read (the caller keys the whole tree)"""
+    if "parts" in _memo:
+        return _memo["parts"]
+    try:
+        rows, keys = [], {}
+        for line in open(os.path.join(ROOT, TABLE)).read().splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            m = re.match(r"^([A-Z]+)=(.*)$", s)
+            if m:
+                keys[m.group(1)] = m.group(2)
+                continue
+            f = [x.strip() for x in s.split(";")]
+            if len(f) >= 5:
+                rows.append(f[:5])
+        mapped, alias, rules, dep = [], {}, [], {}
+        for line in open(os.path.join(ROOT, DEPS_GO)).read().splitlines():
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("MAPPED "):
+                mapped += line.split()[1:]
+            elif line.startswith("ALIAS "):
+                a = line.split()
+                alias[a[1]] = a[2:]
+            elif line.startswith("RULE\t"):
+                _, rx, toks = line.split("\t")
+                rules.append((re.compile(posix_ere(rx)), toks.split()))
+            else:
+                p, _, toks = line.partition("\t")
+                dep[p] = toks.split()
+        aff = [(r[0], re.compile(posix_ere(r[4]))) for r in rows if r[4] != "-"]
+        common = re.compile(posix_ere(keys["COMMON"])) if keys.get("COMMON") else None
+        contract = re.compile(posix_ere(keys["CONTRACT"])) if keys.get("CONTRACT") else None
+    except (OSError, re.error, ValueError, KeyError):
+        _memo["parts"] = None
+        return None
+    names = [r[0] for r in rows]
+    reach = {n: set() for n in names}
+
+    def emit(tok, p, hit):
+        if tok in ("-", ""):
+            return
+        if tok == "*":
+            hit.update(names)
+        elif tok.startswith("@"):
+            hit.update(alias.get(tok, []))
+        else:
+            hit.add(tok)
+
+    universe = set(all_files()) | set(dep)
+    for p in universe:
+        hit, claimed, known = set(), False, False
+        for n, rx in aff:
+            if rx.search(p):
+                hit.add(n)
+                claimed = True
+        if p in dep:
+            for t in dep[p]:
+                emit(t, p, hit)
+            if p.startswith("core/") and p.endswith(".go") and not p.endswith("_test.go"):
+                hit.add("rest")
+            known = True
+        for rx, toks in rules:
+            if rx.search(p):
+                for t in toks:
+                    emit(t, p, hit)
+                known = True
+        if not known and not claimed:
+            if any(p.startswith(m) for m in mapped) or (common and common.search(p)) or (contract and contract.search(p)):
+                hit.update(names)
+        for n in hit:
+            if n in reach:
+                reach[n].add(p)
+    _memo["mapped"] = mapped
+    _memo["parts"] = {n: sorted(v) for n, v in reach.items()}
+    return _memo["parts"]
+
+
+# ── the key ──────────────────────────────────────────────────────────────────
+
+def add(h, *parts):
+    for p in parts:
+        h.update(p.encode() if isinstance(p, str) else p)
+        h.update(b"\0")
+    h.update(b"\n")
+
+
+def job_key(kind, rel, arg):
+    """(key, note) — key is `never` for a job that declared it; note says what the key could not be measured by"""
+    h = hashlib.sha256()
+    name = os.path.basename(rel)
+    note = ""
+    add(h, "verdict-cache v1", kind, name, arg or "")
+    if kind == "go-test":
+        parts = partitions()
+        want = [x for x in (arg or "").lstrip("+").split(",") if x]
+        if parts is None or not want or any(w not in parts for w in want):
+            add(h, "whole-tree", tree_digest())
+            note = "go partitions unmapped"
+        else:
+            files = set()
+            for w in want:
+                files.update(parts[w])
+            files.update([GO_CORE, TABLE, "setup/gocache.sh", "core/go.mod", "core/go.sum"])
+            for w in sorted(want):
+                add(h, "partition", w)
+            for rel_f in sorted(files):
+                add(h, rel_f, file_digest(rel_f))
+            for m in _memo.get("mapped", []):
+                add(h, "ls", m, listing(m, recursive=True))
+    else:
+        if never_declared(rel):
+            return "never", ""
+        add(h, "own", rel, file_digest(rel))
+        measured, reads = parse_subject_deps()
+        if name in measured:
+            files = sorted(reads.get(name, set()))
+            for rel_f in files:
+                add(h, rel_f, file_digest(rel_f))
+            for d in sorted({os.path.dirname(x) for x in files}):
+                add(h, "ls", d, listing(d))
+        else:
+            add(h, "whole-tree", tree_digest())
+            note = "unmeasured: keyed to the whole tree"
+    for c in COMMON_FILES:
+        add(h, c, file_digest(c))
+    add(h, "toolchain", toolchain())
+    add(h, "env", env_knobs())
+    return h.hexdigest(), note
+
+
+def rel_of(path):
+    p = os.path.realpath(path)
+    r = os.path.realpath(ROOT)
+    return os.path.relpath(p, r) if p.startswith(r + os.sep) else path
+
+
+def job_from_name(name):
+    """`176-x.sh`, `mutate-deny-repo-writes.sh`, `go-test-core.sh:t4-1`, `go-test-core.sh:+a,b` -> (kind, rel, arg)"""
+    base, _, arg = name.partition(":")
+    if base == "go-test-core.sh":
+        return "go-test", GO_CORE, arg
+    for cand in ("setup/tests/" + base, "setup/guards/" + base):
+        if os.path.isfile(os.path.join(ROOT, cand)):
+            return ("subject" if cand.startswith("setup/tests/") else "guard"), cand, ""
+    raise SystemExit("verdict-cache: no job named %s (a subject of setup/tests, a guard of setup/guards, or go-test-core.sh:<partition>)" % name)
+
+
+# ── the store ────────────────────────────────────────────────────────────────
+
+MAGIC = b"hw-verdict v1"
+
+
+def entry(key):
+    d = cache_dir()
+    return os.path.join(d, key) if d and re.fullmatch(r"[0-9a-f]{64}", key) else ""
+
+
+def load(key):
+    """the stored log, or None: a missing, torn or hand-edited entry is a miss"""
+    p = entry(key)
+    if not p or disabled():
+        return None
+    try:
+        raw = open(p, "rb").read()
+    except OSError:
+        return None
+    head, nl, log = raw.partition(b"\n")
+    m = re.fullmatch(rb"hw-verdict v1 rc=0 sha256=([0-9a-f]{64})( .*)?", head)
+    if not nl or not m or hashlib.sha256(log).hexdigest().encode() != m.group(1):
+        return None
+    try:
+        os.utime(p, None)   # a hit keeps its entry out of the prune
+    except OSError:
+        pass
+    return log
+
+
+def store(key, rc, log_path, job=""):
+    if rc != 0:
+        sys.stderr.write("verdict-cache: a red is never stored (rc %s)\n" % rc)
+        return 3
+    if disabled():
+        return 0
+    p = entry(key)
+    if not p:
+        return 0
+    try:
+        log = open(log_path, "rb").read()
+        os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+        tmp = "%s.tmp.%d.%d" % (p, os.getpid(), time.monotonic_ns())
+        with open(tmp, "wb") as f:
+            f.write(b"hw-verdict v1 rc=0 sha256=" + hashlib.sha256(log).hexdigest().encode() + b" " + job.encode().replace(b"\n", b" ") + b"\n")
+            f.write(log)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except OSError as e:
+        sys.stderr.write("verdict-cache: cannot store %s: %s\n" % (key[:12], e))
+    return 0
+
+
+def prune():
+    """drop entries not read or written for KEEP_DAYS, at most once a day"""
+    d = cache_dir()
+    if not d or not os.path.isdir(d):
+        return
+    stamp = os.path.join(d, ".pruned")
+    try:
+        if time.time() - os.stat(stamp).st_mtime < 86400:
+            return
+    except OSError:
+        pass
+    cutoff = time.time() - KEEP_DAYS * 86400
+    for n in os.listdir(d):
+        p = os.path.join(d, n)
+        try:
+            if n.startswith(".") and ".tmp." not in n:
+                continue
+            if os.stat(p).st_mtime < cutoff:
+                os.unlink(p)
+        except OSError:
+            pass
+    try:
+        open(stamp, "w").close()
+    except OSError:
+        pass
+
+
+def main(argv):
+    if not argv:
+        sys.stderr.write(__doc__)
+        return 2
+    cmd, a = argv[0], argv[1:]
+    if cmd == "dir":
+        print(cache_dir() or "off")
+        return 0
+    if cmd == "key" and len(a) == 1:
+        k, note = job_key(*job_from_name(a[0]))
+        if note:
+            sys.stderr.write("verdict-cache: %s\n" % note)
+        print(k)
+        return 0
+    if cmd == "plan" and len(a) == 2:
+        jobs, outdir = a
+        os.makedirs(outdir, exist_ok=True)
+        if not disabled():
+            prune()
+        hits = misses = nevers = 0
+        for line in open(jobs).read().splitlines():
+            f = line.split("\t")
+            if len(f) < 3:
+                continue
+            idx, kind, path = f[0], f[1], f[2]
+            arg = f[3] if len(f) > 3 else ""
+            key, _ = job_key(kind, rel_of(path), arg)
+            if key == "never" or disabled() or not entry(key if key != "never" else "x" * 64):
+                print("%s\t%s\t%s" % (idx, "never" if key == "never" else "miss", key))
+                nevers += key == "never"
+                misses += key != "never"
+                continue
+            log = load(key)
+            if log is None:
+                print("%s\tmiss\t%s" % (idx, key))
+                misses += 1
+                continue
+            with open(os.path.join(outdir, idx + ".out"), "wb") as f_out:
+                f_out.write(log)
+            print("%s\thit\t%s" % (idx, key))
+            hits += 1
+        sys.stderr.write("verdict-cache: %d hit, %d miss, %d never\n" % (hits, misses, nevers))
+        return 0
+    if cmd == "hit" and len(a) == 1:
+        log = load(a[0])
+        if log is None:
+            return 1
+        sys.stdout.buffer.write(log)
+        return 0
+    if cmd == "put" and len(a) in (3, 4):
+        try:
+            rc = int(a[1])
+        except ValueError:
+            sys.stderr.write("verdict-cache: put wants an integer rc\n")
+            return 2
+        return store(a[0], rc, a[2], a[3] if len(a) == 4 else "")
+    if cmd == "forget" and len(a) == 1:
+        p = entry(a[0])
+        try:
+            if p:
+                os.unlink(p)
+        except OSError:
+            pass
+        return 0
+    sys.stderr.write(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

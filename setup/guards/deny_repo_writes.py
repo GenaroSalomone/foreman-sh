@@ -489,13 +489,114 @@ def _is_command_position(text, pos):
     segment = prefix[last_boundary_end:]
     return bool(_CMD_PREFIX_ALLOWED.match(segment))
 # git subcommands that change the repo or its refs.
-GIT_MUTATORS = re.compile(
-    r"(?<![\w-])git\b[^|;&]*?(?<![\w-])("
+#
+# THE MUTATOR IS MATCHED AGAINST THE SUBCOMMAND, NOT AGAINST EVERY WORD. This
+# used to be one regex that fired on any mutator word anywhere after `git`, so
+# `git -C <repo> log --grep add` (a pure read) was refused for the word `add`.
+# `_git_mutates` finds the subcommand — the first token after git's global
+# options (`-C <path>`, `-c <k=v>`, `--git-dir=<p>`, `--no-pager`, ...) — and
+# asks the question of that token alone.
+#
+# WHEN THE SUBCOMMAND CANNOT BE READ WITH CONFIDENCE, THE OLD ANY-WORD TEST
+# STANDS (`_GIT_MUTATOR_ANYWHERE`): an unbalanced quote, a `$(...)` or backtick
+# in an option's value (its spaces would shift every token), an alias set with
+# `-c alias.x=...`, a subcommand that is not a plain word. A read the guard
+# cannot prove is a read is refused, as before.
+_GIT_MUTATOR_WORDS = (
     r"commit|add|rm|mv|checkout|switch|restore|reset|revert|merge|rebase|"
-    r"cherry-pick|apply|am|stash|push|clean|gc|prune|worktree\s+(add|remove|prune)|"
-    r"branch\s+-[dDmM]|tag|config|update-ref|symbolic-ref"
-    r")(?![\w-])"
+    r"cherry-pick|apply|am|stash|push|clean|gc|prune|tag|config|update-ref|"
+    r"symbolic-ref"
 )
+_GIT_HEAD = re.compile(r"(?<![\w-])git\b")
+_GIT_SEGMENT_END = re.compile(r"[|;&\n]")
+_GIT_MUTATOR_ANYWHERE = re.compile(
+    r"(?<![\w-])(?:" + _GIT_MUTATOR_WORDS + r"|worktree\s+(?:add|remove|prune)"
+    r"|branch\s+-[dDmM])(?![\w-])")
+_GIT_SIMPLE_MUTATOR = re.compile(r"(?:" + _GIT_MUTATOR_WORDS + r")(?![\w-])")
+_GIT_WORKTREE_MUTATOR = re.compile(r"(?:add|remove|prune)(?![\w-])")
+_GIT_BRANCH_MUTATOR = re.compile(r"-[dDmM](?![\w-])")
+# Global options that take their value as the NEXT token.
+_GIT_OPT_WITH_VALUE = frozenset((
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    "--config-env", "--attr-source"))
+# Subcommands whose own sub-verb can be a mutator (`git remote add`,
+# `git submodule add`, `git bisect reset`, ...): the first operand is tested
+# against the same mutator words, as the any-word test did by accident.
+_GIT_COMPOUND = frozenset((
+    "remote", "submodule", "notes", "bisect", "sparse-checkout", "reflog",
+    "lfs", "subtree", "maintenance", "replace", "rerere"))
+
+
+def _git_tokens(seg):
+    """Shell-ish words of `seg`; a quoted span (already blanked) is one word.
+
+    None when a quote never closes: the caller falls back to the any-word test.
+    """
+    toks, i, n = [], 0, len(seg)
+    while i < n:
+        if seg[i].isspace():
+            i += 1
+            continue
+        j = i
+        while j < n and not seg[j].isspace():
+            if seg[j] == "\\" and j + 1 < n:
+                j += 2
+            elif seg[j] in "'\"":
+                k = seg.find(seg[j], j + 1)
+                if k < 0:
+                    return None
+                j = k + 1
+            else:
+                j += 1
+        toks.append(seg[i:j])
+        i = j
+    return toks
+
+
+def _git_segment_mutates(seg):
+    toks = _git_tokens(seg)
+    if toks is None:
+        return bool(_GIT_MUTATOR_ANYWHERE.search(seg))
+    i, n = 0, len(toks)
+    while i < n and toks[i].startswith("-"):
+        t = toks[i]
+        if "alias." in t.lower():
+            return bool(_GIT_MUTATOR_ANYWHERE.search(seg))
+        if t in _GIT_OPT_WITH_VALUE:
+            if i + 1 >= n:
+                return False
+            val = toks[i + 1]
+            if "$(" in val or "`" in val or "alias." in val.lower():
+                return bool(_GIT_MUTATOR_ANYWHERE.search(seg))
+            i += 2
+        else:
+            i += 1
+    if i >= n:
+        return False  # `git`, or `git --version`: no subcommand at all
+    sub = re.match(r"[A-Za-z][\w-]*", toks[i])
+    if sub is None:
+        return bool(_GIT_MUTATOR_ANYWHERE.search(seg))
+    name = sub.group()
+    nxt = toks[i + 1] if i + 1 < n else ""
+    if _GIT_SIMPLE_MUTATOR.fullmatch(name):
+        return True
+    if name == "worktree":
+        return bool(_GIT_WORKTREE_MUTATOR.match(nxt))
+    if name == "branch":
+        return bool(_GIT_BRANCH_MUTATOR.match(nxt))
+    if name in _GIT_COMPOUND:
+        verb = next((t for t in toks[i + 1:] if not t.startswith("-")), "")
+        return bool(_GIT_SIMPLE_MUTATOR.match(verb))
+    return False
+
+
+def _git_mutates(masked):
+    """True when some `git` in `masked` runs a mutating subcommand."""
+    for head in _GIT_HEAD.finditer(masked):
+        end = _GIT_SEGMENT_END.search(masked, head.end())
+        if _git_segment_mutates(masked[head.end():end.start() if end else len(masked)]):
+            return True
+    return False
 
 
 # ── BOUNDARY: RESOLVE, THEN COMPARE ─────────────────────────────────────────
@@ -2286,7 +2387,7 @@ def _decide(cfg, command, cwd, unwrap):
              or (resolved_token is not None and resolved_token not in masked))
     )
 
-    if GIT_MUTATORS.search(masked):
+    if _git_mutates(masked):
         if content_only:
             return ("git",
                     "Blocked: this git command's text contains the path of %s "

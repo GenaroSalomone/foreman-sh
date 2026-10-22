@@ -269,16 +269,7 @@ loop:
 		return die("could not write %s, so a ruling queued now could not be told this task is closing. Nothing was reported; retry.", reportingMarker)
 	}
 	rulingRun := c.runDir()
-	if st, err := os.Stat(c.BinDir + "/state-witness.sh"); err != nil || st.IsDir() {
-		return die("cannot find state-witness.sh beside %s, so queued rulings cannot be checked before this task closes. Nothing was reported; this brain/bin is incomplete.", c.BinDir)
-	}
-	var claimed bytes.Buffer
-	crc := c.run(runOpts{stdout: &claimed, stderr: c.Stderr}, "bash", "-c",
-		`set -euo pipefail
-. "$1/state-witness.sh"
-ruling_queue_claim_all "$2" done-invoker`, "_", c.BinDir, rulingRun)
-	if crc == 0 { // 203-M01
-		text := strings.TrimRight(claimed.String(), "\n")
+	if text, held := c.ClaimRulings(rulingRun, "done-invoker"); held { // 203-M01
 		msg := "NOT REPORTED — RULING FROM YOUR BRAINER, queued with `hw ruling` while you were working. It changes the premise of your work, so your report was held and NOTHING was sent. Read it, act on it — and if it contradicts what you have already done, say so rather than quietly redoing it — then run done-invoker again.\n\n" + text
 		c.printf(c.Stdout, "%s\n", msg)
 		c.errf("done-invoker: %s\n", msg)

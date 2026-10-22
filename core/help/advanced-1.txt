@@ -29,3 +29,6 @@ ADVANCED
     --top-tier-why <s>  the reason a `kind: build` task runs on the top tier
                        (opus, fable). Refused without it (flag or the brief's
                        `top_tier_why:`); recorded in the manifest and receipt.
+    --ignore-after     dispatch although a task in the brief's `after:` is not
+                       reported and merged. Needs --why "<reason>" (one line);
+                       recorded in the manifest and the receipt.

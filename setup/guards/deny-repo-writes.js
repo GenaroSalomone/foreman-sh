@@ -271,8 +271,96 @@ function isCommandPosition(text, pos) {
   return CMD_PREFIX_ALLOWED.test(segment);
 }
 // git subcommands that change a tree or its refs.
-const GIT_MUTATORS =
-  /(?<![\w-])git\b[^|;&]*?(?<![\w-])(commit|add|rm|mv|checkout|switch|restore|reset|revert|merge|rebase|cherry-pick|apply|am|stash|push|clean|gc|prune|worktree\s+(add|remove|prune)|branch\s+-[dDmM]|tag|config|update-ref|symbolic-ref)(?![\w-])/;
+//
+// THE MUTATOR IS MATCHED AGAINST THE SUBCOMMAND, NOT AGAINST EVERY WORD (mirror
+// of `_git_mutates` in deny_repo_writes.py): the subcommand is the first token
+// after git's global options (`-C <path>`, `-c <k=v>`, `--git-dir=<p>`,
+// `--no-pager`, ...), so `git -C <repo> log --grep add` is a read. When the
+// subcommand cannot be read with confidence (unbalanced quote, `$(...)` or a
+// backtick in an option value, `-c alias.x=...`, a non-word subcommand) the
+// old any-word test stands.
+const GIT_MUTATOR_WORDS =
+  "commit|add|rm|mv|checkout|switch|restore|reset|revert|merge|rebase|cherry-pick|apply|am|stash|push|clean|gc|prune|tag|config|update-ref|symbolic-ref";
+const GIT_HEAD = /(?<![\w-])git\b/g;
+const GIT_SEGMENT_END = /[|;&\n]/;
+const GIT_MUTATOR_ANYWHERE = new RegExp(
+  `(?<![\\w-])(?:${GIT_MUTATOR_WORDS}|worktree\\s+(?:add|remove|prune)|branch\\s+-[dDmM])(?![\\w-])`);
+const GIT_SIMPLE_MUTATOR = new RegExp(`^(?:${GIT_MUTATOR_WORDS})(?![\\w-])`);
+const GIT_WORKTREE_MUTATOR = /^(?:add|remove|prune)(?![\w-])/;
+const GIT_BRANCH_MUTATOR = /^-[dDmM](?![\w-])/;
+const GIT_OPT_WITH_VALUE = new Set([
+  "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+  "--config-env", "--attr-source"]);
+const GIT_COMPOUND = new Set([
+  "remote", "submodule", "notes", "bisect", "sparse-checkout", "reflog",
+  "lfs", "subtree", "maintenance", "replace", "rerere"]);
+
+function gitTokens(seg) {
+  const toks = [];
+  const n = seg.length;
+  let i = 0;
+  while (i < n) {
+    if (/\s/.test(seg[i])) { i += 1; continue; }
+    let j = i;
+    while (j < n && !/\s/.test(seg[j])) {
+      if (seg[j] === "\\" && j + 1 < n) {
+        j += 2;
+      } else if (seg[j] === "'" || seg[j] === '"') {
+        const k = seg.indexOf(seg[j], j + 1);
+        if (k < 0) return null;
+        j = k + 1;
+      } else {
+        j += 1;
+      }
+    }
+    toks.push(seg.slice(i, j));
+    i = j;
+  }
+  return toks;
+}
+
+function gitSegmentMutates(seg) {
+  const toks = gitTokens(seg);
+  if (toks === null) return GIT_MUTATOR_ANYWHERE.test(seg);
+  const n = toks.length;
+  let i = 0;
+  while (i < n && toks[i].startsWith("-")) {
+    const t = toks[i];
+    if (t.toLowerCase().includes("alias.")) return GIT_MUTATOR_ANYWHERE.test(seg);
+    if (GIT_OPT_WITH_VALUE.has(t)) {
+      if (i + 1 >= n) return false;
+      const val = toks[i + 1];
+      if (val.includes("$(") || val.includes("`") || val.toLowerCase().includes("alias.")) {
+        return GIT_MUTATOR_ANYWHERE.test(seg);
+      }
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  if (i >= n) return false; // `git`, or `git --version`: no subcommand at all
+  const sub = /^[A-Za-z][\w-]*/.exec(toks[i]);
+  if (sub === null) return GIT_MUTATOR_ANYWHERE.test(seg);
+  const name = sub[0];
+  const nxt = i + 1 < n ? toks[i + 1] : "";
+  if (GIT_SIMPLE_MUTATOR.test(name)) return true;
+  if (name === "worktree") return GIT_WORKTREE_MUTATOR.test(nxt);
+  if (name === "branch") return GIT_BRANCH_MUTATOR.test(nxt);
+  if (GIT_COMPOUND.has(name)) {
+    const verb = toks.slice(i + 1).find((t) => !t.startsWith("-")) ?? "";
+    return GIT_SIMPLE_MUTATOR.test(verb);
+  }
+  return false;
+}
+
+function gitMutates(masked) {
+  for (const head of masked.matchAll(GIT_HEAD)) {
+    const from = head.index + head[0].length;
+    const m = GIT_SEGMENT_END.exec(masked.slice(from));
+    if (gitSegmentMutates(masked.slice(from, m ? from + m.index : masked.length))) return true;
+  }
+  return false;
+}
 
 // ── BOUNDARY: RESOLVE, THEN COMPARE ────────────────────────────────────────
 //
@@ -1859,7 +1947,7 @@ function decideReading(lane, command, cwd, unwrap) {
     (gateToken !== null && !masked.includes(gateToken))
   );
 
-  if (GIT_MUTATORS.test(masked)) {
+  if (gitMutates(masked)) {
     if (contentOnly) {
       return { rule: "git", reason:
         `Blocked: this git command's text contains the path of ${where} ` +

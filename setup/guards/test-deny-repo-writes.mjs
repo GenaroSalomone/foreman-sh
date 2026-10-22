@@ -45,8 +45,26 @@
 // (or, for a difference no policy field carries, `expect_by_lane`) — that is
 // how a deliberate per-lane difference (the spent-worktree teardown) stays
 // visible as an assertion rather than becoming the next silent drift.
+//
+// ONE PROCESS FOR THE VECTORS, A SAMPLE FOR THE PROCESS (2026-10-20). This suite
+// spawned `python3 <hook>` once per Python and Codex vector, ~2000 interpreters a
+// run, and the mutation arm repeated that for each of 77 mutants. The claim
+// "every vector through the real process entry" is RENAMED, not dropped:
+//
+//   every vector     through the real hook FILE (the lane shim, or the Codex
+//                    guard) run in-process by `hook-batch.py`: same `main`, same
+//                    `decide`, same refusal protocol, no second implementation.
+//   a fixed sample   (first vector per lane x tool x outcome, for the Claude and
+//                    the Codex entry) through the real `spawnSync("python3",
+//                    [hook])`, whose answer must EQUAL the batch's — status,
+//                    stdout and stderr — and meet the vector's own expectation.
+//
+// What a vector no longer proves on its own is the PROCESS: interpreter start-up,
+// the OS's `sys.path[0]`, the exit status the kernel reports. The sample proves
+// that, for one vector per outcome rather than every one. The malformed-payload
+// shapes, Codex's lane-resolution edges and the sandbox arm keep a real spawn each.
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { dirname, basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -157,14 +175,56 @@ const render = (value, r) => value
   .replaceAll("{{outside}}", outside)
   .replaceAll("{{out}}", `${outside}/copy`);
 
-function python(path, command, cwd, env) {
-  const payload = JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd });
-  const r = spawnSync("python3", [path], { input: payload, encoding: "utf8", env: env ?? process.env });
+// A hook's raw answer (`{status, stdout, stderr}`, from a real spawn or from
+// `hook-batch.py`) read as a verdict. One reader for both, so the batch and the
+// sample cannot disagree about what an answer means.
+function claudeResult(r) {
   if (r.status !== 0) return { crashed: `${r.status}: ${r.stderr}` };
   const out = r.stdout.trim();
   if (!out) return { allowed: true, reason: "" };
   try { return { allowed: false, reason: JSON.parse(out).hookSpecificOutput.permissionDecisionReason }; }
   catch { return { crashed: `invalid hook output: ${out}` }; }
+}
+
+function codexResult(r) {
+  if (r.status === 0) return { allowed: true, reason: "" };
+  if (r.status === 2) return { allowed: false, reason: r.stderr.trim() };
+  return { crashed: `${r.status}: ${r.stderr}` };
+}
+
+const payloadOf = (command, cwd, toolName = "Bash") =>
+  JSON.stringify({ tool_name: toolName, tool_input: { command }, cwd });
+
+// One request of `hook-batch.py`, and the same request on a real interpreter.
+function realEntry({ hook, stdin, env, cwd }) {
+  const r = spawnSync("python3", [hook], { input: stdin, encoding: "utf8", env: env ?? process.env, cwd: cwd ?? undefined });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+// Every request in ONE `hook-batch.py` process, answered in order. A process that
+// ends before answering leaves the rest as a crash (status null), which every
+// reader above turns into a failing assertion rather than a silent allow.
+function runBatch(requests, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", [`${root}/setup/guards/hook-batch.py`], { env: env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "", err = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { err += d; });
+    child.stdin.on("error", () => {});
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const lines = out.split("\n").filter(Boolean);
+      resolve(requests.map((_, i) => lines[i] ? JSON.parse(lines[i])
+        : { status: null, stdout: "", stderr: `hook-batch.py ended (${code}) before answering request ${i}: ${err}` }));
+    });
+    child.stdin.end(requests.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  });
+}
+
+function python(path, command, cwd, env) {
+  return claudeResult(realEntry({ hook: path, stdin: payloadOf(command, cwd), env }));
 }
 
 async function javascript(path, sessionDir, command, cwd) {
@@ -190,11 +250,7 @@ function codexEnv(laneDir, neutralDir, home) {
 }
 
 function codex(path, command, cwd, env, neutralDir, toolName = "Bash") {
-  const payload = JSON.stringify({ tool_name: toolName, tool_input: { command }, cwd });
-  const r = spawnSync("python3", [path], { input: payload, encoding: "utf8", env, cwd: neutralDir });
-  if (r.status === 0) return { allowed: true, reason: "" };
-  if (r.status === 2) return { allowed: false, reason: r.stderr.trim() };
-  return { crashed: `${r.status}: ${r.stderr}` };
+  return codexResult(realEntry({ hook: path, stdin: payloadOf(command, cwd, toolName), env, cwd: neutralDir }));
 }
 
 let pass = 0, fail = 0;
@@ -273,36 +329,88 @@ const expected = Object.create(null);
 const voice = Object.create(null);
 
 try {
+  // THE LANE ARM'S PYTHON AND CODEX ANSWERS COME FROM ONE `hook-batch.py`
+  // PROCESS, asked before any assertion so the sample below can run first.
+  const lanes = new Map();
   for (const laneName of laneNames) {
-    const r = laneRender(laneName);
     // THE ROOT LANE LIVES ONE DIRECTORY UP. `brain` is `~/brain`
     // itself, not `~/brain/brain` — measured once, a session
     // started at the root loaded no settings and no guard at all, so the root
     // became a lane like the other four and its registered files sit directly
     // under it.
     const laneDir = laneName === "brain" ? root : `${root}/${laneName}`;
-    const pyPath = `${laneDir}/.claude/hooks/deny-repo-writes.py`;
-    const jsPath = `${laneDir}/.opencode/plugin/deny-repo-writes.js`;
     // Where a Codex session of this lane stands: the lane's own directory under
     // BRAIN, which is where `hw` starts it. The worktree this suite runs from
     // is not under BRAIN, so the lane cannot be read off `root`.
     const codexLaneDir = laneName === "brain" ? BRAIN_ROOT : `${BRAIN_ROOT}/${laneName}`;
-    const cEnv = codexEnv(codexLaneDir, base);
+    lanes.set(laneName, {
+      r: laneRender(laneName),
+      laneDir,
+      pyPath: `${laneDir}/.claude/hooks/deny-repo-writes.py`,
+      jsPath: `${laneDir}/.opencode/plugin/deny-repo-writes.js`,
+      cEnv: codexEnv(codexLaneDir, base),
+    });
+  }
+  // `expect_with_worktree_roots` is the expectation for a lane whose policy
+  // declares `worktree_roots` — the property that grants the spent-worktree
+  // teardown — so the difference follows the table, not a lane's name.
+  const expectFor = (laneName, vector) => vector.expect_by_lane?.[laneName]
+    ?? (vector.expect_with_worktree_roots && LANES[laneName].worktreeRoots?.length
+      ? vector.expect_with_worktree_roots : vector.expect);
+  // The Claude entry's request, then Codex's, per lane per vector — the order the
+  // assertions below consume them in.
+  const requests = [];
+  const sampleOf = new Map();   // "<lane>|<runtime>|Bash|<outcome>" -> its first request
+  for (const [laneName, L] of lanes) {
+    for (const vector of vectors) {
+      const command = render(vector.command, L.r);
+      const cwd = render(vector.cwd, L.r);
+      const stdin = payloadOf(command, cwd);
+      const expect = expectFor(laneName, vector);
+      const codexWanted = laneName === "brain" && !underBrain(cwd) ? "allow" : expect;
+      const py = { hook: L.pyPath, stdin, env: null, cwd: null };
+      const cx = { hook: codexPath, stdin, env: L.cEnv, cwd: base };
+      // FIXED BY THE VECTOR'S OWN EXPECTATION, never by what the code under test
+      // answered: the first vector of each lane x runtime x tool x outcome.
+      const outcome = (wanted) => wanted === "allow" ? "allow" : `deny:${vector.category}`;
+      for (const [runtime, request, wanted, claudeShape] of [["python", py, expect, true], ["codex", cx, codexWanted, false]]) {
+        const key = `${laneName}|${runtime}|Bash|${outcome(wanted)}`;
+        if (!sampleOf.has(key)) sampleOf.set(key, { request, vector, wanted, claudeShape, at: requests.length + (runtime === "python" ? 0 : 1) });
+      }
+      requests.push(py, cx);
+    }
+  }
+  const answers = await runBatch(requests);
+
+  // ── THE SAMPLE: THE REAL PROCESS ENTRY, FIRST ───────────────────────────
+  // Runs before every other assertion on purpose: a batch entry that answers
+  // wrongly for every vector (wired to allow, say) is named here, as a batch
+  // that disagrees with the real entry, before the vectors blame the guard.
+  for (const [key, s] of sampleOf) {
+    const real = realEntry(s.request);
+    const batch = answers[s.at];
+    const [laneName, runtime] = key.split("|");
+    const same = real.status === batch.status && real.stdout === batch.stdout && real.stderr === batch.stderr;
+    if (same) ok(`sample ${key} (${s.vector.id}): the batch answer equals the real entry's`);
+    else notOk(`sample ${key} (${s.vector.id}): the batch answer equals the real entry's`,
+      `real=${JSON.stringify(real).slice(0, 300)} batch=${JSON.stringify(batch).slice(0, 300)}`);
+    judge(`sample ${key} (${s.vector.id}) real entry`, runtime, s.vector, s.wanted,
+      (s.claudeShape ? claudeResult : codexResult)(real));
+  }
+
+  let at = 0;
+  for (const laneName of laneNames) {
+    const { r, laneDir, jsPath } = lanes.get(laneName);
     for (const vector of vectors) {
       const command = render(vector.command, r);
       const cwd = render(vector.cwd, r);
-      // `expect_with_worktree_roots` is the expectation for a lane whose policy
-      // declares `worktree_roots` — the property that grants the spent-worktree
-      // teardown — so the difference follows the table, not a lane's name.
-      const expect = vector.expect_by_lane?.[laneName]
-        ?? (vector.expect_with_worktree_roots && LANES[laneName].worktreeRoots?.length
-          ? vector.expect_with_worktree_roots : vector.expect);
+      const expect = expectFor(laneName, vector);
       (expected[vector.id] ??= Object.create(null))[laneName] = expect;
       const codexUnguarded = laneName === "brain" && !underBrain(cwd);
       const results = [
-        ["python", python(pyPath, command, cwd), expect, ""],
+        ["python", claudeResult(answers[at++]), expect, ""],
         ["javascript", await javascript(jsPath, laneDir, command, cwd), expect, ""],
-        ["codex", codex(codexPath, command, cwd, cEnv, base),
+        ["codex", codexResult(answers[at++]),
           codexUnguarded ? "allow" : expect,
           codexUnguarded ? " (by design: a brain-root session is guarded only from a cwd inside brain)" : ""],
       ];

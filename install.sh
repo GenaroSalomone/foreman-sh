@@ -24,10 +24,11 @@
 #                            opencode-auto, when the run installs an OpenCode lane)
 #   <brain>/core/dist/<os>-<arch>/hw-core
 #                            hw's Go half, built here with setup/build-core when a Go toolchain
-#                            (1.22 or newer) is on PATH; the ported verbs run in it by default.
+#                            (1.22 or newer) is on PATH; every ported tool runs in it by default.
 #                            Without Go nothing is built and hw runs its bash implementation
-#   <config>/hw/impl         `go`, only when it does not exist: the switch file that makes the
-#                            ported verbs run in Go (HW_IMPL=bash, or HW_IMPL_<VERB>=bash, goes back)
+#   <config>/hw/impl         written ONLY by `--no-core`, and only when it does not exist: `default=bash`, the
+#                            switch file that keeps every tool on bash. Otherwise nothing is written: Go is the
+#                            default (HW_IMPL=bash, or `default=bash` in this file, goes back)
 #   <claude-config>/settings.json
 #                            ONE entry merged in: the Stop hook
 #                            `bash '<brain>/bin/hw-stop-hook.sh' stop`
@@ -162,7 +163,8 @@ usage: install.sh init [--brain DIR] [--lane NAME] [--repo PATH] [--yes] [--dry-
   --with-recommended  install what is missing, required and recommended, with Homebrew, one
                   package at a time, each command printed before it runs; alone, it installs
                   only that. With --check it prints the commands and runs none
-  --no-core       do not build hw-core (the Go half of hw): every verb runs its bash implementation.
+  --no-core       do not build hw-core (the Go half of hw): every tool runs its bash implementation
+                  (writes `default=bash` to ~/.config/hw/impl when there is no such file).
                   Also FOREMAN_SH_NO_CORE=1. Without a Go toolchain (1.22 or newer) it is not built either
   --check         verify everything in one pass, list the fixes in the order they must be
                   done and end with one "Next step"; write nothing
@@ -1200,6 +1202,8 @@ put_core() {  # <src> <dst> — a new file in place of the old one, never a writ
   if cmp -s "$1" "$2"; then ok "${2#"$BRAIN"/}"
   else cp -p "$1" "$2.new.$$"; mv -f "$2.new.$$" "$2"; chg "${2#"$BRAIN"/}"; fi   # MUTATION-ANCHOR: 993-M05
 }
+_implf="${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/hw/impl}"
+impl_file_text() { printf '# written by install.sh --no-core: every tool runs its bash implementation. Delete this file to run Go (the default)\ndefault=bash\n'; }
 if [ "$CORE_BUILD" = 1 ]; then
   _cb="$(mktemp -d "${TMPDIR:-/tmp}/hw-core-build.XXXXXX")"
   # the directory bin/hw looks in: the same os-arch spelling as its _core_find
@@ -1218,17 +1222,26 @@ if [ "$CORE_BUILD" = 1 ]; then
       _t="$BRAIN/core/dist/$(basename "$_d")"; mkdir -p "$_t"
       for _f in "$_d"*; do put_core "$_f" "$_t/$(basename "$_f")"; done
     done
-    _implf="${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/hw/impl}"
-    if [ -e "$_implf" ]; then ok "$_implf is yours and stays as it is (it says which verbs run in Go; HW_IMPL=bash overrides it)"   # MUTATION-ANCHOR: 993-M01
-    else
-      mkdir -p "$(dirname "$_implf")"
-      printf '# written by install.sh: the ported verbs run in Go. `bash` here, HW_IMPL=bash or HW_IMPL_<VERB>=bash goes back\ngo\n' > "$_implf"   # MUTATION-ANCHOR: 993-M03
-      chg "$_implf — the ported verbs run in Go (HW_IMPL=bash, or HW_IMPL_<VERB>=bash, goes back to bash)"
+    # Go is the default, so no switch file is written. A file the user has stays as it is (it says which tools run in
+    # bash; HW_IMPL=bash overrides it) — except the one `--no-core` wrote earlier, byte for byte: this run has a core, so
+    # that file would keep every tool on bash for a user who has since asked for Go.
+    if [ -e "$_implf" ] && [ "$(cat "$_implf")" = "$(impl_file_text)" ]; then rm -f "$_implf"; chg "$_implf — the one --no-core wrote is removed: Go is the default again"   # MUTATION-ANCHOR: 993-M01
+    elif [ -e "$_implf" ]; then ok "$_implf is yours and stays as it is (it says which tools run in bash or Go; HW_IMPL=bash overrides it)"
     fi
   fi
   rm -rf "$_cb"
 else
   drop_core "this run builds none"   # MUTATION-ANCHOR: 993-M04
+  # --no-core is a choice to stay on bash: say it once for every tool, where each of them reads it. No Go, an old Go or a
+  # failed build writes nothing: the tools fall back on their own, with a line, and a later install with Go needs no undoing.
+  if [ "$NO_CORE" = 1 ]; then
+    if [ -e "$_implf" ]; then ok "$_implf is yours and stays as it is (it says which tools run in bash or Go; HW_IMPL=bash overrides it)"
+    else
+      mkdir -p "$(dirname "$_implf")"
+      impl_file_text > "$_implf"   # MUTATION-ANCHOR: 993-M03
+      chg "$_implf — every tool runs bash (default=bash; delete the file to go back to Go)"
+    fi
+  fi
 fi
 put "$SRC/lanes/git-worktree.sh" "$BRAIN/lanes/git-worktree.sh"
 for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py specialist_roster.py lane_housekeeping.py; do

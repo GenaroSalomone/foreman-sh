@@ -2,7 +2,7 @@ package main
 
 // The delivery gate of `hw next`: the sender's route (invoker_resolve_sender, bin/invoker-common.sh), the
 // question modal (invoker_clear_opencode_question), the state witness (witness_state and witness_wait,
-// bin/state-witness.sh) and the refusals that name what the gate read (_next_busy_message,
+// the bash state witness) and the refusals that name what the gate read (_next_busy_message,
 // _next_settled_message, _next_finished_stale_stuck, lib/hw/next.sh). The witness and the invoker library
 // are shared with channel-send, hw unstick and hw ruling, which stay bash; these are `hw next`'s copies.
 
@@ -372,7 +372,7 @@ func (a *app) nextClearQuestion(pane string) int {
 	return 0
 }
 
-// ── the witness (bin/state-witness.sh) ──────────────────────────────────────
+// ── the witness (the bash state witness) ──────────────────────────────────────
 
 // nextScreenHash is witness_screen_hash: the first 16 hex of sha256 of the visible text, or false.
 func (a *app) nextScreenHash(pane string) (string, bool) {

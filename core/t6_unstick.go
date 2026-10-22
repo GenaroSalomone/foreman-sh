@@ -3,7 +3,7 @@ package main
 // hw unstick <pane> — port of cmd_unstick (bin/hw:12559). Deliberate recovery for an OpenCode pane that carries
 // blocked_reason=stuck and blocked_scope=root|child: restart OpenCode in the SAME pane, reattaching the exact
 // persisted session when the pane published one. The token signature is only necessary; the state witness
-// (wait.go, state-witness.sh) must positively confirm nothing is moving and nothing is outstanding, twice.
+// (wait.go, the state witness) must positively confirm nothing is moving and nothing is outstanding, twice.
 //
 // The bash runs in a subshell (its EXIT trap releases only this command's lock); here the lock is released by a
 // defer, which also runs while a die unwinds. The executor refusal (`_executor_refuse unstick`) is not here: the
@@ -271,7 +271,6 @@ func (a *app) cmdUnstick() int {
 
 	// The token signature is necessary, not sufficient: a healthy pane can publish it (measured 2026-08-27). An
 	// independent witness must CONFIRM that nothing is moving and nothing is outstanding. Checked before any key.
-	a.loadStateWitness()
 	w := a.newWitness()
 	w.state(pane)
 	switch w.verdict {

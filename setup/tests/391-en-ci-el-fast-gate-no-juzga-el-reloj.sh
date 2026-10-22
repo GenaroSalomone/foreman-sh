@@ -43,8 +43,10 @@ mk_gate_repo() {
   mkdir -p "$d/setup/tests"
   cp "$SUB/test-hw" "$SUB/test-hw-snapshot.py" "$SUB/mutation-coverage" "$SUB/fast-gate-budget.sh" "$d/setup/"
   cp "$SUB/tests/_common.sh" "$d/setup/tests/_common.sh"
-  # threshold 0.3s → budget 1300 ms; the subject waits 1.6s
-  printf '#!/usr/bin/env bash\nsleep 1.6\necho "ok - x"\n' > "$d/setup/tests/01-x.sh"; chmod +x "$d/setup/tests/01-x.sh"
+  # threshold 0.3s → budget 1300 ms; the subject waits 2.2s. A sleep never finishes early, so its wall is >= 2200 ms: clearly past
+  # the runner's near-miss grace (budget + a quarter = 1625 ms; at 1.6s a Linux host reading <= 1625 ms graced it, macOS overshoots and hid it),
+  # and still under R02's x3 ceiling (3900 ms)
+  printf '#!/usr/bin/env bash\nsleep 2.2\necho "ok - x"\n' > "$d/setup/tests/01-x.sh"; chmod +x "$d/setup/tests/01-x.sh"
   printf '{"fast_gate_threshold_seconds": 0.3, "files": {"01-x.sh": {"seconds": 0.1, "exit": 0}}}\n' > "$d/setup/test-budgets.json"
   ( cd "$d" && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE git init -q && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE git add -A \
       && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE git -c user.email=t@t -c user.name=t commit -q -m f )

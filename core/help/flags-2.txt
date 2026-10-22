@@ -49,4 +49,9 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        $HW_ARTIFACTS/design-judgment.md naming it and ending
                        JUDGMENT: APPROVED (Judgment Day's design mode).
     decision: <what is undecided>   as --model-why.
+    after: [<task>, …] the tasks of this lane the brief waits for. Before anything
+                       is built hw checks each is reported (done-invoker) and
+                       its branch is an ancestor of the base (a branch already
+                       removed was merged); otherwise it refuses, naming which.
+                       An unknown task refuses too. `--ignore-after --why` overrides.
 

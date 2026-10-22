@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cache: never — it loads the cockpit mod in the REAL claude installed here (or skips when there is none): the answer is the installed claude's, which no file of the checkout holds, so it always runs (setup/verdict-cache).
 # The card says how long an executor has worked and marks one that stopped moving
 #
 # cockpit/hooks/view.tsx draws, on a WORKING card, `● working 3h12m · turn 41m`; when the card's

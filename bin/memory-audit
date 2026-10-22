@@ -2,6 +2,7 @@
 """THE ALWAYS-LOADED MEMORY INDEXES, AUDITED. READ-ONLY, ONE LINE, OR NOTHING.
 
     memory-audit [--root DIR] [--config-dir DIR]... [--budget-bytes N]
+                 [--engram BIN] [--engram-project LABEL]
 
 Claude Code loads the whole MEMORY.md of a git root's auto-memory into every
 session started under it, one copy per account config dir. Nothing else in the
@@ -15,16 +16,30 @@ projects.json) under each account config dir, and says, in ONE line:
     (OBSOLETA, REVERTIDA, SUPERSEDED, ...), a target file that opens with a
     superseded banner, or a target file that does not exist;
   - a `[[slug]]` cited in a live <lane>/decisions.md that resolves to no memory
-    file in any audited store and no file in this repository.
+    file in any audited store and no file in this repository;
+  - a memory file with no `type:`, a `project` one with no `expires:` date, or
+    one past it (a project fact is a loan, not a gift);
+  - a memory file the index does not list (index and files are one-to-one: the
+    reverse, a listed file that is missing, is the "retired" line above), or a
+    store over HW_MEMORY_FILE_CAP files (default 60);
+  - a memory whose description shares most of its key words with one
+    decisions.md heading or CLAUDE.md line: two owners for one fact;
+  - engram, read through its CLI only (`conflicts stats`, `export`): pending
+    conflicts over HW_ENGRAM_PENDING_MAX (100) or observations without a
+    `topic_key` over HW_ENGRAM_NOKEY_MAX percent (30). It names the
+    `memory-retro` skill, which is the judgment this check cannot make. An
+    engram that does not answer is one line saying so, never a failure.
 
 Clean prints NOTHING and exits 0. A finding exits 3. It writes nothing, ever.
 The owner of each kind of fact: docs/brief-and-memory.md § Memory.
 """
+import datetime
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 MARKER = re.compile(r"\b(OBSOLETA|OBSOLETO|OBSOLETE|REVERTIDA|REVERTIDO|REVERTED|"
                     r"SUPERSEDED|REEMPLAZADA|REEMPLAZADO|RETIRADA|RETIRADO)\b")
@@ -32,6 +47,10 @@ BANNER = re.compile(r"^\s*(\*\*)?(\[)?(Reemplazad[ao]|Superseded|SUPERSEDED|OBSO
 LINK = re.compile(r"\]\(([^)]+\.md)\)")
 SLUG = re.compile(r"\[\[([a-z0-9][a-z0-9._-]*)\]\]")
 CAP = 3
+STOP = set("the and for with that this are its not does when what which how why then than but into out "
+           "only never always must should can will would has have had been being was were more most less "
+           "each per via about over under after before also still just from your their them they".split())
+OVERLAP_MIN_SHARED, OVERLAP_MIN_RATIO = 4, 0.5
 
 
 def store_key(path):
@@ -84,6 +103,107 @@ def short(path):
     return "~" + path[len(home):] if path.startswith(home + os.sep) else path
 
 
+def frontmatter(path):
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return ""
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    return m.group(1) if m else ""
+
+
+def words(text):
+    return {w for w in re.findall(r"[a-záéíóúñ0-9][a-záéíóúñ0-9_-]{3,}", text.lower()) if w not in STOP}
+
+
+def description(fm):
+    m = re.search(r"^description:\s*(.*)$", fm, re.M)
+    return m.group(1).strip().strip("\"'") if m else ""
+
+
+def check_file(name, fm, today):
+    """Why this memory file fails the type/expiry contract, or None."""
+    typ = re.search(r"^\s*type:\s*(\S+)", fm, re.M)
+    kind = typ.group(1).strip("\"'") if typ else ""
+    if not kind:  # MUTATION-ANCHOR: 660-M06
+        return "no type"
+    if kind == "project":
+        exp = re.search(r"^\s*expires:\s*(\d{4}-\d\d-\d\d)", fm, re.M)
+        date = exp.group(1) if exp else ""
+        if not date:  # MUTATION-ANCHOR: 660-M07
+            return "project without expires"
+        if date and date < today:  # MUTATION-ANCHOR: 660-M08
+            return "expired " + date
+    return None
+
+
+def rule_lines(root):
+    """(label, word set) of each live decisions.md heading and CLAUDE.md line."""
+    out = []
+    names = ["CLAUDE.md", "CLAUDE.shared.md"]
+    for lane in sorted(os.listdir(root)):
+        names += [os.path.join(lane, "CLAUDE.md"), os.path.join(lane, "decisions.md")]
+    for rel in names:
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            continue
+        for n, line in enumerate(open(path, encoding="utf-8", errors="replace"), 1):
+            if rel.endswith("decisions.md") and not line.startswith("#"):
+                continue
+            w = words(line)
+            if len(w) >= OVERLAP_MIN_SHARED:
+                out.append(("%s:%d" % (rel, n), w))
+    return out
+
+
+def overlap(desc, lines):
+    """The rule line a description repeats most, or None. The measure is the
+    share of the SHORTER side's words found in the other, so a long heading
+    that merely contains a memory's few words does not count."""
+    d = words(desc)
+    best, where = 0.0, None
+    for label, w in lines:
+        shared = len(d & w)
+        ratio = shared / min(len(d), len(w)) if d and w else 0.0
+        if shared >= OVERLAP_MIN_SHARED and ratio >= OVERLAP_MIN_RATIO and ratio > best:  # MUTATION-ANCHOR: 660-M09
+            best, where = ratio, label
+    return where
+
+
+def engram_line(binary, label):
+    """One part for the audit line, or None when engram is within its thresholds."""
+    pending_max = int(os.environ.get("HW_ENGRAM_PENDING_MAX") or 100)
+    nokey_max = int(os.environ.get("HW_ENGRAM_NOKEY_MAX") or 30)
+    # the CLI creates its store when it finds none: a machine that never ran engram has nothing to audit, and an audit must not leave one
+    data = os.environ.get("ENGRAM_DATA_DIR") or os.path.expanduser("~/.engram")
+    if not os.path.exists(os.path.join(data, "engram.db")):  # MUTATION-ANCHOR: 660-M16
+        return None
+    try:
+        st = subprocess.run([binary, "conflicts", "stats", "--project", label], capture_output=True, text=True,
+                            timeout=30)
+        m = re.search(r"judgment_status:.*?pending:\s*(\d+)", st.stdout, re.S)
+        if st.returncode != 0 or not m:
+            raise ValueError("conflicts stats gave no pending count")
+        pending = int(m.group(1))
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = os.path.join(tmp, "export.json")
+            subprocess.run([binary, "export", dump, "--project", label], capture_output=True, text=True,
+                           timeout=60, check=True)
+            obs = [o for o in json.load(open(dump)).get("observations", []) if not o.get("deleted_at")]
+    except FileNotFoundError:
+        return None  # MUTATION-ANCHOR: 660-M15 — no engram on this machine is not an engram that failed to answer
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return "engram did not answer (%s): conflicts and topic_key not audited" % (str(e).splitlines() or [type(e).__name__])[0][:60]  # MUTATION-ANCHOR: 660-M14
+    nokey = sum(1 for o in obs if not o.get("topic_key"))
+    pct = 100 * nokey // len(obs) if obs else 0
+    bits = []
+    if pending > pending_max:  # MUTATION-ANCHOR: 660-M10
+        bits.append("%d pending conflicts (over %d)" % (pending, pending_max))
+    if pct > nokey_max:  # MUTATION-ANCHOR: 660-M11
+        bits.append("%d%% of %d observations without topic_key (over %d%%)" % (pct, len(obs), nokey_max))
+    return "engram: %s — run the memory-retro skill" % ", ".join(bits) if bits else None
+
+
 def main(argv):
     root = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
     try:
@@ -91,18 +211,28 @@ def main(argv):
     except ValueError:
         budget = 15000
     cfgs = []
+    engram = os.environ.get("HW_ENGRAM_BIN") or "engram"
+    engram_label = "brain"
+    try:
+        file_cap = int(os.environ.get("HW_MEMORY_FILE_CAP") or 60)
+    except ValueError:
+        file_cap = 60
     while argv:
         flag, argv = argv[0], argv[1:]
-        if flag in ("--root", "--config-dir", "--budget-bytes") and argv:
+        if flag in ("--root", "--config-dir", "--budget-bytes", "--engram", "--engram-project") and argv:
             val, argv = argv[0], argv[1:]
             if flag == "--root":
                 root = os.path.realpath(val)
             elif flag == "--config-dir":
                 cfgs.append(os.path.expanduser(val))
+            elif flag == "--engram":
+                engram = val
+            elif flag == "--engram-project":
+                engram_label = val
             else:
                 budget = int(val)
         else:
-            sys.stderr.write("usage: memory-audit [--root DIR] [--config-dir DIR]... [--budget-bytes N]\n")
+            sys.stderr.write("usage: memory-audit [--root DIR] [--config-dir DIR]... [--budget-bytes N] [--engram BIN] [--engram-project LABEL]\n")
             return 2
     if not cfgs:
         home = os.path.expanduser("~")
@@ -114,6 +244,9 @@ def main(argv):
     cfgs = list(dict.fromkeys(os.path.realpath(c) for c in cfgs if os.path.isdir(c)))
 
     over, retired, stores = [], [], []
+    today = datetime.date.today().isoformat()
+    lines = rule_lines(root)
+    badfile, orphans, crowded, dupes = [], [], [], []
     for cfg in cfgs:
         for r in harness_roots(root):
             mem = os.path.join(cfg, "projects", store_key(r), "memory")
@@ -124,7 +257,21 @@ def main(argv):
             size = os.path.getsize(idx)
             if size > budget:  # MUTATION-ANCHOR: 660-M01
                 over.append("%s %d B" % (short(idx), size))
-            for line in open(idx, encoding="utf-8", errors="replace").read().splitlines():
+            index_text = open(idx, encoding="utf-8", errors="replace").read()
+            files = sorted(f for f in os.listdir(mem) if f.endswith(".md") and f != "MEMORY.md")
+            if len(files) > file_cap:  # MUTATION-ANCHOR: 660-M12
+                crowded.append("%s %d files" % (short(mem), len(files)))
+            for f in files:
+                if "(%s)" % f not in index_text:  # MUTATION-ANCHOR: 660-M13
+                    orphans.append("%s:%s" % (short(idx), f[:-3]))
+                fm = frontmatter(os.path.join(mem, f))
+                why = check_file(f, fm, today)
+                if why:
+                    badfile.append("%s (%s)" % (f[:-3], why))
+                twin = overlap(description(fm), lines)
+                if twin:
+                    dupes.append("%s ~ %s" % (f[:-3], twin))
+            for line in index_text.splitlines():
                 m = LINK.search(line)
                 name = m.group(1) if m else ""
                 why = None
@@ -170,6 +317,20 @@ def main(argv):
         more = " …+%d" % (len(dangling) - CAP) if len(dangling) > CAP else ""
         parts.append("%d [[slug]] in decisions.md resolve nowhere: %s%s"
                      % (len(dangling), ", ".join(dangling[:CAP]), more))
+    if badfile:
+        more = " …+%d" % (len(badfile) - CAP) if len(badfile) > CAP else ""
+        parts.append("%d memory file(s) break the type/expires contract: %s%s" % (len(badfile), ", ".join(badfile[:CAP]), more))
+    if orphans:
+        more = " …+%d" % (len(orphans) - CAP) if len(orphans) > CAP else ""
+        parts.append("%d memory file(s) not in the index: %s%s" % (len(orphans), ", ".join(orphans[:CAP]), more))
+    if crowded:
+        parts.append("over %d memory files: %s" % (file_cap, ", ".join(crowded[:CAP])))
+    if dupes:
+        more = " …+%d" % (len(dupes) - CAP) if len(dupes) > CAP else ""
+        parts.append("%d memory file(s) repeat a rule that has an owner: %s%s" % (len(dupes), ", ".join(dupes[:CAP]), more))
+    eng = engram_line(engram, engram_label)
+    if eng:
+        parts.append(eng)
     if not parts:
         return 0
     print("memory indexes  " + "; ".join(parts) + " — docs/brief-and-memory.md § Memory")

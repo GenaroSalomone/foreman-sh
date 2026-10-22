@@ -55,8 +55,6 @@ while [ -L "$_src" ]; do
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
 BRAIN_BIN="$(cd -P "$(dirname "$_src")" && pwd)"
-# shellcheck source=project-spaces.sh
-. "$BRAIN_BIN/project-spaces.sh"
 # The brain root is the directory above the one this script lives in —
 # ~/bin/brain is a link, resolved above — or HW_BRAIN_ROOT when set.
 # THE SPELLING IS KEPT, not canonicalised: the old root was the literal
@@ -68,6 +66,56 @@ case "$_src" in
   *)  _brain_root="$(cd "$(dirname "$_src")/.." && pwd)" ;;
 esac
 BRAIN="${HW_BRAIN_ROOT:-$_brain_root}"
+# ── hw-core: this command as a Go binary (core/brain*.go) ─────────────────────────────────────────────────────────
+# THE DEFAULT IS GO. Which one runs is asked the way the invokers are asked
+# (bin/invoker-go.sh), of the same file `hw` reads: HW_IMPL_BRAIN, then HW_IMPL, in the environment; else the file's
+# `brain=` line, else its default line (${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-~/.config}/hw/impl}, the one `hw shadow` writes), else go.
+# Only `go` runs Go. `shadow` is not offered here — brain writes to live panes, so it is never run twice — and runs bash, as
+# an unknown value does. `brain=bash` keeps one machine on bash whatever the default line says, `HW_IMPL=bash` or `default=bash` all of them. A hw-core that is not built,
+# or is older than core/'s sources, falls back to the bash below with one line saying so. The bash is frozen: a fix goes to
+# core/ (setup/decisions.md, «El núcleo de hw migra a Go»).
+_brain_impl() {
+  local v="${HW_IMPL_BRAIN:-${HW_IMPL:-}}" f line k def=""  # MUTATION-ANCHOR: 1023-M03
+  if [ -z "$v" ]; then
+    f="${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/hw/impl}"
+    if [ -r "$f" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"; line="${line//[[:space:]]/}"
+        case "$line" in
+          "") ;;
+          *=*) k="$(printf '%s' "${line%%=*}" | tr 'a-z-' 'A-Z_')"; [ "$k" != BRAIN ] || v="${line#*=}"; [ "$k" != DEFAULT ] || def="${line#*=}" ;;  # MUTATION-ANCHOR: 1023-M01
+          *) def="$line" ;;  # MUTATION-ANCHOR: 1023-M02
+        esac
+      done <"$f"
+      [ -n "$v" ] || v="$def"
+    fi
+  fi
+  printf '%s' "${v:-go}"  # MUTATION-ANCHOR: 1050-M05
+}
+if [ "$(_brain_impl)" = go ]; then
+  _brain_core=""
+  if [ -n "${HW_CORE:-}" ]; then
+    [ ! -x "$HW_CORE" ] || _brain_core="$HW_CORE"
+  else
+    _brain_os="$(uname -s | tr 'A-Z' 'a-z')"; _brain_arch="$(uname -m)"
+    case "$_brain_os" in mingw*|msys*|cygwin*) _brain_os=windows ;; esac
+    case "$_brain_arch" in x86_64) _brain_arch=amd64 ;; aarch64) _brain_arch=arm64 ;; esac
+    for _c in "$BRAIN_BIN/hw-core" "$BRAIN_BIN/../core/dist/$_brain_os-$_brain_arch/hw-core"; do
+      [ ! -x "$_c" ] || { _brain_core="$_c"; break; }
+    done
+    if [ -n "$_brain_core" ] && [ -d "$BRAIN_BIN/../core" ] \
+       && [ -n "$(find "$BRAIN_BIN/../core" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$_brain_core" -print -quit 2>/dev/null)" ]; then
+      _brain_core=""
+    fi
+  fi
+  if [ -n "$_brain_core" ]; then
+    export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$BRAIN_BIN" HW_CORE_ROOT="$_brain_root"
+    exec "$_brain_core" brain "$@"
+  fi
+  echo "brain: hw-core is not built or is older than the sources in core/, so the bash implementation runs — setup/build-core --native builds it" >&2
+fi
+# shellcheck source=project-spaces.sh
+. "$BRAIN_BIN/project-spaces.sh"
 # --help and --version need no lane table: they answer even when it is broken.
 case "${1:-}" in
   -V|--version) printf 'brain %s\n' "$(cli_version "$BRAIN")"; exit 0 ;;

@@ -4,13 +4,13 @@ package main
 // contract of bin/hw:11066 — 0 reached idle/done, 2 the budget was spent, 5 settled, 6 a person is waited on,
 // 7 ended without delivering its report, 8 handback refused, and herdr-rpc's own 3 and 4 passed through.
 //
-// Ports of cmd_wait_one, cmd_wait_monitor, cmd_wait (bin/hw:10932-11120) and of bin/state-witness.sh (the cross-check:
+// Ports of cmd_wait_one, cmd_wait_monitor, cmd_wait (bin/hw:10932-11120) and of the bash state witness (the cross-check:
 // can this state still change?). Nothing here writes to a pane. `hw wait` asks herdr for one tab and one command in it
 // (the monitor), which is the only thing hw-core does to herdr in T2.
 //
 // Two programs are still run as the bash runs them, because they ARE the contract and not code to port: herdr-rpc
 // (`wait-agent`, which opens one events.wait per status, and `call pane.read`) and curl (the pane's own OpenCode
-// endpoint). They are found beside the hw that started hw-core (HW_CORE_BIN_DIR), exactly where state-witness.sh finds
+// endpoint). They are found beside the hw that started hw-core (HW_CORE_BIN_DIR), exactly where the bash state witness finds
 // them. Their exit codes are the ones the verbs report.
 
 import (
@@ -125,7 +125,7 @@ func (a *app) settledAlreadyReportedNote(info string) {
 	a.warn("it already reported (done_status=" + doneStatus + ", done_state=" + doneState + ") — whatever blocked/stuck token herdr is still showing is stale, published on a pane that has finished. Do not `hw unstick` it. `hw next` to reuse it, or `hw done` to close it.")
 }
 
-// ── the witness (bin/state-witness.sh) ──────────────────────────────────────
+// ── the witness (the bash state witness) ──────────────────────────────────────
 
 type witness struct {
 	a       *app
@@ -141,13 +141,6 @@ type witness struct {
 
 func (a *app) newWitness() *witness {
 	return &witness{a: a, rpc: filepath.Join(a.binDir(), "herdr-rpc")}
-}
-
-// loadStateWitness is _load_state_witness's refusal: a gate with no cross-check would wait out its whole budget.
-func (a *app) loadStateWitness() {
-	if !readableFile(filepath.Join(a.binDir(), "state-witness.sh")) {
-		a.die("cannot find state-witness.sh beside " + a.binDir() + " — this brain/bin is incomplete, and a gate with no cross-check would wait out its whole budget on a state that cannot change")
-	}
 }
 
 // screenHash is witness_screen_hash: one hash of the pane's visible screen, or false when the read did not succeed.
@@ -188,7 +181,22 @@ func (w *witness) screenHash(pane string) (string, bool) {
 	if text == nil || text.kind != vStr {
 		return "", false
 	}
-	sum := sha256.Sum256([]byte(text.s))
+	// `jq -j '.read.text'` prints the text of EVERY document of the stream, run together: a first
+	// document that moved while the last stayed put is still a screen that moved. A document jq
+	// would error on contributes nothing, as there.
+	var all strings.Builder
+	for _, doc := range vals {
+		r, ok := doc.get("read")
+		if !ok {
+			continue
+		}
+		t, ok := r.get("text")
+		if !ok {
+			continue
+		}
+		all.WriteString(t.raw())
+	}
+	sum := sha256.Sum256([]byte(all.String()))
 	return hex.EncodeToString(sum[:])[:16], true
 }
 
@@ -521,7 +529,6 @@ func (a *app) cmdWaitOne() int {
 	if !jqE(info, "result", "agent") {
 		a.die(pane + " is not an agent pane herdr can read (herdr agent get returned nothing usable). Nothing was waited on. Check the id with `herdr agent list`.")
 	}
-	a.loadStateWitness()
 	if tokenOf(info, "turn_state") == "handback_refused" {
 		a.warn(pane + " ended a turn with no report, no delivered ask/challenge outstanding, and no named human-boundary exception.")
 		a.dieRC(rcRefused, "HAND-BACK REFUSED: no wait was started. The executor has every legal exit in front of it: continue working; report with `done-invoker`; report the blocking question with `done-invoker --blocked \"<question and what would unblock it>\"`; or, only for money/third-party/irreversible-outward/priority decisions, record `hw human-boundary \"<specific boundary and why only "+a.operator()+" can decide>\"` before ending the turn.")

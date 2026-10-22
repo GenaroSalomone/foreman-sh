@@ -22,6 +22,7 @@ type dsp struct {
 	brState
 	vdState
 	rtState
+	piState // t6_pi.go: what --agent pi keeps of the dispatch
 
 	readonly bool              // HW_CORE_READONLY=1: shadow's first leg writes nothing
 	envOver  map[string]string // what the dispatch assigned to the environment (HW_INVOKER_PANE by --report-to)
@@ -38,6 +39,8 @@ type dsp struct {
 	modelFloorLine                                               string
 	belowFloorWhy                                                string
 	topTierWhy, topTierLine                                      string // TOP_TIER_WHY, TOP_TIER_LINE (_check_top_tier_ceiling)
+	afterLine, ignoreAfterWhy                                    string // AFTER_LINE, IGNORE_AFTER_WHY (_check_after)
+	ignoreAfter                                                  bool   // IGNORE_AFTER
 	explorerLine                                                 string // EXPLORER_LINE (_explorer_resolve)
 	explorerInjected                                             bool
 	explorerArm                                                  bool // EXPLORER_ARM: claude's launch writes the explorer's file and arms the pane

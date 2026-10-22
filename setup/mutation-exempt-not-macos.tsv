@@ -3,3 +3,4 @@
 #   <subject file>	<arm>	<one-line reason>
 # No wildcards. A subject is exempt only when every arm it declares is listed.
 961-los-fixtures-no-viven-donde-macos-limpia.sh	M01	mutates the /var/folders move of _common.sh, which only macOS takes (dirhelper is macOS's): the subject says so and exits off macOS, and its arm runs on the Mac
+1041-los-mutantes-de-hw-sandbox-en-go.sh	<unnamed>	its arms are the 39 Go anchors of core/hw_sandbox*.go, declared by core/hw_sandbox_mutants_test.go and not by an M<n> id in the subject; the scenarios that judge 11 of them need a real Seatbelt, which only macOS has: the subject says so and exits off macOS, and its anchors are killed on the Mac

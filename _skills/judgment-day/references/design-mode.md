@@ -8,8 +8,8 @@ symptom while the cause is the mechanism.
 
 ## The Target: one design document
 
-One file, frozen by its sha256, that states five things. A design missing any of
-them is returned to its author before judging (the Decision Gate "target
+One file, frozen by its sha256, that states five things (a product design adds a
+sixth, below). A design missing any of the five is returned to its author before judging (the Decision Gate "target
 unclear"), because a judge would have to invent the missing part:
 
 1. **Boundary** — what must never cross, in one sentence.
@@ -30,6 +30,11 @@ of every hook ever written. Measured on the first probes (setup/decisions.md,
 "Judgment Day juzga el diseño"): with no threat model stated, the judges
 rejected the adopted designs as firmly as the failed ones. The threat model is
 what makes the verdict discriminate, and it is judged too — see below.
+
+6. **The original ask** (product designs only) — the requester's own words
+   verbatim in «…» plus their source (Fathom link with timestamp, or a date and a
+   person). It sits IN the document: judges read only that file. A missing quote
+   is not "target unclear"; the judges report it, see `Scope beyond the ask`.
 
 The document is the whole target. Judges do not read the code (there is none, or
 it is not the subject), nor the history of the task.
@@ -58,6 +63,20 @@ it is not the subject), nor the history of the task.
   instead of the command that makes it, a boundary the OS enforces — and its
   cost (false refusals, what legitimate use it breaks).
 
+## Scope beyond the ask (product designs only)
+
+Every judge returns this section, required. A guard design has no requester; it
+does not apply.
+
+- List every element of the design that the original ask quoted in item 6 does
+  not mention, and every part of the ask it drops or redefines, one line each; or
+  write `none`.
+- No original ask quoted: write `no original ask quoted — cannot check` and
+  report that as a finding.
+- It is a finding for whoever approves, never a bypass class: it does not change
+  the verdict, and a non-empty list is not a rejection. The orchestrator copies
+  it to the verdict file as `scope_beyond_the_ask:` lines and to the report.
+
 ## Severity in design mode
 
 | Severity | Means |
@@ -65,7 +84,7 @@ it is not the subject), nor the history of the task.
 | BLOCKER | The approach cannot hold its boundary WITHIN ITS THREAT MODEL: an open input space decided by an allow-by-default rule or an enumerated deny list, with at least one in-scope bypass class no bounded patch closes. |
 | CRITICAL | A bypass class the design does not address but CAN close within its own approach. |
 | WARNING | Cost: false refusals, operability, performance, a legitimate use broken. A bypass class the threat model legitimately excludes is reported here, once. |
-| SUGGESTION | Anything else. |
+| SUGGESTION | Anything else, and every `Scope beyond the ask` line. |
 
 `causal_disposition` is always `introduced`: a design has no base. `location` is
 `<design file>:<line>` or `<design file>:§<section>`.
@@ -123,6 +142,14 @@ close, the closed alternative and its cost. Severity per design-mode.md:
 BLOCKER means the approach itself cannot hold the boundary within its threat
 model.
 
+Product designs only: also give `Scope beyond the ask`. Read the original ask
+quoted in the document (item 6); list each element of the design it does not
+mention, and each part of it the design drops or redefines. Return one
+SUGGESTION finding per line, location `<design file>:§Scope beyond the ask`; if
+there is none, add `Scope beyond the ask: none` to `evidence`. If the document
+quotes no original ask, return a SUGGESTION finding `no original ask quoted —
+cannot check`. It never makes a BLOCKER or CRITICAL.
+
 Do not read code, history, other tasks, or memory about this target: the
 judgment is of the document as written. Run one exhaustive read-only sweep.
 
@@ -147,6 +174,7 @@ boundary: <exactly the brief's boundary: value>
 design: <path of the design document, absolute or relative to $HW_ARTIFACTS>
 design_sha256: <sha256 of that file as judged>
 amendment: <one line per confirmed CRITICAL the code must close>
+scope_beyond_the_ask: <one line per element, or none; product designs only>
 JUDGMENT: APPROVED
 ```
 

@@ -329,6 +329,9 @@ func (l *lch) explorerClaudeArm(pane string) string {
 // agentStart is `_agent_start "$pane" "$name" "$kind"`: true when the agent is up and ready (bash's status 0).
 // Retries while the pane comes up; every call here is inside an `if` in bash, so no status escapes under set -e.
 func (l *lch) agentStart(pane, name, kind string) bool {
+	if kind == "pi" && !l.piProjectSkillsPrepare() { // the project skills' one directory of links, before anything starts
+		return false
+	}
 	if l.sandbox && l.sandboxArmed != pane { // # MUTATION-ANCHOR: 847-B2-09
 		return l.agentStartSandboxed(pane, name, kind)
 	}
@@ -349,6 +352,9 @@ func (l *lch) agentStart(pane, name, kind string) bool {
 				return false
 			}
 			if kind == "claude" && !l.claudeStartupReady(pane) {
+				return false
+			}
+			if kind == "pi" && !l.piStartupReady(pane) {
 				return false
 			}
 			if probeReady(probe) { // # MUTATION-ANCHOR: 847-B2-12
@@ -372,6 +378,10 @@ func (l *lch) agentStart(pane, name, kind string) bool {
 				return false
 			}
 			if kind == "claude" && !l.claudeStartupReady(pane) {
+				return false
+			}
+			// pi's pane reports ready while a startup screen can still own stdin.
+			if kind == "pi" && !l.piStartupReady(pane) {
 				return false
 			}
 			return true
@@ -557,6 +567,9 @@ func (l *lch) agentStep() {
 		}
 		if l.topTierLine != "" {
 			l.receipt("top_tier_why", l.topTierWhy, "--top-tier-why or the brief's top_tier_why (_check_top_tier_ceiling)")
+		}
+		if l.afterLine != "" {
+			l.receipt("after", l.afterLine, "the brief's after: (_check_after), --ignore-after --why when overridden")
 		}
 		if l.belowFloorWhy != "" {
 			l.receipt("below_floor_why", l.belowFloorWhy, "--below-floor-why")

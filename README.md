@@ -5,8 +5,9 @@
 [![CI](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml/badge.svg)](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-foreman-sh is a harness, written in bash with a Go core and built on
-[herdr](https://herdr.dev), that runs coding agents in two roles:
+foreman-sh is a harness, built on [herdr](https://herdr.dev) and run by a Go
+core with its bash implementation kept as the way back, that runs coding agents
+in two roles:
 
 - a **brainer**, the planner, that reads your code, plans the work and writes
   briefs, but cannot touch your repository;
@@ -55,10 +56,38 @@ foreman-sh answers each one with a mechanism:
 | **Executor** | A disposable agent session, launched with `hw`. It works in its own worktree and branch and ends each task with a report. |
 | **Brief** | The executor's instructions, as a Markdown file: goal, scope and the command that proves the work is done. |
 
+## Features
+
+- **A planner that cannot write.** The brainer's writes to your repository are
+  refused; the installer never writes inside your repositories and never reads a
+  credential.
+- **One worktree and one branch per task**, outside your checkout, with its own
+  database where the lane provisions one.
+- **Reports that arrive.** `done-invoker` puts the executor's report in the
+  brainer's session, with no polling; `ask-invoker` asks it a question and waits.
+- **Briefs that are checked.** A brief's front matter is validated against the
+  dispatch before anything is built, and `hw done` runs the brief's verification
+  command itself and records its exit code.
+- **Your agent, your model.** Claude Code, OpenCode, pi and Codex
+  ([L3](KNOWN-LIMITATIONS.md)) run a lane's executors; every executor is handed a
+  `cheap-explorer` subagent on its vendor's cheapest tier.
+- **Frameworks when you want them.** `--sdd none` makes the brief the whole
+  contract; `--sdd speckit` goes through [Spec Kit](https://github.com/github/spec-kit)'s phases.
+- **Secrets as Bitwarden items.** A brief names `secrets: [item, …]`; the value
+  reaches the executor through `hw secret run`, never as text in a brief or a prompt.
+- **A cockpit.** A card per executor, and a band above the brainer's prompt that
+  names the one that needs you.
+- **Cleanup that is safe.** `hw reap` removes the worktree, branch and database
+  of a task that is merged and clean, and nothing else.
+- **Go by default.** `hw`, `brain`, `channel-send` and the invokers run in
+  `hw-core`; `HW_IMPL=bash` puts them back on bash, which stays through 0.5.x and
+  leaves in 0.6.0 ([INSTALL.md](INSTALL.md#the-go-core-and-the-way-back),
+  [L16](KNOWN-LIMITATIONS.md)).
+
 ## Requirements
 
-- **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts).
-  Windows is not supported ([details](INSTALL.md#windows)).
+- **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts)
+  ([L1](KNOWN-LIMITATIONS.md)).
 - **[herdr](https://herdr.dev)**, running, with its Claude Code integration:
   `herdr integration install claude`.
 - **[Claude Code](https://claude.com/claude-code)**, with its first run
@@ -68,55 +97,41 @@ foreman-sh answers each one with a mechanism:
   leaves them on ([INSTALL.md](INSTALL.md#permissions-skip-recommended-or-ask)).
 - `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`. On Linux, also
   Node 22.7 or newer.
-- Optional: **Go 1.22 or newer**. `hw-core`, the Go half of `hw`, ships in this
-  repository and `install.sh` builds it when Go is on PATH. `hw` picks the
-  implementation of each verb from `HW_IMPL` (`bash`, `go` or `shadow`), then
-  from the switch file `~/.config/hw/impl`, and runs bash when neither names
-  one. The installer writes that file with `go` when you have none, so a
-  machine installed with Go runs the ported verbs in Go. `HW_IMPL=bash` (all
-  verbs) or `HW_IMPL_<VERB>=bash` (one verb) goes back to bash on purpose.
-  Without Go nothing is built, `install.sh` says so in one line, and `hw` runs
-  its bash implementation, which answers the same. `--agent pi` dispatches stay
-  on bash and print one line saying so: pi is not in the Go core
-  ([INSTALL.md](INSTALL.md#the-go-core-and-the-way-back),
-  [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) L16).
+- Recommended: **Go 1.22 or newer**, for `hw-core`, which `install.sh` builds when Go is on
+  PATH. Without it the tools run their bash implementation, with the same
+  answers, and `--check` does not list Go as missing.
 
 On macOS, Homebrew installs all of these but Claude Code's first run (see the
-Quickstart).
-
-Each tool has a minimum version, kept in one file (`lib/hw/deps.conf`). `install.sh --check` and
-`hw preflight` refuse a tool below it and print the command to update it
-([INSTALL.md](INSTALL.md), [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) L15).
+Quickstart). Each tool has a minimum version, kept in one file
+(`lib/hw/deps.conf`); `install.sh --check` and `hw preflight` name the command
+that updates one ([INSTALL.md](INSTALL.md), [L15](KNOWN-LIMITATIONS.md)).
 
 [engram](https://github.com/Gentleman-Programming/engram) is recommended, and
-two more tools are optional:
+more tools are optional:
 
 - **engram** gives the brainer memory across sessions; without it,
-  nothing is saved between them. Install it with
+  nothing is saved between them ([L8](KNOWN-LIMITATIONS.md)). Install it with
   `brew install gentleman-programming/tap/engram && engram setup claude-code`,
-  and answer `y` when it asks about the allowlist. Required for a task that
-  `hw` registered an engram session for.
-- **Judgment Day** is a blind review of a diff by two judges. Required only by
-  a brief that declares `boundary:`. Install it with
-  `./install.sh --brain ~/brain --with-judgment-day`.
-- **Bitwarden CLI (`bw`)**, `npm i -g @bitwarden/cli`, only for a brief that
-  declares `secrets:`: a credential reaches an executor as a Bitwarden item,
-  never as a value in a brief or a prompt (see *Secrets* below).
+  and answer `y` when it asks about the allowlist.
+- **Judgment Day** is a blind review of a diff by two judges. Install it with
+  `./install.sh --brain ~/brain --with-judgment-day`
+  ([L10](KNOWN-LIMITATIONS.md)).
+- **Bitwarden CLI (`bw`)**, `npm i -g @bitwarden/cli`, for a brief that
+  declares `secrets:` (see *Secrets* below).
 - **[OpenCode](https://opencode.ai)** 1.18.31 or newer, with
-  `herdr integration install opencode`, can run a lane's executors:
+  `herdr integration install opencode`, runs a lane's executors:
   `./install.sh … --vendor opencode`.
-- **pi**, measured against 1.1.0, with `herdr integration install pi`,
-  can run a task's executor: `hw <lane> <task> --agent pi --model <provider/id> --sdd none`.
-  In a `product_repo` lane it also guards the main checkout and sibling worktrees. The
-  installer does not set pi up, its guards are string-level, and it is not at parity
-  on user and plugin skills (L3b).
+- **pi**, measured against 1.1.0, set up with `herdr integration install pi`,
+  runs a task's executor: `hw <lane> <task> --agent pi --model <provider/id> --sdd none`.
+  In a `product_repo` lane it also guards the main checkout and sibling worktrees
+  ([L3b](KNOWN-LIMITATIONS.md)).
 
 ## Quickstart
 
-### Prerequisite on macOS: Homebrew
+### 1. Homebrew, on macOS
 
-Every command below that starts with `brew` needs [Homebrew](https://brew.sh), and
-Homebrew needs Apple's Command Line Tools. Its installer asks for the Tools if they are
+Every command below that starts with `brew` needs [Homebrew](https://brew.sh), which
+needs Apple's Command Line Tools. Its installer asks for the Tools if they are
 missing, so one command covers both (skip it if `brew --version` already answers):
 
 ```sh
@@ -125,27 +140,22 @@ missing, so one command covers both (skip it if `brew --version` already answers
 
 When it ends, it prints two `eval "$(…/brew shellenv)"` lines to add to your shell profile; do that and open a new terminal.
 
-### Quick start: `foreman-sh init`
-
-(If only `git` or `python3` is missing, `init` names `xcode-select --install`, not Homebrew.)
+### 2. One command: `foreman-sh init`
 
 ```sh
 foreman-sh init             # checks what you have, builds ~/brain with a demo lane, ends with a dry-run dispatch
 foreman-sh init --dry-run   # the plan only; --yes answers its questions
 ```
 
-A missing tool is named with its install command. With Homebrew on PATH, `init` asks
-whether to install what it carries (`--yes` answers yes) and checks again in the same
-run; if you say no, or something is still missing, it stops having written nothing and
-prints one line to copy: `foreman-sh --with-recommended && foreman-sh init`.
-Otherwise it builds `~/brain`, a `demo` lane on a toy repository, and a sample
-brief, and proves them with `hw demo hello … --dry-run`. Claude Code's first run and
-your `PATH` stay yours; it names them. A second run changes nothing and says so. The
-rest of this section is the same path, one step at a time.
+`init` names each missing tool with its install command, offers to install what
+Homebrew carries, builds `~/brain` with a `demo` lane on a toy repository and a
+sample brief, and proves them with `hw demo hello … --dry-run`. A second run
+changes nothing and says so ([INSTALL.md](INSTALL.md#quick-start-foreman-sh-init)).
+Steps 3 and 4 are the same path, one at a time.
 
-### Step by step
+### 3. Install, step by step
 
-On macOS, with [Homebrew](https://brew.sh):
+On macOS, with Homebrew:
 
 ```sh
 brew install GenaroSalomone/tap/foreman-sh                    # foreman-sh, with herdr, jq, rg, fd and sd
@@ -156,13 +166,9 @@ brain myapp                                                   # opens the braine
 ```
 
 `foreman-sh` is `install.sh`, packaged: it takes the same flags. Only the
-first and third lines are required. `--with-recommended` installs each missing
-package with its own `brew install` (Claude Code as the `claude-code@latest` cask: the stable `claude-code` one was below the version floor when measured)
-and prints the command before running it. Nothing is installed unless you ask
-for it this way. `foreman-sh --with-recommended --check` prints the commands
-without running them. Before your first `brain`, finish Claude Code's first run
-and wire herdr and engram into it: `foreman-sh --brain ~/brain --check` names
-each step, in order.
+first and third lines are required. `--with-recommended` prints each
+`brew install` before running it, and `--check` lists what is left, in order,
+ending with the next command to run.
 
 On Linux, or without Homebrew, the installer runs from a pipe:
 
@@ -173,10 +179,6 @@ export PATH="$HOME/.local/bin:$PATH"                            # puts hw and br
 brain myapp                                                     # opens the brainer
 ```
 
-Piped like this, `install.sh` clones the latest published release tag (not
-`main`) into a temporary directory, runs it with your arguments and removes it.
-It needs `git` and `curl`, and says so when one is missing.
-
 Prefer to read the installer first? Clone the repository and run it from there:
 
 ```sh
@@ -185,27 +187,9 @@ git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
 ./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp
 ```
 
-`--check` lists everything that is missing, in order, and ends with the next
-command to run. Run it again until nothing is left. Add the `PATH` line to your
-shell profile so it survives a new terminal.
+Add the `PATH` line to your shell profile so it survives a new terminal.
 
-### Upgrading
-
-```sh
-foreman-sh upgrade --brain ~/brain              # the newest release, with the flags you installed with
-foreman-sh upgrade --brain ~/brain --dry-run    # says what it would do and changes nothing; --to 0.3.0 goes back
-```
-
-The install records its own flags in `~/brain/.foreman/install.json`; `upgrade` replays
-them (what a lane declares is read from `projects.json`, so your hand edits there win), runs `--check` and prints the new release's "In short". `hw status` tells you
-when a newer release exists (once a day, silent offline). A brain installed before
-`upgrade` existed has no record: run your install command once more, and `upgrade`
-works from then on. Without Homebrew, pipe it: `curl -fsSL … | bash -s -- upgrade --brain ~/brain`.
-
-The installer never writes inside your repositories and never reads a
-credential.
-
-## Try it on a toy repository
+### 4. Try it on a toy repository
 
 ```sh
 git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
@@ -224,12 +208,21 @@ hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none --no-report --dry-
 hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none             # launches it
 ```
 
-Without `--no-report`, the dry run exits 1 with `HW_INVOKER_PANE UNRESOLVED` anywhere but a
-herdr pane that `brain` opened: `hw` will not launch an executor whose report has nowhere
-to go. `--no-report` is only for this preview; the launch line has none.
+`--no-report` is for the preview only, outside a pane `brain` opened
+([L7](KNOWN-LIMITATIONS.md)); the launch line has none. An executor opens in a
+new herdr tab, writes `HELLO.md`, commits it on branch `task/hello`, and its
+report arrives in the brainer's session.
 
-An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
-`task/hello`, and its report arrives in the brainer's session.
+### Upgrading
+
+```sh
+foreman-sh upgrade --brain ~/brain              # the newest release, with the flags you installed with
+foreman-sh upgrade --brain ~/brain --dry-run    # says what it would do and changes nothing; --to 0.3.0 goes back
+```
+
+`upgrade` replays the flags the install recorded, runs `--check` and prints the
+new release's "In short"; `hw status` tells you when a newer release exists
+([INSTALL.md](INSTALL.md#the-command)).
 
 ## How it works
 
@@ -245,79 +238,43 @@ An executor opens in a new herdr tab, writes `HELLO.md`, commits it on branch
    worktree, branch and database are removed by `hw reap`, which the brainer's
    session start runs in the background, after archiving the task's outputs.
 
-## Commands
+## Everyday use
 
 | Command | What it does |
 |---|---|
 | `brain <lane>` | Open the lane's brainer. |
 | `hw <lane> <task> --brief <path> --sdd none` | Launch an executor. Add `--dry-run` to preview. |
-| `hw` | With no arguments, an [fzf](https://github.com/junegunn/fzf) picker over every lane's briefs, plus a `+ new brief` row. Needs `fzf`. |
+| `hw` | A picker over every lane's briefs, plus a `+ new brief` row (needs [fzf](https://github.com/junegunn/fzf)). |
 | `hw status` | What is running, what reported and what is left over. |
-| `hw ledger [<lane>] [--brief <path>\|--task <t>] [--state <s>] [--json]` | Every brief as never-dispatched, in-progress or done, from the ledger `hw` writes at each dispatch. When the brain is a git repository on `main` (the installer does not make it one), `hw` also commits the brief at dispatch if it is untracked or changed. `hw <lane> <task>` with no brief is refused, naming the path it looked for; `--no-brief` launches without one on purpose. |
-| brief frontmatter `review: judgment-day\|plugins\|none` | The review the task's close names, in every lane and `--sdd` mode. `judgment-day` (the default when absent) orders Judgment Day over the branch; `plugins` names only the review skills of the brief's `plugins:` and no Judgment Day; `none` adds no review note. Any other value refuses the dispatch, naming the three; `rdd` is retired and warns into `judgment-day`. The dry run prints it in a `review` line and the run's receipt records it. |
-| brief frontmatter `secrets: [<item>[.<field>], …]` | Bitwarden items the task needs, by name (folder `agents`). Before anything is built `hw` checks that the vault is unlocked and each item exists, and refuses naming what is missing. The executor reaches a value only through `hw secret run <item>[.<field>] --as VAR -- <cmd>`, which puts it in `<cmd>`'s environment and nowhere else. See *Secrets* below. |
-| brief frontmatter `plugins: [<name>, …]` | Load installed review plugins (an optional install step, off by default: `install.sh --with-review-plugins`) into that executor only: Claude Code gets one `--plugin-dir` each, pi one `-e <plugin dir>` each (the plugins' hooks run natively in that executor only), and the dry run says `NOT APPLIED` for opencode and codex. Nothing is installed globally; what a hook writes goes to `$HW_ARTIFACTS/plugin-state`, never `~/.claude` or `~/.pi`, and a name that is not installed refuses the dispatch, naming the command that installs it. The export ships no plugin (KNOWN-LIMITATIONS L22). |
-| `hw briefs archive <lane> [--apply]` | Move the lane's finished briefs to `briefs/archive/<yyyy-mm>/` (a plan unless `--apply`). An archived task does not launch: `hw` names the archived path and `hw briefs restore <lane> <task>`; `hw briefs unarchive <lane> --manifest <file>` undoes a whole run. |
+| `hw ledger [<lane>]` | Every brief as never-dispatched, in-progress or done. |
 | `hw log <lane> <task>` | What a task asked and reported. |
 | `hw ruling <pane> "<correction>"` | Correct an executor that is still working, or resume one that reported `--blocked`. |
 | `hw next <pane> --brief <path>` | Give the next task to an executor launched with `--keep-pane`. |
-| `hw done <lane> <task>` | Run the brief's verification and close the task's tab. Waits up to 60 s for the report's own turn to end. A merged, clean task is then reaped like `hw reap --apply`. |
-| `hw preflight --json -- <hw argv>` | Read-only verdict on a dispatch you have not run: `{"level":"ok\|warn\|block","rules":[…]}`. Two rules today: an `--account` other than the lane's, and a release cut holding the suite. Exits 0 whatever the level; only a malformed call exits 1. |
-| `brain relaunch (--all\|<lane>…) [--dry-run]` | Reopen idle Claude Code brainers with the cockpit, keeping each one's conversation, pane and account. A working pane is skipped and named. |
-| `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove. `--apply` removes them, archiving `.artifacts`/`qa-report` to `archive/<lane>/<task>/` beside the work directory first. Dirty, unmerged or occupied work is never removed. Also lists executors kept after a `--blocked` report and left unanswered for 24h; `--apply` closes them. |
-| `hw train add <lane> <task>` | Merge a reported task's branch into `train-<lane>`. Only a `setup/test-budgets.json` conflict is resolved; any other is named. |
-| `hw train push <lane>` | Run the full suite on the train, then move `main` to it, keeping uncommitted edits in the checkout. Pushes nothing. |
+| `hw done <lane> <task>` | Run the brief's verification and close the task's tab. |
+| `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove; `--apply` removes them. |
+| `hw train add\|push <lane> …` | Merge reported tasks into `train-<lane>`, then run the suite and move `main` to it. |
+| `hw preflight --json -- <hw argv>` | A read-only verdict on a dispatch you have not run. |
+| `hw briefs archive <lane>` | Move the lane's finished briefs to `briefs/archive/<yyyy-mm>/`. |
+| `brain relaunch (--all\|<lane>…)` | Reopen idle brainers with the cockpit, keeping each one's conversation. |
+| brief `review: judgment-day\|plugins\|none` | The review the task's close names. |
+| brief `secrets: [<item>, …]` | Bitwarden items the task needs, by name. |
+| brief `plugins: [<name>, …]` | Review plugins loaded into that executor only. |
 
-`<pane>` is the executor's herdr pane, as `hw status` lists it. `hw help all`
-lists every command and flag; `hw help <topic>` shows one part.
-
-### Frameworks (`--sdd`)
-
-`--sdd` is required wherever a framework is in play. To use another
-methodology your repository already has, name it in the brief.
-
-| Mode | Use it for | Needs on the machine |
-|---|---|---|
-| `none` | Read-only, measurement, audit and operational work; the brief is the whole contract. | Nothing. |
-| `speckit` | A task that should go through Spec Kit's phases. | A `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Without one, `hw` refuses before building anything. Claude Code only. |
-
-There is no other mode. `--sdd gentle` (and `sdd: gentle` in a brief) is gone:
-it warns and runs `--sdd none`.
-Spec Kit is a third-party project that foreman-sh integrates with, under its
-own licence. foreman-sh is not part of it, and no endorsement is implied:
-
-- [Spec Kit](https://github.com/github/spec-kit), MIT licence.
+`hw help all` lists every command and flag, `hw help <topic>` shows one part,
+and [REFERENCE.md](REFERENCE.md) has each row in full, with the frameworks, the
+cockpit and every lane setting. `<pane>` is the executor's herdr pane, as
+`hw status` lists it.
 
 ### Secrets (Bitwarden)
 
 A credential an executor needs is a Bitwarden item in the folder `agents`, named
-in the brief's `secrets: [item, …]`; its value is never in the brief, the prompt
-or an argument list. `hw` refuses the dispatch before building anything when the
-vault is locked or an item is missing. The executor runs
+in the brief's `secrets: [item, …]`. `hw` checks that the vault is unlocked and
+each item exists before it builds anything. The executor runs
 `hw secret run <item>[.<field>] --as VAR -- <cmd>`: the value lands in `<cmd>`'s
-environment and is not printed or written. A person unlocks the vault with
+environment and is not printed or written. You unlock the vault with
 `secret-unlock`; on macOS the master password can stay in the login Keychain so
-`hw` unlocks it for you (INSTALL.md, *Secrets*). It needs the `bw` CLI. This
-release does not ship the guard that refuses an agent's own `bw` calls, so the
-boundary is a convention here, not an enforced one: read
-[KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) L23 before you put a secret in
-the folder.
-
-### Delegating by model tier
-
-Every executor, on every vendor, is handed a read-only `cheap-explorer` subagent on its
-vendor's cheapest tier (Claude Code: haiku; OpenCode and codex: `gpt-5.6-luna`; pi:
-`deepseek-v4.1-flash`), and the prompt `hw` prepends names it and says which job goes where:
-search and mapping to the explorer, edits and tests to a mid tier, design and the verdict to
-the executor. The role lives in the brain (`_agents/cheap-explorer.md`) and reaches each
-vendor through its own per-launch mechanism, so nothing is written into a product repo. The
-dry run's `explorer` line says what reached the launch, or `NOT INJECTED` and why; a brief
-can require it with `requires-agents: subagent:cheap-explorer`.
-
-A `kind: build` task refuses the top tier (opus, fable) unless it says why: pass
-`--top-tier-why "<reason>"`, or put a `top_tier_why:` line in the brief's frontmatter. The
-prompt asks for delegation and nothing forces it, and the ceiling reaches only models `hw` can
-rank (KNOWN-LIMITATIONS L21).
+`hw` unlocks it for you ([INSTALL.md](INSTALL.md#secrets-bitwarden),
+[L23](KNOWN-LIMITATIONS.md)).
 
 ## The cockpit
 
@@ -334,126 +291,18 @@ claude · claude-sonnet-5-5 · high · ctx 41% ▰▰▱▱▱▱
                                                    [ receipt ]
 ```
 
-The task and its brief's title (the brief's first `# ` heading, after its
-frontmatter), with its state and how long it has held it; the harness, model,
-effort and context; the commits of its branch over the base it was dispatched
-on, how long ago the last one landed, and the suite running for it (its
-suite-gate slot, or a `setup/test-hw` running in its worktree). The `⚠` line
-appears only when something needs you: no progress, a queued ruling, an open
-ask or challenge, a blocked report. A working executor that has not moved for 30
-minutes (no commit on its branch, no file changed in its worktree, no new line
-in its transcript) says `no progress 47m` and turns yellow, so a stuck run does
-not look like a busy one. The turn's start is the previous turn's end, so a turn
-that began after the executor sat idle is shown longer than it is. The project
-is named beside the task only when the cards span more than one. Each control runs a command
-that already exists, so it does nothing the command itself would refuse:
+Each control runs a command that already exists: `receipt`, `done`, `ruling`,
+`reply` and `verify`. Turn the cockpit off with `FOREMAN_COCKPIT=0` or
+`brain <lane> --no-cockpit`; `brain <lane> --resume <id>` reopens a brainer's own
+conversation with it. Every card line and control is in
+[REFERENCE.md](REFERENCE.md#the-cockpit).
 
-| Control | Runs |
-|---|---|
-| `receipt` | `hw receipt <lane> <task>` |
-| `done` | `hw done <lane> <task>`, after you confirm |
-| `ruling` (a text box) | `hw ruling <pane> -`, with the text you type |
-| `reply` (a text box, on an open ask) | `channel-send`, back to the executor |
-| `verify` | Fills the prompt with a request to check the report against its evidence; runs no verb. |
+## Customize a lane
 
-A control `hw` would refuse is not drawn at all; its reason stays in the state file and in
-`hw receipt`, never on the card. The band also shows
-the verdict of `hw preflight` for the dispatch your brainer is about to run, and only
-displays it. The cockpit needs Claude Code 2.1.289 or newer: below that, `brain`
-says so and opens without it. Turn it off with `FOREMAN_COCKPIT=0` or
-`brain <lane> --no-cockpit`.
-
-`brain <lane> --resume <id>` reopens a brainer's own conversation with the
-cockpit and exits 75 when it did not start. `brain relaunch --all` does the same for
-every idle brainer pane (or name lanes), in place, under the account (`CLAUDE_CONFIG_DIR`) the
-pane already had; `--dry-run` previews it. A pane whose agent is working, or
-that has no session to resume, is skipped and named; one that was stopped and
-did not come back is reported `FAILED` and the command exits 1. Executors are
-never relaunched.
-
-## Layout
-
-For contributors: `bin/hw` is the dispatcher and holds the launch path. Five
-modules under `lib/hw/` hold the verbs that grew past it, and `bin/hw` sources
-each one: `reap.sh` (`hw reap` and the removal `hw done` shares), `status.sh`
-(`hw status`), `done.sh` (`hw done` and the close-time verification), `next.sh`
-(`hw next`) and `ledger.sh` (the dispatch ledger, the brief commit, the picker
-rows, the no-brief refusal and `hw ledger`). They are libraries with no
-shebang: run `hw`, never the module. `install.sh` copies `lib/` into the brain,
-and `hw` stops with a message naming the module when one is missing. The
-cockpit is `cockpit/` (the mod) plus `bin/cockpit-state` and `bin/hw-actions`,
-which write the state it reads and decide which buttons are live.
-The Go half of `hw` is `core/` (one `main` package, standard library only),
-built by `setup/build-core`; `bin/hw` hands a ported verb to it when `hw-core` is
-built and the mode says `go`, and keeps the bash implementation as the way back.
-A fix to a ported verb goes to `core/`; the bash of that verb is frozen.
-
-## Customizing a lane (`projects.json`)
-
-`projects.json` at the brain root is the one place a lane's settings live.
-`hw`, `brain` and the invokers read it once per process, and a lane you add
-there needs no change to `bin/`. An unknown key, or a value of a shape the
-loader checks (`requested_by`, `suite_lock`, `artifacts`, `model_floor`,
-`model_pins`, `ports`), makes the whole file fail to load:
-nothing is read from it. Other values are not checked.
-`hw help lanes` prints this table in short form.
-
-Paths accept a leading `~` (your home). `{brain}` is the brain root, `{work}`
-the top-level `work` directory, `{checkout}` the lane's checkout, `{lane}` its
-name and `{task}` the task name.
-
-| Field | Type | What it does | Default |
-|---|---|---|---|
-| `space` | string | The herdr workspace label for the lane. Required. | none: the file fails to load |
-| `engram` | string | The engram project label the lane's memory is filed under. | `brain` |
-| `vendor` | string | The agent `brain <lane>` and `hw` default to: `claude` or `opencode`. Not validated at load. | `claude` |
-| `model` | string | The model executors get when the dispatch passes no `--model`. | empty: the vendor's own |
-| `model_floor` | object | `tier` (`haiku`, `sonnet` or `opus`) is the lowest Claude tier `hw` launches without `--below-floor-why`; `accepts` lists off-ladder model ids the lane admits. | no floor |
-| `model_pins` | object | Maps an alias (`haiku`, `sonnet`, `opus`, `fable`) to the full `claude-*` id `hw` passes in its place. | the alias as typed |
-| `subagent_model` | string | The model a Claude Code executor's subagents run on when they name none: `inherit`, an alias (`haiku`, `sonnet`, `opus`, `fable`) or a `claude-*` id. `hw` exports it as `CLAUDE_CODE_SUBAGENT_MODEL`, to Claude Code only (the manifest says `NOT APPLIED` for the others); `--subagent-model` overrides it per dispatch. An agent that pins its own `model:` keeps it. | `inherit` |
-| `account` | string | The Claude Code account the lane's sessions run under: `default` or `personal`. | `default` |
-| `artifacts` | string | Where executors may publish claude.ai artifacts: `deny`, `default` or `personal`. | the lane's `account` |
-| `requested_by` | string | `required` refuses a dispatch whose brief cites no request; `warn` says so and launches. | off |
-| `brief_note` | string | Text `hw` appends to the preamble of every executor prompt of this lane. See below. | none |
-| `qa_target` | boolean | `true`: when `hw` allocates the executor a web port, its prompt (and `hw next`) names `http://localhost:<port>` as the QA target. | off |
-| `suite_lock` | string | `none` lets `hw suite` and a task's close verification run at once; `lane` serializes them. | `lane` |
-| `checkout` | path | The lane's repository checkout. | none: no checkout |
-| `checkout_var` | string | An upper-case environment variable that overrides `checkout` when set. | none |
-| `base` | string | The branch a task's worktree is built from, and the base a review is measured against. | none |
-| `base_ref_prefix` | string | Prefix of the ref the base is read from; `""` means a local branch. | `origin/` |
-| `branch` | string | The branch name template for a task. | `task/{task}` |
-| `worktree_root` | path | The directory that holds the lane's worktrees. | none |
-| `worktree` | path | One task's worktree. | none |
-| `build` | path | The script, relative to `projects.json`, that builds a worktree (`lanes/<lane>.sh`). A lane with a worktree and no `build` refuses to launch. | none |
-| `repoless` | boolean | The lane has no repository: no checkout, no worktree. | `false` |
-| `product_repo` | boolean | The checkout is a product repository; framework and agent lookups read it. | `false` |
-| `agents_from` | string | Where a task's `.claude/agents/` come from: `checkout` or `base`. | none |
-| `brain_guard` | boolean | `false` stops `hw` from loading the brain-write guard into the lane's executors, the one that keeps a product executor from writing in the brain. | `true` |
-| `opencode_config_dir` | path | An OpenCode config layer for the lane's executors; it must contain `plugin/deny-repo-writes.js` or `hw` refuses to launch. | none |
-| `sweep` | boolean | `false` leaves the lane's worktree root out of `hw sweep`. | `true` |
-| `reap` | object | `copies`: patterns of files that are copies of the main checkout's, so `hw reap` does not count them as unsaved work. `copies_from`: the worktree script whose own copy list extends them. `max_worktrees` / `max_disk_pct` / `max_build_gb`: past any, `hw status` prints one line naming `hw reap <lane> --apply` (defaults 40, 85 and 30 GB of `.next`/`.turbo` as the last `hw reap` summed them; `HW_HYGIENE_MAX_WORKTREES` / `_DISK_PCT` / `_BUILD_GB` override). | none |
-| `deps` | object | `line`: the sentence the dry run prints about dependencies. `contention`: `true` when a task's install can break other tasks. | none |
-| `db` | object | `provisioned` (one database per worktree), `line`, `no_worktree` and `no_db_inert`: what the dry run says about the database. | none |
-| `devserver` | object | `start`: `always` starts a dev server on every task, `opt-in` only with `--dev-server`. `line` and `off` are the text the dry run prints. | no dev server |
-| `ports` | object | Base port per name, such as `{"web": 3100}`. | none |
-| `hw_aliases` | array | Other names `hw <lane>` accepts. | none |
-| `brain_aliases` | array | Other names `brain <lane>` accepts. | none |
-| `hint_aliases` | array | The aliases the refusal messages print beside the lane name. | none |
-
-At the top level of the file: `work` (required), `lanes` (required),
-`operator` (the person messages tell an agent to leave a decision to),
-`survey_order` (the order `hw reap` and `hw worktrees` walk the lanes),
-`retention` (how long `hw reap` keeps the artifacts of a task that reported and
-its backups: `artifact_retention_days`, 30, and `backup_retention_days`, 60;
-0 disables a window), `metrics_direct` and `comment`.
-
-### `brief_note`: one rule for every executor of a lane
-
-A brief says what one task needs. A rule that holds for every task of a lane,
-such as a pull request template, would otherwise be copied into each brief and
-forgotten in one of them. Put it in `brief_note` instead: `hw` appends it to
-the preamble of every prompt it builds for that lane, including a task sent
-with `hw next`.
+`projects.json` at the brain root is the one place a lane's settings live; a
+lane you add there needs no change to `bin/`. A rule that holds for every task of
+a lane goes in `brief_note`, which `hw` appends to every executor prompt of
+that lane:
 
 ```json
 "myapp": {
@@ -464,14 +313,15 @@ with `hw next`.
 }
 ```
 
-`hw <lane> <task> --dry-run` shows the note inside the prompt. The note is
-plain text, one string, with no tokens expanded.
+`hw <lane> <task> --dry-run` shows the note inside the prompt. Every field is in
+[REFERENCE.md](REFERENCE.md#customizing-a-lane-projectsjson), and
+`hw help lanes` prints it in short form.
 
 ## How it compares
 
 | | Isolation | Guards the brainer | Agents | UI |
 |---|---|---|---|---|
-| **foreman-sh** | worktree and branch per task | yes | Claude Code, OpenCode, pi, Codex (limited) | herdr panes |
+| **foreman-sh** | worktree and branch per task | yes | Claude Code, OpenCode, pi, Codex ([L3](KNOWN-LIMITATIONS.md)) | herdr panes |
 | [claude-squad](https://github.com/smtg-ai/claude-squad) | tmux and worktree per agent | — | Claude Code, Codex, Gemini, Aider | TUI |
 | [Conductor](https://www.conductor.build) | isolated workspaces | — | Claude Code, Codex, Cursor | macOS app |
 | [uzi](https://github.com/devflowinc/uzi) | worktree per agent | — | Claude Code, Codex and others | CLI and tmux |
@@ -492,6 +342,7 @@ What foreman-sh adds on top of isolation:
 ## Learn more
 
 - [`INSTALL.md`](INSTALL.md): every install option, OpenCode and engram.
+- [`REFERENCE.md`](REFERENCE.md): every command, brief field, cockpit control and lane setting.
 - [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md): what a brief can contain.
 - [`THREAT-MODEL.md`](THREAT-MODEL.md): what the guards stop, what they do not
   stop and the opt-in macOS `--sandbox`.

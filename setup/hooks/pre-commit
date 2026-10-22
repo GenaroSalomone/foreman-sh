@@ -65,6 +65,54 @@ if [ -f "$tb_root/setup/test-budget-gate" ] \
   fi
 fi
 
+# A MERGE COMMIT DOES NOT RE-RUN THE FAST GATE NOR THE LANE SWEEP (2026-10-20, sem-10).
+# `git commit` concluding a merge (`git merge --no-commit`, or a conflict resolved by hand) reaches this hook
+# with `<git-dir>/MERGE_HEAD` present. A clean `git merge --no-ff` runs no pre-commit at all (git runs
+# pre-merge-commit, which this repo has none of), so those two paths were the only ones paying the gate:
+# merge-lote-1 paid it on each merge commit, 2463 + 3170 + 3014 + 2531 = 11178 s, 6184 s of it red on a subject
+# that passes alone. And the lane sweep below counts the lanes of EVERYTHING the merge brings in, so it refused
+# a conflicted merge of two lanes' work as "spans 2 lanes" — a merge is the one commit that legitimately holds
+# several lanes' files.
+# COVERAGE: NONE LOST, IT MOVES TO PUSH TIME. The tree a merge commit records is the tree that gets published,
+# and `setup/hooks/pre-push` refuses it without a verdict of that exact tree: the fast gate for a refs/heads/task/*
+# destination, the full suite for main and tags. The channel suite below is NOT covered at push (nothing there
+# runs it), so it still runs on a merge. What stays HERE, in seconds, over the staged merge: the decisions and
+# budget checks above, a syntax check of the staged shell and python files, and a leftover conflict marker.
+hook_merge=0
+[ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ] && hook_merge=1
+if [ "$hook_merge" = 1 ]; then
+  merge_bad=""
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    blob="$(git cat-file -p ":$f" 2>/dev/null)" || continue  # MUTATION-ANCHOR: 1060-M01
+    first="$(printf '%s\n' "$blob" | head -1)"
+    case "$f:$first" in
+      *.py:*|*:'#!'*python*) printf '%s\n' "$blob" | python3 -I -c 'import ast,sys; ast.parse(sys.stdin.read())' >/dev/null 2>&1 \
+                                || merge_bad="$merge_bad
+    syntax (python): $f" ;;
+      *.sh:*|*:'#!'*bash*|*:'#!/bin/sh'*|*:'#!/usr/bin/env sh'*) printf '%s\n' "$blob" | bash -n >/dev/null 2>&1 \
+                                || merge_bad="$merge_bad
+    syntax (bash): $f" ;;
+    esac
+  done <<MERGED
+$(git diff --cached --name-only --diff-filter=ACMR)
+MERGED
+  merge_markers="$(git diff --cached -U0 | grep -E '^\+(<<<<<<<|>>>>>>>)( |$)' | head -5 || true)"  # MUTATION-ANCHOR: 1060-M02
+  [ -z "$merge_markers" ] || merge_bad="$merge_bad
+    leftover conflict marker in the staged merge:
+$(printf '%s\n' "$merge_markers" | sed 's/^/      /')"
+  if [ -n "$merge_bad" ]; then
+    {
+      echo "pre-commit: this merge commit is refused in seconds (syntax and conflict markers are checked on a merge):"
+      printf '%s\n' "$merge_bad"
+      echo
+      echo "If you are certain: git commit --no-verify"
+    } >&2
+    exit 1
+  fi
+  printf 'pre-commit: merge commit — the fast gate and the lane sweep are skipped here; this merge tree is gated at push (pre-push: a fast-gate verdict of its exact tree for task/*, the full suite for main and tags). Syntax and conflict markers checked.\n' >&2  # MUTATION-ANCHOR: 1060-M03
+fi
+
 tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|lib/|shell/|layouts/|setup/plans/|setup/hooks/|CLAUDE\.shared\.md|CLAUDE\.md$|README\.md|BRIEF-TEMPLATE\.md)' || true)"
 # THE LANES ARE A LIST IN setup/hooks/sweep-lanes, one per line, not a literal
 # here: which lanes a brain has is configuration, and this hook is mechanism.
@@ -92,7 +140,7 @@ lanes="$(printf '%s\n' "$staged" \
   | sort -u | tr -d '/' || true)"
 lane_count="$(printf '%s\n' "$lanes" | grep -c . || true)"
 
-if [ "$lane_count" -gt 1 ]; then
+if [ "$hook_merge" != 1 ] && [ "$lane_count" -gt 1 ]; then  # MUTATION-ANCHOR: 1060-M04
   {
     echo "pre-commit: this commit spans $lane_count project lanes."
     echo
@@ -207,7 +255,7 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
   }
   for _gc_name in ${!GIT_CONFIG@}; do hook_git_config_unset+=(-u "$_gc_name"); done
   unset _gc_name 2>/dev/null || true
-  if [ -x "$root/setup/test-hw" ]; then
+  if [ "$hook_merge" != 1 ] && [ -x "$root/setup/test-hw" ]; then  # MUTATION-ANCHOR: 1060-M05
     # RUN IT WITH GIT'S ENVIRONMENT STRIPPED. A hook exports GIT_DIR and
     # GIT_INDEX_FILE, and every git command any child runs inherits them — so a
     # test that builds a throwaway repo with `cd $tmp && git init` initialises
@@ -265,7 +313,7 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
     # (679 s measured 2026-10-13, retro of brain-resume-desde-su-pane): a foreground `git commit` from an
     # agent dies at its 120 s tool timeout, three times in that run, and a `pgrep -f "git commit"` watcher
     # matched its own command line. This is the one place the executor is reading while it waits.
-    [ -n "$hook_reused" ] || printf 'pre-commit: no fast-gate verdict for this tree, so the gate runs now and takes minutes (about 11 measured). An agent: run this commit in the background (run_in_background) and wait for its notification; a foreground git commit dies at the 120 s tool timeout.\n' >&2  # MUTATION-ANCHOR: 995-M01
+    [ -n "$hook_reused" ] || printf 'pre-commit: no fast-gate verdict for this tree, so the gate runs now and takes minutes. An agent: run this commit in the background (run_in_background) and wait for its notification; a foreground git commit dies at the 120 s tool timeout.\n' >&2  # MUTATION-ANCHOR: 995-M01
     [ -n "$hook_reused" ] || out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
                -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
                -u GIT_COMMON_DIR -u GIT_PREFIX \
@@ -406,6 +454,7 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
   fi
 fi
 
+[ "$hook_merge" != 1 ] || exit 0
 [ -n "$tooling" ] && [ -n "$lane" ] || exit 0
 
 {

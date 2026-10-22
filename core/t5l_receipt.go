@@ -193,6 +193,8 @@ func (l *lch) receiptSession(pane string, drc int) {
 		resume = "cd " + l.wt + " && opencode --session " + sid + "   # read-only: opencode export " + sid
 	case "codex":
 		resume = "cd " + l.wt + " && codex resume " + sid
+	case "pi":
+		resume = "cd " + l.wt + " && pi --session " + sid
 	default:
 		resume = "unknown vendor '" + vendor + "' — no resume command is claimed for it"
 	}
@@ -295,17 +297,23 @@ func (l *lch) receiptModel(pane string, drc int) int {
 	}
 	sid := l.receiptGet("session_id")
 	// A vendor with no reader (codex) is not a fault: nothing was measured and nothing is claimed.
-	if l.agent != "claude" && l.agent != "opencode" { // # MUTATION-ANCHOR: 847-A2-10
+	if l.agent != "claude" && l.agent != "opencode" && l.agent != "pi" { // # MUTATION-ANCHOR: 847-A2-10
 		ag := lrcOr(l.agent, "unknown")
 		l.receipt("model_running", "n/a — hw has no model reader for vendor "+ag, "_receipt_model: no reader for this vendor")
 		l.receipt("model_verdict", "n/a — nothing measured for vendor "+ag+"; asked: "+lrcOr(asked, "<agent default>"), "_receipt_model: no reader for this vendor")
 		return 0
 	}
+	if l.agent == "pi" {
+		sid = "pi" // pi publishes its own record (setup/pi/hw-executor.ts): no session id is needed to read it, even under --sandbox
+	}
+	piThinking := ""
 	if sid == "" || strings.HasPrefix(sid, "none") { // # MUTATION-ANCHOR: 847-A2-11
 		why = "no session id was recorded, so there is no session to read the model from"
 	} else {
 		for {
-			if l.agent == "claude" {
+			if l.agent == "pi" {
+				running, piThinking, src = l.piRuntimeRead()
+			} else if l.agent == "claude" {
 				cfg := l.accountConfigDir
 				if cfg == "" {
 					cfg = l.env("CLAUDE_CONFIG_DIR")
@@ -386,6 +394,9 @@ func (l *lch) receiptModel(pane string, drc int) int {
 	l.receipt("model_verdict", verdict, "compared MODEL_PINNED/MODEL with model_running")
 	if strings.HasPrefix(verdict, "DIVERGENCE") {
 		l.warn("DIVERGENCE  model: " + strings.TrimPrefix(verdict, "DIVERGENCE — "))
+	}
+	if l.agent == "pi" {
+		l.piReceiptThinking(piThinking)
 	}
 	return 0
 }

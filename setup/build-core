@@ -3,11 +3,13 @@
 #
 #     setup/build-core                  all five targets into core/dist/<os>-<arch>/, plus SHA256SUMS
 #     setup/build-core --native         only this machine's target
-#     setup/build-core --verify         build everything a second time elsewhere and require the same sha256
+#     setup/build-core --verify         build everything a second time elsewhere and require the same sha256 (outside the short lane)
 #     setup/build-core --time           also print how long each target took to build
 #     setup/build-core --out <dir>      write there instead of core/dist (a new or empty directory, or one a
 #                                       previous build-core made; anything else is refused, never emptied)
 #
+# Except --verify, it runs in setup/heavy's short lane (<= 120 s beside the slot holder; it takes ~11 s), so it never waits
+# behind a long run.
 # The targets: darwin arm64 and amd64, linux amd64 and arm64, windows amd64 (hw-core.exe).
 # Nothing on the building machine is needed beyond the Go toolchain: CGO_ENABLED=0 and the standard
 # library only, so no linker, no C compiler, and no host for the other four systems.
@@ -26,6 +28,7 @@ NATIVE=0; VERIFY=0; TIME=0; OUT_GIVEN=0
 MARK=.build-core   # what marks a directory as one build-core made, and so may rebuild
 TARGETS="darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64"
 
+ARGS=("$@")   # the loop below shifts them away; the short lane re-runs this script with them
 while [ $# -gt 0 ]; do
   case "$1" in
     --native) NATIVE=1; shift ;;
@@ -37,6 +40,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 command -v go >/dev/null 2>&1 || { echo "build-core: no go toolchain on PATH" >&2; exit 1; }
+
+# An 11-second build does not queue behind a run of hours: take setup/heavy's short lane (<= 120 s, beside the slot
+# holder). Not when already inside a slot or a short job (HW_HEAVY_RUNNING), and not for --verify, which builds twice
+# and has no business under a 120 s cap on a cold Go cache.
+if [ "$VERIFY" = 0 ] && [ -z "${HW_HEAVY_RUNNING:-}" ] && [ -x "$HERE/heavy" ]; then
+  exec "$HERE/heavy" --short --tag build-core -- "${BASH_SOURCE[0]}" ${ARGS[@]+"${ARGS[@]}"}
+fi
 
 if [ "$NATIVE" = 1 ]; then
   TARGETS="$(go env GOOS)/$(go env GOARCH)"

@@ -409,7 +409,42 @@ case "$(withsec "$M16B" "$FIX/one-arm.sh")" in
   "0 exempt - one-arm.sh M01 on a host that is not macOS"*) pass "mutant killed: M16b reading the list on macOS too exempts a subject on the Mac, which C21 refuses" ;;
   *) fail "M16b SURVIVED: with the platform test removed the list still exempted nothing" ;;
 esac
+
+# ── C22/C23 / M17. a subject whose arms have no `M<n>` id (1041: the Go anchors of core/) ──────────────────────────
+#
+# 1041 declares its arms on one line that names none, so the list could never exempt it and Linux went red for a skip the
+# subject states itself. The list now names that case: arm `<unnamed>`, with a reason. It is still names-only, and it
+# holds only for a subject whose every declared arm is listed.
+for p in go-anchors go-anchors-unlisted; do
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "ok - s: mutant killed: %s\n" "$anchor"' > "$FIX/$p.sh"
+done
+printf '%s\t%s\t%s\n' \
+  go-anchors.sh '<unnamed>' "its arms are Go anchors, killed on the Mac" \
+  one-arm.sh M01 "a macOS mechanism" > "$TMP/mutation-exempt-not-macos.tsv"
+printf '%s\n' 'ok - s: skipped on linux — a stated reason' > "$FIX/out-declared-skip"
+notmac_out() { local o rc=0; o="$(PATH="$TMP/bin-sec:$TMP/os-linux:$PATH" "$1" "$2" "$3" 2>&1)" || rc=$?; printf '%s %s' "$rc" "$o"; }
+r="$(notmac_out "$TMP/cov.healthy" "$FIX/go-anchors.sh" "$FIX/out-declared-skip")"
+case "$r" in "0 exempt - go-anchors.sh <unnamed> on a host that is not macOS: its arms are Go anchors, killed on the Mac") ;; *) fail "C22 a subject with unnamed arms, listed as <unnamed> with its reason, was not exempt off macOS: $r" ;; esac
+r="$(notmac_out "$TMP/cov.healthy" "$FIX/go-anchors-unlisted.sh" "$FIX/out-declared-skip")"
+case "$r" in "1 "*"(1 declared with no arm name)"*) ;; *) fail "C23 a subject with unnamed arms and no <unnamed> row was exempt: $r" ;; esac
+r="$(notmac_out "$TMP/cov.healthy" "$FIX/go-anchors.sh" "$FIX/out-silent")"
+case "$r" in "1 "*"printed no 'ok - <subject>: skipped on <os> — <reason>' line"*) ;; *) fail "C23b a listed subject whose run printed no skip line was exempt: $r" ;; esac
+r="$(withsec "$TMP/cov.healthy" "$FIX/go-anchors.sh")"
+case "$r" in "1 "*"exercised none"*) ;; *) fail "C23c on macOS the <unnamed> row exempted a subject that ran none of its arms: $r" ;; esac
+pass "C22 off macOS a subject whose arms carry no id is exempt only through an <unnamed> row with its reason; C23 without the row, or on macOS, it stays red"
+M18="$(mut m18)" || fail "M18 could not be built"
+mutate_anchor 46-M18 "$M18" 'elif false; then' || fail "M18 could not be built"
+case "$(notmac_out "$M18" "$FIX/go-anchors.sh" "$FIX/out-silent")" in
+  "0 exempt - go-anchors.sh <unnamed>"*) pass "mutant killed: M18 not requiring the run's own skip line exempts a silent run of a listed subject, which C23b refuses" ;;
+  *) fail "M18 SURVIVED: with the skip line not required a silent run was still red" ;;
+esac
+M17="$(mut m17)" || fail "M17 could not be built"
+mutate_anchor 46-M17 "$M17" 'if [ -n "$ARMS" ] && [ -r "$EXEMPT_LIST" ]; then' || fail "M17 could not be built"
+case "$(notmac_out "$M17" "$FIX/go-anchors.sh" "$FIX/out-declared-skip")" in
+  "1 "*) pass "mutant killed: M17 admitting only subjects with a named arm leaves a Go-anchor subject red off macOS, which C22 refuses" ;;
+  *) fail "M17 SURVIVED: with unnamed-only subjects excluded the Go-anchor subject was still exempt" ;;
+esac
 rm -f "$TMP/mutation-exempt-not-macos.tsv"
 
-printf 'mapping - C01↔M01 declaration · C01↔M02 evidence · C03↔M05 marker breadth · C05↔M04 comment exclusion · C06↔M03 unreadable input · C07↔M06,M07,M08,M09 catch-all shape · C08 no wolf · C09↔M10 helper form enforced · C11↔M11 empty output · C12,C15↔M12 native Windows only · C13↔M13 every arm listed · C17↔M14 an unnamed arm · C14,C16 names only · C18,C19↔M15 no security(1) · C20,C21↔M16 not macOS\n'
-printf 'coverage - 22 behavior claims, 17 dedicated mutants killed\n'
+printf 'mapping - C01↔M01 declaration · C01↔M02 evidence · C03↔M05 marker breadth · C05↔M04 comment exclusion · C06↔M03 unreadable input · C07↔M06,M07,M08,M09 catch-all shape · C08 no wolf · C09↔M10 helper form enforced · C11↔M11 empty output · C12,C15↔M12 native Windows only · C13↔M13 every arm listed · C17↔M14 an unnamed arm · C14,C16 names only · C18,C19↔M15 no security(1) · C20,C21↔M16 not macOS · C22,C23↔M17,M14,M18 arms with no id; the run must say it skipped\n'
+printf 'coverage - 24 behavior claims, 19 dedicated mutants killed\n'

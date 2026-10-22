@@ -272,7 +272,9 @@ func (d *dsp) dispatchManifest(dir string) {
 		modelLine += "  — the lane pins the alias " + d.model + " to " + d.modelPinned + " (projects.json model_pins), so the CLI gets --model " + d.modelPinned
 	}
 	mark = "inherited"
-	if d.effort != "" {
+	if d.piEffortSrc != "" {
+		mark = d.piEffortSrc // pi's roster default says where it came from (bin/hw "PI_EFFORT_SRC")
+	} else if d.effort != "" {
 		mark = "chosen"
 	}
 	effortShown := d.effort
@@ -417,6 +419,8 @@ func (d *dsp) dispatchManifest(dir string) {
 		permissionsLine = "ask  (" + d.permissionsSrc + ") — no --auto; a prompt is reported blocked reason=permission, and a person has to answer it"
 	case "codex:ask":
 		permissionsLine = "ask  (" + d.permissionsSrc + ") — -a on-request; the executor WAITS on an approval nobody answers in an unattended pane"
+	case "pi:skip":
+		permissionsLine = "skip  (" + d.permissionsSrc + ") — pi has no permission prompts; hw's write guard is the tool_call veto in setup/pi/hw-executor.ts"
 	}
 	var providerLine string
 	if d.agent == "opencode" {
@@ -508,6 +512,8 @@ func (d *dsp) dispatchManifest(dir string) {
 			gl = "--plugin-dir " + d.brainGuardClaudePlugin() + "  " + why
 		case "opencode":
 			gl = "OPENCODE_CONFIG=" + d.brainGuardOpencodeConfig() + "  " + why
+		case "pi":
+			gl = "HW_PI_BRAIN_GUARD=1 (setup/pi/hw-executor.ts asks " + d.brainGuardDir() + "/deny_brain_writes.py in tool_call)  " + why
 		default:
 			gl = "NOT APPLIED — " + d.agent + " loads none, so nothing stops this executor writing in brain"
 		}
@@ -537,6 +543,9 @@ func (d *dsp) dispatchManifest(dir string) {
 	if d.topTierLine != "" {
 		sb.WriteString("\n  ceiling     " + d.topTierLine)
 	}
+	if d.afterLine != "" {
+		sb.WriteString("\n  after       " + d.afterLine)
+	}
 	sb.WriteString("\n")
 	sb.WriteString("  " + effortLine + "\n")
 	sb.WriteString("  agent       " + agentLine + "\n")
@@ -544,6 +553,9 @@ func (d *dsp) dispatchManifest(dir string) {
 	sb.WriteString("  subagents   " + d.subagentModelLine + "\n")
 	if d.explorerLine != "" {
 		sb.WriteString("  explorer    " + d.explorerLine + "\n")
+	}
+	if d.agent == "pi" { // bash: ${PI_LINES}, between the explorer and the plugins
+		sb.WriteString(d.piManifestLines(dir)[1:] + "\n")
 	}
 	if pl := d.pluginsLines() + d.reviewLines(); pl != "" {
 		sb.WriteString(pl[1:] + "\n")
@@ -561,6 +573,9 @@ func (d *dsp) dispatchManifest(dir string) {
 	sb.WriteString("  contract    " + contract + "  (which dispatch fields the brief declared, and hw verified)\n")
 	sb.WriteString("  requested   " + trimNL(d.requestedLine()) + "\n")
 	sb.WriteString("  authorizes  " + trimNL(d.authorizesLine()))
+	if d.brSecrets != "" {
+		sb.WriteString("\n  secrets     " + d.secretsLine())
+	}
 	if designLine != "" {
 		sb.WriteString("\n  design      " + designLine)
 	}

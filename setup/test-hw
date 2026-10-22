@@ -1483,6 +1483,28 @@ if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
       "$(printf '%s\n' "$_gt_aff" | grep -c .)" "$(printf '%s\n' "$_gt_pick" | grep -c .)" "$(printf '%s' "$_gt_aff" | tr '\n' ' ' | sed 's/ $//; s/^$/nothing/')" >&2
     _gt_pick="$_gt_aff"  # MUTATION-ANCHOR: 1014-M04
   fi
+  # THE INCREMENTAL VERDICT NAMES THE PARTITIONS ITS DIFF REACHES. setup/verdict-incremental writes, beside the job names of
+  # HW_TEST_ONLY, one `go-test-core.sh:<partition>` line per partition the diff since the recorded run can have moved (the fast
+  # gate's own map, `go-test-core.sh --affected`), the ones red then and the ones it never ran; `go-test-core.sh:-` says none. Measured
+  # 2026-10-17/18: an incremental verify queued all 39 partitions whatever its diff, 7300-10000 busy seconds of a 1277-1799 s run, and
+  # over the 125 code-touching commits since 10-12 the map reaches 44% of their seconds (median 25%, 0% for a third). Without such a
+  # line the whole in-process suite is queued, as before; a name that is no partition is a typo and is refused, never skipped.
+  if [ -n "${HW_TEST_ONLY:-}" ] && [ -r "$HW_TEST_ONLY" ] && grep -q '^go-test-core\.sh:' "$HW_TEST_ONLY"; then  # MUTATION-ANCHOR: 1090-M01
+    _gt_named="$(sed -n 's/^go-test-core\.sh://p' "$HW_TEST_ONLY")"
+    _gt_names="$(printf '%s\n' "$_gt_all" | cut -f1)"
+    for _gt_n in $_gt_named; do
+      [ "$_gt_n" != - ] || continue
+      grep -qx -- "$_gt_n" <<<"$_gt_names" || { printf 'not ok - runner: HW_TEST_ONLY names go-test-core.sh:%s, which is no partition of setup/go-test-partitions.txt\n' "$_gt_n" >&2; exit 1; }
+    done
+    _gt_keep=""
+    for _gt_n in $_gt_pick; do
+      if grep -qx -- "$_gt_n" <<<"$_gt_named"; then _gt_keep="$_gt_keep$_gt_n"$'\n'; fi
+    done
+    _gt_say="$(printf '%s' "$_gt_keep" | tr '\n' ' ')"; _gt_say="${_gt_say% }"
+    printf 'runner: INCREMENTAL — the in-process suite queues %s of %s partitions, the ones HW_TEST_ONLY names: %s\n' \
+      "$(printf '%s' "$_gt_keep" | grep -c . || true)" "$(printf '%s\n' "$_gt_pick" | grep -c . || true)" "${_gt_say:-none}" >&2
+    _gt_pick="${_gt_keep%$'\n'}"  # MUTATION-ANCHOR: 1090-M02
+  fi
   # MUTATION-ANCHOR: 1013-M03
   if [ "$JOBS" = 1 ] && [ -n "$_gt_pick" ] && { [ "$HW_TEST_GATE" = fast ] || [ -n "$_RUNNER_STARTED_NESTED" ]; }; then  # MUTATION-ANCHOR: 1014-M06
     # ONE JOB AT A TIME BY DESIGN (the fast gate, or a nested fixture run; NOT a full gate the load rule cut to one job, which
@@ -1574,6 +1596,7 @@ if [ -n "${HW_TEST_ONLY:-}" ]; then
   while IFS= read -r _on || [ -n "$_on" ]; do
     [ -n "$_on" ] || continue
     ! _is_retired "$_on" || continue   # a retired subject is no job of any run: its name is not a typo
+    case "$_on" in go-test-core.sh:*) continue ;; esac   # a partition: judged where the table is built, against the table
     case "$_only_kept" in *$'\n'"$_on"$'\n'*) ;; *) printf 'not ok - runner: HW_TEST_ONLY names %s, which is no job of this run\n' "$_on" >&2; exit 1 ;; esac
   done < "$HW_TEST_ONLY"
   [ "${#_only_p[@]}" -gt 0 ] || { printf 'not ok - runner: HW_TEST_ONLY=%s names no job\n' "$HW_TEST_ONLY" >&2; exit 1; }
@@ -1630,8 +1653,9 @@ JOBDIR="$(mktemp -d "${TMPDIR:-/tmp}/hw-test-jobs.XXXXXX")"
 #
 #   job kind lane slot launched started ended run_s rc cpu_s   (times: seconds after
 #   the run's own start; `launched` is when it got a worker, `started` when the
-#   subject's clock began, after its parse check; cpu_s is the subject's own
-#   user+sys, blank for a guard job — run_s far above cpu_s is a job WAITING)
+#   subject's clock began, after its parse check; cpu_s is the job's own
+#   user+sys (a subject, or a go-test partition: its whole process tree), blank
+#   for a guard job — run_s far above cpu_s is a job WAITING)
 #   #run wall_s jobs machine_jobs excl_phase pool_wait_s excl_wait_s busy_s load
 #
 # pool_wait_s is time this run had a free worker of its own and the MACHINE'S
@@ -1640,6 +1664,12 @@ JOBDIR="$(mktemp -d "${TMPDIR:-/tmp}/hw-test-jobs.XXXXXX")"
 # busy_s / (wall_s * jobs) is how full this run kept its workers. Opt-in, and
 # only at the top: a nested runner never sees it (tests/_common.sh sweeps HW_*).
 TIMINGS="${HW_TEST_TIMINGS:-}"
+# THE EXECUTOR'S FAST GATE KEEPS ITS TIMINGS TOO, as verify-for-push does for the full run (its default is `$TMPDIR/verify-for-push-timings.<tree>.tsv`): the
+# run that an agent starts by hand (no HW_TEST_CHANGED, not nested) wrote none unless its caller knew the variable, so the fast gate's wall,
+# its busy seconds and each go-test partition's cpu_s were thrown away (suite-en-minutos-0-medir). One file per checkout: `fast-gate-timings.<dir>.tsv`.
+if [ -z "$TIMINGS" ] && [ "$HW_TEST_GATE" = fast ] && [ -z "${HW_TEST_CHANGED:-}" ] && [ -z "${TEST_HW_NESTED:-}" ] && [ -z "${HW_TEST_NO_TIMINGS:-}" ]; then
+  TIMINGS="${TMPDIR:-/tmp}/fast-gate-timings.$(basename "$SOURCE_ROOT").tsv"
+fi
 RUN_T0="$(date +%s)"
 TM_POOL_WAIT=0; TM_POOL_SINCE=""; TM_EXCL_WAIT=0; TM_EXCL_SINCE=""; TM_BUSY=0
 JOB_LAUNCH_AT=()
@@ -1660,7 +1690,7 @@ _tm_wait() { # <pool|excl> <begin|end>
 _tm_row() { # <idx> — after its status was sourced
   [ -n "$TIMINGS" ] || return 0
   local idx="$1" rel=0 st=0 en=0 run=0 cpu=""
-  [ "${JOB_KIND[$idx]}" != subject ] || [ "${cpu_ms:-0}" -le 0 ] || cpu="$(( cpu_ms / 1000 ))"
+  case "${JOB_KIND[$idx]}" in subject|go-test) [ "${cpu_ms:-0}" -le 0 ] || cpu="$(( cpu_ms / 1000 ))" ;; esac
   [ -z "${JOB_LAUNCH_AT[$idx]:-}" ] || rel=$(( JOB_LAUNCH_AT[$idx] - RUN_T0 ))
   if [ "${started_at:-0}" -gt 0 ]; then st=$(( started_at - RUN_T0 )); en=$(( ended_at - RUN_T0 )); run=$(( ended_at - started_at )); fi
   TM_BUSY=$((TM_BUSY + run))
@@ -1895,8 +1925,15 @@ _run_job() {
     fi
   else
     started="$(date +%s)"
-    "${_JOB_RUNNER[@]}" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"} > "$JOBDIR/$idx.out" 2> "$JOBDIR/$idx.err" < /dev/null
-    rc=$?
+    # A GO-TEST JOB IS TIMED LIKE A SUBJECT (user+sys of its process tree): a partition whose run_s is far above its cpu_s is WAITING, and that
+    # decides whether more jobs help (suite-en-minutos-0-medir). The other jobs (guards) stay as they were: wall only.
+    if [ "$kind" = go-test ]; then
+      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" "${_JOB_RUNNER[@]}" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"}
+      rc=$?; wall_ms="$FG_WALL_MS"; cpu_ms="$FG_CPU_MS"
+    else
+      "${_JOB_RUNNER[@]}" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"} > "$JOBDIR/$idx.out" 2> "$JOBDIR/$idx.err" < /dev/null
+      rc=$?
+    fi
     ended="$(date +%s)"
   fi
   # A subject that never ran because it did not parse timed nothing, and 0 is
@@ -1931,6 +1968,52 @@ _i=0; while [ "$_i" -lt "$JOB_TOTAL" ]; do JOB_PID+=("0"); JOB_LAUNCHED+=("0"); 
 # EVERY JOB THAT IS NOT EXCLUSIVE, still to be started. The exclusive ones wait
 # for it to reach zero when they run LAST (below).
 NONEXCL_LEFT=$((JOB_TOTAL - EXCLUSIVE_OWED))
+
+# ── A JOB RUNS ONLY WHEN WHAT IT READS CHANGED (setup/verdict-cache, sem-8) ─────────────────────────────────────────────────────
+#
+# A release suite is hours of jobs whose inputs did not move: 6 h on 2026-10-21, no paid CI to spread it. Before anything is queued,
+# `verdict-cache plan` keys every job by the BYTES of everything it reads (a subject: setup/subject-deps.txt; a go-test partition:
+# setup/go-test-deps.txt; one nobody measured: the whole tree, which is today's behaviour) and answers hit/miss/never. A HIT is a green
+# this tree's inputs already earned: its stored log becomes the job's output and its status is written HERE, so the job never takes a
+# worker, never waits for the timing lane and spawns nothing; it is counted and printed like any job (the tally reads its `ok -`
+# lines). A MISS runs as always and, once the loop below has judged it green, stores its log (never a red; the entry is renamed in).
+# `# cache: never` in a subject's header always runs it. HW_TEST_NO_CACHE=1 runs everything cold. A nested runner (a fixture run
+# inside a subject) and a runner with no setup/verdict-cache beside it use none.
+#
+# THE COVERAGE THIS TRADES AWAY is named in KNOWN-LIMITATIONS: a subject's reads are MEASURED once (setup/measure/subject-deps.py), so a
+# change to a file it never read cannot move its key, and a mutant whose anchor, test, cases and golden did not change is not re-judged
+# (core/mutant_verdict_test.go). A change elsewhere that would let an old mutant survive is unseen until a cold run (HW_TEST_NO_CACHE=1).
+CACHE_ON=0; JOB_CKEY=(); JOB_CHIT=(); CACHE_STORED=""
+if [ -x "$HERE/verdict-cache" ] && [ -z "${_RUNNER_STARTED_NESTED:-}" ] && [ -z "${HW_TEST_NO_CACHE:-}" ] && [ "${HW_VERDICT_CACHE:-}" != off ] \
+   && [ "$JOB_TOTAL" -gt 0 ] && command -v python3 >/dev/null 2>&1; then
+  CACHE_ON=1
+  # the Go mutant runners (core/mutant_verdict_test.go) keep their per-anchor verdicts in the same store
+  HW_VERDICT_CACHE="$(python3 "$HERE/verdict-cache" dir 2>/dev/null || true)"
+  if [ -n "$HW_VERDICT_CACHE" ] && [ "$HW_VERDICT_CACHE" != off ]; then export HW_VERDICT_CACHE; else unset HW_VERDICT_CACHE; fi
+  _i=0
+  : > "$JOBDIR/cache.in"
+  while [ "$_i" -lt "$JOB_TOTAL" ]; do
+    printf '%s\t%s\t%s\t%s\n' "$_i" "${JOB_KIND[$_i]}" "${JOB_PATH[$_i]}" "${JOB_ARG[$_i]:-}" >> "$JOBDIR/cache.in"
+    _i=$((_i + 1))
+  done
+  _c_plan="$(python3 "$HERE/verdict-cache" plan "$JOBDIR/cache.in" "$JOBDIR" 2> "$JOBDIR/cache.err")" || _c_plan=""
+  _c_hit=0; _c_never=0
+  while IFS=$'\t' read -r _c_i _c_v _c_k; do
+    [ -n "${_c_i:-}" ] || continue
+    case "$_c_v" in
+      never) _c_never=$((_c_never + 1)) ;;
+      miss) JOB_CKEY[$_c_i]="$_c_k" ;;
+      hit)
+        [ -f "$JOBDIR/$_c_i.out" ] || continue
+        printf 'parse_rc=0\nrc=0\ncov_rc=0\nelapsed=0\nwall_ms=0\ncpu_ms=0\nfirst_ms=0\nrerun_rc=0\nretried=0\nfirst_rc=0\nstarted_at=0\nended_at=0\n' > "$JOBDIR/$_c_i.status.part"
+        mv -f "$JOBDIR/$_c_i.status.part" "$JOBDIR/$_c_i.status"
+        JOB_CHIT[$_c_i]=1; JOB_LAUNCHED[$_c_i]=1; _c_hit=$((_c_hit + 1))
+        if [ "${JOB_LANE[$_c_i]}" = exclusive ]; then EXCLUSIVE_OWED=$((EXCLUSIVE_OWED - 1)); else NONEXCL_LEFT=$((NONEXCL_LEFT - 1)); fi ;;
+    esac
+  done <<< "$_c_plan"
+  printf 'runner: verdict cache — %s of %s jobs replayed from a green with the same inputs, %s never cached, %s run (HW_TEST_NO_CACHE=1 runs cold)\n' \
+    "$_c_hit" "$JOB_TOTAL" "$_c_never" "$((JOB_TOTAL - _c_hit - _c_never))" >&2
+fi
 
 # THE SUBJECTS THAT NEED THE MACHINE ALONE RUN LAST, ALWAYS (goal of 2026-10-16:
 # "sus tests que necesitan la máquina sola corren al final"). They used to go FIRST
@@ -2273,6 +2356,11 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
       "$(basename "$f")" "$cov_rc" "$(cat "$JOBDIR/$_i.cov" 2>/dev/null || printf 'mutation-coverage printed no reason')" >&2
     _job_red 1 "setup/tests/$(basename "$f") failed mutation coverage (exit $cov_rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
   fi
+  # A GREEN THAT RAN IS STORED, once every check above passed (a red `continue`s before here, so none is ever stored); a replayed one is not stored again.
+  if [ "$CACHE_ON" = 1 ] && [ -n "${JOB_CKEY[$_i]:-}" ] && [ -z "${JOB_CHIT[$_i]:-}" ]; then
+    python3 "$HERE/verdict-cache" put "${JOB_CKEY[$_i]}" 0 "$JOBDIR/$_i.out" "${JOB_KIND[$_i]}:$(_job_name "$_i")" 2>/dev/null \
+      && CACHE_STORED="$CACHE_STORED ${JOB_CKEY[$_i]}" || true
+  fi
   rm -f "$JOBDIR/$_i.out" "$JOBDIR/$_i.err" "$JOBDIR/$_i.cov" "$JOBDIR/$_i.parse"
   _i=$((_i + 1))
   NEXT_EMIT="$_i"
@@ -2354,6 +2442,8 @@ if [ -n "$WITNESS_PID" ]; then
   if [ -s "$WITNESS_LOG" ]; then
     printf '\nnot ok - runner: %s connection(s) reached the herdr WITNESS socket that stood where the live pane'"'"'s address was — some job addressed the pane it was started from, which on a live pane is a write onto somebody'"'"'s session. First request: %s\n' \
       "$(grep -c . "$WITNESS_LOG")" "$(head -1 "$WITNESS_LOG")" >&2
+    # a run that reached the live pane vouches for none of its greens: drop what it stored
+    for _c_k in $CACHE_STORED; do python3 "$HERE/verdict-cache" forget "$_c_k" 2>/dev/null || true; done
     [ "$KEEP_GOING" = 1 ] || { abort_marker; exit 1; }
     WITNESS_RED=1
     RED_COUNT=$((RED_COUNT + 1)); [ "$RED_RC" != 0 ] || RED_RC=1

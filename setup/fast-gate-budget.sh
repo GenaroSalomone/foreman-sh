@@ -181,6 +181,14 @@ fg_drift_warn() {
 # subject's. On a cut the wrapper writes "<elapsed_s> <cap_s>" to <status-file>
 # and exits 124; the runner turns that into the red line.
 #
+# FROZEN TIME IS NOT TEST TIME (2026-10-21: the cut of 0.5.0-rc.1 sat 15 h under
+# the one-test-at-a-time freezer, which SIGSTOPs a unit's tree under 20% free
+# memory). The ceiling counts the time the subject was RUNNING: a tick that found
+# its process group stopped (every live member in state T) is not spent, and
+# neither is the excess of a tick that took over 5 s longer than its wait (the
+# wrapper frozen with it). A subject frozen 2 h that then finishes in budget is
+# green. The cut line says how much frozen time it did not count. Held by tests/1100.
+#
 # NATIVE WINDOWS (Git Bash: native python, sys.platform win32) has neither
 # killpg nor SIGKILL, and start_new_session makes no group there: the cut is
 # `taskkill /T /F`, which ends the subject and the tree it spawned. And there
@@ -239,19 +247,51 @@ if job:
     ntdll.NtResumeProcess(int(p._handle))
 else:
     p = subprocess.Popen(cmd, start_new_session=True)
-t0 = last = time.time()
-spent, rc = 0.0, None
-while rc is None:
+def ps_stats(*args):
     try:
-        rc = p.wait(timeout=None if cap is None else max(0.05, min(1.0, (cap - spent) * stretch())))
+        return subprocess.run(["ps"] + list(args), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              universal_newlines=True, timeout=5).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return []
+def group_stopped():
+    # the freezer (one-test-at-a-time) SIGSTOPs the whole tree of a unit: stopped is every live member of
+    # the subject group in state T. The leader is read first (one cheap ps); the group only when it is stopped.
+    if windows:
+        return False
+    lead = ps_stats("-o", "stat=", "-p", str(p.pid))
+    if not lead or not lead[0].strip().startswith("T"):
+        return False
+    stats = []
+    for line in ps_stats("-axo", "pgid=,stat="):
+        f = line.split()
+        if len(f) == 2 and f[0] == str(p.pid) and not f[1].startswith("Z"):
+            stats.append(f[1])
+    return bool(stats) and all(s.startswith("T") for s in stats)
+t0 = last = time.time()
+spent, frozen, rc = 0.0, 0.0, None
+while rc is None:
+    wait = None if cap is None else max(0.05, min(1.0, (cap - spent) * stretch()))
+    try:
+        rc = p.wait(timeout=wait)
     except subprocess.TimeoutExpired:
         now = time.time()
-        spent += (now - last) / stretch()
-        last = now
+        dt, last = now - last, now
+        # FROZEN TIME IS NOT TEST TIME. A tick that found the subject group stopped did not run it; and a tick
+        # that took far longer than its wait was the wrapper itself frozen (or the machine asleep): the excess is not spent.
+        if group_stopped():
+            frozen += dt
+            continue
+        gap = dt - wait
+        if gap > 5.0:
+            frozen += gap
+            dt -= gap
+        spent += dt / stretch()
         if spent >= cap:
             break
 if rc is None:
-    elapsed = time.time() - t0
+    elapsed = time.time() - t0 - frozen
+    if frozen >= 1.0:
+        sys.stderr.write("runner: %.0fs of frozen time (process group stopped) were not counted against the ceiling\n" % frozen)
     if windows:
         if job:
             k32.TerminateJobObject(job, 1)
@@ -261,7 +301,7 @@ if rc is None:
         for sig, grace in ((signal.SIGTERM, 2), (signal.SIGKILL, None)):
             try:
                 os.killpg(p.pid, sig)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):  # a dying group answers EPERM on macOS
                 break
             try:
                 p.wait(timeout=grace)

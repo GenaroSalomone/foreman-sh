@@ -87,6 +87,17 @@ bash setup/test-hw
 prose: in these briefs a `path` and half a sentence of `VAR=1 VAR=2` are spelled
 exactly like a command, so hw does not read them — it would be executing prose.
 
+A heavy command (a subject, the fast gate, `go test` of a package, a release cut) runs as
+`setup/heavy -- <cmd>`: two slots, first come first served, the holders shown. Write
+that and nothing else about the machine: a `pgrep -f` count or a hand-typed lock
+deadlocks the executors, and `hw` refuses a brief that carries the `pgrep` one.
+
+The full suite already includes every Go partition (`setup/go-test-core.sh`): do not
+run them before it, and never a bare `go test ./...` over `core/` with `HW_INPROC_ALL=1`
+(it starts the monolithic TestC848 and never finishes; `core/main_test.go` exits 2 on it).
+A partition is `setup/go-test-core.sh <name>` (`--list` names them), alone only when the
+brief's change can reach just that one.
+
 Anything else here — which directions to run it in, what a fixture must pin, how
 to reproduce the old behaviour — is for the executor and hw never touches it.
 
@@ -125,7 +136,8 @@ paste a secret into a pane.>
 
 ## When you finish
 If engram is set up, `mem_save` the findings (`<task> — findings (<date>)`,
-type `discovery`) and, if any, the open questions (type `manual`). No
+type `discovery`, `topic_key: <lane>/<task>/findings`) and, if any, the open
+questions (type `manual`, `topic_key: <lane>/<task>/open-questions`). No
 `findings.md`: engram is the one store, and `hw` has already pinned your label.
 Without engram, the report carries them. Then `done-invoker "<one paragraph:
 what you established, and the observation ids>"`. Once, last thing.

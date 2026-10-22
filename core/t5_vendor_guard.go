@@ -162,6 +162,8 @@ func (d *dsp) engramProxyArgs() {
 	case "codex":
 		d.agentArgs = vdJoinArg(d.agentArgs, `-c mcp_servers.engram.command="`+proxy+`" -c mcp_servers.engram.args=["--label","`+label+`","--","`+eng+`","mcp","--tools=agent"]`)
 		d.engramProxyLine = "-c mcp_servers.engram.*" // # MUTATION-ANCHOR: 844-B80
+	case "pi":
+		d.engramProxyLine = piEngramProxyLine // t6_pi.go: the extension registers hw_engram, nothing rides the launch line
 	}
 }
 

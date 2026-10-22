@@ -103,7 +103,7 @@ new = '        elif false; then\n          # A PLAIN MESSAGE'
 assert s.count(old) == 1
 open(p, "w").write(s.replace(old, new))
 PY
-chmod +x "$M1/channel-send"
+chmod +x "$M1/channel-send"; pin_bash "$M1/channel-send"  # a mutant of the bash source runs on bash whatever HW_IMPL the suite runs under
 : > "$LOG"; : > "$SENT"; : > "$TMP/witness-count"
 PATH="$STUB:$PATH" HW_INVOKER_WAIT_MS=300 MSG_HUMAN=0 MSG_WITNESS=static \
   WITNESS_SAMPLES=2 WITNESS_INTERVAL_S=0 WITNESS_COUNT_FILE="$TMP/witness-count" \

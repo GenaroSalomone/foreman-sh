@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+# setup/heavy [--tag T] -- <cmd…>   run <cmd> holding one heavy-run slot.   setup/heavy --status   who holds, who waits.
+# setup/heavy --short [--max S] [--tag T] -- <cmd…>   the SHORT LANE: a job of seconds does not queue behind a run of hours.
+#
+# THE MACHINE RUNS ONE HEAVY JOB AT A TIME (HW_HEAVY_SLOTS=2 opts into a second while it has memory: two heavy
+# runs lagged the Mac on 2026-10-18, so one is the default). A subject, the fast gate, `go test` of a
+# package, a release cut: run it as `setup/heavy -- <cmd>`, never behind a hand-typed lock and never behind a
+# `pgrep -f` count (that one matches the waiters' own `zsh -c until …` loops and every waiter waits on the others:
+# measured 2026-10-18, four executors ~2h17).
+#
+#   slot 1   ~/.cache/hw/heavy.lock     (the lock the briefs already running take by hand: compatible)
+#   slot 2   ~/.cache/hw/heavy.lock.2   only while >= HW_HEAVY_MIN_FREE (20) percent of memory is free
+#            (macOS `memory_pressure`, Linux MemAvailable/MemTotal); HW_HEAVY_SLOTS (default 1; 2 opens slot 2) is how many slots exist
+#   queue    ~/.cache/hw/heavy.queue/   one ticket per waiter, FIFO: only the head may take a free slot, and only
+#            the head reclaims a slot whose owner pid is dead (so two reclaimers never race). A ticket whose pid
+#            is dead is dropped.
+#   log      ~/.cache/hw/heavy.log      `start end wall rc tag cmd` per run: the measured durations a report quotes
+#
+# THE SHORT LANE (`--short [--max S]`, default and cap 120 s) runs BESIDE a holder of slot 1, never behind the slot queue:
+# build-core takes 11 s and once waited ~6100 s behind a 14104 s release run . One short job at a time
+# (lock ~/.cache/hw/heavy.short.lock, FIFO among shorts in ~/.cache/hw/heavy.short.queue), because a short job adds load
+# to the heavy one beside it: the cap and the one-at-a-time are what bound it. A short job still running at its cap is
+# sent TERM, then KILL after HW_HEAVY_SHORT_GRACE (5 s), and setup/heavy exits 124 saying so. heavy.log tags its line
+# `short:<tag>`. Only a job that really is short belongs there: anything that can pass 120 s takes a slot.
+# Every command setup/heavy runs sees HW_HEAVY_RUNNING=1, so a script that opts into the short lane on its own
+# (setup/build-core) does not queue a second time when it is already inside a slot or a short job.
+#
+# While it waits it says, once a minute on stderr, who holds each slot (tag, pid, elapsed) and your position.
+# It releases on exit and on INT/TERM (the command's process group is TERMed) and exits with the command's own
+# code (128+N for a signal). It removes only a lock whose owner file names its own pid.
+#
+# A run that cannot make progress says so (2026-10-20: a release cut sat frozen 15 h, SIGSTOPped by the
+# `one-test-at-a-time` LaunchAgent, and nobody was told). This file only READS that guard's published numbers; it never
+# touches the guard or its thresholds.
+#   preflight  as the command starts, free memory under HW_HEAVY_RESUME_FREE (26, the guard's resume line) prints one
+#              warning and the 5 biggest processes by RSS, then starts anyway; HW_HEAVY_REQUIRE_FREE=1 refuses (exit 75)
+#   watchdog   while the command runs, every HW_HEAVY_WATCH (60 s) its process tree is read; mostly state T for
+#              HW_HEAVY_FROZEN_ALERT_MIN (20) minutes writes ONE line to ~/.cache/hw/heavy-alerts.log and, with
+#              HW_INVOKER_PANE set, `channel-send --report`s it to that pane. One alert per frozen stretch; a thaw re-arms.
+#              `--status` shows `FROZEN since HH:MM` on the holder as soon as the watchdog has seen it frozen.
+#
+# HW_HEAVY_DIR (the directory above), HW_HEAVY_POLL (5 s), HW_HEAVY_REPORT (60 s) and HW_HEAVY_FREE (force the
+# free-memory reading, in percent) exist for the subject that holds this file (tests/1040), and so do HW_HEAVY_CLOCK
+# (a file holding the epoch the watchdog uses as "now") and HW_HEAVY_CHANNEL_SEND (the delivery command).
+set -u
+
+D="${HW_HEAVY_DIR:-$HOME/.cache/hw}"
+Q="$D/heavy.queue"
+LOG="$D/heavy.log"
+SLOTS="${HW_HEAVY_SLOTS:-1}"
+MINFREE="${HW_HEAVY_MIN_FREE:-20}"
+POLL="${HW_HEAVY_POLL:-5}"
+REPORT="${HW_HEAVY_REPORT:-60}"
+RESUME_FREE="${HW_HEAVY_RESUME_FREE:-26}"        # one-test-at-a-time resumes over this; a mirror of its number, not a control of it
+WATCH="${HW_HEAVY_WATCH:-60}"
+FROZEN_MIN="${HW_HEAVY_FROZEN_ALERT_MIN:-20}"
+ALERTS="$D/heavy-alerts.log"
+SQ="$D/heavy.short.queue"
+SL="$D/heavy.short.lock"
+SHORT_CAP=120
+GRACE="${HW_HEAVY_SHORT_GRACE:-5}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: setup/heavy [--tag T] -- <cmd…>    run <cmd> in a heavy slot (FIFO), keep its exit code
+       setup/heavy --short [--max S] [--tag T] -- <cmd…>
+                                          run <cmd> in the short lane beside the slot holder: one short job at a
+                                          time, killed at S seconds (default and cap 120) with exit 124
+       setup/heavy --status               print holders and queue once
+EOF
+  exit 2
+}
+
+lockdir() { if [ "$1" = 1 ]; then printf '%s' "$D/heavy.lock"; else printf '%s' "$D/heavy.lock.$1"; fi; }
+alive() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
+now() { date +%s; }
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+elapsed() {  # seconds -> 4m02s
+  local s="$1"
+  case "$s" in ''|*[!0-9]*) printf '?'; return ;; esac
+  if [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+  else printf '%dm%02ds' $((s / 60)) $((s % 60)); fi
+}
+
+free_reading() {  # percent free, or nothing when this machine cannot say
+  local v
+  if [ -n "${HW_HEAVY_FREE:-}" ]; then printf '%s' "$HW_HEAVY_FREE"; return; fi
+  if [ -r /proc/meminfo ]; then
+    v="$(awk '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{if (t>0) printf "%d", a*100/t}' /proc/meminfo)"
+  else
+    v="$(memory_pressure 2>/dev/null | awk '/free percentage/{print $NF+0}')"
+  fi
+  printf '%s' "$v"
+}
+free_pct() { local v; v="$(free_reading)"; printf '%s' "${v:-0}"; }
+
+# The watchdog's "now" is a file when a subject stubs the clock, the real clock otherwise.
+wnow() {
+  local v
+  if [ -n "${HW_HEAVY_CLOCK:-}" ] && read -r v < "$HW_HEAVY_CLOCK" 2>/dev/null && [ -n "$v" ]; then printf '%s' "$v"; else now; fi
+}
+hhmm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || printf '?'; }  # BSD, then GNU
+
+# An owner file is `tag pid start-epoch`; the interim helper wrote HH:MM, a brief's hand loop wrote no third field.
+# Sets OTAG OPID OSTART; all empty when there is no owner file (a slot being taken, or taken by something older).
+read_owner() {
+  OTAG=""; OPID=""; OSTART=""
+  [ -r "$1/owner" ] && read -r OTAG OPID OSTART < "$1/owner" 2>/dev/null
+  return 0
+}
+
+holder_text() { holder_text_at "$(lockdir "$1")"; }
+holder_text_at() {  # <lock dir> -> "tag pid N 4m02s" | "free" | "dead (tag pid N)" | "owner unknown"
+  local L="$1" t
+  [ -d "$L" ] || { printf 'free'; return; }
+  read_owner "$L"
+  if [ -z "$OPID" ]; then printf 'taken, owner not written yet'; return; fi
+  if alive "$OPID"; then
+    case "$OSTART" in ''|*[!0-9]*) t="since $OSTART" ;; *) t="$(elapsed $(($(now) - OSTART)))" ;; esac
+    printf '%s pid %s %s' "$OTAG" "$OPID" "$t"
+    if [ -s "$L/frozen" ]; then read -r t < "$L/frozen"; printf '  FROZEN since %s' "$(hhmm "$t")"; fi  # MUTATION-ANCHOR: 1040-H10
+  else
+    printf 'DEAD holder (%s pid %s)' "$OTAG" "$OPID"
+  fi
+}
+
+live_tickets() {  # [queue dir] live ticket names, oldest first; a ticket whose pid is dead is dropped
+  local f n q="${1:-$Q}"
+  for f in "$q"/*; do
+    [ -e "$f" ] || continue
+    n="${f##*/}"
+    if alive "${n#*.}"; then printf '%s\n' "$n"; else rm -f "$f"; fi  # MUTATION-ANCHOR: 1040-H06
+  done
+}
+
+status_text() {  # <my ticket or ''>
+  local k pos=0 i=0 t total free
+  free="$(free_pct)"
+  for k in $(seq 1 "$SLOTS"); do
+    printf 'heavy: slot %s: %s' "$k" "$(holder_text "$k")"
+    [ "$k" -ge 2 ] && printf '  (needs >= %s%% memory free; now %s%%)' "$MINFREE" "$free"
+    printf '\n'
+  done
+  total=0
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    total=$((total + 1))
+    [ "$t" = "${1:-}" ] && pos="$total"
+  done <<EOF
+$(live_tickets)
+EOF
+  if [ "$total" = 0 ]; then printf 'heavy: queue: empty\n'
+  else
+    i=0
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      i=$((i + 1))
+      printf 'heavy: queue %s: %s pid %s%s\n' "$i" "$(cat "$Q/$t" 2>/dev/null)" "${t#*.}" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
+    done <<EOF
+$(live_tickets)
+EOF
+  fi
+  [ "$pos" = 0 ] || printf 'heavy: you are %s of %s\n' "$pos" "$total"
+  printf 'heavy: short lane: %s  (<= %ss each, one at a time, beside slot 1)\n' "$(holder_text_at "$SL")" "$SHORT_CAP"
+  i=0
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    i=$((i + 1))
+    printf 'heavy: short queue %s: %s pid %s%s\n' "$i" "$(cat "$SQ/$t" 2>/dev/null)" "${t#*.}" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
+  done <<EOF
+$(live_tickets "$SQ")
+EOF
+}
+
+# ── --status ────────────────────────────────────────────────────────────────
+TAG="${HW_TASK:-$(basename "$PWD")}"
+SHORT=0; MAX=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --status) mkdir -p "$Q" "$SQ"; status_text ""; exit 0 ;;  # MUTATION-ANCHOR: 1040-H07
+    --short) SHORT=1; shift ;;
+    --max) [ $# -ge 2 ] || usage; MAX="$2"; shift 2 ;;
+    --max=*) MAX="${1#--max=}"; shift ;;
+    --tag) [ $# -ge 2 ] || usage; TAG="$2"; shift 2 ;;
+    --tag=*) TAG="${1#--tag=}"; shift ;;
+    -h|--help) usage ;;
+    --) shift; break ;;
+    *) usage ;;
+  esac
+done
+[ $# -gt 0 ] || usage
+TAG="$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9._-' '_')"
+case "$SLOTS" in ''|*[!0-9]*|0) echo "setup/heavy: HW_HEAVY_SLOTS must be a positive number, not '$SLOTS'" >&2; exit 2 ;; esac
+
+if [ -n "$MAX" ] && [ "$SHORT" = 0 ]; then echo "setup/heavy: --max belongs to --short" >&2; exit 2; fi
+if [ "$SHORT" = 1 ]; then
+  MAX="${MAX:-$SHORT_CAP}"
+  case "$MAX" in ''|*[!0-9]*|0) echo "setup/heavy: --max must be a positive number of seconds, not '$MAX'" >&2; exit 2 ;; esac
+  if [ "$MAX" -gt "$SHORT_CAP" ]; then echo "setup/heavy: --max $MAX is over the short lane's cap: using $SHORT_CAP s (a longer job takes a slot)" >&2; MAX="$SHORT_CAP"; fi
+  MYQ="$SQ"
+else
+  MYQ="$Q"
+fi
+mkdir -p "$MYQ" || exit 1
+
+HOLD=""; MYT=""; CPID=""; WPID=""; WD=""; CAPFILE=""
+
+stop_watch() {  # the watchdog's own process group, so its `sleep` goes with it
+  [ -n "$WPID" ] || return 0
+  kill -TERM -- "-$WPID" 2>/dev/null || kill "$WPID" 2>/dev/null
+  wait "$WPID" 2>/dev/null; WPID=""
+}
+
+release() {  # only what this process took
+  stop_watch
+  [ -z "$MYT" ] || rm -f "$MYQ/$MYT"
+  if [ -n "$HOLD" ]; then
+    read_owner "$HOLD"
+    [ "$OPID" = "$$" ] && rm -rf "$HOLD"
+    HOLD=""
+  fi
+}
+on_signal() {  # <exit code>
+  trap '' INT TERM
+  [ -z "$WD" ] || kill -KILL -- "-$WD" 2>/dev/null
+  if [ -n "$CPID" ]; then
+    kill -TERM -- "-$CPID" 2>/dev/null || kill -TERM "$CPID" 2>/dev/null  # MUTATION-ANCHOR: 1040-H05
+    wait "$CPID" 2>/dev/null
+  fi
+  release
+  exit "$1"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap release EXIT
+set -m   # the command gets its own process group, so a signal reaches everything it started
+
+# A name that sorts by arrival: nanoseconds when python3 has them, seconds+pid otherwise.
+stamp="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)"
+[ -n "$stamp" ] || stamp="$(now)000000000"
+MYT="$stamp.$$"
+printf '%s\n' "$TAG" > "$MYQ/$MYT"
+
+# A slot whose owner pid is dead is the head's to reclaim, and it says so. An owner file that never appeared is
+# given a minute: the lock is made with mkdir, and the owner written a moment later.
+reclaim_if_stale() { reclaim_at "$(lockdir "$1")" "slot $1"; }
+reclaim_at() {  # <lock dir> <what to call it>
+  local L="$1"
+  [ -d "$L" ] || return 0
+  read_owner "$L"
+  if [ -n "$OPID" ]; then
+    alive "$OPID" && return 0  # MUTATION-ANCHOR: 1040-H02
+    echo "setup/heavy: $2 is held by $OTAG (pid $OPID), which is dead — reclaiming it" >&2
+    rm -rf "$L"
+  elif [ $(($(now) - $(mtime "$L"))) -gt 60 ]; then
+    echo "setup/heavy: $2 has been taken for over a minute and names no owner — reclaiming it" >&2
+    rm -rf "$L"
+  fi
+}
+
+last=0; first=1
+while :; do
+  head="$(live_tickets "$MYQ" | head -n 1)"  # MUTATION-ANCHOR: 1040-H01
+  if [ "$head" = "$MYT" ] && [ "$SHORT" = 1 ]; then
+    reclaim_at "$SL" "the short lane"
+    if mkdir "$SL" 2>/dev/null; then HOLD="$SL"; break; fi  # MUTATION-ANCHOR: 1040-H14
+  elif [ "$head" = "$MYT" ]; then
+    k=1
+    while [ "$k" -le "$SLOTS" ]; do
+      L="$(lockdir "$k")"
+      reclaim_if_stale "$k"
+      if [ "$k" -ge 2 ] && [ "$(free_pct)" -lt "$MINFREE" ]; then k=$((k + 1)); continue; fi  # MUTATION-ANCHOR: 1040-H03
+      if mkdir "$L" 2>/dev/null; then HOLD="$L"; break 2; fi
+      k=$((k + 1))
+    done
+  fi
+  t="$(now)"
+  if [ "$first" = 1 ] || [ $((t - last)) -ge "$REPORT" ]; then
+    first=0; last="$t"
+    if [ "$SHORT" = 1 ]; then echo "setup/heavy: $TAG is waiting for the short lane" >&2
+    else echo "setup/heavy: $TAG is waiting for a heavy slot" >&2; fi
+    status_text "$MYT" | sed 's/^/  /' >&2
+  fi
+  sleep "$POLL" & wait $!
+done
+
+printf '%s %s %s\n' "$TAG" "$$" "$(now)" > "$HOLD/owner"
+rm -f "$MYQ/$MYT"; MYT=""
+if [ "$SHORT" = 1 ]; then echo "setup/heavy: $TAG took the short lane (cap ${MAX}s)" >&2
+else echo "setup/heavy: $TAG took $(basename "$HOLD")" >&2; fi
+
+# PREFLIGHT. Under the guard's resume line the run will be SIGSTOPped as soon as it grows; say so now, with what is eating
+# the memory. A warning, not a refusal, unless HW_HEAVY_REQUIRE_FREE=1. A machine that cannot read its memory says nothing.
+preflight() {
+  local f; f="$(free_reading)"
+  case "$f" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$f" -lt "$RESUME_FREE" ] || return 0  # MUTATION-ANCHOR: 1040-H09
+  echo "heavy: free memory ${f}% is under the guard's resume line (${RESUME_FREE}%) — this run will be frozen until it rises" >&2
+  echo "heavy: top 5 processes by RSS:" >&2
+  ps -A -o rss=,pid=,comm= 2>/dev/null | sort -rn | head -n 5 \
+    | awk '{ r = $1; $1 = ""; p = $2; $2 = ""; sub(/^ +/, ""); printf "heavy:   %7.0f MB  pid %s  %s\n", r / 1024, p, $0 }' >&2
+  if [ "${HW_HEAVY_REQUIRE_FREE:-}" = 1 ]; then
+    echo "setup/heavy: HW_HEAVY_REQUIRE_FREE=1 and ${f}% is free — refusing to start $TAG (exit 75)" >&2
+    exit 75
+  fi
+}
+
+# WATCHDOG. Reads the holder's process tree (the command's own process group leader and every descendant) once per HW_HEAVY_WATCH;
+# when more than half of it is in state T it is frozen. Lives in a subshell of this script, which the guard's patterns do not match.
+tree_frozen() {  # <root pid> -> 0 when the tree is mostly stopped
+  ps -A -o pid=,ppid=,stat= 2>/dev/null | awk -v root="$1" '
+    { kid[$1] = $2; st[$1] = $3 }
+    END {
+      tot = 0; stopped = 0
+      for (p in kid) {
+        q = p; ok = 0; hops = 0
+        while (hops < 64) { if (q == root) { ok = 1; break } if (!(q in kid)) break; q = kid[q]; hops++ }
+        if (!ok) continue
+        tot++; if (substr(st[p], 1, 1) == "T") stopped++
+      }
+      exit !(tot > 0 && stopped * 2 > tot)  # MUTATION-ANCHOR: 1040-H12
+    }'
+}
+alert_frozen() {  # <since-epoch> <now-epoch>
+  local mins=$(($2 - $1)) msg rc cs
+  mins=$((mins / 60))
+  msg="heavy: $TAG (pid $CPID) has been FROZEN since $(hhmm "$1") ($mins min): its process tree is stopped (state T), most likely by the one-test-at-a-time guard; free memory is ${3}% and the guard resumes over ${RESUME_FREE}%"
+  printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$msg" >> "$ALERTS"
+  [ -n "${HW_INVOKER_PANE:-}" ] || return 0
+  cs="${HW_HEAVY_CHANNEL_SEND:-$HEAVY_BIN/channel-send}"
+  rc=0; "$cs" --report herdr "$HW_INVOKER_PANE" - "$msg" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 0 ] || printf '%s heavy: the alert above did not reach pane %s (channel-send exit %s)\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$HW_INVOKER_PANE" "$rc" >> "$ALERTS"
+}
+watch_frozen() {  # <command pid> <lock dir>
+  local since="" alerted=0 t
+  while kill -0 "$1" 2>/dev/null; do
+    sleep "$WATCH" & wait $!
+    if tree_frozen "$1"; then
+      t="$(wnow)"
+      if [ -z "$since" ]; then since="$t"; alerted=0; printf '%s\n' "$since" > "$2/frozen.$$" && mv -f "$2/frozen.$$" "$2/frozen"; fi
+      if [ "$alerted" = 0 ] && [ $((t - since)) -ge $((FROZEN_MIN * 60)) ]; then  # MUTATION-ANCHOR: 1040-H11  # MUTATION-ANCHOR: 1040-H13
+        alerted=1; alert_frozen "$since" "$t" "$(free_pct)"
+      fi
+    elif [ -n "$since" ]; then
+      since=""; alerted=0; rm -f "$2/frozen"
+    fi
+  done
+}
+HEAVY_BIN="$(cd -P "$(dirname "$0")/../bin" 2>/dev/null && pwd)"
+
+preflight
+
+export HW_HEAVY_RUNNING=1
+start="$(now)"; start_iso="$(date +%Y-%m-%dT%H:%M:%S)"
+"$@" <&0 &
+CPID=$!
+watch_frozen "$CPID" "$HOLD" & WPID=$!
+if [ "$SHORT" = 1 ]; then
+  # the watchdog: at the cap, TERM to the command's group, KILL after the grace. It sleeps in its own group so it can be
+  # taken down whole once the command is over.
+  CAPFILE="$HOLD/capped"
+  ( sleep "$MAX"; : > "$CAPFILE"; kill -TERM -- "-$CPID" 2>/dev/null; sleep "$GRACE"; kill -KILL -- "-$CPID" 2>/dev/null ) &  # MUTATION-ANCHOR: 1040-H15
+  WD=$!
+fi
+wait "$CPID"; rc=$?
+if [ -n "$WD" ]; then
+  kill -KILL -- "-$WD" 2>/dev/null || kill -KILL "$WD" 2>/dev/null
+  wait "$WD" 2>/dev/null
+  WD=""
+  if [ -e "$CAPFILE" ]; then
+    kill -KILL -- "-$CPID" 2>/dev/null  # whatever outlived the TERM
+    rc=124
+    echo "setup/heavy: short job $TAG was still running at its cap of ${MAX}s: killed, exit 124" >&2
+  fi
+fi
+CPID=""
+stop_watch
+end="$(now)"; end_iso="$(date +%Y-%m-%dT%H:%M:%S)"
+LOGTAG="$TAG"; [ "$SHORT" = 0 ] || LOGTAG="short:$TAG"
+printf '%s %s %s %s %s %s\n' "$start_iso" "$end_iso" $((end - start)) "$rc" "$LOGTAG" "$*" >> "$LOG"  # MUTATION-ANCHOR: 1040-H08
+release
+exit "$rc"  # MUTATION-ANCHOR: 1040-H04

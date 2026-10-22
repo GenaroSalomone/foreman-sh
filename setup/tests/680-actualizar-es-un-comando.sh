@@ -366,6 +366,7 @@ mutate_hw() {  # a copy of the brain, its hw never asking
   rm -rf "$TMP/mut-brain-hw"; cp -R "$BR" "$TMP/mut-brain-hw"
   replace_in "$TMP/mut-brain-hw/bin/hw" '  _status_par_start release _release_quiet
 ' ''
+  pin_bash "$TMP/mut-brain-hw/bin/hw"  # a mutant of the bash source runs on bash whatever HW_IMPL the suite runs under
 }
 mutate_hw
 rm -f "$TMP/mut-brain-hw/.foreman/latest-release.json"

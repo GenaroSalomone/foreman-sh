@@ -215,9 +215,24 @@ exempt_arms() {
     ARMS="$(printf '%s\n' "$DECLARING" \
       | awk '{ while (match($0, /M[0-9]+[A-Za-z0-9]*/)) { print substr($0, RSTART, RLENGTH); $0 = substr($0, RSTART + RLENGTH) } }' | sort -u)"
     UNNAMED="$(printf '%s\n' "$DECLARING" | grep -cvE 'M[0-9]+' || true)"
-    if [ -n "$ARMS" ] && [ -r "$EXEMPT_LIST" ]; then
+    # A subject whose arms live in another language (1041: the Go anchors of core/) declares them on a line that
+    # carries no `M<n>` id. The list names that one case with the arm `<unnamed>`, a reason, and nothing else: the
+    # exemption holds only for a subject whose declared arms are ALL listed, unnamed ones included.
+    if { [ -n "$ARMS" ] || [ "${UNNAMED:-0}" -gt 0 ]; } && [ -r "$EXEMPT_LIST" ]; then # MUTATION-ANCHOR: 46-M17
       exempt="" missing=""
-      [ "${UNNAMED:-0}" -eq 0 ] || missing=" (${UNNAMED} declared with no arm name)" # MUTATION-ANCHOR: 46-M14
+      if [ "${UNNAMED:-0}" -gt 0 ]; then
+        reason="$(awk -F '\t' -v s="$SUBJECT_NAME" \
+          '$1 !~ /^#/ && $1 == s && $2 == "<unnamed>" && $3 ~ /[^[:space:]]/ { print $3; exit }' "$EXEMPT_LIST")"
+        if [ -z "$reason" ]; then
+          missing=" (${UNNAMED} declared with no arm name)" # MUTATION-ANCHOR: 46-M14
+        elif ! grep -Eq '^ok - .*: skipped on [^ ]+ — ' "$OUTPUT"; then # MUTATION-ANCHOR: 46-M18
+          # Listed is not enough for arms nobody can name: the run itself must say it skipped, and where.
+          missing=" (${UNNAMED} unnamed arms are listed, but the run printed no 'ok - <subject>: skipped on <os> — <reason>' line)"
+        else
+          exempt="$(printf 'exempt - %s %s on %s: %s' "$SUBJECT_NAME" "<unnamed>" "$2" "$reason")
+"
+        fi
+      fi
       for arm in $ARMS; do
         reason="$(awk -F '\t' -v s="$SUBJECT_NAME" -v a="$arm" \
           '$1 !~ /^#/ && $1 == s && $2 == a && $3 ~ /[^[:space:]]/ { print $3; exit }' "$EXEMPT_LIST")"

@@ -42,6 +42,9 @@ copy_tree() {
   # decision suite runs every vector through it.
   cp "$ROOT/setup/guards/deny-repo-writes-codex.py" "$dst/brain/setup/guards/"
   cp "$ROOT/setup/guards/deny-repo-writes-vectors.json" "$dst/brain/setup/guards/"
+  # The batch entry that answers the decision driver's Python and Codex vectors
+  # in one process; the mutant below breaks only its wiring.
+  cp "$ROOT/setup/guards/hook-batch.py" "$dst/brain/setup/guards/"
   # THE POLICY THE MODULES READ, from `<root>/guards.json` beside `setup/`. A
   # copy without it would not load at all, and every arm would read VACUOUS.
   cp "$ROOT/guards.json" "$dst/brain/"
@@ -86,9 +89,11 @@ PY
   filesystem_rc=0
   # ONLY THE DRIVER THIS MUTANT IS JUDGED BY RUNS, AND IT STOPS AT ITS FIRST
   # FAILURE: the verdict below reads `$expected.txt`'s first `not ok -` line and
-  # that driver's exit, nothing else. The decision driver is ~5500 python3
+  # that driver's exit, nothing else. The decision driver was ~5500 python3
   # spawns (~70s of CPU); run in full for all 77 mutants, including the three
-  # judged by the filesystem driver, it made this arm ~1949s (2026-09-30).
+  # judged by the filesystem driver, it made this arm ~1949s (2026-09-30). Since
+  # 2026-10-20 its Python and Codex vectors go through one `hook-batch.py`
+  # process and a fixed sample keeps the real spawn (see the driver's header).
   if [ "$expected" = decision ]; then
     DENY_GUARD_FAIL_FAST=1 DENY_GUARD_ROOT="$dir/brain" node "$ROOT/setup/guards/test-deny-repo-writes.mjs" >"$dir/decision.txt" 2>&1 || decision_rc=$?
   fi
@@ -157,6 +162,16 @@ mutate python-malformed-tool-input "$GUARD_PY" \
   "    if not isinstance(tool_input, dict):" "    if False:"
 mutate codex-malformed-payload "setup/guards/deny-repo-writes-codex.py" \
   "    if not isinstance(payload, dict):" "    if False:"
+
+# ── The batch entry's wiring (2026-10-20) ───────────────────────────────────
+# The decision driver answers every Python and Codex vector through
+# `hook-batch.py`, one process for all of them, and keeps a fixed sample on the
+# real `python3 <hook>` spawn whose answer must equal the batch's. A batch that
+# answers "allow" for everything breaks nothing in the guard and everything in
+# the claim: only the sample can name it, and it runs before the vectors do.
+mutate batch-answers-allow "setup/guards/hook-batch.py" \
+  '    return {"status": status, "stdout": out.getvalue(), "stderr": err.getvalue()}' \
+  '    return {"status": 0, "stdout": "", "stderr": ""}'
 
 # ── The shims, the only per-lane code left ─────────────────────────────────
 # A shim that names the wrong lane guards the wrong trees; a shim that cannot

@@ -1,7 +1,7 @@
 package main
 
 // hw ruling (bin/hw cmd_ruling) and the ruling queue it writes
-// (bin/state-witness.sh, "THE RULING QUEUE"): a correction queued into the run
+// (the bash state witness, "THE RULING QUEUE"): a correction queued into the run
 // directory of an executor that is still working, delivered at its next turn
 // end. The files are the contract — `pending-ruling.<n>`, `ruling-delivered.<n>`,
 // `transcript.log` — and executor-turn-end and done-invoker read them.

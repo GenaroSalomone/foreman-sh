@@ -244,6 +244,11 @@ func (a *app) reviveBrainGuardOn(proj string) bool {
 // recorded resume could not carry: INJECTED, NOT REPLAYED.
 func (a *app) reviveFrameworkArgs(st *reviveRunState, vendor, cmdArgs, rundir string) {
 	args := st.agentArgs
+	// pi's guard, turn-end hook and engram proxy are its extensions: policy, appended exactly as a fresh launch does.
+	if vendor == "pi" && !reviveHasWord(args, "-e "+a.reviveBrainRoot()+"/setup/pi/hw-executor.ts") { // # MUTATION-ANCHOR: 863-G26
+		ext, skills := a.revivePiArgs(st.proj)
+		args += " " + ext + " " + skills
+	}
 	if vendor == "codex" && st.permissions == "ask" {
 		if !reviveHasWord(args, "-a") {
 			args += " -a on-request" // # MUTATION-ANCHOR: 863-G25
@@ -340,4 +345,24 @@ func (a *app) reviveLaneFields(proj string) (space, artifacts string, guard bool
 		guard = false
 	}
 	return
+}
+
+// revivePiArgs is `$(_pi_extension_args)` and `$(_pi_skill_args)` as cmd_revive calls them: the dispatch's own builders
+// on a dispatch that holds the lane (cmd_revive sets PROJ) and no brief (BRIEF is never set). So a product lane's own
+// skills ARE named, and the brief's plugins are not (`_plugins_declared` of no brief is empty). A die of the extension
+// builder ends bash's subshell, which `|| _revive_die` then words; the builder's own message has already been said.
+func (a *app) revivePiArgs(proj string) (ext, skills string) {
+	d := &dsp{app: a, proj: proj} // # MUTATION-ANCHOR: 863-G32
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(exitNow); ok {
+					a.reviveDie("could not build pi's extension set") // # MUTATION-ANCHOR: 863-G31
+				}
+				panic(r)
+			}
+		}()
+		ext = d.piExtensionArgs()
+	}()
+	return ext, d.piSkillArgs()
 }

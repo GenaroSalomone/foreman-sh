@@ -28,7 +28,10 @@ least, and reruns ONLY:
   · the subjects that carry a mutant anchored on a changed file
     (setup/mutation-anchors.tsv);
   · the guard jobs, when a guard changed;
-  · any job T1 never ran (a new subject).
+  · any job T1 never ran (a new subject);
+  · of the in-process suite (setup/go-test-core.sh), only the partitions the fast gate's own map says the diff
+    reaches, the ones red in T1 and the ones T1 never ran (`go-test-core.sh:<partition>` lines of the job list,
+    `go-test-core.sh:-` for none); every other partition keeps the row it had. Without that map it queues them all.
 
 If all of them pass, verify-for-push caches a FULL verdict for T2 that names T1
 (`base_tree=`, `incremental=1`, `chain_depth=`) AND leaves T2's own record, so the
@@ -405,6 +408,43 @@ def anchored_subjects(root, changed, tests):
     return out
 
 
+def go_partitions(root, changed, rows):
+    """-> ({partition: why} to run, [every partition]) for the in-process suite (setup/go-test-core.sh), or (None, [])
+    when it cannot say, which leaves the whole suite queued as before.
+
+    A partition runs when the fast gate's own map says the diff can have moved it (`go-test-core.sh --affected`: what each
+    partition READS, measured, and everything for a path nobody measured), when the recorded run had it red, or when the
+    recorded run never ran it (no row, or a row named by another job shape)."""
+    script = os.path.join(root, "setup", "go-test-core.sh")
+    if not os.path.isfile(script) or not os.path.isfile(os.path.join(root, "core", "go.mod")):
+        return None, []
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    r = subprocess.run(["bash", script, "--list"], capture_output=True, text=True, cwd=root, env=env)
+    names = [l.split("\t")[0] for l in r.stdout.split("\n") if l.strip()]
+    if r.returncode != 0 or not names:
+        return None, []
+    with tempfile.NamedTemporaryFile("w", delete=False, prefix="vi-go-changed.") as fh:
+        fh.write("\n".join(changed) + "\n")
+        name = fh.name
+    try:
+        a = subprocess.run(["bash", script, "--affected", name], capture_output=True, text=True, cwd=root, env=env)
+    finally:
+        os.unlink(name)
+    if a.returncode != 0:
+        return None, []
+    affected = set(a.stdout.split())
+    sel = {}
+    for n in names:
+        row = rows.get("go-test-core.sh:" + n)
+        if n in affected:
+            sel[n] = "go-test-core.sh --affected <- the diff"
+        elif row is None:
+            sel[n] = "a partition the recorded run never ran"
+        elif row[1] == "red":
+            sel[n] = "red in the recorded run"  # MUTATION-ANCHOR: 1090-M05
+    return sel, names
+
+
 def cmd_plan(root, full, out, expect_tree=None):
     def fallback(why):
         print("full %s" % why)
@@ -510,15 +550,23 @@ def cmd_plan(root, full, out, expect_tree=None):
     present = set(tests) | set(GUARD_JOBS)
     run = {k: v for k, v in run.items() if k in present}
     total = len(present)
-    if not run:
+    go_sel, go_all = go_partitions(root, changed, rows)  # MUTATION-ANCHOR: 1090-M03
+    if not run and not go_sel:
         return fallback("nothing selected — refusing an empty run")
 
-    print("incremental base_tree=%s base_commit=%s files=%d commits=%d jobs=%d of %d chain_depth=%d"
-          % (base, rec["head"].get("commit", ""), len(changed), dist, len(run), total, record_depth(rec["head"]) + 1))
+    parts = " partitions=%d of %d" % (len(go_sel), len(go_all)) if go_sel is not None else ""
+    print("incremental base_tree=%s base_commit=%s files=%d commits=%d jobs=%d of %d%s chain_depth=%d"
+          % (base, rec["head"].get("commit", ""), len(changed), dist, len(run), total, parts, record_depth(rec["head"]) + 1))
     for name in sorted(run):
         print("run %s %s" % (name, run[name]))
+    lines = sorted(run)
+    if go_sel is not None:
+        for n in sorted(go_sel):
+            print("run go-test-core.sh:%s %s" % (n, go_sel[n]))
+        # `go-test-core.sh:-` is the positive "none": no line at all would leave the whole in-process suite queued
+        lines += ["go-test-core.sh:" + n for n in sorted(go_sel)] or ["go-test-core.sh:-"]  # MUTATION-ANCHOR: 1090-M04
     if out:
-        write_atomic(out, "\n".join(sorted(run)) + "\n")
+        write_atomic(out, "\n".join(lines) + "\n")
     return 0
 
 

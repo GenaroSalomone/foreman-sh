@@ -53,14 +53,30 @@ set -euo pipefail
 case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
 # ── hw-core: this tool as a Go binary (core/channel_send*.go) ───────────────────────────────────────────
-# THE DEFAULT IS BASH, and the bash below is the rollback. HW_IMPL_CHANNEL_SEND (else HW_IMPL) = `go` execs
-# `hw-core channel-send` with the same argv, stdin and environment; anything else (bash, shadow, unset) runs the
-# bash below. The Go answers the same command line with the same stdout, stderr, exit codes and on-disk effects
+# THE DEFAULT IS GO, and the bash below is the rollback. HW_IMPL_CHANNEL_SEND (else HW_IMPL, else the switch file, else go) = `go` execs
+# `hw-core channel-send` with the same argv, stdin and environment; `bash` and `shadow` run the
+# bash below (HW_IMPL=bash, or `default=bash` in the file, is the one-line way back). The Go answers the same command line with the same stdout, stderr, exit codes and on-disk effects
 # (core/channel_send_test.go and setup/tests/05, 26, 41, 42, 66, 101, 111, 135 hold both). hw-core is HW_CORE,
 # else beside this file, else core/dist/<os>-<arch>/ (setup/build-core builds it). A hw-core not built says so
 # once and the bash answers.
+# THE MODE resolves as hw's `_core_impl_for` and the invokers' (bin/invoker-go.sh) do: HW_IMPL_CHANNEL_SEND, else HW_IMPL,
+# else the switch file — ${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-~/.config}/hw/impl}, the `channel-send=` line, else its default
+# line — else go. A machine whose file says `bash` runs bash here too; `channel-send=bash` is the way back for this tool alone.
 _cs_impl="${HW_IMPL_CHANNEL_SEND:-${HW_IMPL:-}}"
-if [ "$_cs_impl" = go ]; then
+_cs_file="${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/hw/impl}"
+if [ -z "$_cs_impl" ] && [ -r "$_cs_file" ]; then # MUTATION-ANCHOR: 1017-M01
+  _cs_def=""
+  while IFS= read -r _cs_line || [ -n "$_cs_line" ]; do
+    _cs_line="${_cs_line%%#*}"; _cs_line="${_cs_line//[[:space:]]/}"
+    case "$_cs_line" in
+      "") ;;
+      *=*) _cs_k="$(printf '%s' "${_cs_line%%=*}" | tr 'a-z-' 'A-Z_')"; [ "$_cs_k" != CHANNEL_SEND ] || _cs_impl="${_cs_line#*=}"; [ "$_cs_k" != DEFAULT ] || _cs_def="${_cs_line#*=}" ;;  # MUTATION-ANCHOR: 1050-M09
+      *) _cs_def="$_cs_line" ;;
+    esac
+  done < "$_cs_file"
+  [ -n "$_cs_impl" ] || _cs_impl="$_cs_def"
+fi
+if [ "${_cs_impl:-go}" = go ]; then  # MUTATION-ANCHOR: 1050-M07
   _cs_src="${BASH_SOURCE[0]}"
   while [ -L "$_cs_src" ]; do
     _cs_dir="$(cd -P "$(dirname "$_cs_src")" && pwd)"
@@ -81,9 +97,9 @@ if [ "$_cs_impl" = go ]; then
   if [ -n "$_cs_core" ]; then
     HW_CORE_BIN_DIR="$_cs_bin" exec "$_cs_core" channel-send "$@"
   fi
-  printf 'channel-send: hw-core is not built (HW_IMPL=go), so the bash implementation runs — setup/build-core builds it\n' >&2
+  printf 'channel-send: hw-core is not built (the implementation is go), so the bash implementation runs — setup/build-core builds it\n' >&2
 fi
-unset _cs_impl _cs_src _cs_dir _cs_bin _cs_core _cs_os _cs_arch _cs_c
+unset _cs_impl _cs_file _cs_def _cs_line _cs_k _cs_src _cs_dir _cs_bin _cs_core _cs_os _cs_arch _cs_c
 
 # ── THE EXIT CODE A PIPE SWALLOWS ───────────────────────────────────────────
 #

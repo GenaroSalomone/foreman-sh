@@ -2,13 +2,16 @@
 # THE INSTALLER BUILDS hw-core WHEN IT CAN, MAKES THE PORTED VERBS RUN IN IT, AND SAYS WHAT IT DID NOT DO.
 #
 # 0.4.0-rc.1 ships the Go half of hw (core/, built by setup/build-core). A user who installs it gets the ported verbs
-# in Go by default and the bash implementation as the way back; the installer is what makes both true:
+# in Go by default and the bash implementation as the way back; from 0.5.0 Go is the default of every tool, so the
+# installer writes NO switch file for it, and `--no-core` writes `default=bash` (go-050 S4c). The installer is what makes both true:
 #   - with a Go toolchain of 1.22 or newer it builds hw-core into <brain>/core/dist/<os>-<arch>/ (the file bin/hw looks
 #     in), byte for byte what setup/build-core makes, and writes the switch file `go` — only when the user has none;
 #   - without Go, or with an older Go, it builds nothing, says so in one line, exits 0, writes no switch file, and hw
 #     runs bash (the same answers);
 #   - `--no-core` (and FOREMAN_SH_NO_CORE=1) builds nothing even where Go is;
-#   - with the switch file and a core, a ported verb runs in Go, and HW_IMPL=bash or HW_IMPL_<VERB>=bash goes back;
+#   - with a core and no switch file, a ported verb runs in Go (the default), and HW_IMPL=bash or HW_IMPL_<VERB>=bash goes back;
+#   - `--no-core` (a choice to stay on bash) writes `default=bash` to the switch file when there is none, and a later install that
+#     builds a core removes that file, byte for byte, and no other; no Go, an old Go or a failed build writes nothing;
 #   - a second identical run changes no file, and a switch file the user wrote is never touched;
 #   - a run that leaves no fresh hw-core (--no-core, no Go, an old Go, a failed build, a Go for another architecture)
 #     removes the one an earlier install left: an installed brain has no core/ sources, so bin/hw could never tell it
@@ -16,13 +19,16 @@
 #   - a new hw-core replaces the old FILE (a new inode), never a write into it: macOS keeps a binary's code signature
 #     per file and kills an executable rewritten in place;
 #   - a Go that builds for an architecture other than the one bin/hw looks in installs nothing and writes no switch file;
-#   - the mutants 993-M01 (an existing switch file is overwritten), 993-M02 (an old Go is accepted), 993-M03 (no
-#     switch file is written), 993-M04 (a stale hw-core is kept), 993-M05 (hw-core written in place) and 993-M06
+#   - the mutants 993-M01 (a switch file of the user's is removed, or the one --no-core wrote is kept), 993-M02 (an
+#     old Go is accepted), 993-M03 (--no-core writes no switch file), 993-M04 (a stale hw-core is kept), 993-M05 (hw-core written in place) and 993-M06
 #     (another architecture is installed) and 993-M07 (a go that fails `go version` stops the install) are each caught.
 #
 # Run by ../test-hw. Alone:  bash setup/tests/993-el-instalador-construye-hw-core.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR FOREMAN_SH_NO_CORE
+# The claim is what the INSTALLED hw does with nothing set, so the runner's choice is not an input here: _common.sh exports
+# HW_IMPL=bash when it has no hw-core to hand over (an export carries no contract-hw/), and that would answer arm 2 on bash.
+unset HW_IMPL
 command -v go >/dev/null 2>&1 || { pass "993: no Go toolchain on this machine — the build arms need one (the no-Go arm is held by 993's stub in a machine that has it)"; exit 0; }
 [ -f "$ROOT/setup/build-core" ] && [ -d "$ROOT/core" ] || { pass "993: this tree carries no core/ to build"; exit 0; }
 export GOCACHE="${GOCACHE:-$HW_GOCACHE_DEFAULT}"
@@ -45,41 +51,59 @@ inst() { "$1/install.sh" --brain "$2" --lane app --repo "$REPO" "${@:3}" 2>&1; }
 # one user, one brain: every arm reinstalls the same brain, from a state with no core and no switch file of the arm before
 fresh() { rm -rf "$HOME/b/core" "$HOME/.config/hw"; }
 
-# ── 1. with Go: the binary is built where hw looks, equal to the builder's, and the switch file says go ──────────────
+# ── 1. with Go: the binary is built where hw looks, equal to the builder's, and no switch file is written ───────────
 out="$(inst "$ROOT" "$HOME/b")" || fail "993: the install with Go failed: $(printf '%s' "$out" | tail -6)"
 BIN="$HOME/b/core/dist/$os-$arch/hw-core$ext"
 [ -x "$BIN" ] || fail "993: no hw-core at $BIN after an install with Go: $(printf '%s' "$out" | tail -8)"
 "$ROOT/setup/build-core" --native --out "$TMP/ref" >/dev/null 2>&1 || fail "993: build-core --native failed"
 cmp -s "$BIN" "$TMP/ref/$os-$arch/hw-core$ext" || fail "993: the installed hw-core is not the builder's binary"
-[ "$(grep -v '^#' "$IMPL" | tr -d '[:space:]')" = go ] || fail "993: the switch file does not say go: $(cat "$IMPL" 2>&1)"
-case "$out" in *"$IMPL"*"run in Go"*) ;; *) fail "993: the install did not say it moved the ported verbs to Go: $out" ;; esac
-pass "993: with Go the installer builds the builder's hw-core into the brain's core/dist and writes the switch file"
+[ ! -e "$IMPL" ] || fail "993: the install wrote a switch file although Go is the default: $(cat "$IMPL" 2>&1)"
+pass "993: with Go the installer builds the builder's hw-core into the brain's core/dist and writes no switch file"
 
-# ── 2. the switch file makes a ported verb run in Go, and the two switches go back ───────────────────────────────────
+# ── 2. with no switch file a ported verb runs in Go (the default), and the two switches go back ────────────────────
 printf '#!/bin/sh\necho GO-RAN "$@"\n' > "$TMP/stubcore"; chmod +x "$TMP/stubcore"
 g="$(HW_IMPL_FILE="$IMPL" HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-993 2>&1)"
-case "$g" in *"GO-RAN handle zzz-993"*) ;; *) fail "993: with the switch file at go a ported verb did not run in hw-core: $g" ;; esac
+case "$g" in *"GO-RAN handle zzz-993"*) ;; *) fail "993: with no switch file a ported verb did not run in hw-core: $g" ;; esac
 b="$(HW_IMPL=bash HW_IMPL_FILE="$IMPL" HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-993 2>&1 || true)"
 case "$b" in *GO-RAN*) fail "993: HW_IMPL=bash still ran hw-core: $b" ;; esac
 b="$(HW_IMPL_HANDLE=bash HW_IMPL_FILE="$IMPL" HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-993 2>&1 || true)"
 case "$b" in *GO-RAN*) fail "993: HW_IMPL_HANDLE=bash still ran hw-core: $b" ;; esac
-pass "993: the switch file runs a ported verb in Go; HW_IMPL=bash and HW_IMPL_<VERB>=bash go back"
+pass "993: with no switch file a ported verb runs in Go; HW_IMPL=bash and HW_IMPL_<VERB>=bash go back"
 
 # ── 3. a second run changes nothing; a switch file of the user's stays ───────────────────────────────────────────────
 out="$(inst "$ROOT" "$HOME/b")" || fail "993: the second install failed: $out"
 case "$out" in *"  +     "*) fail "993: a second identical run changed something: $(printf '%s\n' "$out" | grep '^  +')" ;; esac
-printf 'bash\n' > "$IMPL"
+mkdir -p "$(dirname "$IMPL")"; printf 'bash\n' > "$IMPL"
 out="$(inst "$ROOT" "$HOME/b")" || fail "993: an install over the user's switch file failed: $out"
 [ "$(cat "$IMPL")" = bash ] || fail "993: the install rewrote a switch file the user had: $(cat "$IMPL")"
 case "$out" in *"stays as it is"*) ;; *) fail "993: the install did not say it left the user's switch file alone: $out" ;; esac
 pass "993: a second run writes nothing, and a switch file that exists is never rewritten"
 
-# the brain now holds a hw-core of this install: a run that builds none removes it, and says so
+# the brain now holds a hw-core of this install: a run that builds none removes it, and says so (the user's file stays)
 [ -x "$BIN" ] || fail "993: the brain holds no hw-core to be found stale"
 out="$(inst "$ROOT" "$HOME/b" --no-core)" || fail "993: --no-core over a brain with a core failed: $out"
 [ ! -e "$HOME/b/core/dist" ] || fail "993: --no-core left the hw-core of the earlier install: it would keep running in Go"
 case "$out" in *"hw-core of an earlier install is removed"*) ;; *) fail "993: the removal of the old hw-core was not said: $out" ;; esac
-pass "993: a run that builds no hw-core removes the one an earlier install left"
+[ "$(cat "$IMPL")" = bash ] || fail "993: --no-core rewrote a switch file the user had: $(cat "$IMPL")"
+pass "993: a run that builds no hw-core removes the one an earlier install left, and leaves the user's switch file alone"
+
+# --no-core is a choice to stay on bash: with no switch file it writes `default=bash`, which every tool reads; a later install that
+# builds a core removes exactly that file (it would keep every tool on bash for a user who has since asked for Go), never another
+rm -f "$IMPL"
+out="$(inst "$ROOT" "$HOME/b" --no-core)" || fail "993: --no-core with no switch file failed: $out"
+[ "$(grep -v '^#' "$IMPL" | tr -d '[:space:]')" = default=bash ] || fail "993: --no-core did not write default=bash: $(cat "$IMPL" 2>&1)"
+case "$out" in *"$IMPL"*"every tool runs bash"*) ;; *) fail "993: the install did not say --no-core put every tool on bash: $out" ;; esac
+g="$(HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-993 2>&1 || true)"
+case "$g" in *GO-RAN*) fail "993: the default=bash file --no-core wrote still ran hw-core: $g" ;; esac
+out="$(inst "$ROOT" "$HOME/b" --no-core)" || fail "993: a second --no-core failed: $out"
+case "$out" in *"  +     "*) fail "993: a second identical --no-core run changed something: $(printf '%s\n' "$out" | grep '^  +')" ;; esac
+out="$(inst "$ROOT" "$HOME/b")" || fail "993: the install with Go after --no-core failed: $out"
+[ -x "$BIN" ] && [ ! -e "$IMPL" ] || fail "993: an install that builds a core left the default=bash file --no-core wrote (core: $([ -x "$BIN" ] && echo built || echo none), file: $([ -e "$IMPL" ] && echo there || echo gone))"
+case "$out" in *"the one --no-core wrote is removed"*) ;; *) fail "993: the removal of the --no-core file was not said: $out" ;; esac
+printf 'default=bash # mine\n' > "$IMPL"
+out="$(inst "$ROOT" "$HOME/b")" || fail "993: the install over a hand-written default=bash failed: $out"
+[ "$(cat "$IMPL")" = 'default=bash # mine' ] || fail "993: an install that builds a core removed or rewrote a switch file that is not the one --no-core wrote: $(cat "$IMPL" 2>&1)"
+pass "993: --no-core writes default=bash when there is none; an install that builds a core removes that exact file and no other"
 
 # ── 4. no Go, an older Go, and --no-core: nothing built, one line, exit 0, no switch file ────────────────────────────
 fresh
@@ -95,7 +119,12 @@ out="$(PATH="$PATH_NOGO" inst "$ROOT" "$HOME/b")" || fail "993: the install with
 case "$out" in *"no Go toolchain on PATH: hw-core is not built and hw runs its bash implementation"*) ;; *) fail "993: no line said hw-core was not built for lack of Go: $out" ;; esac
 [ ! -e "$HOME/b/core/dist" ] && [ ! -e "$IMPL" ] || fail "993: an install without Go left a core or a switch file behind"
 "$HOME/b/bin/hw" --version >/dev/null 2>&1 || fail "993: hw does not run in a brain installed without Go"
-pass "993: without Go the installer builds nothing, says so in one line, writes no switch file, and hw runs"
+# the line above ran hw with whatever HW_CORE the runner had (none, in an export): with the default asking for a hw-core it
+# does not have, that call may already have said it — the stamp of what was said is cleared so the next call is the first
+rm -rf "$HOME/.local/state/hw"
+w1="$(env -u HW_CORE "$HOME/b/bin/hw" help 2>&1 >/dev/null || true)"
+case "$w1" in *"hw-core is not built (default asks for go)"*) ;; *) fail "993: hw in a brain installed without Go did not say, once, that the default asked for a hw-core it does not have: $w1" ;; esac
+pass "993: without Go the installer builds nothing, says so in one line, writes no switch file, and hw runs (saying once that the default could not be Go)"
 
 fresh; OLDGO="$TMP/oldgo-bin"; mkdir -p "$OLDGO"
 printf '#!/bin/sh\necho "$@" >> "%s/go.calls"\n[ "$1" = version ] && { echo "go version go1.21.5 linux/amd64"; exit 0; }\nexit 1\n' "$TMP" > "$OLDGO/go"; chmod +x "$OLDGO/go"
@@ -109,7 +138,7 @@ out="$(PATH="$BADGO:$PATH" inst "$ROOT" "$HOME/b")" || fail "993: a go that does
 case "$out" in *"of an unreadable version is older than 1.22"*) ;; *) fail "993: a go with no version was not named: $out" ;; esac
 [ ! -e "$HOME/b/core/dist" ] && [ ! -e "$IMPL" ] || fail "993: a go with no version built something or wrote the switch file"
 fresh; out="$(inst "$ROOT" "$HOME/b" --no-core)" || fail "993: --no-core failed: $out"
-[ ! -e "$HOME/b/core/dist" ] && [ ! -e "$IMPL" ] || fail "993: --no-core built or wrote the switch file"
+[ ! -e "$HOME/b/core/dist" ] || fail "993: --no-core built a hw-core"
 pass "993: an older Go is named and builds nothing, and --no-core builds nothing even where Go is"
 
 # ── mutants of install.sh, in a source tree of its own (it installs what lies beside it), with a builder that is a stub ──
@@ -153,11 +182,17 @@ else
   pass "993: a hw-core that cannot be copied stops the install, and no switch file follows"
 fi
 
-# M01: the user's switch file is overwritten
+# M01: a switch file of the user's is removed by an install that builds a core ...
 fresh; mkdir -p "$HOME/.config/hw"; printf 'bash\n' > "$IMPL"
-fresh_src; mutate_anchor 993-M01 "$MS/install.sh" 'if false; then :'; parses 993-M01
+fresh_src; mutate_anchor 993-M01 "$MS/install.sh" 'if [ -e "$_implf" ]; then rm -f "$_implf"; chg "$_implf — removed"'; parses 993-M01
 inst "$MS" "$HOME/b" >/dev/null || true
-saw_mutant "M01 a switch file of the user's overwritten" "switch file: $(grep -v '^#' "$IMPL" | tr -d '[:space:]')" "switch file: go"
+saw_mutant "M01 a switch file of the user's removed" "switch file: $([ -e "$IMPL" ] && echo kept || echo gone)" "switch file: gone"
+# ... and the one --no-core wrote is kept by it
+fresh; fresh_src; inst "$MS" "$HOME/b" --no-core >/dev/null || true
+[ -e "$IMPL" ] || fail "993: the stub --no-core install wrote no switch file"
+mutate_anchor 993-M01 "$MS/install.sh" 'if false; then :'; parses 993-M01
+inst "$MS" "$HOME/b" >/dev/null || true
+saw_mutant "M01 the --no-core switch file kept by an install with a core" "switch file: $([ -e "$IMPL" ] && echo kept || echo gone)" "switch file: kept"
 
 # M02: an old Go is accepted
 fresh; : > "$TMP/go.calls"
@@ -165,11 +200,11 @@ fresh_src; mutate_anchor 993-M02 "$MS/install.sh" 'if [ -n "$_gov" ]; then ok "g
 PATH="$OLDGO:$PATH" inst "$MS" "$HOME/b" >/dev/null || true
 saw_mutant "M02 an old Go accepted" "core built: $([ -e "$HOME/b/core/dist/$os-$arch/hw-core$ext" ] && echo yes || echo no)" "core built: yes"
 
-# M03: no switch file is written
+# M03: --no-core writes no switch file
 fresh
 fresh_src; mutate_anchor 993-M03 "$MS/install.sh" ':'; parses 993-M03
-inst "$MS" "$HOME/b" >/dev/null || true
-saw_mutant "M03 no switch file written" "switch file: $([ -e "$IMPL" ] && echo yes || echo no)" "switch file: no"
+inst "$MS" "$HOME/b" --no-core >/dev/null || true
+saw_mutant "M03 --no-core writes no switch file" "switch file: $([ -e "$IMPL" ] && echo yes || echo no)" "switch file: no"
 
 # M04: a stale hw-core is kept
 fresh; fresh_src; STUB_BODY=one inst "$MS" "$HOME/b" >/dev/null || true

@@ -147,6 +147,52 @@ func (a *app) reviveClaudeReady(target string) bool {
 	return false
 }
 
+// revivePiSkillsPrepare is _pi_project_skills_prepare: the directory of symlinks the one `--skill` argument names, made
+// before the agent starts (it never exists yet on a revive's first start of a set). True also when there are none. A link
+// already pointing at the skill is kept; `ln -sfn` replaces any other and never follows an existing link into the
+// skill's own directory.
+func (a *app) revivePiSkillsPrepare(proj string) bool {
+	d := &dsp{app: a, proj: proj}
+	dir, ok := d.piProjectSkillDir()
+	if !ok {
+		return true
+	}
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		a.warn("pi project skills: cannot create " + dir)
+		return false
+	}
+	for _, s := range d.piProjectSkills(true) {
+		link := dir + "/" + s.name
+		if to, err := os.Readlink(link); err == nil && to == s.dir {
+			continue
+		}
+		if exec.Command("ln", "-sfn", s.dir, link).Run() != nil {
+			a.warn("pi project skills: cannot link " + s.dir + " into " + dir)
+			return false
+		}
+	}
+	return true
+}
+
+// revivePiReady is _pi_startup_ready: the one screen answered is the deprecation notice (any key dismisses it, enter
+// changes nothing); every other one is a person's.
+func (a *app) revivePiReady(target string) bool {
+	dialog := piStartupDialog(a.reviveDetection(target))
+	switch dialog {
+	case "":
+		return true
+	case "press-any-key": // # MUTATION-ANCHOR: 863-G30
+		a.info("pi opened on a deprecation notice (\"Press any key to continue\") — answering enter, which changes nothing")
+		if !a.reviveHerdrQuiet("agent", "send-keys", target, "enter") { // # MUTATION-ANCHOR: 863-G33
+			return false
+		}
+		time.Sleep(2 * time.Second)
+		return true
+	}
+	a.err.Write([]byte("pi is waiting on a startup screen (" + dialog + ") that only a person may answer: clear it on " + target + ", then re-deliver\n"))
+	return false
+}
+
 // reviveCodexReady is _codex_startup_ready.
 func (a *app) reviveCodexReady(name string) bool {
 	screen := a.reviveDetection(name)
@@ -263,6 +309,9 @@ func (a *app) reviveAgentStart(st *reviveRunState, pane, name, kind string) bool
 	if st.sandbox && st.sandboxArmed != pane {
 		return a.reviveAgentStartSandboxed(st, pane, name, kind)
 	}
+	if kind == "pi" && !a.revivePiSkillsPrepare(st.proj) {
+		return false
+	}
 	h := a.reviveHerdr()
 	if kind == "claude" {
 		a.reviveClaudeSessionPrep(pane, a.reviveExplorerArm(st, pane)) // # MUTATION-ANCHOR: 863-G15
@@ -281,6 +330,9 @@ func (a *app) reviveAgentStart(st *reviveRunState, pane, name, kind string) bool
 				return false
 			}
 			if kind == "claude" && !a.reviveClaudeReady(pane) {
+				return false
+			}
+			if kind == "pi" && !a.revivePiReady(pane) { // # MUTATION-ANCHOR: 863-G28
 				return false
 			}
 			if reviveAgentReady(probe) {
@@ -306,6 +358,10 @@ func (a *app) reviveAgentStart(st *reviveRunState, pane, name, kind string) bool
 				return false
 			}
 			if kind == "claude" && !a.reviveClaudeReady(pane) {
+				return false
+			}
+			// pi's pane reports ready while a startup screen can still own stdin
+			if kind == "pi" && !a.revivePiReady(pane) { // # MUTATION-ANCHOR: 863-G27
 				return false
 			}
 			return true

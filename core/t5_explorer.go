@@ -4,7 +4,7 @@ package main
 // lib/hw/explorer.sh (_explorer_role_json, _explorer_claude_args, _explorer_opencode_overlay, _explorer_codex_args,
 // _explorer_resolve, _explorer_tier_note), plus _check_top_tier_ceiling and model_is_top_tier. Byte for byte what
 // bash prints: the contract goldens come from bash, and a launch under HW_IMPL=go must hand the same words to the
-// vendor. pi is not ported to hw-core (core/t5.go refuses it), so it has no arm here.
+// vendor. pi's arm is t6_pi.go's (the pi directory list the explorer rides in), the rest is here.
 
 import (
 	"os"
@@ -30,10 +30,10 @@ type explorerRole struct {
 
 // explorerSrc is what the explorer functions read: the brain's root (bash's _brain_root) and the lane's pin of
 // haiku (model_pins, "" when none). Shared by the dispatch, the launch and the re-task, which hold different types.
-type explorerSrc struct{ root, haikuPin string }
+type explorerSrc struct{ root, haikuPin, piHome string } // piHome: pi's agent dir (PI_CODING_AGENT_DIR, else ~/.pi/agent)
 
 func (d *dsp) explorer() explorerSrc {
-	return explorerSrc{root: d.vdRoot(), haikuPin: d.modelPinFor(explorerModelClaude)}
+	return explorerSrc{root: d.vdRoot(), haikuPin: d.modelPinFor(explorerModelClaude), piHome: d.piAgentDir()}
 }
 
 func (x explorerSrc) roleFile() string { return x.root + "/_agents/" + explorerName + ".md" }
@@ -144,6 +144,8 @@ func (x explorerSrc) model(vendor string) string {
 		return explorerModelOpencode
 	case "codex":
 		return explorerModelCodex
+	case "pi":
+		return piExplorerModel
 	}
 	return ""
 }
@@ -239,6 +241,8 @@ func (d *dsp) explorerResolve() {
 		} else {
 			d.explorerLine = "NOT INJECTED — setup/codex/agents/" + explorerName + ".toml or the role file is missing, so no -c agents.* reached the launch"
 		}
+	case "pi":
+		d.piExplorerResolve(m) // t6_pi.go
 	default:
 		d.explorerLine = "not applicable — unknown vendor '" + d.agent + "'"
 	}
@@ -267,6 +271,12 @@ func (x explorerSrc) tierNote(vendor string) string {
 		}
 		call = `the spawn_agent tool with agent_type "` + explorerName + `"`
 		implement = "a mid-tier agent (terra), when the edit is already defined"
+	case "pi":
+		if x.piAgentDirOK() == "" || !x.piSubagentsReady() {
+			return ""
+		}
+		call = `the subagent tool with agent "` + explorerName + `"`
+		implement = "yourself: pi's roster already runs builds on its build model"
 	default:
 		return ""
 	}
@@ -306,7 +316,7 @@ func (d *dsp) checkTopTierCeiling() {
 // explorerFor is the explorer's source for a re-task or a revive, which hold no dispatch state: the brain's root and
 // the lane's pin of haiku, read from the lane table the way lane_get reads model_pins ("" when the lane pins none).
 func (a *app) explorerFor(proj string) explorerSrc {
-	x := explorerSrc{root: a.reviveBrainRoot()}
+	x := explorerSrc{root: a.reviveBrainRoot(), piHome: orDefaultStr(a.getenv("PI_CODING_AGENT_DIR"), a.getenv("HOME")+"/.pi/agent")}
 	if proj == "" || !a.c.t.known(proj) {
 		return x
 	}

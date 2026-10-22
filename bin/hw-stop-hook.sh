@@ -77,6 +77,62 @@ esac
 [ -n "${HERDR_SOCKET_PATH:-}" ]     || exit 0
 [ -n "${HERDR_PANE_ID:-}" ]         || exit 0
 
+# ── the Go implementation: hw-core stop-hook (core/stop_hook.go) ───────────
+# THE DEFAULT IS BASH. HW_IMPL_STOP_HOOK, else HW_IMPL, else the `stop-hook=` line
+# (then the default line) of ${HW_IMPL_FILE:-~/.config/hw/impl} — the switch bin/hw
+# reads, resolved the same way — `go` execs hw-core with this hook's stdin untouched.
+# `shadow` is not offered: the hook writes markers and herdr tokens, and a second run
+# is a second turn counted. A hw-core that is not built, or older than core/'s
+# sources, leaves the bash below to run: this hook must never break a session. The
+# bash is the rollback and stays until the Go has soaked; a fix to one goes to both.
+# No forks before the exec but one `find`: the hook runs at every turn end.
+_hw_sh_mode="${HW_IMPL_STOP_HOOK:-${HW_IMPL:-}}"
+if [ -z "$_hw_sh_mode" ]; then
+  _hw_sh_file="${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/hw/impl}"
+  if [ -r "$_hw_sh_file" ]; then
+    _hw_sh_def=""
+    while IFS= read -r _hw_sh_line || [ -n "$_hw_sh_line" ]; do
+      _hw_sh_line="${_hw_sh_line%%#*}"; _hw_sh_line="${_hw_sh_line//[[:space:]]/}"
+      case "$_hw_sh_line" in
+        "") ;;
+        stop-hook=*|stop_hook=*|STOP-HOOK=*|STOP_HOOK=*) _hw_sh_mode="${_hw_sh_line#*=}" ;;
+        *=*) ;;
+        *) _hw_sh_def="$_hw_sh_line" ;;
+      esac
+    done < "$_hw_sh_file"
+    [ -n "$_hw_sh_mode" ] || _hw_sh_mode="$_hw_sh_def"
+  fi
+fi
+if [ "$_hw_sh_mode" = go ]; then
+  _hw_sh_src="${BASH_SOURCE[0]}"
+  while [ -L "$_hw_sh_src" ]; do
+    _hw_sh_dir="$(cd -P "$(dirname "$_hw_sh_src")" && pwd)" || break
+    _hw_sh_src="$(readlink "$_hw_sh_src")" || break
+    case "$_hw_sh_src" in /*) ;; *) _hw_sh_src="$_hw_sh_dir/$_hw_sh_src" ;; esac
+  done
+  _hw_sh_bin="$(cd -P "$(dirname "$_hw_sh_src")" 2>/dev/null && pwd)"
+  case "$OSTYPE" in darwin*) _hw_sh_os=darwin; _hw_sh_ext="" ;; msys*|cygwin*) _hw_sh_os=windows; _hw_sh_ext=.exe ;; *) _hw_sh_os=linux; _hw_sh_ext="" ;; esac
+  case "${HOSTTYPE:-}" in x86_64) _hw_sh_arch=amd64 ;; aarch64|arm64) _hw_sh_arch=arm64 ;; *) _hw_sh_arch="${HOSTTYPE:-}" ;; esac
+  _hw_sh_core=""
+  if [ -n "${HW_CORE:-}" ]; then
+    [ ! -x "$HW_CORE" ] || _hw_sh_core="$HW_CORE"
+  elif [ -n "$_hw_sh_bin" ]; then
+    for _hw_sh_c in "$_hw_sh_bin/hw-core$_hw_sh_ext" "$_hw_sh_bin/../core/dist/$_hw_sh_os-$_hw_sh_arch/hw-core$_hw_sh_ext"; do
+      if [ -x "$_hw_sh_c" ]; then _hw_sh_core="$_hw_sh_c"; break; fi
+    done
+    # the same staleness test as bin/hw's _core_stale: a source newer than the binary is a binary that is not this tree's
+    if [ -n "$_hw_sh_core" ] && [ -d "$_hw_sh_bin/../core" ] \
+       && [ -n "$(find "$_hw_sh_bin/../core" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$_hw_sh_core" -print -quit 2>/dev/null)" ]; then
+      _hw_sh_core=""
+    fi
+  fi
+  if [ -n "$_hw_sh_core" ] && [ -n "$_hw_sh_bin" ]; then
+    export HW_CORE_BIN_DIR="$_hw_sh_bin" HW_CORE_ROOT="${_hw_sh_bin%/*}"
+    export HW_BRAIN_ROOT="${HW_BRAIN_ROOT:-${_hw_sh_bin%/*}}"
+    exec "$_hw_sh_core" stop-hook "$@"
+  fi
+fi
+
 # ── guard 3: read the completed turn once ──────────────────────────────────
 # Stop input carries `last_assistant_message`; unlike transcript_path, Claude's
 # documented contract says it includes the just-finished response. Subagent

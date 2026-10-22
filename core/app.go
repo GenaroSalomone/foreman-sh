@@ -48,8 +48,20 @@ func brainRoot(getenv func(string) string) string {
 
 // run is main without the process: it returns the exit status.
 func run(args []string, stdout, stderr *os.File) (rc int) {
+	if len(args) > 0 && args[0] == "stop-hook" { // the Stop hook (stop_hook.go): its stdout is the hook's, its stderr is never written
+		return runStopHook(args[1:], stdout, realGetenv, os.Stdin)
+	}
+	if len(args) > 0 && args[0] == "hw-sandbox" { // the Seatbelt sandbox and its outbox broker (hw_sandbox.go): raw bytes, no colour, no lane table
+		return sbMain(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "channel-send" { // the delivery transport (channel_send.go): raw bytes, no colour, no lane table
 		return runChannelSend(args[1:], stdout, stderr, realGetenv, os.Stdin, isTerminal(stdout), isTerminal(os.Stdin))
+	}
+	if len(args) > 0 && isWrapperTool(args[0]) { // the small runtime wrappers of bin/ (wrappers.go): raw bytes, no colour, no lane table
+		return runWrapper(args[0], args[1:], stdout, stderr, realGetenv, os.Stdin, os.Stdin)
+	}
+	if len(args) > 0 && args[0] == "hw-secret" { // the Bitwarden path (hw_secret.go): never prints a value, exec's the command
+		return hwSecretMain(args[1:], stdout, stderr)
 	}
 	color := getenvColor(realGetenv, stdout, stderr)
 	if color {
@@ -85,6 +97,9 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return 64
 	}
 	verb := args[0]
+	if verb == "brain" { // bin/brain, ported (brain.go): its own --help and --version answer with no lane table
+		return brainEntry(args[1:], stdout, stderr, getenv, stdin)
+	}
 	switch verb {
 	case "receipt", "log", "handle", "help", "status", "worktrees", "executor-gate":
 	case "review-range", "review-delta", "preflight", "outbox", "reports", "sweep", "reap", "wait", "wait-one", "wait-monitor", "status-full": // T2; status-full is all of `hw status`

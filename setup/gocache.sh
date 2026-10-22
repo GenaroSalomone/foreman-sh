@@ -53,6 +53,26 @@ gocache_seed_mutants() {
   MUT_GOCACHE="$dest"; export MUT_GOCACHE
 }
 
+# gocache_trim_mutants <dir> <cap-mb> — the mutant test binaries (core/mutant_cache_test.go; setup/go-test-core.sh puts them beside the go cache) are
+# ~11 MB each and a full run keeps ~300-500: over <cap-mb> the least recently used go first (a hit refreshes the mtime). Unlike the go cache, an
+# entry in use may go at any time: a binary is copied out whole, and an open file survives its removal. Never fails.
+gocache_trim_mutants() {
+  local dir="$1" cap="$2" kb over
+  case "$cap" in ''|*[!0-9]*) cap=4096 ;; esac
+  [ -d "$dir" ] || return 0
+  kb="$(du -sk "$dir" 2>/dev/null | cut -f1)" || kb=""
+  case "$kb" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$kb" -gt $((cap * 1024)) ] || return 0
+  over=$(( (kb - cap * 1024) * 1024 ))
+  { stat -c '%Y %s %n' /dev/null >/dev/null 2>&1 && find "$dir" -type f -exec stat -c '%Y %s %n' {} + 2>/dev/null \
+      || find "$dir" -type f -exec stat -f '%m %z %N' {} + 2>/dev/null; } \
+    | sort -n \
+    | awk -v need="$over" '{ if (got >= need) exit; got += $2; sub(/^[0-9]+ [0-9]+ /, ""); printf "%s%c", $0, 0 }' \
+    | xargs -0 rm -f 2>/dev/null || true
+  printf 'runner: mutant binaries %s were %s MB, over their %s MB cap — least recently used removed\n' "$dir" "$((kb / 1024))" "$cap" >&2
+  return 0
+}
+
 # gocache_pool_busy <pool-dir> — 0 when another runner holds a slot, the exclusive, or waits for one. A holder that
 # cannot be read counts as alive: the cost of a wrong "busy" is one skipped trim, the cost of a wrong "idle" is a
 # cache emptied under a build.
@@ -82,6 +102,7 @@ gocache_trim() {
     printf 'runner: removing the old go cache %s (replaced by %s)\n' "$old" "$cache" >&2
     ( rm -rf "$old" >/dev/null 2>&1 & )
   done
+  gocache_trim_mutants "$(dirname "$cache")/hw-mutant-bins.v1" "${HW_TEST_MUTCACHE_CAP_MB:-4096}"
   [ -d "$cache" ] || return 0
   kb="$(du -sk "$cache" 2>/dev/null | cut -f1)" || kb=""   # an unreadable entry must not abort an EXIT trap under set -e/pipefail # MUTATION-ANCHOR: 1004-M06
   case "$kb" in ''|*[!0-9]*) return 0 ;; esac
@@ -116,6 +137,7 @@ gocache_trim_start() {
     return 0
   fi
   : > "$stamp" 2>/dev/null || true
+  gocache_trim_mutants "$(dirname "$cache")/hw-mutant-bins.v1" "${HW_TEST_MUTCACHE_CAP_MB:-4096}"   # trimmed with the cache, on the same look
   kb="$(du -sk "$cache" 2>/dev/null | cut -f1)" || kb=""
   case "$kb" in ''|*[!0-9]*) rmdir "$lock" 2>/dev/null || true; return 0 ;; esac
   if [ "$kb" -gt $((cap * 1024)) ]; then   # MUTATION-ANCHOR: 1004-M08

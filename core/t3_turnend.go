@@ -320,6 +320,29 @@ func t3HerdrCall(sock, method string, params any, timeout time.Duration) {
 	}
 }
 
+// t3JSONStr is jq's string encoding: raw UTF-8, only the quote, the backslash and the control characters escaped.
+func t3JSONStr(s string) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.Encode(s)
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// t3JSONObj is an object of already-encoded values, in the order given.
+func t3JSONObj(kv [][2]string) string {
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, p := range kv {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(t3JSONStr(p[0]) + ":" + p[1])
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
 func (t *t3) publish(state string, turns int64, extraName, extraValue string) {
 	if t.getenv("HERDR_ENV") != "1" || t.getenv("HERDR_PANE_ID") == "" || t.fs.readonly {
 		return
@@ -337,16 +360,18 @@ func (t *t3) publish(state string, turns int64, extraName, extraValue string) {
 	if run == "" {
 		run = "unknown"
 	}
-	tokens := map[string]string{
-		"hw_project":    proj,                         // # MUTATION-ANCHOR: 841-U01
-		"hw_task":       task,                         // # MUTATION-ANCHOR: 841-U02
-		"hw_run":        run,                          // # MUTATION-ANCHOR: 841-U03
-		"turn_state":    state,                        // # MUTATION-ANCHOR: 841-U04
-		"turn_ended_at": t3IsoNow(),                   // # MUTATION-ANCHOR: 841-U05
-		"turns":         strconv.FormatInt(turns, 10), // # MUTATION-ANCHOR: 841-U06
+	// the wire order of bash's jq program: pane_id, source, ttl_ms, tokens{hw_project, hw_task, hw_run, turn_state,
+	// turn_ended_at, turns, the extra, ctx_pct, ctx_tokens} — a herdr reads it either way, the bytes are the contract
+	tokens := [][2]string{
+		{"hw_project", t3JSONStr(proj)},                    // # MUTATION-ANCHOR: 841-U01
+		{"hw_task", t3JSONStr(task)},                       // # MUTATION-ANCHOR: 841-U02
+		{"hw_run", t3JSONStr(run)},                         // # MUTATION-ANCHOR: 841-U03
+		{"turn_state", t3JSONStr(state)},                   // # MUTATION-ANCHOR: 841-U04
+		{"turn_ended_at", t3JSONStr(t3IsoNow())},           // # MUTATION-ANCHOR: 841-U05
+		{"turns", t3JSONStr(strconv.FormatInt(turns, 10))}, // # MUTATION-ANCHOR: 841-U06
 	}
 	if extraName != "" {
-		tokens[extraName] = extraValue // # MUTATION-ANCHOR: 841-U07
+		tokens = append(tokens, [2]string{extraName, t3JSONStr(extraValue)}) // # MUTATION-ANCHOR: 841-U07
 	}
 	if ctx != "" {
 		if vals, err := parseStream([]byte(ctx)); err == nil && len(vals) == 1 && vals[0].truthy() {
@@ -356,16 +381,16 @@ func (t *t3) publish(state string, turns int64, extraName, extraValue string) {
 			if !ok1 || !ok2 { // jq errors on `.pct` of a non-object: the whole params are lost
 				return
 			}
-			tokens["ctx_pct"] = pct.raw()    // # MUTATION-ANCHOR: 841-U08
-			tokens["ctx_tokens"] = tok.raw() // # MUTATION-ANCHOR: 841-U09
+			tokens = append(tokens, [2]string{"ctx_pct", t3JSONStr(pct.raw())})    // # MUTATION-ANCHOR: 841-U08
+			tokens = append(tokens, [2]string{"ctx_tokens", t3JSONStr(tok.raw())}) // # MUTATION-ANCHOR: 841-U09
 		}
 	}
-	params := map[string]any{
-		"pane_id": t.getenv("HERDR_PANE_ID"), // # MUTATION-ANCHOR: 841-U10
-		"source":  "hw:executor-turn-end",    // # MUTATION-ANCHOR: 841-U11
-		"ttl_ms":  86400000,                  // # MUTATION-ANCHOR: 841-U12
-		"tokens":  tokens,
-	}
+	params := json.RawMessage(t3JSONObj([][2]string{
+		{"pane_id", t3JSONStr(t.getenv("HERDR_PANE_ID"))}, // # MUTATION-ANCHOR: 841-U10
+		{"source", t3JSONStr("hw:executor-turn-end")},     // # MUTATION-ANCHOR: 841-U11
+		{"ttl_ms", "86400000"},                            // # MUTATION-ANCHOR: 841-U12
+		{"tokens", t3JSONObj(tokens)},
+	}))
 	t3HerdrCall(t.getenv("HERDR_SOCKET_PATH"), "pane.report_metadata", params, 10*time.Second)
 	// The cockpit shows this turn end: one debounced write (bin/cockpit-state --kick).
 	t.executorCockpitKick() // # MUTATION-ANCHOR: 841-T08
@@ -385,10 +410,9 @@ func (t *t3) executorCockpitKick() {
 
 // ── the engram lease: _engram_renew_session ─────────────────────────────────
 
-func (t *t3) engramRenew(stateDir string) {
-	if t.fs.readonly {
-		return
-	}
+// receiptValues is `jq -r 'select(.key=="<key>") | .value' receipt.jsonl`: the values of that key, in order, up to the
+// first record jq cannot index.
+func receiptValues(stateDir, key string) []string {
 	vals, _ := readStream(stateDir + "/receipt.jsonl")
 	var outs []string
 	for _, v := range vals {
@@ -396,17 +420,33 @@ func (t *t3) engramRenew(stateDir string) {
 		if !ok {
 			break
 		}
-		if k.kind == vStr && k.s == "engram_session" {
+		if k.kind == vStr && k.s == key {
 			val, _ := v.get("value")
 			outs = append(outs, val.raw())
 		}
 	}
-	id := lastLine(outs)
+	return outs
+}
+
+func (t *t3) engramRenew(stateDir string) {
+	if t.fs.readonly {
+		return
+	}
+	id := lastLine(receiptValues(stateDir, "engram_session"))
 	if !strings.HasPrefix(id, "hw-") {
 		return
 	}
 	project, dir := t.getenv("ENGRAM_PROJECT"), t.getenv("HW_WORKDIR")
 	if project == "" || dir == "" {
+		return
+	}
+	t.engramLeasePost(id, project, dir)
+}
+
+// engramLeasePost is engram_serve_verdict then engram_session_post: renew the session's 30-minute lease, on a serve
+// proven to be this machine's store, and never say anything.
+func (t *t3) engramLeasePost(id, project, dir string) {
+	if t.fs.readonly {
 		return
 	}
 	if st, err := os.Stat(t.binDir() + "/engram-serve.sh"); err != nil || st.IsDir() {
@@ -463,6 +503,34 @@ func t3Atoi(s string) int64 {
 	return v
 }
 
+// piTurnEndForeign is _pi_turn_end_foreign: whether this turn end names ANOTHER session than the one hw registered.
+// pi's adapter names its session in the payload (the session file herdr publishes as agent_session and hw records as
+// `session_id`); a pi-subagents child is a session of the same process with the same environment, so it must not be judged
+// as the executor. ONLY A REGISTERED SESSION NARROWS IT: a receipt with no session id keeps the old behaviour.
+func (t *t3) piTurnEndForeign(stateDir string) bool {
+	if t.getenv("HW_EXECUTOR_VENDOR") != "pi" || t.getenv("HW_TURN_END_PAYLOAD") == "" { // # MUTATION-ANCHOR: 986-T02
+		return false
+	}
+	payload := jqRawOr(t.getenv("HW_TURN_END_PAYLOAD"), "", "session_id")
+	if payload == "" { // # MUTATION-ANCHOR: 986-T06
+		return false
+	}
+	registered, _ := reviveReceiptLast(stateDir+"/receipt.jsonl", "session_id")
+	if registered == "" { // # MUTATION-ANCHOR: 986-T03
+		return false
+	}
+	if strings.HasPrefix(registered, "none") { // # MUTATION-ANCHOR: 986-T05
+		return false
+	}
+	if payload == registered {
+		return false
+	}
+	if payload[strings.LastIndexByte(payload, '/')+1:] == registered[strings.LastIndexByte(registered, '/')+1:] { // # MUTATION-ANCHOR: 986-T04
+		return false
+	}
+	return true
+}
+
 func (t *t3) executorTurnEnd() int {
 	hookJSON := false
 	args := t.args
@@ -477,6 +545,10 @@ func (t *t3) executorTurnEnd() int {
 		return 0
 	}
 	if t.fs.mkdirAll(stateDir) != nil {
+		return 0
+	}
+	// A child session's turn end is not the executor's: no count, no handback, no ruling.
+	if t.piTurnEndForeign(stateDir) { // # MUTATION-ANCHOR: 986-T01
 		return 0
 	}
 	t.engramRenew(stateDir)

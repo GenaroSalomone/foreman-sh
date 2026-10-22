@@ -143,7 +143,7 @@ unset _v 2>/dev/null || true
 # be worse than the bug.
 # HW_IMPL (and HW_CORE, the binary it routes to, and HW_SHADOW_JSONL, where shadow writes) ARE INPUTS THIS DIRECTORY OWNS, since the Go pilot (core/): `HW_IMPL=go|shadow
 # bash setup/test-hw` runs the whole suite through hw-core for the verbs it has (bin/hw's
-# shim). Unset it and the answer is bash's, which is the default and the rollback.
+# shim). Unset it and the answer is Go's, which is the default (0.5.0); HW_IMPL=bash is the rollback and runs the suite on bash.
 _HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING HW_IMPL HW_CORE HW_SHADOW_JSONL HW_TEST_TMPROOT "  # MUTATION-ANCHOR: 54-M02
 for _v in ${!HW_@}; do  # MUTATION-ANCHOR: 54-M01
   case "$_HW_TEST_INPUTS" in *" $_v "*) continue ;; esac
@@ -282,18 +282,21 @@ trap 'rm -rf "$TMP"' EXIT
 if [ -f "$ROOT/setup/gocache.sh" ]; then . "$ROOT/setup/gocache.sh"; HW_GOCACHE_DEFAULT="$(gocache_default)"   # a harness that copies only _common.sh (145) has none
 else HW_GOCACHE_DEFAULT="${TMPDIR:-/tmp}/hw-go-cache.v2"; fi
 # HW_CORE IS A SEAM, like HW_LIB_DIR above: a subject that runs hw from a COPY of bin/ has no
-# core/dist beside it, and with HW_IMPL=go|shadow the shim would warn that hw-core is not built. When the
-# suite is asked for an implementation other than bash, it hands the shim the hw-core it has (the built
-# one, or one built here) — never a warning line the subject did not ask for.
-if [ -n "${HW_IMPL:-}" ] && [ "$HW_IMPL" != bash ] && [ -z "${HW_CORE:-}" ]; then
+# core/dist beside it, and with HW_IMPL=go|shadow (or none: go is the default) the shim would warn that hw-core is not
+# built. When the suite is asked for an implementation other than bash, it hands the shim the hw-core it has (the built
+# one, or one built here) — never a warning line the subject did not ask for. A machine with no Go toolchain that asked
+# for nothing runs the suite on bash, and says so once (the shim's own fallback would warn in every subject).
+if [ "${HW_IMPL:-go}" != bash ] && [ -z "${HW_CORE:-}" ]; then
   # the export of this suite may not carry contract-hw/: without it there is no hw-core to hand over
   if [ -f "$ROOT/setup/tests/contract-hw/world.sh" ]; then
     . "$ROOT/setup/tests/contract-hw/world.sh"
-    _core="$(contract_core_bin "$TMP/hw-core-build")" || { printf 'runner: HW_IMPL=%s and the go toolchain is here, but hw-core did not build\n' "$HW_IMPL" >&2; exit 1; }
+    _core="$(contract_core_bin "$TMP/hw-core-build")" || { printf 'runner: HW_IMPL=%s and the go toolchain is here, but hw-core did not build\n' "${HW_IMPL:-go}" >&2; exit 1; }
   else
     _core=""
   fi
-  if [ -n "$_core" ]; then export HW_CORE="$_core"; else printf 'runner: HW_IMPL=%s but there is no hw-core to hand over (no go toolchain, or no contract-hw/ in this suite) — the shim will fall back to bash with its warning\n' "$HW_IMPL" >&2; fi
+  if [ -n "$_core" ]; then export HW_CORE="$_core"
+  elif [ -z "${HW_IMPL:-}" ]; then export HW_IMPL=bash; printf 'runner: no hw-core to hand over (no go toolchain, or no contract-hw/ in this suite), so this run is on bash\n' >&2
+  else printf 'runner: HW_IMPL=%s but there is no hw-core to hand over (no go toolchain, or no contract-hw/ in this suite) — the shim will fall back to bash with its warning\n' "${HW_IMPL:-go}" >&2; fi
   unset _core
 fi
 # copy_tracked_tree <src> <dst> — a release ships the TRACKED tree, so a fixture that stands for a

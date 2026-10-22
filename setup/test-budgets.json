@@ -241,6 +241,10 @@
       "exit": 0,
       "seconds": 7.42
     },
+    "660-hw-status-audita-las-memorias.sh": {
+      "exit": 0,
+      "seconds": 3.03
+    },
     "680-actualizar-es-un-comando.sh": {
       "exit": 0,
       "seconds": 56.18
@@ -402,6 +406,6 @@
       "seconds": 120.0
     }
   },
-  "measured_at": "2026-10-17T00:59:20Z",
+  "measured_at": "2026-10-19T21:44:56Z",
   "touched_budget_seconds": 90
 }

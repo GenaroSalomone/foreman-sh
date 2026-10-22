@@ -1,6 +1,6 @@
-# Known limitations — 0.4.0
+# Known limitations — 0.5.0
 
-This is the register of what this pre-release does not do, or does only
+This is the register of what this release does not do, or does only
 partly. Each entry says its **scope** (where it applies), its **impact**, its
 **evidence** (`measured` = observed by running it; `unverified` = believed, not
 executed) and a **workaround** where there is one. Nothing here is a hidden
@@ -91,34 +91,106 @@ release candidate.
 
 ## The Go core
 
-### L16. The ported verbs run in Go; pi launches and everything not ported stay on bash
-- **Scope:** every `hw` verb, through the switch in `bin/hw`.
+### L16. `hw`, `brain`, `channel-send` and the invokers run in Go by default; eight small tools and whatever is not ported stay on bash
+- **Scope:** every `hw` verb, `brain`, `channel-send`, `ask-invoker` and `done-invoker`, through the switch in `bin/hw` and `bin/invoker-go.sh`; and eight small tools that still default to bash. macOS and Linux only (L1, L1b).
 - **Impact:**
-  - **The switch.** `HW_IMPL` (or `HW_IMPL_<VERB>` for one verb) takes `bash`,
-    `go` or `shadow`; `shadow` runs both and prints bash's answer. The switch
-    file `~/.config/hw/impl` says the same for every pane and hook. With neither,
-    `bin/hw` runs bash: Go is the default of a machine the installer set up, not
-    of the code. An unknown `HW_IMPL` stops the command.
+  - **The switch.** Go is the default: with no `HW_IMPL` and nothing in `~/.config/hw/impl`,
+    `hw`, `brain`, `channel-send`, `ask-invoker` and `done-invoker` run `hw-core`, and bash is
+    the rollback, for 0.5.x only: 0.6.0 removes it. `HW_IMPL` (or `HW_IMPL_<TOOL>`, or
+    `HW_IMPL_<VERB>` for one `hw` verb) takes `bash`, `go` or `shadow`; `shadow` runs both and
+    prints bash's answer (for `brain`, `channel-send` and the invokers it means bash). The switch
+    file `~/.config/hw/impl` says the same for every pane and hook (`default=bash`, or a bare `bash`
+    line, puts every tool back on bash; `<tool>=bash` one). An unknown `HW_IMPL` stops the command.
   - **What runs in Go.** `install.sh` builds `hw-core` when Go 1.22 or newer is on
-    PATH and writes `~/.config/hw/impl` as `go` when that file is absent (an
-    existing one is left as it is). The ported verbs then run in `hw-core`:
+    PATH and writes no switch file, since Go needs none (`--no-core` writes
+    `default=bash` when that file is absent, and an install that builds a core removes exactly that
+    file; any other existing file is left as it is).
+    Without a `hw-core` the bash answers, with one line saying why. The ported verbs run in `hw-core`:
     `receipt`, `log`, `handle`, `help`, `worktrees`, the table of `status`, the
     read half of `reap`, `sweep` and `reports`, `review-range`, `review-delta`,
     `preflight --json`, `outbox list`, the `wait` family, the marker writers
     (`ruling`, `human-boundary`, `executor-turn-end`, `chaining-lease-start` and
     `-expire`, `outbox flush`, `output`, `stage`) and the dispatch
-    (`hw <lane> <task> …`, its dry run and its launch), and the large writers: `done`,
+    (`hw <lane> <task> …`, its dry run and its launch, `--agent pi` included), and the large writers: `done`,
     `next`, `revive`, `preview`, `reap --apply` and `sweep --apply`. Anything else is bash.
+  - **The Stop hook** (`bin/hw-stop-hook.sh`, run at every turn end of every wired
+    Claude Code and Codex session) defaults to bash and has the same switch: `HW_IMPL_STOP_HOOK`, `HW_IMPL`, or
+    the `stop-hook=` line of the switch file, and `go` execs `hw-core stop-hook`. It runs the
+    turn end in process instead of starting a second `hw`. `shadow` is not offered for it (the
+    hook writes markers and herdr tokens, and a second run would count a second turn): it runs
+    on bash. A `hw-core` that is not built or older than `core/` leaves the hook's bash to run,
+    silently. The Go does not need `python3` or `jq` on PATH; the bash goes quiet without them.
     An executor's own `hw` calls and `shadow` mode never run a writer in Go.
     `HW_IMPL=bash` goes back for every verb, `HW_IMPL_<VERB>=bash` for one.
+  - **`brain`.** `bin/brain` runs in Go (`hw-core brain`) unless `HW_IMPL_BRAIN` or
+    `HW_IMPL` says otherwise, or else the switch file does (its `brain=` line, else its
+    default line), the way the invokers are asked. `shadow` is bash here: `brain`
+    writes to live panes and is never run twice. `brain=bash` keeps one machine on
+    bash. Where the Go answers differently from the bash on the same input, the
+    difference is one of two, both pinned by `core/brain_parity_test.go`: a
+    projects.json that does not load prints the words of the bash loader (jq's,
+    which differ between jq versions) because `hw-core brain` asks `bash` and
+    `bin/project-spaces.sh` for them — without them, Go's own wording; and a
+    `bin/hw` or a `herdr` that is missing or not executable makes the bash print
+    its shell diagnostic (`…/brain: line N: …: Permission denied`) into the
+    message of the step that failed, where Go prints an empty line (the exit
+    status and every other byte are the same).
   - **No Go, a Go older than 1.22, or `--no-core`:** nothing is built and `hw` runs
     its bash implementation: the same answers. Speed differs by verb: measured here, `hw worktrees` takes about 0.5 s in Go and 1.6 s in bash, and `hw help` about 0.14 s in Go and 0.07 s in bash.
-  - **pi stays on bash.** `--agent pi` dispatches are not in `hw-core`; they run
-    the bash and say so on stderr.
+  - **Eight small tools still default to bash, and run in Go on their own switch.** The five wrappers below,
+    `hw-sandbox` (same switch as the five, `HW_IMPL_HW_SANDBOX`), the Stop hook and `hw secret` (both described
+    here) are not flipped in 0.5.0: set `HW_IMPL_<TOOL>=go` (or `HW_IMPL=go`) to run one in Go. A bare `go` line in
+    the switch file moves the hook and the six wrappers, not `hw secret`.
+  - **Five small wrappers run in Go too, on their own switch.** `browser-close`,
+    `brain-archive`, `secret-unlock`, `opencode-auto` and `codex-channel-session-hook.sh`
+    exec `hw-core <tool>` when `HW_IMPL_<TOOL>` (else `HW_IMPL`, else the `<tool>=` line or the
+    default line of `~/.config/hw/impl`) says `go`; `bin/wrapper-go.sh` is the switch. Only
+    the word `go` selects it: `shadow` or anything else runs bash, because these tools act and a
+    second run would be a second effect. The default is bash even where `hw` itself runs Go.
+    A `hw-core` not built, or older than `core/`, says so and the bash answers (every time when
+    the environment chose Go, once per state when only the file did). `hw-reconcile` stays bash:
+    nothing on the runtime path calls it. Three differences, all at the edge of the shell:
+    a failed `exec` is worded as bash 3.2 words it (other bash versions word it differently), the
+    hook's sequence number is the clock in nanoseconds with no `python3` needed (the bash exits 0
+    without one), and `jq`'s printing of a non-string `session_id` is imitated for strings,
+    numbers and booleans only.
+  - **pi runs in Go too.** `--agent pi` dispatches (dry run and launch) are in
+    `hw-core` under `go`, held byte for byte against the bash by the `pi-*`
+    goldens; nothing falls back to bash and nothing says so.
   - **Lane hooks.** The export carries the builders of git-worktree lanes only. A
     lane hook of any other name is handed to bash by `hw-core`.
+  - **`hw secret` / `secret-unlock`.** `bin/hw-secret` (and `bin/secret-unlock`, which execs
+    it) runs in Go (`hw-core hw-secret`) when `HW_IMPL_HW_SECRET` or `HW_IMPL` says `go`,
+    or the switch file has a `hw-secret=go` line. The file's default line does **not**
+    reach it: it holds the machine's choice for the other tools, and the Bitwarden
+    road moves only when someone names it (`HW_IMPL_HW_SECRET=go`, `HW_IMPL=go` or a `hw-secret=go` line). `shadow` is bash here (a run execs the
+    command, so it is never run twice). The Go answers the same command line with the
+    same stdout, stderr, exit status and files (`setup/tests/1077` diffs 84 scenarios
+    against the bash's recorded answers; `1009` and `1012` run under both) and
+    keeps the guard contract (`1010`): `hw secret run <item>[.<field>] --as VAR -- <cmd>`
+    is the one road to a value, `BW_*` never reaches the child, and no value is printed,
+    written or put in argv. Two differences, both on purpose or unavoidable: the Go reads
+    bw's JSON itself, so it works on a machine with no `jq` (the bash dies with
+    `jq is required`); and `exec: <cmd>: not found` has no `<script>: line N:` prefix
+    in Go, nor does the diagnostic for a command given as a path that cannot run (the bash's
+    wording and status for that are its version's: 3.2 and 5 differ; Go says
+    `cannot execute: <why>` and exits 126, or 127 for a missing file). A leading-zero `--hours` (`010`) is read as decimal in Go and as octal by the
+    bash's arithmetic, and a value that is a JSON object or array prints with jq's
+    indentation but not its number normalisation. The 17 mutation anchors of the Go are
+    killed by `setup/tests/1078`.
   - **A missing or stale `hw-core`** (absent, or older than `core/`'s sources)
     gives bash and one warning, never a failure.
+  - **The state witness is Go.** The cross-check every gate runs before it gives up
+    (`witness_state`, `witness_wait`) and the ruling queue `done-invoker` claims
+    (`ruling_queue_claim_all`) run in the Go core with no `bash -c` and no
+    `bin/state-witness.sh` beside the binary; a `brain/bin` without that file no
+    longer refuses a gate or degrades `channel-send` and `ask-invoker`. The file stays
+    for the bash rollback, which still sources it. The Go core carries the witness
+    in more than one place (`hw wait`, `hw next` and `channel-send` each have a copy
+    that answers the same bytes); folding them into one function is not done.
+  - **`channel-send` and its suite.** `channel-send` runs in Go by default, but its subject
+    (`setup/tests/05-channel-send.sh`) stays pinned to `HW_IMPL=bash` in 0.5.0: against a stub `herdr-rpc`
+    the Go probe waits 90 s, and the cause is not established.
   - **Bash is not deleted.** It is the rollback and stays frozen: a fix to a
     ported verb goes to `core/`, so the bash of a ported verb does not receive it.
 - **Evidence:** `measured`: the setup suite runs under both implementations, and
@@ -127,8 +199,8 @@ release candidate.
   `unverified`: any long live shadow on a user's machine (the maintainer's was
   short, and no figure from it is given here), and Windows: `hw-core.exe` is built
   by the same builder, but use on a real Windows machine is not measured (L1b).
-- **Workaround:** `HW_IMPL=bash`, or `--no-core` at install, to run the bash that
-  predates the core.
+- **Workaround:** `HW_IMPL=bash`, `default=bash` in `~/.config/hw/impl`, or `--no-core` at install, to run
+  the bash that predates the core. It stays through 0.5.x and 0.6.0 removes it.
 
 ## Agents
 
@@ -222,8 +294,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   - **A re-task cannot add them.** A plugin is loaded when a session starts: the reuse route says `NOT APPLIED`
     and the brainer launches with `--fresh`, and `hw next` ignores the field. A revived pane (`hw revive`) is not
     given them again.
-  - **pi stays on bash.** The pi half exists in the bash implementation only; the Go core carries the field for
-    claude, opencode and codex and sends a pi dispatch to bash, as before (L16).
+  - **pi runs in Go by default.** `--agent pi` dispatches are in `hw-core` (L16); `HW_IMPL=bash` runs the bash.
   - **Plugin state counts as artifacts.** A hook's state lives under `$HW_ARTIFACTS/plugin-state`, and `done-invoker`
     counts every file under `$HW_ARTIFACTS` (only `.hw/` is excluded): a report-only executor that loaded ponytail
     reports `Artifacts: 2 file(s)` (the nudge flag and `.ponytail-active`) instead of none. Found by both Judgment Day
@@ -433,7 +504,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   that the agent user cannot write, if you need a hard boundary.
 
 ### L23. Bitwarden secrets: the session token and the master password sit where the user's own processes can read them
-- **Scope:** `secrets:` in a brief, `hw secret run|check|status|ensure`,
+- **Scope:** `secrets:` in a brief, `hw secret run|put|check|status|ensure`,
   `secret-unlock` and, where it is installed, the global guard
   `deny-bitwarden-secrets.py` (Claude, Codex, OpenCode). **This export ships
   `hw secret`, `secret-unlock` and the `secrets:` preflight, and does not ship the
@@ -452,15 +523,21 @@ it leaves the brain directory, is unguarded even with the hook registered.
   token that opens the WHOLE vault, not only the folder `agents`: `hw secret run`
   refuses items outside that folder, but a process running as the same user can
   read the file and ask bw for anything. The guard refuses `bw get|unlock|export|
-  list|serve`, the file's name and `BW_SESSION` in an agent's command, and judges
+  list|serve|create|edit`, the file's name and `BW_SESSION` in an agent's command, and judges
   the command's TEXT: `B=bw; $B get x`, a script that calls bw, or a value already
   in a child's environment and printed on purpose (`hw secret run … -- sh -c 'echo
   $V'`) are not caught. Like L5 it is a tripwire for the careless, not a sandbox,
   and a quoted mention (a commit message spelling `bw get`) is refused too: write
   it through a heredoc. Codex and Claude settings carry the registration by hand,
   and a machine without the guard has none of this tripwire.
-  `hw next` re-tasks and the Go core (`HW_IMPL=go|shadow`, L16) do not run the
-  `secrets:` preflight.
+  `hw next` re-tasks do not run the `secrets:` preflight.
+  `hw secret put` is the way in: the value comes from a pipe on stdin, reaches bw on bw's
+  stdin (never argv) and jq in jq's environment, and put prints one line. It cannot read a
+  value back, but it can OVERWRITE one: `--replace` on an existing item of the folder
+  `agents` destroys the old value, and the guard cannot tell an intended replace from a
+  mistaken one (it judges the command text, and `put` names no bw verb). A put that
+  creates an item needs the folder `agents` to exist; a dotted name that matches no item
+  is read as `<item>.<field>`, so a new item whose own name has a dot cannot be created by put.
 - **Evidence:** the resolver, the guard and the preflight are `measured` against a
   throwaway `bw` stub (tests 1009-1011); a run against a real vault is `unverified`
   here and belongs to the operator who unlocks it.
@@ -545,6 +622,25 @@ it leaves the brain directory, is unguarded even with the hook registered.
   end-to-end pass with a real herdr server and real Claude Code and OpenCode
   executors (ask, challenge and report through the return channel); that run
   is not part of this repository.
+
+### L24. A suite job whose inputs did not change is replayed from its last green, so a change in a file it never read is unseen until a cold run
+- **Scope:** `setup/test-hw` with `setup/verdict-cache` (every subject, guard and go-test partition) and the per-mutant lookup in
+  `core/mutant_verdict_test.go` (the in-process mutant corpora m826, m840, m844, m848, m861-866, m871).
+- **Impact:** a job's green is stored under the sha256 of its own file, the bytes of every file it reads (a subject: `setup/subject-deps.txt`,
+  a partition: `setup/go-test-deps.txt`, both measured by access time, not guessed), the names in the directories it read, the toolchain and
+  an allowlist of `HW_*` knobs, and replayed when those bytes come back; only greens are stored, written atomically. What is traded away:
+  (1) a change in ANOTHER file that would make a job fail, or let an old mutant survive, is not seen, because that file was never in the
+  job's reads; (2) a mutant's verdict is keyed by its anchor file, its test files, its cases and goldens and the toolchain only, so a change
+  elsewhere in `core/` or in the world the cases run in leaves its kill cached; (3) a subject that reads outside the checkout (the network,
+  the installed claude) must say `# cache: never` in its header — six do — and one that does not is cached on bytes that do not hold its answer;
+  (4) a subject nobody measured is keyed to the whole tree, which is today's behaviour, never a smaller one: until
+  `python3 setup/measure/subject-deps.py` has run, only a byte-identical tree hits.
+- **Evidence:** `measured` by `setup/tests/1110-un-job-corre-solo-si-cambio-lo-que-lee.sh` on stub subjects and a stub in-process suite (second
+  identical run spawns only the `# cache: never` job; an edited read file, an added file in a read directory and an edited partition file miss;
+  a red is never stored; `HW_TEST_NO_CACHE=1` runs cold) and by `TestMutantVerdictKeepsAKillByItsInputs`. `unverified`: the whole suite's
+  hit rate on a real release, and the measured `subject-deps.txt` (the file ships unmeasured).
+- **Workaround:** `HW_TEST_NO_CACHE=1 bash setup/test-hw` runs every job cold. Run it once per release cut, on Linux (it is not enforced by
+  the cut). `HW_VERDICT_CACHE=<dir>` moves the store, `off` disables it; entries unused for 30 days are pruned.
 
 ## Review
 
@@ -708,3 +804,19 @@ it leaves the brain directory, is unguarded even with the hook registered.
   a sustained queue of fast gates.
 - **Workaround:** `bash setup/verify-for-push --full` runs every job and starts a new chain;
   `HW_VERDICT_MAX_CHAIN=1` restores one hop.
+
+### L25. `setup/heavy` reports a frozen or starved run; it does not unfreeze it
+- **Scope:** `setup/heavy` on a machine where something SIGSTOPs heavy trees under memory pressure (the maintainer's
+  `one-test-at-a-time` LaunchAgent; nothing in this repo installs it).
+- **Impact:** (1) the preflight warns when free memory is under `HW_HEAVY_RESUME_FREE` (26, a copy of that guard's
+  resume line, not read from it — if the guard's thresholds move, this number does not follow) and starts anyway;
+  `HW_HEAVY_REQUIRE_FREE=1` makes it refuse with exit 75. (2) A watchdog reads the holder's process tree every
+  `HW_HEAVY_WATCH` seconds (60) and calls it frozen when more than half of it is in state `T`; after
+  `HW_HEAVY_FROZEN_ALERT_MIN` minutes (20) it writes one line to `heavy-alerts.log` and, if `HW_INVOKER_PANE` is set,
+  one `channel-send --report` per frozen stretch. A tree stopped by anything else (a debugger, `Ctrl-Z`) alerts the same
+  way, and the text says "most likely" the guard. A run frozen under 20 minutes, an alert whose delivery fails
+  (the failure is a line in `heavy-alerts.log`), and a `setup/heavy` that is itself stopped, raise nothing.
+- **Evidence:** `measured` with stubbed `memory_pressure`, `ps`, clock and `channel-send` by
+  `setup/tests/1040-una-corrida-pesada-a-la-vez.sh` (F12-F16; mutants H09-H13). `unverified`: against the real guard
+  freezing a real run (nothing was frozen for real), and `ps` state letters on Linux.
+- **Workaround:** `setup/heavy --status`; free memory (the guard resumes the run over its resume line).

@@ -756,21 +756,21 @@ BRAIN="${HW_BRAIN_ROOT:-$_brain_root}"
 case "${1:-}" in -V|--version) _hw_v=1 ;; esac  # answered below, after the T6 switch (lib/hw/core-t6.sh), still before the lane table
 
 # ── hw-core: the verbs that run as a Go binary (T0: receipt, log, handle, help; T1: worktrees and the table of status) ──
-# THE DEFAULT IS BASH, AND NOTHING BELOW RUNS UNLESS HW_IMPL (or HW_IMPL_<VERB>) IS
-# SET — in the environment, or in the SWITCH FILE below. `go` execs hw-core for a ported verb; `bash` is the path that has always run
-# and is the rollback; `shadow` runs both, prints bash's answer and appends any
+# THE DEFAULT IS GO: WHEN NOTHING SETS HW_IMPL (or HW_IMPL_<VERB>) — in the environment, or in the SWITCH FILE below —
+# hw-core ANSWERS. `go` execs hw-core for a ported verb; `bash` is the path that ran before and is the ONE-LINE ROLLBACK
+# (HW_IMPL=bash, or `default=bash` in the switch file); `shadow` runs both, prints bash's answer and appends any
 # difference in stdout, stderr or exit status to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (HW_SHADOW_JSONL names another file); EVERY shadow call, equal or not, adds a line to
 # shadow.calls.tsv beside it, and `hw shadow` reads both (days, calls and diffs per verb: the clock of the 7-day gate).
 # The two runs of a shadow see the same herdr (the first asker reaches the real one, every later asker is replayed
 # its answer) and the same HW_ST_NOW (`_core_shadow_penv`); and when they still differ they run once more, a pair
 # that is equal the second time being filed in shadow.moved.jsonl, not in shadow.jsonl (`_core_shadow_settle`).
 # A hw-core older than core/'s sources is treated as not built. A hw-core that is
-# not built falls back to bash with ONE warning line.
+# not built falls back to bash with ONE warning line, never a dead tool (`default=bash` in the file is the way back).
 #
 # THE SWITCH FILE puts shadow in every pane, hook and invoker without touching one: it is the default mode when the
 # environment names none. ${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-~/.config}/hw/impl}; a line `shadow` (or bash, go) is the
 # default for every ported verb, a line `<verb>=<mode>` is one verb's (the way back for a verb whose shadow costs too
-# much). Precedence: HW_IMPL_<VERB>, HW_IMPL, the file's `<verb>=`, the file's default, bash — and the bash re-run
+# much). Precedence: HW_IMPL_<VERB>, HW_IMPL, the file's `<verb>=`, the file's default, go — and the bash re-run
 # inside a shadow sets HW_IMPL=bash, so it never meets the file. `hw shadow on|off` writes it. A hw-core not built or
 # stale, when the mode came from the file, warns ONCE per state (a hook calls hw every turn); the stamp is
 # ${XDG_STATE_HOME:-~/.local/state}/hw/warned. `hw shadow` says it every time it is asked.
@@ -790,8 +790,8 @@ _core_impl_for() {  # <verb> → bash | go | shadow
   up="$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
   v="$(_core_env_impl_for "$1")"
   [ -n "$v" ] || v="$(_core_conf_mode "$up")"   # MUTATION-ANCHOR: 890-M01
-  case "${v:-bash}" in
-    bash|go|shadow) printf '%s' "${v:-bash}" ;;
+  case "${v:-go}" in  # MUTATION-ANCHOR: 1050-M01
+    bash|go|shadow) printf '%s' "${v:-go}" ;;  # MUTATION-ANCHOR-END: 1050-M01
     *) die "HW_IMPL=$v is not an implementation — the valid ones are bash, go and shadow" ;;
   esac
 }
@@ -809,14 +809,14 @@ _core_conf_mode() {  # <VERB in capitals> — the mode the switch file names for
     line="${line%%#*}"; line="${line//[[:space:]]/}"
     case "$line" in
       "") ;;
-      *=*) key="$(printf '%s' "${line%%=*}" | tr 'a-z-' 'A-Z_')"; [ "$key" != "$1" ] || mine="${line#*=}" ;;
+      *=*) key="$(printf '%s' "${line%%=*}" | tr 'a-z-' 'A-Z_')"; [ "$key" != "$1" ] || mine="${line#*=}"; [ "$key" != DEFAULT ] || def="${line#*=}" ;;  # MUTATION-ANCHOR: 1050-M06
       *) def="$line" ;;
     esac
   done <"$f"
   [ -n "$mine" ] || mine="$def"
   case "$mine" in
     ""|bash|go|shadow) printf '%s' "$mine" ;;
-    *) _core_warn_once "badfile:${f}:${mine}" "$f names «${mine}», which is not an implementation (bash, go or shadow), so the bash implementation runs" ;;
+    *) _core_warn_once "badfile:${f}:${mine}" "$f names «${mine}», which is not an implementation (bash, go or shadow), so the bash implementation runs"; printf bash ;;
   esac
 }
 _core_env_impl_for() {  # <verb> — what the ENVIRONMENT says for it ("" when it says nothing)
@@ -1040,7 +1040,7 @@ _core_usable() {  # <verb> — sets _core_bin and succeeds when hw-core can answ
   else
     return 0
   fi
-  [ -n "$(_core_env_impl_for "$1")" ] || src="$(_core_impl_file)"
+  [ -z "$(_core_env_impl_for "$1")" ] && { src="$(_core_impl_file)"; [ -n "$(_core_conf_mode "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')")" ] || src=default; }
   if [ -n "$_core_warned" ]; then :
   elif [ "$src" = environment ]; then
     case "$why" in
@@ -3622,6 +3622,8 @@ known = {"agent", "model", "sdd", "placement", "worktree", "database", "invoker"
 known |= {"requested_by", "asked", "authorizes", "secrets"}
 # The reason a kind: build task runs on the top tier, read by _check_top_tier_ceiling (not compared).
 known |= {"top_tier_why"}
+# The tasks this brief waits for, read by _check_after (not compared).
+known |= {"after"}
 for raw in lines[1:end]:
     line = raw.strip()
     if not line or line.startswith("#"):
@@ -4699,8 +4701,85 @@ _brief_has_key() {  # $1 = decls, $2 = key
   return 1
 }
 
+# NO BRIEF CARRIES THE PGREP MACHINE RULE. MEASURED 2026-10-18: briefs told executors to wait until
+# `pgrep -f 'setup/test-hw|run-suite.sh|release/cut'` counted 0; it matched the waiters' own `zsh -c until …`
+# loops, and four executors waited on each other ~2h17. The body (frontmatter excluded) is read, and the
+# first line that pgreps with -f for one of those names refuses the dispatch. Same words as core/t5_brief.go
+# (checkBriefHeavyRule); setup/tests/fixtures/heavy-pgrep-refusal.golden holds both.
+_brief_heavy_rule_line() {  # prints the line number of the first pgrep rule in the brief's body, or nothing
+  [ -n "${BRIEF:-}" ] && [ -r "${BRIEF:-}" ] || return 0
+  python3 - "$BRIEF" <<'PYEOF' 2>/dev/null || true
+import re, sys
+lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+off = 0
+if lines and lines[0].strip() == "---":
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            off = i + 1
+            break
+pat = re.compile(r"pgrep\s+-\w*f\w*\b.*?(setup/test-hw|run-suite\.sh|release/cut)")  # MUTATION-ANCHOR: 1040-M01
+for n, line in enumerate(lines[off:], start=off + 1):
+    if pat.search(line):
+        print(n)
+        break
+PYEOF
+}
+_check_brief_heavy_rule() {
+  local n; n="$(_brief_heavy_rule_line)"
+  [ -n "$n" ] || return 0
+  die "the brief carries the pgrep machine rule (line $n: pgrep -f naming setup/test-hw, run-suite.sh or release/cut). That count matches the waiters' own \`zsh -c until …\` loops, so executors waiting on it wait on each other forever (measured 2026-10-18: four executors, about 2h17). Heavy commands run as \`setup/heavy -- <cmd>\`: two slots, FIFO, the holders shown, a dead holder reclaimed. NOTHING was built. Replace the rule with that line."  # MUTATION-ANCHOR: 1040-M02
+}
+
+# A BRIEF THAT NEEDS A MERGE WAITS FOR IT. MEASURED 2026-10-20: merge-lote-2's full run (6344 s)
+# ran before rojos-lote-1 was merged and came back with 8 reds, discarded; merge-lote-1's release run (14104 s) was
+# launched with its own fixture fix uncommitted and ended 5423 s macOS + 6859 s Linux red. `after: [<task>, …]` names
+# the tasks of THIS lane the brief depends on, and each must be (1) known to the dispatch ledger, (2) reported
+# (done-invoker: the ledger's `done`), and (3) its branch an ancestor of the dispatch's base — or, where the branch
+# is gone, removed by `hw done`/`hw reap`, which remove a branch only once merged. Otherwise the dispatch is refused,
+# naming which and why. `--ignore-after --why "<reason>"` goes through and the manifest records the reason.
+# Same words as core/t5_brief.go (checkAfter); setup/tests/10-brief-contract.sh holds both.
+AFTER_LINE=""; IGNORE_AFTER=0; IGNORE_AFTER_WHY=""
+_check_after() {  # $1 = the frontmatter's after: value, `[a, b]` or `a b`
+  local val="$1" names t out state br main base ref prefix problems="" NL=$'\n'
+  names="$(printf '%s' "$val" | tr -d '[]' | tr ',' ' ')"
+  main="$(lane_checkout "${PROJ:-}")"; base="$(_task_base)"; prefix="$(_lane_base_ref_prefix "${PROJ:-}")"
+  [ -n "${names//[[:space:]]/}" ] || die "the brief's after: names no task (after: $val). NOTHING was built. List the tasks of this lane it waits for: after: [<task>, …]."
+  set -f
+  for t in $names; do
+    case "$t" in */*|*[\*\?\[]*) problems="${problems}${NL}  - $t: unknown task — a task name has no path separator or glob character"; continue ;; esac
+    out="$(cmd_ledger "${PROJ:-}" --task "$t" --json 2>/dev/null | head -n 1)" || out=""
+    if [ -z "$out" ]; then
+      problems="${problems}${NL}  - $t: unknown task — no brief of that name in $PROJ's briefs/ and no dispatch of it in the ledger"
+      continue
+    fi
+    state="$(printf '%s' "$out" | jq -r '.state' 2>/dev/null)" || state=""
+    if [ "$state" != done ]; then
+      problems="${problems}${NL}  - $t: not reported — its state is ${state:-unreadable}, and done-invoker has not run for it"
+      continue
+    fi
+    if [ -z "$main" ] || [ -z "$base" ]; then continue; fi  # a repoless lane has no base to be an ancestor of
+    br="$(_lane_branch "${PROJ:-}" "$t")"
+    if ! git -C "$main" rev-parse --verify -q "refs/heads/$br" >/dev/null 2>&1; then continue; fi  # branch removed: only a merged one is
+    ref=""
+    if git -C "$main" merge-base --is-ancestor "$br" "$prefix$base" >/dev/null 2>&1; then ref="$prefix$base"
+    elif git -C "$main" merge-base --is-ancestor "$br" "$base" >/dev/null 2>&1; then ref="$base"; fi
+    [ -n "$ref" ] || problems="${problems}${NL}  - $t: reported, but its branch $br is not an ancestor of $base — it is not merged"
+  done
+  set +f
+  if [ -n "$problems" ]; then
+    if [ "$IGNORE_AFTER" = 1 ]; then
+      AFTER_LINE="$val — NOT READY, dispatched by --ignore-after: $IGNORE_AFTER_WHY (would have refused:$(printf '%s' "$problems" | tr '\n' ' ' | sed 's/  */ /g'))"
+      return 0
+    fi
+    die "the brief says after: $val and these are not ready:$problems${NL}NOTHING was built. A run that depends on a task's merge measures a tree without it (2026-10-20: 6344 s and 14104 s full runs discarded). Wait until each is reported AND merged into $base, or, if this dispatch really must go now, say why with --ignore-after --why \"<reason>\" — it is written to the manifest and the receipt."
+  fi
+  AFTER_LINE="$val — every task reported and merged into $base"
+  BRIEF_DECLARED="${BRIEF_DECLARED}${BRIEF_DECLARED:+ }after"
+}
+
 _check_brief_contract() {
   local decls key val actual bad=0 required_agent_bad=0
+  _check_brief_heavy_rule
   _load_brief_decls; decls="$BRIEF_DECLS"
   local inferred; inferred="$(_task_kind_from_name "$TASK")"
   if [ -z "$decls" ]; then
@@ -4726,6 +4805,7 @@ _check_brief_contract() {
       continue
     fi
     if [ "$key" = kind ];     then _check_task_kind "$val" declared; continue; fi
+    if [ "$key" = after ];    then _check_after "$val"; continue; fi
     # `sandbox: true` IS A SOURCE, NOT ONLY A CHECK: a brief that must not run
     # unconfined turns the sandbox on rather than trusting the dispatcher to
     # remember --sandbox. `false` never turns a --sandbox off — the stricter
@@ -13119,6 +13199,11 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        $HW_ARTIFACTS/design-judgment.md naming it and ending
                        JUDGMENT: APPROVED (Judgment Day's design mode).
     decision: <what is undecided>   as --model-why.
+    after: [<task>, …] the tasks of this lane the brief waits for. Before anything
+                       is built hw checks each is reported (done-invoker) and
+                       its branch is an ancestor of the base (a branch already
+                       removed was merged); otherwise it refuses, naming which.
+                       An unknown task refuses too. `--ignore-after --why` overrides.
 
 USAGE
 }
@@ -13350,6 +13435,9 @@ ADVANCED
     --top-tier-why <s>  the reason a `kind: build` task runs on the top tier
                        (opus, fable). Refused without it (flag or the brief's
                        `top_tier_why:`); recorded in the manifest and receipt.
+    --ignore-after     dispatch although a task in the brief's `after:` is not
+                       reported and merged. Needs --why "<reason>" (one line);
+                       recorded in the manifest and the receipt.
 USAGE
   local l a lines=""
   for l in $HW_LANES; do
@@ -13379,6 +13467,9 @@ USAGE
   BITWARDEN SECRETS (brief frontmatter  secrets: [item, ...] — items of the folder agents)
     hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR ...] -- <cmd...>
                                     the value reaches <cmd>'s environment only; never printed
+    <cmd> | hw secret put <item>[.<field>] [--replace]
+                                    store the value a PIPE on stdin carries (a hidden field when .<field>);
+                                    never printed, never in argv; an existing one is refused without --replace
     hw secret check <item>...       present / absent, no value      hw secret status | ensure
     secret-unlock --setup             once, a person: the master password into the Keychain (a LaunchAgent unlocks from it)
     secret-unlock [--hours N|--lock]  an interactive unlock / lock
@@ -13572,24 +13663,13 @@ _core_shadow_launch() {  # <core> <argv…> — Go read-only with a plan, then b
   rm -rf "$tmp"
   exit "$rc_b"
 }
-# pi is a vendor of the bash implementation only: hw-core does not know it, and its answer for it would read as the
-# real one. A dispatch that names it stays on bash under every HW_IMPL, and SAYS so on stderr (one line, never stdout: a
-# dry run's stdout is the manifest). No lane's default vendor is pi (projects.json), so the argv is where pi is named; if
-# a lane ever defaults to it, hw-core refuses it loudly (core/t5.go: "--agent pi is not ported to hw-core yet").
-_core_pi_argv=0
-case " $* " in *" --agent pi "*|*" --agent=pi "*) _core_pi_argv=1 ;; esac
-_core_pi_stays_on_bash() {  # <mode> — the stated line of the fallback; the caller then goes on in bash
-  printf '  %s·%s hw: --agent pi is not in hw-core, so this dispatch runs on the bash implementation (HW_IMPL=%s)\n' "${C_DIM:-}" "${C_0:-}" "$1" >&2
-}
 case " $* " in
   *" --dry-run "*)
     _core_mode="$(_core_impl_for dispatch)"
     if [ "$_core_mode" != bash ] && _core_usable dispatch; then
-      if [ "$_core_pi_argv" = 1 ]; then _core_pi_stays_on_bash "$_core_mode"; else
       export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
       if [ "$_core_mode" = go ]; then exec "$_core_bin" dispatch "$@"; fi
       _shadow_dispatch=1 _core_shadow "$_core_bin" dispatch "$@"
-      fi
     fi
     ;;
   *)
@@ -13597,11 +13677,9 @@ case " $* " in
       if [ $# -ge 2 ]; then
         _core_mode="$(_core_impl_for dispatch)"
         if [ "$_core_mode" != bash ] && _core_usable dispatch; then
-          if [ "$_core_pi_argv" = 1 ]; then _core_pi_stays_on_bash "$_core_mode"; else
           export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
           if [ "$_core_mode" = go ]; then exec "$_core_bin" dispatch "$@"; fi
           _core_shadow_launch "$_core_bin" "$@"
-          fi
         fi
       fi ;;
     esac
@@ -13686,6 +13764,7 @@ while [ $# -gt 0 ]; do
     # The reason a dispatch runs below its lane's model_floor. Required there.
     --below-floor-why) _need_val "$@"; BELOW_FLOOR_WHY="$2"; shift 2 ;;
     # The reason a `kind: build` dispatch runs on the top tier (_check_top_tier_ceiling). Required there.
+    --ignore-after) IGNORE_AFTER=1; shift ;;
     --top-tier-why) _need_val "$@"; TOP_TIER_WHY="$2"; shift 2 ;;  # MUTATION-ANCHOR: 1003-M07
     --effort) _need_val "$@"; EFFORT="$2"; shift 2 ;;
     --sdd)    _need_val "$@"; SDD="$2";    shift 2 ;;
@@ -13771,8 +13850,15 @@ if [ "$KEEP_PANE" = 1 ]; then
   [ "$WANT_REPORT" = 1 ] || die "--keep-pane and --no-report contradict each other: a chaining lease starts only after receiver-proved report delivery."
   case "$KEEP_PANE_WHY" in *$'\n'*) die "--why must be one line so the run env and lease records remain parseable" ;; esac
   KEEP_PANE_SECONDS="$(_lease_seconds "$KEEP_PANE_FOR")"
-elif [ -n "$KEEP_PANE_WHY" ]; then
-  die "--why is only valid with --keep-pane"
+elif [ -n "$KEEP_PANE_WHY" ] && [ "$IGNORE_AFTER" != 1 ]; then
+  die "--why is only valid with --keep-pane or --ignore-after"
+fi
+if [ "$IGNORE_AFTER" = 1 ]; then
+  [ -n "$KEEP_PANE_WHY" ] || die "--ignore-after needs --why \"<why this dispatch must not wait for the brief's after: tasks>\". An override with no stated reason is the same as no check."
+  case "$KEEP_PANE_WHY" in *$'\n'*) die "--why must be one line so the manifest and the receipt stay parseable" ;; esac
+  # --why is the --keep-pane lease reason too: with --ignore-after alone it is the override's, and must not reach the lease.
+  IGNORE_AFTER_WHY="$KEEP_PANE_WHY"
+  [ "$KEEP_PANE" = 1 ] || KEEP_PANE_WHY=""
 fi
 # An explicit --brief wins; otherwise brain/<project>/briefs/<task>.md is used
 # when it exists. No brief at all is REFUSED, naming the path looked for and the
@@ -14592,7 +14678,8 @@ dispatch $PROJ:$TASK  run=$run_label
   framework   ${live:-<undetermined>}  ($sdd_src, from $surface)
   $model_line${MODEL_FLOOR_LINE:+
   floor       $MODEL_FLOOR_LINE}${TOP_TIER_LINE:+
-  ceiling     $TOP_TIER_LINE}
+  ceiling     $TOP_TIER_LINE}${AFTER_LINE:+
+  after       $AFTER_LINE}
   $effort_line
   agent       $agent_line
   account     $ACCOUNT_LINE
@@ -15386,6 +15473,7 @@ _agent_step() {
     [ -z "$MODEL_FLOOR_LINE" ] || _receipt model_floor "$MODEL_FLOOR_LINE" "_check_model_floor against projects.json model_floor of $PROJ"
     [ -z "$EXPLORER_LINE" ] || _receipt explorer "$EXPLORER_LINE" "_explorer_resolve (lib/hw/explorer.sh)"
     [ -z "$TOP_TIER_LINE" ] || _receipt top_tier_why "$TOP_TIER_WHY" "--top-tier-why or the brief's top_tier_why (_check_top_tier_ceiling)"
+    [ -z "$AFTER_LINE" ] || _receipt after "$AFTER_LINE" "the brief's after: (_check_after), --ignore-after --why when overridden"
     [ -z "$BELOW_FLOOR_WHY" ] || _receipt below_floor_why "$BELOW_FLOOR_WHY" "--below-floor-why"
     _receipt requested_by "$(_requested_line)" "_check_requested: ${REQUESTED_BY_SRC:-no citation}"
     [ -z "${HW_AGENT_ENDPOINT:-}" ] || _receipt endpoint "$HW_AGENT_ENDPOINT" "--port passed to opencode in _build_agent_args"

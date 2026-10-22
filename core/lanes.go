@@ -28,6 +28,7 @@ type table struct {
 	names  []string // HW_LANES, in table order
 	lanes  map[string]*lane
 	aliasH map[string]string // hw alias -> lane
+	aliasB map[string]string // brain alias -> lane (lane_alias brain)
 	work   string            // _LC_WORK_DEFAULT
 	// T2: operator and retention (the _LC_OPERATOR_DEFAULT and _LC_RETENTION_* values, as the strings jq tostring prints)
 	operator                         string
@@ -362,10 +363,12 @@ func loadTable(file, home string) (*table, []string) {
 			survey = append(survey, n)
 		}
 	}
-	t := &table{file: file, names: names, survey: survey, lanes: map[string]*lane{}, aliasH: map[string]string{}, work: expandHome(workV.tostring(), home)}
+	t := &table{file: file, names: names, survey: survey, lanes: map[string]*lane{}, aliasH: map[string]string{}, aliasB: map[string]string{}, work: expandHome(workV.tostring(), home)}
 	for _, a := range aliases {
 		if a.kind == "hw" {
 			t.aliasH[a.alias] = a.lane
+		} else {
+			t.aliasB[a.alias] = a.lane
 		}
 	}
 	t.operator = orDefault(field(root, "operator"), "the operator")

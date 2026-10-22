@@ -217,6 +217,8 @@ func (d *dsp) buildAgentArgs() {
 			}
 			d.agentArgs += " -c model_reasoning_effort=" + d.effort // # MUTATION-ANCHOR: 844-B66
 		}
+	case "pi":
+		d.piBuildArgs(perm) // t6_pi.go
 	}
 	d.agentArgs = strings.TrimPrefix(d.agentArgs, " ") // # MUTATION-ANCHOR: 844-B67
 	if d.agentArgs != "" {

@@ -123,6 +123,11 @@ BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
                        $HW_ARTIFACTS/design-judgment.md naming it and ending
                        JUDGMENT: APPROVED (Judgment Day's design mode).
     decision: <what is undecided>   as --model-why.
+    after: [<task>, …] the tasks of this lane the brief waits for. Before anything
+                       is built hw checks each is reported (done-invoker) and
+                       its branch is an ancestor of the base (a branch already
+                       removed was merged); otherwise it refuses, naming which.
+                       An unknown task refuses too. `--ignore-after --why` overrides.
 
 OTHER COMMANDS
     hw                              interactive brief picker
@@ -291,6 +296,9 @@ ADVANCED
     --top-tier-why <s>  the reason a `kind: build` task runs on the top tier
                        (opus, fable). Refused without it (flag or the brief's
                        `top_tier_why:`); recorded in the manifest and receipt.
+    --ignore-after     dispatch although a task in the brief's `after:` is not
+                       reported and merged. Needs --why "<reason>" (one line);
+                       recorded in the manifest and the receipt.
 
   THE BRIEF AND THE LEDGER
     --no-brief         launch with no brief on purpose (without it a missing brief
@@ -312,6 +320,9 @@ ADVANCED
   BITWARDEN SECRETS (brief frontmatter  secrets: [item, ...] — items of the folder agents)
     hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR ...] -- <cmd...>
                                     the value reaches <cmd>'s environment only; never printed
+    <cmd> | hw secret put <item>[.<field>] [--replace]
+                                    store the value a PIPE on stdin carries (a hidden field when .<field>);
+                                    never printed, never in argv; an existing one is refused without --replace
     hw secret check <item>...       present / absent, no value      hw secret status | ensure
     secret-unlock --setup             once, a person: the master password into the Keychain (a LaunchAgent unlocks from it)
     secret-unlock [--hours N|--lock]  an interactive unlock / lock

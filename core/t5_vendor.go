@@ -246,6 +246,10 @@ func (d *dsp) vdBriefKind() string {
 
 // applyModelDefault is _apply_model_default: sonnet for a claude executor with no model, opus for kind design.
 func (d *dsp) applyModelDefault() {
+	if d.model == "" && d.agent == "pi" && d.reusePane == "" { // t6_pi.go: pi's roster decides, by kind
+		d.piApplyModelDefault()
+		return
+	}
 	if !(d.model == "" && d.agent == "claude" && d.reusePane == "") { // # MUTATION-ANCHOR: 844-B19
 		return
 	}

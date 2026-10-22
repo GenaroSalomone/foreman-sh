@@ -5,7 +5,7 @@
 #
 #   hw shadow            the report: the switch, hw-core, and per verb the days, calls and diffs
 #   hw shadow on         write the switch file (`shadow`), building hw-core first when it is missing or stale
-#   hw shadow off        remove the switch file: bash again, the history is kept
+#   hw shadow off        remove the switch file: the default (go) again, the history is kept
 #
 # THE CLOCK. setup/attachments/migracion-hw.md §5a asks for 7 days of live shadow with shadow.jsonl empty. Per verb
 # that is: whole days since the later of its first shadow call and its last difference. A difference restarts it.
@@ -45,7 +45,7 @@ _shadow_report() {
   calls="$(_core_shadow_calls)"
   jsonl="${HW_SHADOW_JSONL:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/hw/shadow.jsonl}"
   printf 'switch    %s  ' "$f"
-  if [ -r "$f" ]; then printf '→ %s\n' "$(tr '\n' ' ' <"$f" | sed 's/  */ /g; s/ $//')"; else printf '→ absent (bash)\n'; fi
+  if [ -r "$f" ]; then printf '→ %s\n' "$(tr '\n' ' ' <"$f" | sed 's/  */ /g; s/ $//')"; else printf '→ absent (go, the default)\n'; fi
   case "$state" in
     fresh*) printf 'hw-core   fresh  %s\n' "${state#fresh }" ;;
     stale*) printf 'hw-core   STALE — core/ has sources newer than %s: hw falls back to bash and NO shadow accumulates. `hw shadow on` rebuilds it (setup/build-core --native)\n' "${state#stale }" ;;
@@ -138,7 +138,7 @@ cmd_shadow() {
       [ "${_HW_CALLER_EXECUTOR:-0}" != 1 ] || die "hw shadow $sub is a brainer verb: an executor reads the report, it does not flip the switch for every pane"
       f="$(_core_impl_file)"
       if [ "$sub" = off ]; then
-        rm -f "$f" && info "shadow is off: $f removed, so the bash implementation answers (the history in $(_core_shadow_calls) is kept)"
+        rm -f "$f" && info "shadow is off: $f removed, so the default (go) answers (the history in $(_core_shadow_calls) is kept)"
         return 0
       fi
       state="$(_shadow_core_state)"
@@ -159,7 +159,7 @@ cmd_shadow() {
       info "shadow is on: $f → shadow; every ported verb in every pane runs bash and Go and logs to $(_core_shadow_calls)"
       info "read it with: hw shadow"
       ;;
-    -h|--help|help) printf 'usage: hw shadow [on|off]\n  (no argument)  the report: the switch, hw-core, and per verb the days, calls and diffs\n  on             write the switch file (shadow), building hw-core first when it is missing or stale\n  off            remove the switch file: bash again, the history kept\n\nA difference is one line of ~/.local/state/hw/shadow.jsonl, and only when the two runs differ AGAIN on a second ask (a difference that does not repeat — the world moved between the runs — goes to shadow.moved.jsonl and the report counts it per verb). For each of stdout and stderr it carries the first 400\ncharacters of each answer and, for a stream that differs, "at" (the offset in bytes of the first different byte),\n"bash_len"/"go_len" and "bash_ctx"/"go_ctx" (300 bytes either side of it in each answer). Past 4 MiB the log\nbecomes shadow.jsonl.1. Read it with: jq -c ".stdout|{at,bash_ctx,go_ctx}" ~/.local/state/hw/shadow.jsonl\n' ;;
+    -h|--help|help) printf 'usage: hw shadow [on|off]\n  (no argument)  the report: the switch, hw-core, and per verb the days, calls and diffs\n  on             write the switch file (shadow), building hw-core first when it is missing or stale\n  off            remove the switch file: the default (go) again, the history kept\n\nA difference is one line of ~/.local/state/hw/shadow.jsonl, and only when the two runs differ AGAIN on a second ask (a difference that does not repeat — the world moved between the runs — goes to shadow.moved.jsonl and the report counts it per verb). For each of stdout and stderr it carries the first 400\ncharacters of each answer and, for a stream that differs, "at" (the offset in bytes of the first different byte),\n"bash_len"/"go_len" and "bash_ctx"/"go_ctx" (300 bytes either side of it in each answer). Past 4 MiB the log\nbecomes shadow.jsonl.1. Read it with: jq -c ".stdout|{at,bash_ctx,go_ctx}" ~/.local/state/hw/shadow.jsonl\n' ;;
     *) die "unknown: hw shadow $sub (usage: hw shadow [on|off])" ;;
   esac
 }

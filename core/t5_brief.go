@@ -30,6 +30,7 @@ type brState struct {
 	brAsked       string
 	brAuthorizes  string
 	brAuthMarker  string
+	brSecrets     string
 	brSddResolved bool
 	brLaneTried   bool
 	brLaneRoot    *jval
@@ -505,7 +506,7 @@ func (d *dsp) checkTaskKind(kind, how string) {
 var brKnownDecl = map[string]bool{"agent": true, "model": true, "sdd": true, "placement": true, "worktree": true, "database": true,
 	"invoker": true, "requires": true, "requires-agents": true, "kind": true, "base": true, "decision": true, "delivery": true,
 	"boundary": true, "deployed_check": true, "sandbox": true, "review": true, "plugins": true, "requested_by": true, "asked": true, "authorizes": true, "secrets": true,
-	"top_tier_why": true}
+	"top_tier_why": true, "after": true}
 
 // brNearestKnown is the `dist`/`near`/`listed` of _brief_declares' python: the known key nearest to <key> (edit
 // distance <= 2, "" when none is that close; the first of the sorted keys on a tie) and every known key, sorted,
@@ -716,9 +717,111 @@ func (d *dsp) ensureSddEffectiveForContract() {
 	d.brResolveEffectiveSdd(d.sdd, surface, inherited)
 }
 
+// brHeavyRuleRe is the pattern of _brief_heavy_rule_line: a pgrep with -f that names one of the three heavy jobs.
+var brHeavyRuleRe = regexp.MustCompile(`pgrep\s+-\w*f\w*\b.*?(setup/test-hw|run-suite\.sh|release/cut)`)
+
+// heavyRuleLine is _brief_heavy_rule_line: the line number of the first pgrep rule in the brief's body
+// (frontmatter excluded), or 0.
+func (d *dsp) heavyRuleLine() int {
+	if d.brief == "" || !brReadable(d.brief) {
+		return 0
+	}
+	data, err := os.ReadFile(d.brief)
+	if err != nil {
+		return 0
+	}
+	lines := pySplitlines(brDecodeReplace(data))
+	off := 0
+	if len(lines) > 0 && pyStrip(lines[0]) == "---" {
+		for i := 1; i < len(lines); i++ {
+			if pyStrip(lines[i]) == "---" {
+				off = i + 1
+				break
+			}
+		}
+	}
+	for i := off; i < len(lines); i++ {
+		if brHeavyRuleRe.MatchString(lines[i]) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// checkBriefHeavyRule is _check_brief_heavy_rule: no brief carries the pgrep machine rule (measured 2026-10-18,
+// four executors waited ~2h17 on each other's own wait loops). The words are the bash's, held by
+// setup/tests/fixtures/heavy-pgrep-refusal.golden.
+// checkAfter is _check_after: a brief that needs a merge waits for it. `after: [<task>, …]` names the tasks of this
+// lane the brief depends on; each must be known to the dispatch ledger, reported (the ledger's `done`) and its
+// branch an ancestor of the dispatch's base (a branch already removed was merged: hw done and hw reap remove only
+// a merged one). Otherwise the dispatch is refused, naming which; --ignore-after --why goes through and the
+// manifest records the reason. MEASURED 2026-10-20: 6344 s and 14104 s full runs discarded.
+func (d *dsp) checkAfter(val string) {
+	names := strings.Fields(strings.NewReplacer("[", "", "]", "", ",", " ").Replace(val))
+	if len(names) == 0 {
+		d.die("the brief's after: names no task (after: " + val + "). NOTHING was built. List the tasks of this lane it waits for: after: [<task>, …].")
+	}
+	main, base, prefix := d.c.checkout(d.proj), d.taskBase(), d.laneBaseRefPrefix()
+	ldir := d.env("HW_LEDGER_DIR")
+	if ldir == "" {
+		ldir = nextOr(d.c.work, d.c.home+"/work") + "/.hw-ledger"
+	}
+	problems := ""
+	for _, t := range names {
+		if strings.ContainsAny(t, "/*?[") {
+			problems += "\n  - " + t + ": unknown task — a task name has no path separator or glob character"
+			continue
+		}
+		rows := ledgerCollect(pyRealpath(d.c.brain), ldir, []string{d.proj}, "", t, "")
+		if len(rows) == 0 {
+			problems += "\n  - " + t + ": unknown task — no brief of that name in " + d.proj + "'s briefs/ and no dispatch of it in the ledger"
+			continue
+		}
+		if st := rows[0].state; st != "done" {
+			problems += "\n  - " + t + ": not reported — its state is " + st + ", and done-invoker has not run for it"
+			continue
+		}
+		if main == "" || base == "" { // a repoless lane has no base to be an ancestor of
+			continue
+		}
+		br := d.c.lanePath(d.proj, "branch", t)
+		if !d.c.t.known(d.proj) {
+			br = "task/" + t
+		}
+		if _, rc := gitRC(main, "rev-parse", "--verify", "-q", "refs/heads/"+br); rc != 0 { // branch removed: only a merged one is
+			continue
+		}
+		if _, rc := gitRC(main, "merge-base", "--is-ancestor", br, prefix+base); rc == 0 {
+			continue
+		}
+		if _, rc := gitRC(main, "merge-base", "--is-ancestor", br, base); rc == 0 {
+			continue
+		}
+		problems += "\n  - " + t + ": reported, but its branch " + br + " is not an ancestor of " + base + " — it is not merged"
+	}
+	if problems != "" {
+		if d.ignoreAfter {
+			d.afterLine = val + " — NOT READY, dispatched by --ignore-after: " + d.ignoreAfterWhy + " (would have refused:" + strings.Join(strings.Fields(strings.ReplaceAll(problems, "\n", " ")), " ") + ")"
+			return
+		}
+		d.die("the brief says after: " + val + " and these are not ready:" + problems + "\nNOTHING was built. A run that depends on a task's merge measures a tree without it (2026-10-20: 6344 s and 14104 s full runs discarded). Wait until each is reported AND merged into " + base + ", or, if this dispatch really must go now, say why with --ignore-after --why \"<reason>\" — it is written to the manifest and the receipt.")
+	}
+	d.afterLine = val + " — every task reported and merged into " + base
+	d.brAppendDeclared("after")
+}
+
+func (d *dsp) checkBriefHeavyRule() {
+	n := d.heavyRuleLine()
+	if n == 0 {
+		return
+	}
+	d.die("the brief carries the pgrep machine rule (line " + strconv.Itoa(n) + ": pgrep -f naming setup/test-hw, run-suite.sh or release/cut). That count matches the waiters' own `zsh -c until …` loops, so executors waiting on it wait on each other forever (measured 2026-10-18: four executors, about 2h17). Heavy commands run as `setup/heavy -- <cmd>`: two slots, FIFO, the holders shown, a dead holder reclaimed. NOTHING was built. Replace the rule with that line.")
+}
+
 // checkBriefContract is _check_brief_contract.
 func (d *dsp) checkBriefContract() {
 	bad, requiredAgentBad := false, false
+	d.checkBriefHeavyRule()
 	decls := d.loadBriefDecls()
 	inferred := brTaskKindFromName(d.task)
 	if decls == "" {
@@ -766,6 +869,10 @@ func (d *dsp) checkBriefContract() {
 		}
 		if key == "kind" { // # MUTATION-ANCHOR: 844-A43
 			d.checkTaskKind(val, "declared")
+			continue
+		}
+		if key == "after" {
+			d.checkAfter(val)
 			continue
 		}
 		if key == "sandbox" {
@@ -1084,6 +1191,77 @@ func (d *dsp) remoteMarker() string {
 		}
 	}
 	return ""
+}
+
+// checkSecrets is _check_secrets: the Bitwarden items a brief names, checked BEFORE anything is built.
+func (d *dsp) checkSecrets() {
+	d.brSecrets = ""
+	var items []string
+	for _, line := range strings.Split(d.loadBriefDecls(), "\n") {
+		key, val := brReadKV(line)
+		if key != "secrets" {
+			continue
+		}
+		raw := strings.TrimSuffix(strings.TrimPrefix(val, "["), "]")
+		for _, item := range strings.Split(raw, ",") {
+			item = brAuthTrim(item)
+			item = strings.TrimSuffix(strings.TrimPrefix(item, `"`), `"`)
+			item = strings.TrimSuffix(strings.TrimPrefix(item, `'`), `'`)
+			if item == "" {
+				continue
+			}
+			if strings.HasPrefix(item, "-") {
+				d.die("the brief's secrets: names \"" + item + "\", which is not a Bitwarden item name. NOTHING was built.")
+			}
+			items = append(items, item)
+		}
+	}
+	if len(items) == 0 {
+		return
+	}
+	d.brSecrets = strings.Join(items, ", ")
+	if d.briefDeclared == "none" {
+		d.briefDeclared = ""
+	}
+	d.brAppendDeclared("secrets")
+	if !d.checkHandles {
+		d.warn("the brief's secrets: (" + d.brSecrets + ") were NOT checked (--no-handle-check): the executor may find the vault locked or an item missing")
+		return
+	}
+	hwSecret := d.env("HW_CORE_BIN_DIR") + "/hw-secret"
+	run := func(buf *bytes.Buffer, args ...string) int {
+		cmd := exec.Command(hwSecret, args...)
+		cmd.Env = d.rtChildEnv()
+		cmd.Stdout, cmd.Stderr = buf, buf
+		if err := cmd.Run(); err != nil {
+			return exitStatus(err)
+		}
+		return 0
+	}
+	if d.dispatchDry {
+		var sink bytes.Buffer
+		if run(&sink, "status") != 0 {
+			d.warn("the Bitwarden vault is LOCKED: a real dispatch tries `secret-unlock --auto` once. The items (" + d.brSecrets + ") are NOT checked in this dry run.")
+			return
+		}
+	} else {
+		var buf bytes.Buffer // `hw-secret ensure >&2`
+		rc := run(&buf, "ensure")
+		d.err.Write(buf.Bytes())
+		if rc != 0 {
+			d.die("the brief's secrets: (" + d.brSecrets + ") need the Bitwarden vault unlocked and it is not. NOTHING was built. A person, once: secret-unlock --setup (the LaunchAgent then keeps it unlocked). Or pass --no-handle-check.")
+		}
+	}
+	// out="$(hw-secret check items 2>&1)"
+	var buf bytes.Buffer
+	if run(&buf, append([]string{"check"}, items...)...) != 0 {
+		d.die("the brief's secrets: names Bitwarden items that do not resolve in the folder agents — NOTHING was built.\n" + brSub(buf.String()) + "\nStore each in the folder agents (the item's name is the handle), or pass --no-handle-check.")
+	}
+}
+
+// secretsLine is _secrets_line: the manifest's `secrets` field, names and never values.
+func (d *dsp) secretsLine() string {
+	return d.brSecrets + "  (Bitwarden folder agents; names only, values never leave hw secret run)"
 }
 
 // warnAuthorizesMissing is _warn_authorizes_missing: a warning, never a refusal.

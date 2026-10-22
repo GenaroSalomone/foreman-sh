@@ -4,11 +4,12 @@ The Go half of `bin/hw`, as a pilot (trains T0, T1, T2, T3 and T5, the dispatch 
 `receipt`, `log`, `handle` and `help` (T0), `worktrees` and the table of `status` (T1), and the marker writers
 (T3: `ruling`, `human-boundary`, `executor-turn-end`, `chaining-lease-start`/`-expire`, `outbox flush`, `output`,
 `stage`), and the dispatch (T5: `hw <lane> <task> …`, its dry run and its launch), ported byte for byte from the bash they replace. Nothing else is
-ported, and nothing changes for anyone unless `HW_IMPL` is set (`bin/hw`, "hw-core: the verbs that run as a
-Go binary").
+ported. From 0.5.0 Go is the default: with no `HW_IMPL` and nothing in the switch file `hw-core` answers, and
+`HW_IMPL=bash` (or `default=bash` in `~/.config/hw/impl`) is the one-line rollback (`bin/hw`, "hw-core: the verbs that run as a
+Go binary"; held by `setup/tests/1050-*`).
 
-    HW_IMPL=bash   (default) the bash that has always run — the rollback
-    HW_IMPL=go     exec hw-core for a ported verb
+    HW_IMPL=go     (default) exec hw-core for a ported verb
+    HW_IMPL=bash   the bash that ran before — the rollback
     HW_IMPL=shadow run both, print bash's answer, append any difference to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (a hw-core older than core/ is not run: bash answers, with one warning)
     HW_IMPL_<VERB> overrides HW_IMPL for that verb (HW_IMPL_RECEIPT, _LOG, _HANDLE, _HELP, _STATUS, _WORKTREES, the T2 verbs below, the T3 writers: _RULING, _HUMAN_BOUNDARY, _EXECUTOR_TURN_END,
                    _CHAINING_LEASE_START, _CHAINING_LEASE_EXPIRE, _OUTBOX, _OUTPUT, _STAGE, and T5a: _DISPATCH)
@@ -134,6 +135,9 @@ in one line, and lets the export leave the pilot out with one `exclude core/` (`
                  t3_lease.go, t3_outbox.go, t3_simple.go (human-boundary, output, stage), t3_pid_*.go
     t5*.go       the dispatch's dry run: t5.go (flow, flags), t5_state.go, t5_manifest.go, t5_lanefields.go,
                  t5_brief*.go, t5_vendor*.go, t5_reuse*.go, t5_sdd*.go
+    t6_pi*.go    `--agent pi`: the dispatch half (t6_pi.go: roster, extension and skill args, manifest lines) and the launch half
+                 (t6_pi_launch.go: startup screens, environment, the brief's processed proof); held by the `pi-*` goldens
+                 (cases-t5-pi) and by t6_pi_test.go
     contract.go  the run directory and the env file
 
 ## The verbs that were bash-only (T6)
@@ -154,10 +158,24 @@ keeps once.
 `hw-core channel-send <args>` is `bin/channel-send` in Go (`channel_send*.go`): the same command line, stdout, stderr,
 exit codes (0, 1, 4, 5, 6 — the table `--help` prints) and on-disk effects (the delivery lock, the reply hold, the
 task transcript). `bin/channel-send` keeps its bash as the rollback and execs hw-core when `HW_IMPL_CHANNEL_SEND` (else
-`HW_IMPL`) is `go`; `shadow` and unset run the bash. The programs it ran it still runs (`herdr`, `herdr-rpc`,
+`HW_IMPL`, else the `channel-send=` or default line of the switch file `${HW_IMPL_FILE:-~/.config/hw/impl}`, the file `hw`
+and the invokers read) is `go`; `shadow` and unset run the bash. The programs it ran it still runs (`herdr`, `herdr-rpc`,
 `holdfacts`, `claude-delivery-receipt.py`, `claude`, `codex`, `ps`, `find`); what it did with `jq`, two `python3`
 heredocs and two `node` scripts is native here. `setup/tests/1015` runs both on the same inputs and diffs them;
 `setup/tests/1016` kills a mutant of each mutation anchor (named `<n>-G<nn>`, the bash's `<n>-M<nn>`) with
 `channel_send_test.go`. Not byte for byte, and said so: the message of an unparseable JSON body (node's own parser
 text, imitated for the two common shapes) and the order of the session ids in the opencode-tui busy refusal
 (the endpoint's in node, sorted here).
+
+## hw-secret (Bitwarden to a command, never a value)
+
+`hw-core hw-secret <verb>` is `bin/hw-secret` in Go (`hw_secret*.go`): `run`, `check`, `status`, `ensure` and `unlock`
+(`secret-unlock`, with `--hours`, `--lock`, `--auto` and `--setup`), with the same words, streams, exit statuses and files
+(the session file 0600 in a 0700 directory, the status file). `bin/hw-secret` keeps its bash as the rollback and execs
+hw-core when `HW_IMPL_HW_SECRET` (else `HW_IMPL`) is `go` or the switch file has a `hw-secret=go` line; the file's default
+line does not reach it, and `shadow` and unset run the bash. The value is read into one string, put in the child's
+environment and exec'd over this process; `BW_*` never reaches the child. The five `jq` programs of the bash are read in
+Go (`hw_secret_json.go`), so a machine with no `jq` works. `setup/tests/1077` runs 84 scenarios of both on stubs
+(`bw`, `security`) and diffs them against the bash's recorded transcripts; `setup/tests/1078` kills a mutant of each of the
+17 anchors (`<n>-G<nn>`) with `hw_secret_test.go`. Not byte for byte, and said so: the bash's `<script>: line N:` prefix of
+`exec: <cmd>: not found` (and the bash version's own wording for a command given as a path that cannot run), and a leading-zero `--hours` (octal in the bash's arithmetic).

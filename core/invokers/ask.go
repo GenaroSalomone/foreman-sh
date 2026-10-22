@@ -45,10 +45,6 @@ func (c *Ctx) ask(args []string) error {
 		return &Die{Code: rc}
 	}
 	c.loadRoots()
-	witness := false
-	if st, err := os.Stat(c.BinDir + "/state-witness.sh"); err == nil && !st.IsDir() {
-		witness = true
-	}
 
 	challenge := false
 	if len(args) > 0 {
@@ -264,13 +260,11 @@ func (c *Ctx) ask(args []string) error {
 		return &Die{Code: 1}
 	}
 	logAsk("delivered")
-	if witness {
-		k := "ASK"
-		if challenge {
-			k = "CHALLENGE"
-		}
-		c.transcriptAppend(stateDir, k, envelope, question)
+	k := "ASK"
+	if challenge {
+		k = "CHALLENGE"
 	}
+	c.transcriptAppend(stateDir, k, envelope, question)
 	publishAsk("delivered")
 	c.cockpitKick()
 	c.quiet("herdr", "notification", "show", "executor blocked · "+project+":"+task,

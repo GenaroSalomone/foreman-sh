@@ -55,6 +55,11 @@ done
 BIN_DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
 SELF="$BIN_DIR/hw-sandbox"
 
+# ── hw-core: this tool as a Go binary (core/hw_sandbox*.go; the switch is bin/wrapper-go.sh). THE DEFAULT IS BASH: the bash below is the rollback ──
+_wg_prog=hw-sandbox; _wg_bin="$BIN_DIR"
+[ ! -f "$_wg_bin/wrapper-go.sh" ] || . "$_wg_bin/wrapper-go.sh"
+unset _wg_prog _wg_bin
+
 # Seatbelt compares RESOLVED paths: /tmp is /private/tmp and /var is
 # /private/var, and a rule on the unresolved spelling never matches.
 _canon() {  # $1=path — resolved through its nearest existing ancestor, so

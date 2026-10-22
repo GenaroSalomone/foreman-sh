@@ -59,7 +59,8 @@ def inventory(root):
     root_real = os.path.realpath(root)
     for parent, dirs, files in os.walk(root, followlinks=False):
         at_root = os.path.realpath(parent) == root_real
-        dirs[:] = sorted(d for d in dirs if d != '.git' and not (at_root and _run_state(d)))
+        dirs[:] = sorted(d for d in dirs if d != '.git' and not (at_root and _run_state(d))
+                         and os.path.join(parent, d) != os.path.join(root, 'core', 'dist'))  # gitignored build output: gtc_fresh_core rebuilds it mid-run
         if at_root:
             files = [f for f in files if not _run_state(f)]
         for name in sorted(dirs + [f for f in files if f != '.git']):

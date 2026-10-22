@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cache: never — it loads the cockpit mod in the REAL claude installed here (or skips when there is none): the answer is the installed claude's, which no file of the checkout holds, so it always runs (setup/verdict-cache).
 # The cockpit's buttons start only the contract's verbs, and its rule band only looks
 #
 # cockpit/ is a Claude Code mod. T4 gives it hands: a button per verb and a band

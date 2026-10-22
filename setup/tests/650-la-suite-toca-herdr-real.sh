@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cache: never — it drives a REAL herdr server (its own socket and sessions) and the real hw/invokers: a green of another run says nothing about this machine's herdr, so it always runs (setup/verdict-cache).
 # The live herdr path, driven for real, with no paid model.
 #
 # Every other subject runs with herdr stubbed (KNOWN-LIMITATIONS L9), so the

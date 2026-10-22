@@ -1,0 +1,29 @@
+
+browser-close — close an agent-browser session and PROVE it, or say what is
+still open and why.
+
+  browser-close                       # close every session, verify
+  browser-close --session <name>      # close one, verify
+  browser-close --profile <path>      # a profile path to verify is released
+
+With no --profile it checks $HW_BROWSER_PROFILE, which hw sets per task. Do
+NOT pass a bare profile NAME: a name resolves to
+~/.agent-browser/profiles/<name>, which every task in the project shares.
+
+WHY THIS EXISTS.
+
+`agent-browser close` prints "✓ Browser closed" and that sentence is not
+evidence. Measured 2026-08-25 on a namespace with NO sessions at all:
+
+    $ agent-browser session list   → No active sessions
+    $ agent-browser close          → ✓ Browser closed
+    $ agent-browser session list   → Active sessions: → default
+
+The close SPAWNED the registration it claims to have removed. `close --all`
+does the same: it prints "Closed session: default" and the session is still
+listed the instant afterwards. The registration is a short-lived daemon, gone
+in under a second — so it is a RACE, not a leak, and it is invisible to
+anything that checks immediately.
+
+That race cost a real run. The browser QA subagent of a product-lane task
+closed, listed, saw a session, concluded the close had failed, and relaunched —

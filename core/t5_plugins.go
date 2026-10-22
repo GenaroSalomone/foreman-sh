@@ -6,8 +6,7 @@ package main
 // bin/hw: _plugins_dir, _plugins_installed, _plugin_is_installed, _plugins_declared, _plugins_declared_installed,
 // _plugins_names_line, _check_plugins, _plugins_args, _plugins_lines, _plugins_receipt_value/_source.
 //
-// pi is not here: a pi dispatch is not ported (t5.go refuses it, and bin/hw sends it to bash), so the
-// `-e <plugin dir>` half lives in bash alone.
+// pi's half (`-e <plugin dir>` per plugin, and the launch line's length check) is t6_pi.go: piSkillArgs, piPluginsLineCheck.
 
 import (
 	"os"
@@ -129,6 +128,13 @@ func (d *dsp) pluginsLines() string {
 			flags = append(flags, "--plugin-dir "+d.pluginsDir()+"/"+n)
 		}
 		return "\n  plugins     " + names + "  (brief plugins:; installed pinned copies) — " + strings.Join(flags, " ") + ": this session only; the plugins' hooks run natively in it, through hw/hook-env, and what a hook writes goes to $HW_ARTIFACTS/plugin-state, never ~/.claude"
+	}
+	if d.agent == "pi" {
+		var flags []string
+		for _, n := range declared {
+			flags = append(flags, "-e "+d.pluginsDir()+"/"+n)
+		}
+		return "\n  plugins     " + names + "  (brief plugins:; installed pinned copies) — " + strings.Join(flags, " ") + ": this run only (-ns stays); each is loaded as a pi package (its skills and, where it has one, its extension: pi has no Claude hooks, the extension is the equivalent), and what an extension writes goes to $HW_ARTIFACTS/plugin-state, never ~/.pi"
 	}
 	return "\n  plugins     " + names + "  (brief plugins:) — NOT APPLIED: this executor is " + d.agent + ", and only claude (--plugin-dir) and pi (-e) load plugins. Its skills are whatever " + d.agent + " finds on its own."
 }

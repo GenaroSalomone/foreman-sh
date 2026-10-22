@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cache: never — it loads the cockpit mod in the REAL claude installed here (or skips when there is none): the answer is the installed claude's, which no file of the checkout holds, so it always runs (setup/verdict-cache).
 # The cockpit mod reads the contract's states right (and may start only hw verbs)
 #
 # cockpit/ is a Claude Code mod (plugin.json, hooks/). Claims:

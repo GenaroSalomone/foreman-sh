@@ -91,8 +91,21 @@ func (d *dsp) run(argv []string) {
 			d.die("--why must be one line so the run env and lease records remain parseable")
 		}
 		d.keepPaneSeconds = d.leaseSeconds(d.keepPaneFor) // # MUTATION-ANCHOR: 844-M03
-	} else if d.keepPaneWhy != "" {
-		d.die("--why is only valid with --keep-pane")
+	} else if d.keepPaneWhy != "" && !d.ignoreAfter {
+		d.die("--why is only valid with --keep-pane or --ignore-after")
+	}
+	if d.ignoreAfter {
+		if d.keepPaneWhy == "" {
+			d.die("--ignore-after needs --why \"<why this dispatch must not wait for the brief's after: tasks>\". An override with no stated reason is the same as no check.")
+		}
+		if strings.Contains(d.keepPaneWhy, "\n") {
+			d.die("--why must be one line so the manifest and the receipt stay parseable")
+		}
+		// --why is the --keep-pane lease reason too: with --ignore-after alone it is the override's, and must not reach the lease.
+		d.ignoreAfterWhy = d.keepPaneWhy
+		if !d.keepPane {
+			d.keepPaneWhy = ""
+		}
 	}
 
 	// An explicit --brief wins; otherwise brain/<project>/briefs/<task>.md when it exists.
@@ -125,11 +138,7 @@ func (d *dsp) run(argv []string) {
 		d.tab = false
 	}
 	switch d.agent {
-	case "claude", "opencode", "codex": // # MUTATION-ANCHOR: 844-M06
-	case "pi":
-		// bash knows pi (vendor map, adapter, roster, subagents); hw-core does not yet, and a half-answer for it would
-		// read as the real one. Refuse loudly: HW_IMPL=bash is the implementation that launches a pi executor.
-		d.die("--agent pi is not ported to hw-core yet: run it with HW_IMPL=bash. NOTHING was built.")
+	case "claude", "opencode", "codex", "pi": // # MUTATION-ANCHOR: 844-M06
 	default:
 		d.die("--agent must be claude, opencode, codex or pi (got: " + d.agent + ")")
 	}
@@ -180,6 +189,7 @@ func (d *dsp) run(argv []string) {
 	d.checkSandbox()
 	d.checkRequested()
 	d.checkAuthorizes()
+	d.checkSecrets()
 	d.checkTask(d.task)
 	d.checkAgentNameFree(d.task)
 	if !d.c.t.known(d.proj) {
@@ -261,6 +271,9 @@ func (d *dsp) parseFlags(rest []string) {
 			d.needVal(rest)
 			d.belowFloorWhy = rest[1]
 			rest = rest[2:]
+		case "--ignore-after":
+			d.ignoreAfter = true
+			rest = rest[1:]
 		case "--top-tier-why":
 			d.needVal(rest)
 			d.topTierWhy = rest[1]

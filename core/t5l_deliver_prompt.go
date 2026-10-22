@@ -228,7 +228,9 @@ every mem_search already reads all labels (all_projects is forced).`, binDir, bi
 		preamble = bashSub(preamble + "\n\n" + fmt.Sprintf("Your engram session is %s, registered by hw under %s for this work\ndirectory. Pass session_id: %s with project: %s on every mem_save; without\nit, engram may file the save into manual-save-%s, which it can refuse.\ndone-invoker checks it: a done report must name at least one observation as\n#<id>, and that id must exist under %s, or the report is refused.",
 			s, label, s, label, label, label))
 	}
-	if specialists != "" {
+	if l.piPromptApplies(specialists) { // a pi executor cannot delegate to .claude/agents: it is told so (t6_pi_launch.go)
+		preamble = pjoin(preamble, l.piSpecialistNote(specialists))
+	} else if specialists != "" {
 		preamble = bashSub(preamble + "\n\n" + fmt.Sprintf("Specialist subagents available here: %s. If one of them is the job, delegate\nrather than doing it inline — they carry the access and the conventions for it,\nand reconstructing those in your own session is how a mechanism gets improvised.", specialists))
 	} else {
 		preamble = pjoin(preamble, "no specialists in this lane; ops-investigator / qa-tester are not available here") // # MUTATION-ANCHOR: 847-C-05
@@ -335,4 +337,12 @@ func (l *lch) briefAuthorization() string {
 	}
 	sb.WriteString("\nOnly these destinations and operations are authorized, and nothing beyond them:\nanother destination, another operation, or a credential or session not named\nhere stays unauthorized. Within them, act without asking; for anything else\nask-invoker, or report blocked. A handle is a resolver, never a value.")
 	return bashSub(sb.String())
+}
+
+// briefSecretsNote is _brief_secrets_note: what the executor is told, once, beside the authorization block.
+func (l *lch) briefSecretsNote() string {
+	if l.brSecrets == "" {
+		return ""
+	}
+	return bashSub("SECRETS — delivered by hw from the brief frontmatter (secrets:): " + l.brSecrets + "\n\nEach is an item of the Bitwarden folder agents. Reach a value ONLY as\n  hw secret run <item>[.<field>] --as VAR [--item <item> --as VAR ...] -- <cmd>\nwhich puts it in <cmd>'s environment and nowhere else. Never call bw, never read\nthe session file, never print or write a value. Vault locked or session expired:\ndone-invoker --blocked naming the item; the brainer unlocks it.")
 }

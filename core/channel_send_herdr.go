@@ -158,14 +158,6 @@ func (c *chanSend) executorState(pane string) csExecState {
 
 // rulingGate is _ruling_gate: the classifier `hw ruling` asks; its answers are the complement of that verb's.
 func (c *chanSend) rulingGate(pane, desc string) {
-	if c.degraded {
-		info, _ := c.herdr().stdout("agent", "get", pane)
-		status := jqRawOr(info, "", "result", "agent", "agent_status")
-		if status == "idle" || status == "done" {
-			return
-		}
-		c.rulingRefusal(desc, status, pane)
-	}
 	es := c.executorState(pane)
 	switch es.verdict {
 	case "idle": // # MUTATION-ANCHOR: 41-G05
@@ -187,16 +179,12 @@ func (c *chanSend) rulingGate(pane, desc string) {
 	}
 }
 
-// ── the witness wait (bin/state-witness.sh witness_wait) ────────────────────
+// ── the witness wait (witness_wait of the bash state witness) ────────────────────
 
 // witnessWait: 0 idle,done; 2 budget spent; 5 proved unable to change; 6 a person is waited on; 3/4 herdr-rpc's.
 // c.witnessDetail carries what the cross-check read.
 func (c *chanSend) witnessWait(pane string, totalMS int64, valid bool) int {
 	c.witnessDetail = ""
-	if c.degraded {
-		c.witnessDetail = "no cross-check was available (state-witness.sh missing)"
-		return c.csRPCWait(pane, totalMS)
-	}
 	slice := int64(20000)
 	if n, ok := csMS(c.env("WITNESS_SLICE_MS", "20000")); ok {
 		slice = n

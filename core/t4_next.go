@@ -2,7 +2,7 @@ package main
 
 // hw next — re-task a live executor (lib/hw/next.sh, cmd_next and its _next_* helpers), byte for byte.
 //
-// The helpers cmd_next reaches in bin/hw, lib/hw/ledger.sh, bin/invoker-common.sh and bin/state-witness.sh are
+// The helpers cmd_next reaches in bin/hw, lib/hw/ledger.sh, bin/invoker-common.sh and the bash state witness are
 // in t4_next_*.go under next… names (see t4_next_util.go): the gate (witness_wait, the question modal, the
 // route), the message (the preamble, the epistemic safeguard, the authorization, the brief
 // (its frontmatter), the run (env, markers, lease, receipt, ledger) and the refusals. The external commands
@@ -133,9 +133,6 @@ loop:
 	bin := a.nextBinDir()
 	if !nextReadable(bin + "/invoker-common.sh") {
 		a.die("cannot find invoker-common.sh beside " + bin + " — this brain/bin is incomplete")
-	}
-	if !nextReadable(bin + "/state-witness.sh") {
-		a.die("cannot find state-witness.sh beside " + bin + " — this brain/bin is incomplete, and a gate with no cross-check would wait out its whole budget on a state that cannot change")
 	}
 
 	s.info = nextHerdrSub("agent", "get", s.pane)

@@ -203,6 +203,7 @@ func (l *lch) hwEnvArgs(cwd string) []string {
 	if l.agent == "opencode" && l.brainGuardOn() {
 		p(" --env OPENCODE_CONFIG=%s", l.brainGuardOpencodeConfig())
 	}
+	p("%s", l.piHwEnvFlags(cwd)) // pi's guard halves and roster fallback; nothing for any other vendor
 	p(" --env ENGRAM_PROJECT=%s", l.engramLabel(l.proj))
 	// The brainer's pane in BOTH modes, resolved and not inherited (a stale HERDR_PANE_ID is an address that is gone).
 	if pane := l.invokerPane(); pane != "" {
@@ -279,6 +280,7 @@ func (l *lch) exportHwEnv(cwd string) {
 	} else {
 		l.unsetEnv("OPENCODE_CONFIG")
 	}
+	l.piExportEnv(cwd) // pi's guard halves and roster fallback (the unset for every other vendor is its own)
 	// NO AUTO-MEMORY IN AN EXECUTOR: its contract is its brief and its lane's CLAUDE.md.
 	if l.agent == "claude" {
 		l.setEnv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1") // # MUTATION-ANCHOR: 847-A1-10
@@ -663,6 +665,13 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		"OPENCODE_CONFIG_CONTENT":         env("OPENCODE_CONFIG_CONTENT"),
 		"HW_OPENCODE_EFFORT":              env("HW_OPENCODE_EFFORT"),
 		"HW_OPENCODE_EFFORT_AGENT":        env("HW_OPENCODE_EFFORT_AGENT"),
+		// pi's guard halves and roster fallback: `hw revive` replays every key
+		"HW_PI_BRAIN_GUARD":            env("HW_PI_BRAIN_GUARD"),
+		"HW_PI_FALLBACK_MODEL":         env("HW_PI_FALLBACK_MODEL"),
+		"HW_PI_FALLBACK_THINKING":      env("HW_PI_FALLBACK_THINKING"),
+		"HW_PI_ASKED_MODEL":            env("HW_PI_ASKED_MODEL"),
+		"HW_PI_SUBAGENTS_DIR":          env("HW_PI_SUBAGENTS_DIR"),
+		"PI_SUBAGENT_EXTRA_AGENT_DIRS": env("PI_SUBAGENT_EXTRA_AGENT_DIRS"),
 	} {
 		values.set(k, v)
 	}

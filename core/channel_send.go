@@ -84,7 +84,6 @@ type chanSend struct {
 	holdProven, reportProven                      bool
 	vendor, tgt, endpoint, message                string
 	witnessDetail                                 string
-	degraded                                      bool // no state-witness.sh beside this binary
 	probeMS                                       int64
 }
 
@@ -362,7 +361,6 @@ parse:
 			c.die("message is empty")
 		}
 	}
-	c.degraded = !csReadable(filepath.Join(c.binDir, "state-witness.sh"))
 	c.probeMS = 30000
 	c.checkHold()
 	c.checkReportState()
@@ -411,33 +409,31 @@ func (c *chanSend) clearReplyHold() {
 	if !c.holdProven {
 		return
 	}
-	if !c.degraded { // `type transcript_append` is true only when state-witness.sh was sourced
-		envelope := c.deliveryKey
-		if envelope == "" {
-			if b, err := os.ReadFile(c.replyHold); err == nil {
-				for _, l := range strings.Split(string(b), "\n") { // awk -F= '$1 == "logical_id" { print $2; exit }'
-					if f := strings.Split(l, "="); f[0] == "logical_id" {
-						if len(f) > 1 {
-							envelope = f[1]
-						}
-						break
+	envelope := c.deliveryKey
+	if envelope == "" {
+		if b, err := os.ReadFile(c.replyHold); err == nil {
+			for _, l := range strings.Split(string(b), "\n") { // awk -F= '$1 == "logical_id" { print $2; exit }'
+				if f := strings.Split(l, "="); f[0] == "logical_id" {
+					if len(f) > 1 {
+						envelope = f[1]
 					}
+					break
 				}
 			}
 		}
-		if envelope == "" {
-			envelope = "-"
-		}
-		kind := "ANSWER"
-		if c.isRuling {
-			kind = "RULING"
-		}
-		csTranscriptAppend(filepath.Dir(c.replyHold), kind, envelope, c.message)
 	}
+	if envelope == "" {
+		envelope = "-"
+	}
+	kind := "ANSWER"
+	if c.isRuling {
+		kind = "RULING"
+	}
+	csTranscriptAppend(filepath.Dir(c.replyHold), kind, envelope, c.message)
 	os.Remove(c.replyHold)
 }
 
-// csTranscriptAppend is transcript_append (bin/state-witness.sh): best effort, always.
+// csTranscriptAppend is transcript_append (the bash state witness): best effort, always.
 func csTranscriptAppend(d, kind, envelope, text string) {
 	if d == "" {
 		return

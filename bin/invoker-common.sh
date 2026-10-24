@@ -134,7 +134,7 @@ def herdr_stable(text):
     space here, so what herdr keeps is what was asked for.
     """
     out = [" " if (c.isspace() or unicodedata.category(c) == "Cc") else c for c in text]
-    return " ".join("".join(out).split())  # MUTATION-ANCHOR: 899-M01
+    return " ".join("".join(out).split())
 
 def split(text, width):
     """Fixed-width slices, but preferring a whitespace boundary.
@@ -156,9 +156,9 @@ def split(text, width):
         cut = max(head.rfind(" "), 0)
         if cut <= 0:
             out.append(rest[:width])   # one long token: cut it, there is nothing else
-            rest = rest[width:].lstrip(" ")   # a space that ends the token is herdr-trimmed off the next chunk  # MUTATION-ANCHOR: 899-M08
+            rest = rest[width:].lstrip(" ")   # a space that ends the token is herdr-trimmed off the next chunk
         else:
-            out.append(rest[:cut])     # the separator is dropped here and given back by the reader  # MUTATION-ANCHOR: 899-M02
+            out.append(rest[:cut])     # the separator is dropped here and given back by the reader
             rest = rest[cut + 1:]
     out.append(rest)
     return out
@@ -305,13 +305,13 @@ INVOKER_CLOSER_SH='
 pid="$1"; state="$2"; hw="$3"; shift 3
 export HW_DONE_INVOKER_PID="$pid"
 n=0
-while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done  # MUTATION-ANCHOR: 899-M03
+while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
 sleep "${HW_CLOSE_GRACE_SECONDS:-1}"
 [ -d "$state" ] || exit 0
 rm -f "$state/close-failed"
 rc=0
 "$hw" "$@" || rc=$?
-if [ "$rc" != 0 ]; then  # MUTATION-ANCHOR: 899-M05
+if [ "$rc" != 0 ]; then
   printf "rc=%s\nat=%s\nlog=%s\nthe report was delivered; hw %s exited %s and the pane may still be open\n" \
     "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state/close.log" "$*" "$rc" > "$state/close-failed"
   herdr notification show "executor close FAILED (exit $rc)" --body "hw $* — see $state/close.log" --sound request >/dev/null 2>&1 || true
@@ -328,7 +328,7 @@ pid, state, hw, script, *args = sys.argv[1:]
 log = open(state + "/close.log", "ab")
 subprocess.Popen(["bash", "-c", script, "_", pid, state, hw] + args,
                  stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                 close_fds=True, start_new_session=True)  # MUTATION-ANCHOR: 899-M04
+                 close_fds=True, start_new_session=True)
 CLOSER
 }
 

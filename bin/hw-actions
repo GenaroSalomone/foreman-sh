@@ -103,10 +103,10 @@ def done_reasons(ev, status, self_close, post, seq, pane, marker):
     if stranded:
         reasons.append("  · task %s is STRANDED: %s published its report (done_state=undelivered) and the brainer never received it — no %s. "
                        "Closing the pane discards the only place that report can still be redelivered from." % (seq, pane, marker))
-    if status == "working" and not self_close:  # MUTATION-ANCHOR: 150-M01
+    if status == "working" and not self_close:
         reasons.append("  · %s is WORKING right now — a turn is in progress and this close would cut it mid-turn. "
                        "hw dispatched no turn into it: after a report, hw next is the only re-task route and it advances the task counter first." % pane)
-    if post and not self_close:  # MUTATION-ANCHOR: 150-M02
+    if post and not self_close:
         reasons.append("  · %s turn(s) ended in %s AFTER its report, and hw dispatched none of them. Somebody is talking to this pane." % (post, pane))
     return "\n".join(reasons), stranded
 

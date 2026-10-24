@@ -12,7 +12,7 @@
 # WHAT THIS PROVES is an ABSENCE, so it stands next to a control, as 145 does
 # for herdr. A recording stand-in plays the live engram on a free port, reached
 # the way the live one is: through an inherited ENGRAM_PORT, with HW_ENGRAM_URL
-# unset. C01 runs the real `_engram_register_session`, extracted from bin/hw,
+# unset. C01 runs hw's registration sequence (the engram-serve.sh verbs hw-core calls),
 # WITHOUT _common.sh and requires the POST to arrive. The claim runs the same
 # driver in a child that sources _common.sh first and requires nothing to
 # arrive. If the control does not reproduce, this file fails rather than
@@ -29,8 +29,24 @@
 
 COMMON="${SUBJECT_COMMON:-$ROOT/setup/tests/_common.sh}"
 FRAG="$TMP/register.sh"
-sed -n '/^_engram_register_session() {/,/^}/p' "$ROOT/bin/hw" > "$FRAG"
-grep -q 'POST' "$FRAG" || fail "driver: _engram_register_session was not found in bin/hw"
+# hw-core registers the session by running three verbs of bin/engram-serve.sh in order (core/t5l_receipt.go,
+# engramRegisterSession): engram_serve_url, engram_serve_verdict, engram_session_post. bin/hw has no bash body any more,
+# so the driver is that same sequence over the real lib, with hw's receipts and warnings stubbed by the caller below.
+cat > "$FRAG" <<'FRAGEOF'
+_engram_register_session() {
+  local id project dir url verdict rc=0
+  project="${ENGRAM_PROJECT:-}"; dir="${HW_WORKDIR:-$WT}"; id="hw-$HW_RUN"
+  . "$HW_BIN_DIR/engram-serve.sh"
+  url="$(engram_serve_url)"
+  printf 'url=%s\n' "$url"
+  verdict="$(engram_serve_verdict "$url")" || rc=$?
+  [ "$rc" = 0 ] && engram_session_post "$id" "$project" "$dir" "$url" >/dev/null
+  return 0
+}
+FRAGEOF
+grep -q 'engram_session_post' "$ROOT/bin/engram-serve.sh" || fail "driver: engram_session_post is not in bin/engram-serve.sh"
+rg -q 'l.lrcEngramLib\(lib, true, .*"engram_session_post"' "$ROOT/core/t5l_receipt.go" \
+  || fail "driver: hw-core no longer posts the session through engram_session_post, so this driver is not the launch's registration"
 
 # ── the recording stand-in ──────────────────────────────────────────────────
 LOG="$TMP/engram-requests.log"; : > "$LOG"
@@ -70,14 +86,17 @@ PORT="$(<"$PORTF")"
 # inherited the way a person's shell carries it. With an argument, the child
 # sources that _common.sh first, as every subject does.
 drive() {
-  env -u HW_ENGRAM_URL -u ENGRAM_DATA_DIR ENGRAM_PORT="$PORT" HW_BIN_DIR="$ROOT/bin" FRAG="$FRAG" C="${1:-}" bash -c '
+  # _common.sh sweeps every HW_* from the environment, HW_BIN_DIR too: it is set after the source, from DRV_BIN. (Left unset, the
+  # driver died on `set -u` at the first line that read it, and under bash 3.2 that exit still read as 0: the claim below then
+  # held for the wrong reason.)
+  env -u HW_ENGRAM_URL -u ENGRAM_DATA_DIR ENGRAM_PORT="$PORT" DRV_BIN="$ROOT/bin" FRAG="$FRAG" C="${1:-}" bash -c '
     set -euo pipefail
     [ -z "$C" ] || . "$C"
-    WT=/fixture/wt; HW_WORKDIR=/fixture/wt; HW_RUN=run-189; ENGRAM_PROJECT=brain
+    HW_BIN_DIR="$DRV_BIN"; WT=/fixture/wt; HW_WORKDIR=/fixture/wt; HW_RUN=run-189; ENGRAM_PROJECT=brain
     info() { :; }; warn() { :; }; _receipt() { :; }
     source "$FRAG"
     _engram_register_session
-  ' >/dev/null 2>&1
+  ' > "$TMP/drive.out" 2>&1
 }
 
 # The stand-in plays the person's OWN serve: hw registers only on a serve whose
@@ -95,7 +114,13 @@ esac
 
 # The claim — under _common.sh nothing arrives.
 : > "$LOG"
-drive "$COMMON" || fail "claim: the driver failed under _common.sh"
+drive "$COMMON" || fail "claim: the driver failed under _common.sh: $(<"$TMP/drive.out")"
+# the silence is only evidence if the driver ran to the address it would have posted to, and that address is the pinned one
+case "$(<"$TMP/drive.out")" in
+  "url=http://127.0.0.1:$PORT"*) fail "claim: under _common.sh the driver still resolved the inherited port $PORT" ;;
+  "url=http://127.0.0.1:9"*) ;;
+  *) fail "claim: the driver never reached its engram address, so the silence proves nothing: $(<"$TMP/drive.out")" ;;
+esac
 [ ! -s "$LOG" ] || fail "claim: a registration made under _common.sh reached the inherited engram address: $(<"$LOG")"
 pass "claim: under _common.sh a launch's engram registration reaches no engram the person runs"
 

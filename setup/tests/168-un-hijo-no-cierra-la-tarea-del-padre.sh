@@ -9,6 +9,9 @@
 # is the whole decision under test (the verdict itself is 43's subject).
 # `SUBJECT_HOOK` runs the same assertions against another hook, for old/new.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+# This subject exercises the BASH body of the Stop hook (a stub `hw` beside it, mutants of its source). Go is the hook's default since
+# 0.6.0 and the bash is the rollback through 0.6.x, so the subject takes the way back by the tool's own word (1030 holds Go against it).
+export HW_IMPL_STOP_HOOK=bash
 
 BIN="$TMP/bin"; mkdir -p "$BIN" "$TMP/work/.hw/run"
 cp "${SUBJECT_HOOK:-$ROOT/bin/hw-stop-hook.sh}" "$BIN/hw-stop-hook.sh"

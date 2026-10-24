@@ -329,33 +329,10 @@ case "$OUT" in
   *) fail "unexpected behaviour when ps is unavailable: $OUT" ;;
 esac
 
-# MUTANT M03: identity by command name only, which is what shipped. The
-# symlinked sender in arm 5 then loses its lock.
-cp "$ROOT/bin/channel-send" "$cs/bin/channel-send"
-mutate_anchor 101-M03 "$cs/bin/channel-send" '_owner_start_was="" # MUTANT: name only'
-grep -q 'MUTANT: name only' "$cs/bin/channel-send" || fail "M03 did not apply"
-chmod +x "$cs/bin/channel-send"
-rm -rf "$lock"; mkdir -p "$lock"
-env PATH="$cs/bin:$PATH" TMPDIR="$cs/tmp" STUB_WAIT_S=60 STUB_RPC_RC=2 \
-  HW_INVOKER_WAIT_MS=60000 "$cs/bin/deliver" herdr wT:p9 - "holder" >/dev/null 2>&1 &
-holder=$!
-# Same bounded wait as the arm above, and for a sharper reason here: this `cp`
-# ends in `|| true`, so under load the mutant's lock would silently have NO
-# recorded start time — and the arm would then be judging a lock that is missing
-# the very field M03 is about.
-waited=0
-while [ ! -s "$cs/tmp/hw-deliver-wT_p9.lock/owner.start" ] && [ "$waited" -lt 100 ]; do
-  sleep 0.2; waited=$((waited + 1))
-done
-printf '%s\n' "$holder" > "$lock/owner.pid"
-cp "$cs/tmp/hw-deliver-wT_p9.lock/owner.start" "$lock/owner.start" 2>/dev/null \
-  || fail "M03 could not stage a recorded start time, so this arm would judge a lock without the field it is about"
-OUT="$(cs_probe)"
-kill -TERM "$holder" 2>/dev/null || true
-wait "$holder" 2>/dev/null || true
-rm -rf "$lock" "$cs/tmp/hw-deliver-wT_p9.lock"
-saw_mutant "M03 identity rests on the command name, so a symlinked sender loses its lock" \
-  "$OUT" "NOT a sender"
+# MUTANT M03 (identity by command name only, which is what shipped: the symlinked sender of arm 5 then loses its lock) edited a line of
+# bin/channel-send's bash and went with it (go-060 S5: the file is a shim). It is held by the Go anchor 101-G03 (core/channel_send_herdr.go,
+# `if startWas != ""`, killed in process by setup/tests/1016 and judged by TestChannelSendLock); arms 5-7 above still run the symlinked
+# sender, the reused pid and the unreadable `ps` through the shim.
 
 # ── the pid-reuse half, added 2026-09-08 after Judgment Day ─────────────────
 #

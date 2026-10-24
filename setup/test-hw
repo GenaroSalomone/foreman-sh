@@ -2073,13 +2073,32 @@ _try_launch() {
   _launch_job "$1"
 }
 
+# _job_died <idx> — a job whose process is gone and that left no <idx>.status is DEAD, and
+# 0 here means this call wrote the status it never wrote: rc=1 and a `not ok` line naming
+# the subject, so the loop below reports it red instead of polling a file that will never
+# appear. MEASURED 2026-10-24, macOS full suite on main ee7a5b80: job 330 (subject 650)
+# printed its last `ok`, its process vanished with no status, and the runner span in
+# `sleep 0.1` for 73 minutes with no children. The status is checked AFTER the `kill -0`
+# miss, never before: a job writes it as its last act and then exits, so a job seen gone
+# with the file already there finished normally and is left to the normal path.
+_job_died() {
+  local idx="$1"
+  kill -0 "${JOB_PID[$idx]}" 2>/dev/null && return 1  # MUTATION-ANCHOR: 1128-M01
+  [ ! -f "$JOBDIR/$idx.status" ] || return 1
+  : >> "$JOBDIR/$idx.out"
+  printf 'not ok - runner: setup/tests/%s DIED WITHOUT REPORTING — its job process %s is gone and wrote no status, so it is red (a subject cannot be proven by a job that vanished)\n' \
+    "$(basename "${JOB_PATH[$idx]}")" "${JOB_PID[$idx]}" >> "$JOBDIR/$idx.err"
+  printf 'parse_rc=0\nrc=1\ncov_rc=0\nelapsed=0\nwall_ms=0\ncpu_ms=0\nfirst_ms=0\nrerun_rc=0\nretried=0\nfirst_rc=0\nstarted_at=0\nended_at=0\n' > "$JOBDIR/$idx.status.part"
+  mv -f "$JOBDIR/$idx.status.part" "$JOBDIR/$idx.status"
+}
+
 # _reap — true when at least one job finished since the last call. `wait` is
 # per pid rather than `wait -n`, which bash 3.2 does not have and this file has
 # to run under: the same bash every bin/ script runs under (tests/_common.sh).
 _reap() {
   local idx rest="" any=1
   for idx in $ACTIVE; do
-    if [ -f "$JOBDIR/$idx.status" ]; then
+    if [ -f "$JOBDIR/$idx.status" ] || _job_died "$idx"; then
       wait "${JOB_PID[$idx]}" 2>/dev/null || true
       RUNNING=$((RUNNING - 1))
       if [ "${JOB_LANE[$idx]}" = exclusive ]; then
@@ -2181,6 +2200,25 @@ KEEP_GOING=0
 case "${HW_TEST_KEEP_GOING:-}" in 1|yes|true) KEEP_GOING=1 ;; esac
 RED_LINES=""; RED_RC=0; RED_COUNT=0
 JOB_RED=()
+# A RED THAT PASSES ALONE IS A FLAKE, AND A FLAKE MUST NOT THROW THE RUN AWAY.
+# MEASURED 2026-10-24, the 0.6.0 batch: five Linux full runs (~40 min each) were each red on
+# exactly one job, a different one each time (391, 815, tty-sw-dry, 797), and every one of them
+# passed alone. So a job that exits non-zero is not called red at once: the run goes on, and at
+# its end each such job is run ONE more time, serially, with nothing else of this run beside it
+# (the exclusive of the machine's pool, as the timeout retry above). Green alone -> `flaky - <job>`
+# is printed, a row goes to the ledger and the run's number says how many flakes it absorbed; red
+# alone -> the run fails as it always did. BOUNDS: at most RETRY_MAX (3) reds are retried — a fourth
+# red is not load, it is a broken tree, and the run fails (a run without --keep-going stops there, as
+# before) — and ONLY a non-zero exit is retried: a subject that does not parse, a failed mutation arm,
+# a budget refusal, a second cut by the ceiling and a herdr witness hit stay red on the spot.
+# HW_TEST_NO_RETRY=1 turns it off (the first red stops the run again), and so does the fast gate,
+# whose whole claim is that a subject passes every time.
+RETRY_ON=1; RETRY_MAX=3
+case "${HW_TEST_NO_RETRY:-}" in 1|yes|true) RETRY_ON=0 ;; esac
+[ "${HW_TEST_GATE:-}" != fast ] || RETRY_ON=0
+DEFER_RED=""; DEFER_N=0; _RED_DEFER=0
+JOB_REDRC=(); JOB_REDLINE=()
+FLAKE_COUNT=0; FLAKE_LINES=""
 # _cut_line <name> <elapsed> <ceiling> [<suffix>] — the red a subject cut by its ceiling is named with.
 _cut_line() {
   printf '\nnot ok - runner: setup/tests/%s TIMED OUT after %ss, over its %ss ceiling (budget x HW_TEST_TIMEOUT_FACTOR=%s, floor HW_TEST_TIMEOUT_FLOOR=%s, spent in loaded seconds: up to HW_TEST_TIMEOUT_LOAD_MAX=%s times the wall on a busy machine) — its process group was killed, nothing else%s\n' \
@@ -2199,8 +2237,13 @@ _report_unretried() {
   done
 }
 _job_red() {
+  local _defer="$_RED_DEFER"; _RED_DEFER=0
   JOB_RED[${_i:-0}]=1
-  if [ "$KEEP_GOING" != 1 ]; then _stop_everything; _report_unretried; _tm_run; abort_marker; exit "$1"; fi
+  if [ "$KEEP_GOING" != 1 ] && [ "$_defer" != 1 ]; then
+    _stop_everything; _report_unretried
+    [ -z "$RED_LINES" ] || printf '\nnot ok - suite: red job(s) found earlier, not retried because the run stopped on another red:%s\n' "$RED_LINES" >&2
+    _tm_run; abort_marker; exit "$1"
+  fi
   RED_COUNT=$((RED_COUNT + 1))
   [ "$RED_RC" != 0 ] || RED_RC="$1"
   RED_LINES="$RED_LINES
@@ -2256,8 +2299,14 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
     TIMEOUT_DEFER="$TIMEOUT_DEFER $_i"
     _i=$((_i + 1)); NEXT_EMIT="$_i"; continue
   fi
+  # A RED THE RETRY MAY ABSORB (see RETRY_ON): its output is shown now but not tallied or counted — only the run
+  # that decides is, and for a job that stays red there is no number at all.
+  _defer=0
+  if [ "$rc" -ne 0 ] && [ "$RETRY_ON" = 1 ] && [ ! -s "$JOBDIR/$_i.timeout" ] && [ "$RED_COUNT" -eq "$DEFER_N" ] && [ "$RED_COUNT" -lt "$RETRY_MAX" ]; then  # MUTATION-ANCHOR: 1129-M01
+    _defer=1
+  fi
   cat "$JOBDIR/$_i.out"
-  cat "$JOBDIR/$_i.out" >> "$TALLY"
+  [ "$_defer" = 1 ] || cat "$JOBDIR/$_i.out" >> "$TALLY"
   [ ! -s "$JOBDIR/$_i.err" ] || cat "$JOBDIR/$_i.err" >&2
   if [ "$rc" -ne 0 ]; then
     # A SUBJECT CUT BY ITS CEILING IS NAMED, with the time it had and the ceiling
@@ -2268,6 +2317,7 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
       _cut_line "$(basename "$f")" "$_to_el" "$_to_cap"
     fi
     _stops="the run stops here"; [ "$KEEP_GOING" != 1 ] || _stops="continuing (--keep-going)"
+    [ "$_defer" != 1 ] || _stops="continuing, to retry it alone at the end"
     case "${JOB_KIND[$_i]}" in
       subject)
         printf '\nnot ok - suite: setup/tests/%s failed (exit %s) — %s\n' \
@@ -2284,7 +2334,12 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
     esac
     # Its `ok` lines are already in the tally, so they are counted here too, or
     # the tracked/untracked split below would not add up.
-    [ "$KEEP_GOING" != 1 ] || count_into "$f" "$JOBDIR/$_i.out"
+    { [ "$KEEP_GOING" != 1 ] || [ "$_defer" = 1 ]; } || count_into "$f" "$JOBDIR/$_i.out"
+    if [ "$_defer" = 1 ]; then
+      DEFER_RED="$DEFER_RED $_i"; DEFER_N=$((DEFER_N + 1))
+      JOB_REDRC[$_i]="$rc"; JOB_REDLINE[$_i]="$(_job_name "$_i") failed (exit $rc)"
+      _RED_DEFER=1
+    fi
     _job_red "$rc" "$(_job_name "$_i") failed (exit $rc)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; }
   fi
   count_into "$f" "$JOBDIR/$_i.out"
@@ -2426,6 +2481,81 @@ for _d in $TIMEOUT_DEFER; do
   fi
   rm -f "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" "$JOBDIR/$_d.cov" "$JOBDIR/$_d.timeout" "$JOBDIR/$_d.timeout.first"
 done
+# THE REDS THE RETRY MAY ABSORB (see RETRY_ON), run one at a time with nothing else of this run beside them. Only when
+# EVERY red of the run was deferred and there are at most RETRY_MAX of them: a plain red (no exit to retry) or a
+# fourth red means the run fails as it always did, and nothing here runs.
+_retry_job() { # <idx> → the job's own command run again into $JOBDIR/<idx>.rt.out and .rt.err; its exit
+  local idx="$1" f="${JOB_PATH[$1]}" kind="${JOB_KIND[$1]}" _r=bash
+  rm -f "$JOBDIR/$idx.rt.timeout"
+  if [ "$kind" = subject ]; then
+    fg_time_cmd "$JOBDIR/$idx.rt.out" "$JOBDIR/$idx.rt.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.rt.timeout" bash "$f"
+    return
+  fi
+  [ "$kind" != guard-node ] || _r=node
+  if [ "${JOB_LANE[$idx]}" = guards ]; then
+    mkdir -p "$JOBDIR/artifacts.$idx.rt"
+    env HOME="$GUARD_HOME" HW_ARTIFACTS="$JOBDIR/artifacts.$idx.rt" "$_r" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"} > "$JOBDIR/$idx.rt.out" 2> "$JOBDIR/$idx.rt.err" < /dev/null
+  else
+    fg_time_cmd "$JOBDIR/$idx.rt.out" "$JOBDIR/$idx.rt.err" "$_r" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"}
+  fi
+}
+if [ "$DEFER_N" -gt 0 ] && [ "$RED_COUNT" -eq "$DEFER_N" ] && [ "$DEFER_N" -le "$RETRY_MAX" ]; then
+  _ledger="${HW_TEST_FLAKY_LEDGER:-${TEST_HW_LIVE_ROOT:-$SOURCE_ROOT}/setup/flaky-ledger.tsv}"
+  _still=""
+  for _d in $DEFER_RED; do
+    f="${JOB_PATH[$_d]}"; _i="$_d"; _jn="$(_job_name "$_d")"
+    _first_fail="$(grep -m1 '^not ok' "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" 2>/dev/null | sed 's/^[^:]*:not ok - //; s/^not ok - //' || true)"
+    [ -n "$_first_fail" ] || _first_fail="exit ${JOB_REDRC[$_d]}"
+    if [ "$POOL_ON" = 1 ]; then
+      until _pool_excl_step "$_d"; do sleep 0.5; done
+    fi
+    rc=0; _retry_job "$_d" || rc=$?
+    [ "$POOL_ON" != 1 ] || _pool_excl_release
+    cat "$JOBDIR/$_d.rt.out"
+    [ ! -s "$JOBDIR/$_d.rt.err" ] || cat "$JOBDIR/$_d.rt.err" >&2
+    _rt_bad=""
+    if [ "$rc" -ne 0 ]; then  # MUTATION-ANCHOR: 1129-M02
+      _rt_bad="$_jn failed (exit $rc) again on its retry, alone"
+      printf '\nnot ok - suite: %s — first failure: %s\n' "$_rt_bad" "$_first_fail" >&2
+    elif [ "${JOB_KIND[$_d]}" = subject ]; then
+      _cov_rc=0
+      "$COVERAGE" "$f" "$JOBDIR/$_d.rt.out" > "$JOBDIR/$_d.rt.cov" 2>&1 || _cov_rc=$?
+      if [ "$_cov_rc" -ne 0 ]; then
+        _rt_bad="$_jn failed mutation coverage (exit $_cov_rc) on its retry, alone"
+        printf '\nnot ok - suite: %s: %s\n' "$_rt_bad" "$(cat "$JOBDIR/$_d.rt.cov" 2>/dev/null)" >&2
+      else
+        [ ! -s "$JOBDIR/$_d.rt.cov" ] || cat "$JOBDIR/$_d.rt.cov"
+      fi
+    fi
+    if [ -n "$_rt_bad" ]; then
+      _still="$_still $_d"
+      continue
+    fi
+    # green alone: the run that counts is this one, tallied as any job's
+    cat "$JOBDIR/$_d.rt.out" >> "$TALLY"
+    count_into "$f" "$JOBDIR/$_d.rt.out"
+    JOB_RED[$_d]=""
+    FLAKE_COUNT=$((FLAKE_COUNT + 1))
+    FLAKE_LINES="$FLAKE_LINES
+  flaky - $_jn (red in the pool, green alone): $_first_fail"
+    printf 'flaky - %s (red in the pool, green alone): %s\n' "$_jn" "$_first_fail"
+    if [ ! -s "$_ledger" ]; then
+      printf 'date\tcommit\tsubject\tfirst_failing_line\n' >> "$_ledger" 2>/dev/null || true
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$(git -C "$SOURCE_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)" "$_jn" \
+      "$(printf '%s' "$_first_fail" | tr '\t\n' '  ' | cut -c1-300)" >> "$_ledger" 2>/dev/null \
+      || printf 'runner: cannot append to the flaky ledger %s — the flake is still named above\n' "$_ledger" >&2
+  done
+  # what stays red is exactly what stayed red alone: the run fails with those, and with the first one's exit
+  RED_LINES=""; RED_COUNT=0; RED_RC=0
+  for _d in $_still; do
+    RED_COUNT=$((RED_COUNT + 1))
+    [ "$RED_RC" != 0 ] || RED_RC="${JOB_REDRC[$_d]}"
+    RED_LINES="$RED_LINES
+  not ok - ${JOB_REDLINE[$_d]} (and again on its retry, alone)"
+  done
+fi
 _i="$JOB_TOTAL"
 rm -f "$TALLY.subject"
 _tm_run
@@ -2538,6 +2668,9 @@ fi
 if [ "$RETRIED_COUNT" -gt 0 ]; then
   printf '\nRETRIED: %s timing subject(s) failed once and passed on their single retry:%s\n' "$RETRIED_COUNT" "$RETRIED_LINES"
 fi
+if [ "$FLAKE_COUNT" -gt 0 ]; then
+  printf '\nFLAKES ABSORBED: %s job(s) were red in the pool and green alone on their single retry:%s\n' "$FLAKE_COUNT" "$FLAKE_LINES"
+fi
 if [ "$TIMEOUT_RETRIED_COUNT" -gt 0 ]; then
   printf '\nRETRIED AFTER TIMEOUT: %s subject(s) were cut by their ceiling once and passed on their single retry, alone:%s\n' "$TIMEOUT_RETRIED_COUNT" "$TIMEOUT_RETRIED_LINES"
 fi
@@ -2566,7 +2699,9 @@ else
   elif [ -n "${HW_TEST_ONLY:-}" ]; then
     printf '\nINCREMENTAL: %s tests passed  (TRACKED only — %s jobs named by HW_TEST_ONLY, NOT the whole suite)\n' "$TRACKED_OK" "$JOB_TOTAL"
   else
-    printf '\n%s tests passed  (TRACKED only — the number this commit can reproduce)\n' "$TRACKED_OK"  # MUTATION-ANCHOR: 55-M01
+    # THE FLAKE COUNT TRAVELS IN THE HEADLINE, which is what the verdict records (the prefix is the one every reader parses)
+    _flk=""; [ "$FLAKE_COUNT" -eq 0 ] || _flk="; FLAKES ABSORBED: $FLAKE_COUNT, each red in the pool and green alone"
+    printf '\n%s tests passed  (TRACKED only — the number this commit can reproduce%s)\n' "$TRACKED_OK" "$_flk"  # MUTATION-ANCHOR: 55-M01
   fi
   if [ -n "$UNTRACKED_NAMES" ]; then
     # MUTATION-ANCHOR: 55-M02

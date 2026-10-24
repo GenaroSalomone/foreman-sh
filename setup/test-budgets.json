@@ -5,14 +5,6 @@
       "exit": 0,
       "seconds": 2.4
     },
-    "03-launch-rollback.sh": {
-      "exit": 0,
-      "seconds": 0.23
-    },
-    "100-a-startup-timeout-is-not-a-dead-agent.sh": {
-      "exit": 0,
-      "seconds": 0.07
-    },
     "100-decisions-rotation-order-and-refusal.sh": {
       "exit": 0,
       "seconds": 2.43
@@ -85,17 +77,9 @@
       "exit": 0,
       "seconds": 0.62
     },
-    "148-el-repo-no-ve-lo-de-hw-y-odd-ya-no-existe.sh": {
-      "exit": 0,
-      "seconds": 0.27
-    },
     "152-la-atribucion-muere-en-commit-msg.sh": {
       "exit": 0,
       "seconds": 7.75
-    },
-    "166-el-cierre-es-judgment-day.sh": {
-      "exit": 0,
-      "seconds": 0.2
     },
     "168-un-hijo-no-cierra-la-tarea-del-padre.sh": {
       "exit": 0,
@@ -113,14 +97,6 @@
       "exit": 0,
       "seconds": 144.02
     },
-    "183-un-fix-prueba-el-rojo.sh": {
-      "exit": 0,
-      "seconds": 0.42
-    },
-    "185-el-analyze-corre-en-contexto-limpio.sh": {
-      "exit": 0,
-      "seconds": 0.44
-    },
     "187-un-instalador-de-un-comando.sh": {
       "exit": 0,
       "seconds": 7.49
@@ -137,13 +113,9 @@
       "exit": 0,
       "seconds": 0.81
     },
-    "22-close-failures.sh": {
-      "exit": 0,
-      "seconds": 1.07
-    },
     "22-hw-unstick.sh": {
       "exit": 0,
-      "seconds": 12.78
+      "seconds": 52.88
     },
     "23-invoker-env-file.sh": {
       "exit": 0,
@@ -179,7 +151,7 @@
     },
     "392-los-fixtures-del-preambulo-no-ensucian-el-log.sh": {
       "exit": 0,
-      "seconds": 6.03
+      "seconds": 10.1
     },
     "41-ruling-refusal.sh": {
       "exit": 0,
@@ -196,10 +168,6 @@
     "46-mutation-arms-are-not-gated.sh": {
       "exit": 0,
       "seconds": 4.44
-    },
-    "47-unattended-gate-stall.sh": {
-      "exit": 0,
-      "seconds": 0.36
     },
     "48-plain-opencode-is-not-plain.sh": {
       "exit": 0,
@@ -273,10 +241,6 @@
       "exit": 0,
       "seconds": 1.92
     },
-    "790-reap-vive-en-lib-hw.sh": {
-      "exit": 0,
-      "seconds": 1.2
-    },
     "795-cockpit-contract-is-frozen.sh": {
       "exit": 0,
       "seconds": 0.14
@@ -288,10 +252,6 @@
     "797-cockpit-state-writer.sh": {
       "exit": 0,
       "seconds": 137.19
-    },
-    "80-codex-brief-delivery.sh": {
-      "exit": 0,
-      "seconds": 9.16
     },
     "801-cockpit-mod-reads-the-state.sh": {
       "exit": 0,
@@ -317,10 +277,6 @@
       "exit": 0,
       "seconds": 0.94
     },
-    "82-agent-registration-readiness.sh": {
-      "exit": 0,
-      "seconds": 0.23
-    },
     "824-foreman-sh-init-lleva-de-cero-al-primer-dry-run.sh": {
       "exit": 0,
       "seconds": 124.72
@@ -328,18 +284,6 @@
     "85-codex-report-route.sh": {
       "exit": 0,
       "seconds": 0.04
-    },
-    "86-status-report-units.sh": {
-      "exit": 0,
-      "seconds": 0.08
-    },
-    "87-usage-sections.sh": {
-      "exit": 0,
-      "seconds": 0.11
-    },
-    "90-a-verdict-that-could-not-be-measured.sh": {
-      "exit": 0,
-      "seconds": 9.1
     },
     "92-a-clean-bill-covers-only-what-was-read.sh": {
       "exit": 0,
@@ -381,10 +325,6 @@
       "exit": 0,
       "seconds": 3.81
     },
-    "981-pi-delivery-route.sh": {
-      "exit": 0,
-      "seconds": 0.62
-    },
     "982-pi-turn-end.sh": {
       "exit": 0,
       "seconds": 0.56
@@ -406,6 +346,6 @@
       "seconds": 120.0
     }
   },
-  "measured_at": "2026-10-19T21:44:56Z",
+  "measured_at": "2026-10-24T19:24:34Z",
   "touched_budget_seconds": 90
 }

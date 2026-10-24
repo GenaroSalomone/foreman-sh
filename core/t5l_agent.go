@@ -381,7 +381,7 @@ func (l *lch) agentStart(pane, name, kind string) bool {
 				return false
 			}
 			// pi's pane reports ready while a startup screen can still own stdin.
-			if kind == "pi" && !l.piStartupReady(pane) {
+			if kind == "pi" && !l.piStartupReady(pane) { // # MUTATION-ANCHOR: 986-G11
 				return false
 			}
 			return true

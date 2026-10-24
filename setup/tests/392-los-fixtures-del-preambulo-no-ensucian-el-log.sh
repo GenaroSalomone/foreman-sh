@@ -24,13 +24,13 @@
 
 TESTS_DIR="${SUBJECT_TESTS:-$ROOT/setup/tests}"
 ran=0
-for t in 27-brief-epistemic-safeguard.sh 47-unattended-gate-stall.sh 166-el-cierre-es-judgment-day.sh 183-un-fix-prueba-el-rojo.sh \
-         185-el-analyze-corre-en-contexto-limpio.sh 205-el-diseno-se-juzga-antes-del-codigo.sh; do
+for t in 47-unattended-gate-stall.sh 183-un-fix-prueba-el-rojo.sh 205-el-diseno-se-juzga-antes-del-codigo.sh; do
   [ -f "$TESTS_DIR/$t" ] || continue
   ran=$((ran + 1))
   tree="$(mktemp -d "$TMP/tree-XXXXXX")"; mkdir -p "$tree/setup/tests" "$tree/bin"
   cp "$TESTS_DIR/_common.sh" "$TESTS_DIR/$t" "$tree/setup/tests/"
   cp -R "$ROOT/bin/." "$tree/bin/"; cp -R "$ROOT/lib" "$tree/lib"
+  cp -R "$ROOT/core" "$tree/core"   # 47 and 183 render the prompt with hw-core (go test) and 205 builds the invokers from it
   [ ! -d "$ROOT/setup/fixtures" ] || cp -R "$ROOT/setup/fixtures" "$tree/setup/"
   rc=0; bash "$tree/setup/tests/$t" > "$tree/out" 2> "$tree/err" || rc=$?
   [ "$rc" -eq 0 ] || fail "$t: the subject itself failed (exit $rc): $(grep -m3 'not ok' "$tree/out" "$tree/err")"

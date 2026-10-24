@@ -101,7 +101,7 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return brainEntry(args[1:], stdout, stderr, getenv, stdin)
 	}
 	switch verb {
-	case "receipt", "log", "handle", "help", "status", "worktrees", "executor-gate":
+	case "receipt", "log", "handle", "help", "status", "worktrees", "executor-gate", "picker": // picker: `hw` with no arguments on a terminal (picker.go)
 	case "review-range", "review-delta", "preflight", "outbox", "reports", "sweep", "reap", "wait", "wait-one", "wait-monitor", "status-full": // T2; status-full is all of `hw status`
 		for _, tool := range []string{"herdr", "git", "jq"} { // bin/hw's `need herdr; need git; need jq`, before any verb
 			if _, err := exec.LookPath(tool); err != nil {
@@ -180,6 +180,8 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return a.cmdHandle()
 	case "help":
 		a.cmdHelp()
+	case "picker":
+		return a.cmdPicker()
 	case "status":
 		return a.cmdStatusArgs()
 	case "status-full":
@@ -196,8 +198,8 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return a.cmdOutbox()
 	case "reports":
 		return a.cmdReports()
-	case "reap": // T2 surveys; T4 applies (bin/hw sends a call with --apply here only for the writer)
-		if hasApply(a.args) {
+	case "reap": // T2 surveys; T4 applies (bin/hw sends a call with --apply here only for the writer); -h/--help is T4's usage, which cmd_reap answers
+		if hasApply(a.args) || hasHelp(a.args) {
 			return a.cmdReapApply()
 		}
 		return a.cmdReap()

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# core-rebuild — bring a stale hw-core up to date, for the entry points that require it (bin/hw, bin/brain,
+# bin/channel-send, the invokers). usage: core-rebuild <bin-dir> <binary> <program>
+#
+# <binary> is the hw-core (or invokers) the caller found; it is stale when a source in core/ is newer than it (the test every
+# entry point makes). This builds hw-core and the invokers for THIS machine with `setup/build-core --native` into a directory
+# of its own, then puts each file where its stale one lives, as a NEW file (mv over the old one), so a caller that runs
+# while this does never meets a binary that is missing or half written, and macOS never meets an executable rewritten in
+# place (its code signature is per file). One rebuild at a time: a caller that finds another's lock waits for it and then
+# looks again, so N hooks that meet the same stale binary build once.
+#
+# Exit: 0 the binary is fresh (rebuilt here, or by the caller whose lock this waited for), and nothing is printed
+#       2 the build failed
+#       3 it cannot be rebuilt here: no Go toolchain on PATH, no setup/build-core beside bin/, or no core/ sources
+# On 2 and 3 it prints ONE line, what the caller says before it runs the old binary — and prints it once per state of the
+# binary: <program> and the binary's mtime are the key in ${XDG_STATE_HOME:-~/.local/state}/hw/warned (a hook calls these every
+# turn). A caller prints that line (prefixed with its own name) and runs the stale binary; the exit code is for tests.
+# A build that FAILED is not tried again until the sources change (or the binary does): the next callers get exit 2 and no
+# output, at once — a hook must not pay eleven seconds of a broken build on every turn.
+set -uo pipefail
+[ $# -ge 3 ] || { echo "usage: core-rebuild <bin-dir> <binary> <program>" >&2; exit 64; }
+BIN="$1"; STALE="$2"; PROG="$3"; ROOT="$BIN/.."; SRC="$ROOT/core"; BC="$ROOT/setup/build-core"
+stamp="${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/hw/warned"
+fail() {  # <code> <what stopped it>
+  local key="$PROG:stale:$(stat -c %Y "$STALE" 2>/dev/null || stat -f %m "$STALE" 2>/dev/null)"
+  if ! grep -qxF -- "$key" "$stamp" 2>/dev/null; then
+    printf 'hw-core is older than the sources in core/ and %s, so the old one runs (said once; setup/build-core --native needs Go 1.22 or newer, https://go.dev/dl)\n' "$2"
+    { mkdir -p "${stamp%/*}" && printf '%s\n' "$key" >>"$stamp"; } 2>/dev/null || true
+  fi
+  exit "$1"
+}
+command -v go >/dev/null 2>&1 && [ -x "$BC" ] && [ -d "$SRC" ] || fail 3 "it cannot be rebuilt here (no Go toolchain on PATH, or no setup/build-core beside bin/)"
+
+is_stale() { [ -n "$(find "$SRC" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$STALE" -print -quit 2>/dev/null)" ]; }
+is_stale || exit 0   # a caller that got here first has already made it fresh
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+newest="$(find "$SRC" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$STALE" -print0 2>/dev/null | xargs -0 stat -c %Y 2>/dev/null | sort -n | tail -n 1)"
+[ -n "$newest" ] || newest="$(find "$SRC" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$STALE" -print0 2>/dev/null | xargs -0 stat -f %m 2>/dev/null | sort -n | tail -n 1)"
+failed="$PROG:rebuild-failed:$(mtime "$STALE"):$newest"
+! grep -qxF -- "$failed" "$stamp" 2>/dev/null || exit 2
+
+os="$(uname -s | tr 'A-Z' 'a-z')"; arch="$(uname -m)"; ext=""
+case "$os" in mingw*|msys*|cygwin*) os=windows; ext=.exe ;; esac
+case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+
+lock="${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/hw/core-rebuild.lock"
+locked=0
+if mkdir -p "${lock%/*}" 2>/dev/null; then
+  for _ in $(seq 1 180); do
+    if mkdir "$lock" 2>/dev/null; then locked=1; break; fi
+    # lint-shell: measured-elsewhere — a `find` that failed prints nothing, the same bytes as "this lock is not
+    # 10 minutes old", and both skip the rmdir: the lock stays and the loop keeps waiting, bounded by the 180 tries
+    # that end in `fail 3` with its own diagnosis. Reaping a lock whose age could not be read would let two builds
+    # write core/dist at once; bin/hw's run lock and channel-send's delivery lock annotate the same construct.
+    [ -z "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ] || rmdir "$lock" 2>/dev/null   # a builder that died holds nothing  # lint-shell: measured-elsewhere
+    sleep 1
+  done
+  [ "$locked" = 1 ] || fail 3 "another rebuild held the lock for three minutes"
+fi
+unlock() { [ "$locked" = 0 ] || rmdir "$lock" 2>/dev/null; }
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hw-core-rebuild.XXXXXX")" || { unlock; fail 3 "no temporary directory to build in"; }
+trap 'rm -rf "$tmp"; unlock' EXIT
+
+is_stale || exit 0   # the lock was another caller's, and its build covered this one
+remember() { { mkdir -p "${stamp%/*}" && printf '%s\n' "$failed" >>"$stamp"; } 2>/dev/null || true; }
+if ! "$BC" --native --out "$tmp/out" >"$tmp/log" 2>&1; then remember; fail 2 "setup/build-core --native failed ($(tail -n 1 "$tmp/log"))"; fi
+built="$tmp/out/$os-$arch"
+[ -f "$built/hw-core$ext" ] || { remember; fail 2 "the builder made no $os-$arch/hw-core$ext"; }
+
+place() {  # <built file> <where the stale one lives>
+  [ -f "$1" ] || return 0
+  cp -p "$1" "$2.new.$$" && mv -f "$2.new.$$" "$2" || { rm -f "$2.new.$$"; fail 2 "the new $2 could not be put in place"; }
+}
+dist="$ROOT/core/dist/$os-$arch"
+mkdir -p "$dist" 2>/dev/null
+place "$built/hw-core$ext" "$dist/hw-core$ext"
+place "$built/invokers$ext" "$dist/invokers$ext"
+[ ! -f "$BIN/hw-core$ext" ] || place "$built/hw-core$ext" "$BIN/hw-core$ext"
+! is_stale || fail 2 "$STALE is still older after the rebuild (it lives outside core/dist and bin/)"
+exit 0

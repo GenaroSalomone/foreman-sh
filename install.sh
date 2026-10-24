@@ -24,11 +24,10 @@
 #                            opencode-auto, when the run installs an OpenCode lane)
 #   <brain>/core/dist/<os>-<arch>/hw-core
 #                            hw's Go half, built here with setup/build-core when a Go toolchain
-#                            (1.22 or newer) is on PATH; every ported tool runs in it by default.
-#                            Without Go nothing is built and hw runs its bash implementation
-#   <config>/hw/impl         written ONLY by `--no-core`, and only when it does not exist: `default=bash`, the
-#                            switch file that keeps every tool on bash. Otherwise nothing is written: Go is the
-#                            default (HW_IMPL=bash, or `default=bash` in this file, goes back)
+#                            (1.22 or newer) is on PATH; every tool runs in it. It is REQUIRED: without such a
+#                            Go (https://go.dev/dl) the installer refuses before writing anything
+#   <config>/hw/impl         never written (Go is the default); an install that builds a core removes the
+#                            byte-identical `default=bash` file an earlier `--no-core` install wrote
 #   <claude-config>/settings.json
 #                            ONE entry merged in: the Stop hook
 #                            `bash '<brain>/bin/hw-stop-hook.sh' stop`
@@ -94,7 +93,7 @@ case "${OSTYPE:-}" in msys*|cygwin*) . "$(dirname "$(readlink -f "${BASH_SOURCE[
 
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_RP=0 WITH_REC=0 PERMISSIONS_OPT=""
-UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0 NO_CORE="${FOREMAN_SH_NO_CORE:-0}" NO_CORE_ASKED=0
+UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0 NO_CORE="${FOREMAN_SH_NO_CORE:-0}"   # FOREMAN_SH_NO_CORE=1 is the suite's seam (tests/_common.sh), not a user option: it skips the build and says so
 ORIG_ARGS=("$@")
 OPERATOR="" MIN_MODEL="" REQ_BY=""   # "" = not given; --min-model / --requested-by "none" = given, none
 BIN_DIR_OUT="${HOME}/.local/bin"
@@ -163,9 +162,8 @@ usage: install.sh init [--brain DIR] [--lane NAME] [--repo PATH] [--yes] [--dry-
   --with-recommended  install what is missing, required and recommended, with Homebrew, one
                   package at a time, each command printed before it runs; alone, it installs
                   only that. With --check it prints the commands and runs none
-  --no-core       do not build hw-core (the Go half of hw): every tool runs its bash implementation
-                  (writes `default=bash` to ~/.config/hw/impl when there is no such file).
-                  Also FOREMAN_SH_NO_CORE=1. Without a Go toolchain (1.22 or newer) it is not built either
+  --no-core       removed in 0.6.0 and refused: hw-core (the Go half of hw) is required, and so is a
+                  Go toolchain (1.22 or newer, https://go.dev/dl) to build it
   --check         verify everything in one pass, list the fixes in the order they must be
                   done and end with one "Next step"; write nothing
   init            from a fresh install to a first dispatch, in one command: checks the prerequisites
@@ -215,7 +213,7 @@ while [ $# -gt 0 ]; do
     --with-judgment-day) WITH_JD=1; shift ;;
     --with-review-plugins) WITH_RP=1; shift ;;
     --with-recommended) WITH_REC=1; shift ;;
-    --no-core) NO_CORE=1; NO_CORE_ASKED=1; shift ;;
+    --no-core) die "--no-core was removed in 0.6.0: hw-core (the Go half of hw) is required, so install Go 1.22 or newer (https://go.dev/dl) and run this again" ;;   # MUTATION-ANCHOR: 993-M03
     -h|--help) usage; exit 0 ;;
     -V|--version) printf 'install.sh %s\n' "$(install_version)"; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
@@ -730,17 +728,17 @@ need herdr   "every brainer and executor is a herdr pane" "https://herdr.dev"
 need claude  "the agent runtime"                     "https://claude.com/claude-code"
 if type -P herdr >/dev/null 2>&1; then floor herdr 0; fi
 if type -P claude >/dev/null 2>&1; then floor claude 0; fi
-# hw-core, the Go half of hw, is optional: the ported verbs run in it when it is built and in bash (the same
-# answers) when it is not. Built here when a Go toolchain of 1.22 or newer is on PATH.
+# hw-core, the Go half of hw, is REQUIRED (0.6.0): it is built here, so a Go toolchain of 1.22 or newer on PATH is
+# too, and without one the run refuses below (`missing=1`), before anything is written.
 CORE_BUILD=0
-if [ "$NO_CORE" = 1 ]; then [ "$NO_CORE_ASKED" = 0 ] || say "NOTE  hw-core is not built (--no-core): hw runs its bash implementation"
+if [ "$NO_CORE" = 1 ]; then say "NOTE  hw-core is not built (FOREMAN_SH_NO_CORE=1, the suite's seam): hw dies until setup/build-core --native has built it"
 elif [ ! -f "$SRC/setup/build-core" ] || [ ! -d "$SRC/core" ]; then :
 elif ! type -P go >/dev/null 2>&1; then
-  say "NOTE  no Go toolchain on PATH: hw-core is not built and hw runs its bash implementation (the same answers). Install Go 1.22 or newer (https://go.dev/dl) and run this again to move the ported verbs to Go"
+  printf '  MISSING go >= 1.22 — no Go toolchain on PATH, and hw-core (the Go half of hw) is required. Install: https://go.dev/dl\n'; missing=1; fix_tool "go >= 1.22: https://go.dev/dl"
 else
   _gov="$(go version 2>/dev/null | sed -n 's/^go version go\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')" || _gov=""   # MUTATION-ANCHOR: 993-M07
   if [ -n "$_gov" ] && [ "$(printf '1.22\n%s\n' "$_gov" | sort -V | head -n 1)" = 1.22 ]; then ok "go $_gov (builds hw-core)"; CORE_BUILD=1   # MUTATION-ANCHOR: 993-M02
-  else say "NOTE  Go ${_gov:-of an unreadable version} is older than 1.22: hw-core is not built and hw runs its bash implementation. Update Go (https://go.dev/dl) and run this again"; fi
+  else printf '  MISSING go >= 1.22 — Go %s is older than 1.22, and hw-core (the Go half of hw) is required. Update: https://go.dev/dl\n' "${_gov:-of an unreadable version}"; missing=1; fix_tool "go >= 1.22: https://go.dev/dl"; fi
 fi
 # Linux needs four more that macOS setups carry already: hw and its scripts
 # call sd, fd and rg, and the OpenCode guard plugin is an ES module run by Node.
@@ -1195,7 +1193,7 @@ sync_dir "$SRC/layouts" "$BRAIN/layouts"
 drop_core() {  # <why>
   [ -d "$BRAIN/core/dist" ] || return 0
   rm -rf "$BRAIN/core/dist"; rmdir "$BRAIN/core" 2>/dev/null || true
-  chg "core/dist — the hw-core of an earlier install is removed ($1): hw runs its bash implementation"
+  chg "core/dist — the hw-core of an earlier install is removed (): hw has no bash to fall back to and stops, naming setup/build-core --native, until a core is built"
 }
 put_core() {  # <src> <dst> — a new file in place of the old one, never a write INTO it: macOS keeps a binary's code
   # signature per file, and an executable rewritten in place is killed the next time it runs
@@ -1211,37 +1209,46 @@ if [ "$CORE_BUILD" = 1 ]; then
   case "$_hos" in mingw*|msys*|cygwin*) _hos=windows ;; esac
   case "$_har" in x86_64) _har=amd64 ;; aarch64) _har=arm64 ;; esac
   if ! "$SRC/setup/build-core" --native --out "$_cb/out" >"$_cb/log" 2>&1; then
-    say "WARN  hw-core did not build, so hw runs its bash implementation. The builder said:"
+    say "hw-core did not build. The builder said:"
     tail -n 12 "$_cb/log" | sed 's/^/          /'
     drop_core "its build failed"
+    rm -rf "$_cb"; die "hw-core is required and did not build (the builder's output is above): fix it and run this again"
   elif [ ! -d "$_cb/out/$_hos-$_har" ]; then   # MUTATION-ANCHOR: 993-M06
-    say "WARN  your Go builds for $(ls "$_cb/out" | grep -v SHA256SUMS | tr '\n' ' ')but this shell reports $_hos-$_har, where hw looks for hw-core, so hw-core is not installed and hw runs its bash implementation. Use a Go for this machine's architecture"
+    say "your Go builds for $(ls "$_cb/out" | grep -v SHA256SUMS | tr '\n' ' ')but this shell reports $_hos-$_har, where hw looks for hw-core, so hw-core is not installed"
     drop_core "the Go toolchain builds for another architecture"
+    rm -rf "$_cb"; die "hw-core is required and your Go builds for another architecture than $_hos-$_har: use a Go for this machine"
   else
     for _d in "$_cb"/out/*/; do
       _t="$BRAIN/core/dist/$(basename "$_d")"; mkdir -p "$_t"
       for _f in "$_d"*; do put_core "$_f" "$_t/$(basename "$_f")"; done
     done
-    # Go is the default, so no switch file is written. A file the user has stays as it is (it says which tools run in
-    # bash; HW_IMPL=bash overrides it) — except the one `--no-core` wrote earlier, byte for byte: this run has a core, so
-    # that file would keep every tool on bash for a user who has since asked for Go.
+    # Go is the only implementation of the five, so no switch file is written. A file the user has stays as it is (only a
+    # `<tool>=bash` line of the eight small tools still means anything, and the loop below says the rest) — except the one
+    # `--no-core` wrote earlier, byte for byte: it says nothing now, and no user chose it by hand.
     if [ -e "$_implf" ] && [ "$(cat "$_implf")" = "$(impl_file_text)" ]; then rm -f "$_implf"; chg "$_implf — the one --no-core wrote is removed: Go is the default again"   # MUTATION-ANCHOR: 993-M01
-    elif [ -e "$_implf" ]; then ok "$_implf is yours and stays as it is (it says which tools run in bash or Go; HW_IMPL=bash overrides it)"
+    elif [ -e "$_implf" ]; then
+      ok "$_implf is yours and stays as it is"
+      # 0.6.0 has no bash for hw, brain, channel-send or the invokers: a line that chose it (a default, a bare word, one of those five)
+      # means nothing now, and only a `<tool>=bash` line of the eight small tools still does. Said once here, never edited out.
+      _n=0
+      while IFS= read -r _l || [ -n "$_l" ]; do
+        _n=$((_n + 1)); _l="${_l%%#*}"; _l="$(printf '%s' "$_l" | tr -d '[:space:]')"
+        case "$_l" in "") continue ;; *=*) _k="${_l%%=*}"; _v="${_l#*=}" ;; *) _k=default; _v="$_l" ;; esac
+        case "$_v" in go) continue ;; esac
+        case "$(printf '%s' "$_k" | tr 'A-Z_' 'a-z-')" in
+          stop-hook|hw-secret|hw-sandbox|browser-close|brain-archive|secret-unlock|opencode-auto|codex-channel-session-hook)
+            if [ "$_v" = bash ]; then say "$_implf line $_n ($_k=bash) still runs that tool on its bash, through 0.6.x"
+            else say "WARN  $_implf line $_n ($_k=$_v) means nothing: only the word bash selects an implementation"; fi ;;
+          *) say "WARN  $_implf line $_n ($_l) means nothing since 0.6.0, which removed the bash of hw, brain, channel-send and the invokers: Go runs; delete the line (the way back is foreman-sh upgrade --to 0.5.0)" ;;   # MUTATION-ANCHOR: 993-M08
+        esac
+      done < "$_implf"
+      unset _n _l _k _v
     fi
   fi
   rm -rf "$_cb"
 else
   drop_core "this run builds none"   # MUTATION-ANCHOR: 993-M04
-  # --no-core is a choice to stay on bash: say it once for every tool, where each of them reads it. No Go, an old Go or a
-  # failed build writes nothing: the tools fall back on their own, with a line, and a later install with Go needs no undoing.
-  if [ "$NO_CORE" = 1 ]; then
-    if [ -e "$_implf" ]; then ok "$_implf is yours and stays as it is (it says which tools run in bash or Go; HW_IMPL=bash overrides it)"
-    else
-      mkdir -p "$(dirname "$_implf")"
-      impl_file_text > "$_implf"   # MUTATION-ANCHOR: 993-M03
-      chg "$_implf — every tool runs bash (default=bash; delete the file to go back to Go)"
-    fi
-  fi
+  # a run that builds none (the suite's seam, or a source with no core/) writes no switch file: nothing says bash
 fi
 put "$SRC/lanes/git-worktree.sh" "$BRAIN/lanes/git-worktree.sh"
 for g in deny_repo_writes.py deny-repo-writes.js deny-repo-writes-codex.py specialist_roster.py lane_housekeeping.py; do

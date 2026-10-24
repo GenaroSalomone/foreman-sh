@@ -229,6 +229,11 @@ def record_depth(h):
     return int(d) if d.isdigit() else -1
 
 
+def current_impl():
+    """The implementation this run measures: HW_IMPL=bash is the rollback, anything else is the Go default."""
+    return "bash" if os.environ.get("HW_IMPL", "go") == "bash" else "go"
+
+
 def usable_base(path, tree_from_name, chain=False):
     """A record a plan may start from: a real full run, and with chain=True also a green incremental one
     still under the hop cap (a new run off it would be at most MAX_CHAIN hops from the full run)."""
@@ -236,6 +241,9 @@ def usable_base(path, tree_from_name, chain=False):
     if not rec:
         return None, "unreadable"
     h = rec["head"]
+    if (h.get("impl") or "go") != current_impl():
+        # A record is rows of jobs as ONE implementation judged them; a plan under the other would vouch for rows it never ran.
+        return None, "it measured impl=%s, this run is impl=%s" % (h.get("impl") or "go", current_impl())
     if h.get("kind") != "full":
         if not chain or h.get("kind") != "incremental":
             return None, "not a full run"
@@ -321,7 +329,7 @@ def cmd_record(root, results, rc, elapsed, tree=None, commit=None, base_tree=Non
         kind = "incremental"
         extra = ["base_tree=" + base_tree, "root_tree=" + (brec["head"].get("root_tree") or base_tree),
                  "chain_depth=%d" % depth]
-    head = ["kind=" + kind, "tree=" + tree, "commit=" + commit,
+    head = ["kind=" + kind, "impl=" + current_impl(), "tree=" + tree, "commit=" + commit,
             "recorded_at=" + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "elapsed_seconds=" + str(elapsed), "rc=" + str(rc), "runner_red=%d" % runner_red,
             "jobs=%d" % len(rows), "reds=%d" % reds] + extra
@@ -578,6 +586,9 @@ def cmd_chain(common, tree):
     v = parse_kv(os.path.join(d, tree))
     if v.get("tree") != tree or v.get("gate") != "full":
         print("no full verdict for tree %s" % tree)
+        return 1
+    if (v.get("impl") or "go") != current_impl():
+        print("the verdict for tree %s measured impl=%s, this run is impl=%s" % (tree, v.get("impl") or "go", current_impl()))
         return 1
     if v.get("incremental") != "1":
         print("a real full run")

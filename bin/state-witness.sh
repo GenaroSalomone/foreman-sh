@@ -554,7 +554,7 @@ witness_executor_state() {  # <pane>
 # the run's own env; `--invoker` names it directly.
 _WITNESS_BIN_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cockpit_kick() {  # --rundir <dir> | --invoker <pane>
-  "$_WITNESS_BIN_DIR/cockpit-state" --kick "$@" >/dev/null 2>&1 || true  # MUTATION-ANCHOR: 798-M04
+  "$_WITNESS_BIN_DIR/cockpit-state" --kick "$@" >/dev/null 2>&1 || true
 }
 
 # ── THE RULING QUEUE ─────────────────────────────────────────────────────────
@@ -623,10 +623,8 @@ ruling_queue_add() {  # <run_dir> <tmp>
     m="${f##*/pending-ruling}"; m="${m#.}"
     if [ -z "$m" ] || [ "$((10#$m))" -lt "$n" ]; then ahead=$((ahead + 1)); fi
   done < <(ruling_queue_pending "$d")
-  # MUTATION-ANCHOR: 210-M01
   if [ "$ahead" -ge "$RULING_QUEUE_CAP" ] \
      && mv "$d/pending-ruling.$n" "$d/.pending-ruling.retracted.$n.$$" 2>/dev/null; then
-  # MUTATION-ANCHOR-END: 210-M01
     rm -f "$d/.pending-ruling.retracted.$n.$$"
     return 3
   fi
@@ -656,7 +654,7 @@ $text
 
 "
     fi
-    rm -f "$claim" 2>/dev/null || true  # MUTATION-ANCHOR: 133-M01  # MUTATION-ANCHOR: 210-M02
+    rm -f "$claim" 2>/dev/null || true
   done < <(ruling_queue_pending "$d")
   [ "$count" -gt 0 ] || return 1
   cockpit_kick --rundir "$d"

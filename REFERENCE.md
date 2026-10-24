@@ -128,9 +128,9 @@ cockpit is `cockpit/` (the mod) plus `bin/cockpit-state` and `bin/hw-actions`,
 which write the state it reads and decide which buttons are live.
 The Go core is `core/` (one `main` package, standard library only), built by
 `setup/build-core`; `bin/hw`, `brain`, `channel-send` and the invokers hand their
-work to it when `hw-core` is built, unless the mode says `bash` (`HW_IMPL=bash`),
-and keep the bash implementation as the way back through 0.5.x. A fix to a ported
-verb goes to `core/`; the bash of that verb is frozen, and 0.6.0 removes it.
+work to it, with no switch to bash (0.6.0 removed it; a `HW_IMPL=bash` is said once and
+ignored). A fix to a ported verb goes to `core/`; the bash that is still in the tree is
+frozen dead code, and goes when the last two callers in `hw-core` are ported.
 
 ## Customizing a lane (`projects.json`)
 

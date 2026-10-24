@@ -72,7 +72,7 @@ func (s *sweepApplyRun) runDirs() []string {
 		roots = append(roots, sr)
 	}
 	listed, _ := reapApplyFd("-H", "-t", "d", `^2[0-9]{7}-[0-9]{6}-[0-9]+$`, work)
-	out := reapApplyLines(listed)
+	out := fdSortedOrder(reapApplyLines(listed))
 	for _, sr := range roots {
 		for _, rd := range reapApplyGlob(sr + "/*/.hw/2*") {
 			if isDir(rd) && sweepApplyRunName.MatchString(rd[strings.LastIndexByte(rd, '/')+1:]) {

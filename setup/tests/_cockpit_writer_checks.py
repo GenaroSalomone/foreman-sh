@@ -357,11 +357,29 @@ def atomic():
     assert seqs == [seqs[0], seqs[0] + 1, seqs[0] + 2], "seq does not rise by one per write: %s" % seqs
 
 
+# Runs the REAL writer source, but parks it at the state file's rename: the tmp exists, the
+# rename has not happened, and a marker file says so. The wrapper lives here, not in the writer,
+# so production carries no test-only pause point. Only the rename onto the state file parks.
+_PARK = """
+import os, sys, time
+target, marker, script = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.argv = [script] + sys.argv[4:]
+_replace = os.replace
+def replace(src, dst, *a, **k):
+    if os.fspath(dst) == target:
+        open(marker, "w").close()
+        time.sleep(600)
+    return _replace(src, dst, *a, **k)
+os.replace = replace
+exec(compile(open(script, encoding="utf-8").read(), script, "exec"), {"__name__": "__main__", "__file__": script})
+"""
+
+
 def killed_writer():
     """kill -9 in the middle of a write leaves the old file or the new one, never half of either,
-    and the tmp file it leaves behind is cleaned by the next writer. The kill is aimed: the
-    writer is watched until its tmp file appears (it exists only between the open and the rename)
-    and killed that instant, so the window under test is the one that matters."""
+    and the tmp file it leaves behind is cleaned by the next writer. The kill is deterministic: the
+    writer is parked right after it wrote its tmp file and before the rename (_PARK), waited for
+    on a marker, and killed there, so every kill lands in the window under test regardless of load."""
     import glob as _glob
     w = cw.World(tmpdir())
     for i in range(30):
@@ -369,28 +387,31 @@ def killed_writer():
     w.publish()
     path = w.state_path()
     assert cw.run_writer(w, BIN, "--once").returncode == 0
-    killed_in_window = 0
-    for _ in range(60):
-        for t in _glob.glob(path + ".tmp.*"):  # only THIS writer's tmp may trigger the kill
-            os.unlink(t)
-        p = subprocess.Popen([os.path.join(BIN, "cockpit-state"), "--once"], env=w.env(), stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-        deadline = time.time() + 3
-        while p.poll() is None and time.time() < deadline and not _glob.glob(path + ".tmp.*"):
-            pass
-        if p.poll() is None:
-            p.kill()  # SIGKILL on POSIX, TerminateProcess on Windows
+    marker = path + ".parked"
+    script = os.path.join(BIN, "cockpit-state")
+    rounds = 5
+    for n in range(rounds):
+        if os.path.exists(marker):
+            os.unlink(marker)
+        p = subprocess.Popen([sys.executable, "-I", "-c", _PARK, path, marker, script, "--once"], env=w.env(),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.time() + 60 * float(os.environ.get("HW_TIMING_SCALE", "1") or 1)
+        while p.poll() is None and time.time() < deadline and not os.path.exists(marker):
+            time.sleep(0.01)
+        assert os.path.exists(marker), "the writer never reached its rename (exit %s): the check cannot aim" % p.poll()
+        mine = _glob.glob("%s.tmp.%d" % (path, p.pid))
+        assert mine, "the writer is parked at the rename but its tmp file is not on disk"
+        p.kill()  # SIGKILL on POSIX, TerminateProcess on Windows
         p.wait()
-        if _glob.glob(path + ".tmp.*"):
-            killed_in_window += 1
+        assert os.path.exists(mine[0]), "the killed writer's tmp vanished by itself: nothing was killed mid-write"
         d = json.load(open(path))  # raises on a partial file
         assert d["schema"] == 1 and not cw.validate_state(d), "the file is not a valid state after a kill -9"
-    assert killed_in_window >= 3, "only %d of 60 writers were caught between tmp and rename: the check proves nothing" % killed_in_window
-    open(path + ".tmp.99999999", "w").write("{")  # a killed writer's leftover, whatever the last kill did
+    left_by_kills = [f for f in os.listdir(os.path.dirname(path)) if ".tmp." in f]
+    assert len(left_by_kills) == rounds, "expected the %d tmp files of the killed writers, found %s" % (rounds, left_by_kills)
     assert cw.run_writer(w, BIN, "--once").returncode == 0
     left = [f for f in os.listdir(os.path.dirname(path)) if ".tmp." in f]
     assert not left, "tmp files of killed writers survive the next write: %s" % left                          # 797-M22
-    sys.stderr.write("  killed_writer: %d of 60 writers killed between tmp and rename, the file was always whole\n" % killed_in_window)
+    sys.stderr.write("  killed_writer: %d of %d writers killed between tmp and rename, the file was always whole and the next write removed their tmps\n" % (rounds, rounds))
 
 
 def debounce():

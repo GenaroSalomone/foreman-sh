@@ -78,32 +78,25 @@ esac
 [ -n "${HERDR_PANE_ID:-}" ]         || exit 0
 
 # ── the Go implementation: hw-core stop-hook (core/stop_hook.go) ───────────
-# THE DEFAULT IS BASH. HW_IMPL_STOP_HOOK, else HW_IMPL, else the `stop-hook=` line
-# (then the default line) of ${HW_IMPL_FILE:-~/.config/hw/impl} — the switch bin/hw
-# reads, resolved the same way — `go` execs hw-core with this hook's stdin untouched.
-# `shadow` is not offered: the hook writes markers and herdr tokens, and a second run
-# is a second turn counted. A hw-core that is not built, or older than core/'s
-# sources, leaves the bash below to run: this hook must never break a session. The
-# bash is the rollback and stays until the Go has soaked; a fix to one goes to both.
-# No forks before the exec but one `find`: the hook runs at every turn end.
-_hw_sh_mode="${HW_IMPL_STOP_HOOK:-${HW_IMPL:-}}"
+# THE DEFAULT IS GO (0.6.0), and the bash below is the rollback through 0.6.x. This file stays the registered hook (install.sh,
+# ~/.claude/settings.json, ~/.codex/hooks.json) and execs `hw-core stop-hook` with this hook's stdin untouched. The way back is
+# HW_IMPL_STOP_HOOK=bash, else the `stop-hook=bash` line of ${HW_IMPL_FILE:-~/.config/hw/impl}; only the word `bash` selects the
+# bash (the global HW_IMPL and the file's default line retired with the switch, go-060 S3, and do not reach this tool). A hw-core
+# that is not built, or older than core/'s sources, leaves the bash below to run: this hook must never break a session. A fix to
+# one goes to both until 0.7.0. No forks before the exec but one `find`: the hook runs at every turn end.
+_hw_sh_mode="${HW_IMPL_STOP_HOOK:-}"
 if [ -z "$_hw_sh_mode" ]; then
   _hw_sh_file="${HW_IMPL_FILE:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/hw/impl}"
   if [ -r "$_hw_sh_file" ]; then
-    _hw_sh_def=""
     while IFS= read -r _hw_sh_line || [ -n "$_hw_sh_line" ]; do
       _hw_sh_line="${_hw_sh_line%%#*}"; _hw_sh_line="${_hw_sh_line//[[:space:]]/}"
       case "$_hw_sh_line" in
-        "") ;;
         stop-hook=*|stop_hook=*|STOP-HOOK=*|STOP_HOOK=*) _hw_sh_mode="${_hw_sh_line#*=}" ;;
-        *=*) ;;
-        *) _hw_sh_def="$_hw_sh_line" ;;
       esac
     done < "$_hw_sh_file"
-    [ -n "$_hw_sh_mode" ] || _hw_sh_mode="$_hw_sh_def"
   fi
 fi
-if [ "$_hw_sh_mode" = go ]; then
+if [ "$_hw_sh_mode" != bash ]; then
   _hw_sh_src="${BASH_SOURCE[0]}"
   while [ -L "$_hw_sh_src" ]; do
     _hw_sh_dir="$(cd -P "$(dirname "$_hw_sh_src")" && pwd)" || break

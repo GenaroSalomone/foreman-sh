@@ -7,7 +7,7 @@ set -uo pipefail  # MUTATION-ANCHOR: 102-M04
 # file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
 case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
-# ── hw-core: this tool as a Go binary (core/wrappers*.go; the switch is bin/wrapper-go.sh). THE DEFAULT IS BASH: the bash below is the rollback ──
+# ── hw-core: this tool as a Go binary (core/wrappers*.go; the switch is bin/wrapper-go.sh). THE DEFAULT IS GO: the bash below is the rollback (HW_IMPL_<TOOL>=bash) ──
 _wg_prog=codex-channel-session-hook; _wg_src="${BASH_SOURCE[0]}"
 while [ -L "$_wg_src" ]; do _wg_d="$(cd -P "$(dirname "$_wg_src")" && pwd)"; _wg_src="$(readlink "$_wg_src")"; case "$_wg_src" in /*) ;; *) _wg_src="$_wg_d/$_wg_src" ;; esac; done
 _wg_bin="$(cd -P "$(dirname "$_wg_src")" && pwd)"

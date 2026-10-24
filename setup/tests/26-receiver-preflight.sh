@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # channel-send: the exit-6 dead-receiver preflight
 #
-# WHY THIS FILE EXISTS. The preflight in bin/channel-send is the whole of ACP
+# WHY THIS FILE EXISTS. The preflight in channel-send (bin/channel-send until go-060 S5, core/channel_send_http.go since) is the whole of ACP
 # 0.4.3, and on 2026-08-26 four defects were injected into it — the preflight
 # call deleted outright, exit 6 downgraded to 5, the membership test inverted,
 # and the empty-resolved-set guard dropped — and ALL FOUR survived every gate
@@ -304,123 +304,12 @@ case "$OUT" in *"receiver preflight"*) fail "unreachable: the preflight claimed 
 pass "preflight: an unreachable endpoint is still exit 1 at session-identity, never 6"
 
 # ── mutants ─────────────────────────────────────────────────────────────────
-# Verde no es cobertura. One mutant per behavioural claim above, each judged by
-# the arm named beside it. The four marked SURVIVED-2026-08-26 are the exact
-# defects that got past this gate when it had no preflight arm at all.
-echo "── mutants: every arm must bite ──"
-
-MUTANTS="$TMP/mutants"; mkdir -p "$MUTANTS"
-
-# mutant_bin <name> -> path to a fresh copy of the binary, ready for one or more
-# `mutate_anchor <id> "$path" <replacement>` calls: each lands on the line (or
-# block) a `// # MUTATION-ANCHOR: 26-Mnn` marker in bin/channel-send declares,
-# not on the prose of that line (mutate_anchor, _common.sh). A defect that is not
-# one edit — moving the preflight after the POST means deleting the call from
-# where it is and adding it where it should not be — takes several.
-mutant_bin() {
-  local out="$MUTANTS/$1"
-  cp "$BIN" "$out"
-  chmod +x "$out"
-  printf '%s' "$out"
-}
-
-# judge <name> <mode> <mutant-path>
-#
-# BASELINE FIRST, ALWAYS. A mutant that "survives" because the machine was
-# loaded reads exactly like a real gap in the tests, so the unmutated binary is
-# re-run on the same arm immediately beforehand and must produce the contract's
-# values. If it does not, this is an ENVIRONMENT failure and is reported as
-# one — never as a surviving mutant.
-judge() {
-  local bin wr wp brc bposts name mode
-  name="$1"; mode="$2"
-  # The arity is checked first: a bare `shift` past the end returns 1 and
-  # `set -e` would kill the run with nothing printed — the silent-death shape
-  # this suite exists to make impossible, and one bin/lint-shell refuses.
-  [ $# -eq 3 ] || fail "judge: needs a name, a mode, and the path of a built mutant"
-  bin="$3"
-  wr="$(want_rc "$mode")"; wp="$(want_posts "$mode")"
-
-  run "$BIN" "$mode"
-  brc="$RC"; bposts="$POSTS"
-  { [ "$brc" = "$wr" ] && { [ "$mode" = unreachable ] || [ "$bposts" = "$wp" ]; }; } \
-    || fail "ENVIRONMENT: arm $mode is unsound (unmutated binary gave exit $brc, $bposts POSTs; expected $wr, $wp) — mutant $name not judged: $OUT"
-
-  run "$bin" "$mode"
-  if [ "$RC" = "$wr" ] && { [ "$mode" = unreachable ] || [ "$POSTS" = "$wp" ]; }; then
-    fail "MUTANT SURVIVED: $name — arm $mode gave exit $RC with $POSTS POST(s), identical to the correct binary"
-  fi
-  pass "mutant killed: $name (arm $mode: exit $RC/$POSTS POSTs vs correct $wr/$wp)"
-}
-
-# SURVIVED-2026-08-26 #1 — the preflight call deleted outright.
-mb="$(mutant_bin preflight-call-deleted)"
-mutate_anchor 26-M01 "$mb" ''
-judge preflight-call-deleted dead-disabled "$mb"
-
-# SURVIVED-2026-08-26 #2 — the new fact filed under an existing code.
-mb="$(mutant_bin exit-6-downgraded-to-5)"
-mutate_anchor 26-M02 "$mb" '5,'
-judge exit-6-downgraded-to-5 dead-disabled "$mb"
-
-# SURVIVED-2026-08-26 #3 — the membership test inverted, so healthy receivers
-# are condemned. Judged by the HEALTHY arm: the false-positive guard is the
-# half an inverted test destroys.
-mb="$(mutant_bin membership-inverted)"
-mutate_anchor 26-M03 "$mb" 'if (!resolved.includes(defaultAgent)) return'
-judge membership-inverted healthy "$mb"
-
-# SURVIVED-2026-08-26 #4 — the empty-resolved-set guard dropped, so an endpoint
-# that does not report its agents the way we assumed is condemned.
-mb="$(mutant_bin empty-set-guard-dropped)"
-mutate_anchor 26-M04 "$mb" 'if (false) return'
-judge empty-set-guard-dropped empty-agents "$mb"
-
-# The preflight never condemns anything — the other half of #3, and the shape a
-# "make the test pass" edit produces.
-mb="$(mutant_bin preflight-never-condemns)"
-mutate_anchor 26-M05 "$mb" 'if (true) return'
-judge preflight-never-condemns dead-disabled "$mb"
-
-# The preflight runs AFTER the POST — deleted from the top and re-inserted once
-# the message has already been admitted. It STILL EXITS 6, so the exit code
-# cannot kill it and only the receiver-side POST witness can; that is precisely
-# why the witness exists.
-#
-# The first version of this mutant moved the call one line down, past the
-# session lookup, and SURVIVED — correctly, because the session lookup is not
-# the POST and the defect was never actually injected. Recorded here because it
-# is the failure mode a mutation suite is most likely to hide: a mutant that
-# does not change behaviour proves nothing about the arm judging it.
-mb="$(mutant_bin preflight-after-the-post)"
-mutate_anchor 26-M01 "$mb" ''
-mutate_anchor 26-M06 "$mb" $'await preflightDefaultAgent()\nconst deadline = Date.now() + persistenceTimeout'
-judge preflight-after-the-post dead-disabled "$mb"
-
-# The preflight reports a transport failure of its own, masking the layer that
-# owns unreachability.
-mb="$(mutant_bin preflight-owns-transport)"
-mutate_anchor 26-M07 "$mb" $'} catch (error) {\n  fail("receiver preflight", error instanceof Error ? error.message : String(error), 6)\n}'
-judge preflight-owns-transport unreachable "$mb"
-
-# A non-OK response is treated as evidence. Only the 500-with-a-plausible-body
-# arm can kill this: a 404 body carries no default_agent, so the next guard
-# returns anyway and the mutant is equivalent there.
-mb="$(mutant_bin trusts-non-ok-response)"
-mutate_anchor 26-M08 "$mb" 'if (false) return'
-judge trusts-non-ok-response agent-500-body "$mb"
-
-# A receiver with no default_agent configured is condemned.
-mb="$(mutant_bin no-default-condemns)"
-mutate_anchor 26-M09 "$mb" 'if (false) return'
-judge no-default-condemns no-default "$mb"
-
-# THE ONE-GET VERSION: decide from /config alone — "declared and not disabled" —
-# instead of membership in the resolved set. This is the shape a single GET can
-# support, and the HEALTHY arm is what rejects it: the commonest default,
-# `build`, is a builtin declared in no config scope, so a config-only test
-# condemns a perfectly healthy receiver. This is the arm that justifies the
-# second GET.
-mb="$(mutant_bin one-get-config-only)"
-mutate_anchor 26-M10 "$mb" 'if (config?.agent && Object.prototype.hasOwnProperty.call(config.agent, defaultAgent) && config.agent[defaultAgent]?.disable !== true) return'
-judge one-get-config-only healthy "$mb"
+# THE TEN MUTANTS OF THE BASH PREFLIGHT WENT WITH IT (go-060 S5: bin/channel-send is a shim and its embedded node program is gone).
+# Each one edited a line of that program; the preflight is core/channel_send_http.go now, and its decisions carry the anchors
+# 26-G01..G09 that setup/tests/1016 kills in process, each judged by the Go twin of the arms above (TestChannelSendOpenCodePreflight,
+# core/channel_send_test.go, which also asserts the receiver's POST counter stays 0 on a dead receiver):
+#   M01 preflight call deleted -> 26-G01       M02 exit 6 filed under 5 -> 26-G02      M03, M05, M10 membership test -> 26-G03 (one line in Go)
+#   M04 empty-resolved-set guard dropped -> 26-G04    M06 preflight after the POST -> the POST witness of the same test, and 26-G06
+#   M07 preflight owns transport -> 26-G07     M08 trusts a non-OK response -> 26-G08    M09 no default condemns -> 26-G09
+# The arms above still run the whole contract through the shim, byte for byte, against the node stub receiver.
+printf 'coverage - 26: the exit-6 contract through the shim, 0 mutants (the 10 bash mutants are retired; their Go anchors 26-G01..G09, no G05, are killed by 1016)\n'

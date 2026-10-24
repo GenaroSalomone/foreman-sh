@@ -230,6 +230,15 @@ EOF
   return 1
 }
 
+# verdict_impl_is_current <file> → 0 when <file> measured the implementation this push is under (`impl=` from
+# HW_IMPL, go by default; a file with no `impl=` line is a go one — setup/verify-for-push writes the line).
+# The suite under the bash rollback is not the Go suite: neither verdict opens a push for the other.
+verdict_impl_is_current() {
+  local want=go v
+  [ "${HW_IMPL:-go}" != bash ] || want=bash
+  v="$(grep -m1 '^impl=' "$1" 2>/dev/null || true)"; v="${v#impl=}"
+  [ "${v:-go}" = "$want" ]
+}
 # full_verdict <file> <tree> → 0 when <file> is a FULL verdict for <tree>: it
 # names the tree, and it does not say `gate=fast`. A fast verdict lives at
 # `<tree>.fast` and no full reader opens that name; refusing the marker here too
@@ -237,6 +246,7 @@ EOF
 # cannot open main. A verdict with no gate line is a full one: verify-for-push
 # wrote every verdict before gates existed, and still writes `gate=full`.
 full_verdict() {
+  verdict_impl_is_current "$1" || return 1  # MUTATION-ANCHOR: 1125-M01
   grep -qF "tree=$2" "$1" 2>/dev/null && ! grep -qxF "gate=fast" "$1" 2>/dev/null  # MUTATION-ANCHOR: 250-M03
 }
 

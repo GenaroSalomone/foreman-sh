@@ -36,6 +36,7 @@
 # Run alone while working on this subject:
 #     bash setup/tests/135-a-message-can-cross-a-shell-that-cannot-touch-it.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+need_invokers   # this subject runs ask-invoker and done-invoker, which are Go (go-060 S2): HW_INVOKERS names the built binary
 
 CS_SRC="$ROOT/bin/channel-send"
 AI_SRC="$ROOT/bin/ask-invoker"
@@ -139,35 +140,10 @@ out="$(printf 'x' | env -u HW_INVOKER_PANE "$HW_SRC" ruling nopane - "extra word
 case "$out" in *"given on argv AND as '-'"*) pass "hw ruling refuses a correction given both ways, distinctly from the empty case" ;; *) fail "hw ruling's double-channel refusal is missing or reuses the empty-stdin wording: $out" ;; esac
 
 # ── mutants ───────────────────────────────────────────────────────────────────
-# M01 — channel-send's '-' branch is dropped, so a lone '-' is treated as
-# ordinary argv text (the literal string "-") instead of a stdin read. The
-# byte-for-byte assertion above must then fail, proving it exercises real
-# stdin plumbing and not just a string comparison somewhere else.
-mut="$TMP/m01"; mkdir -p "$mut"; cp "$CS_SRC" "$mut/channel-send"
-mutate_anchor 135-M01 "$mut/channel-send" 'if false; then'
-chmod +x "$mut/channel-send"
-: > "$TMP/codex.log"
-PATH="$TMP/cxbin:$PATH" "$mut/channel-send" --require admitted codex fakethread /tmp/fake.sock - \
-  <<<"$PAYLOAD" >/dev/null 2>&1 || true
-# WITH THE '-' BRANCH DISABLED, "-" IS TREATED AS ORDINARY ARGV TEXT: MESSAGE
-# becomes the literal one-character string "-" instead of the piped payload.
-# EXACT equality, not substring: the real payload also contains a hyphen
-# (deny-repo-writes.py), so a substring check on '-' would pass whether or not
-# the mutant ran, which is exactly the vacuous-mutant shape saw_mutant exists
-# to refuse.
-m01_logged="$(codex_message_logged)"
-if [ "$m01_logged" = "-" ]; then
-  pass "mutant killed: M01 (saw: the literal argv word '-' sent as the message, instead of the piped payload)"
-else
-  fail "M01 VACUOUS: expected the disabled stdin branch to send the literal '-', got: $m01_logged"
-fi
-
-# M02 — done-invoker's double-channel check is dropped, so text given both ways
-# is silently accepted with only the stdin half kept — proving assertion 3b's
-# done-invoker arm is load-bearing rather than incidentally true.
-mut="$TMP/m02"; mkdir -p "$mut"; cp "$DI_SRC" "$mut/done-invoker"
-cp "$ROOT/bin/invoker-common.sh" "$mut/invoker-common.sh"; cp "$ROOT/bin/runenv" "$mut/runenv"
-mutate_anchor 135-M02 "$mut/done-invoker" ''
-chmod +x "$mut/done-invoker"
-out="$(printf 'from stdin' | env -u HW_INVOKER_PANE "$mut/done-invoker" - "from argv" 2>&1 || true)"
-saw_mutant "M02" "$out" "no HW_INVOKER_PANE"
+# THE TWO BASH MUTANTS WENT WITH THE BASH (go-060 S5: bin/channel-send and bin/done-invoker are shims). What each held is held in Go:
+#   M01 channel-send's '-' branch dropped, so a lone '-' is sent as the literal word      135-G01, core/channel_send.go (`if args[0] == "-"`),
+#       setup/tests/1016 kills it in process, judged by TestChannelSendMessageFromStdin
+#   M02 done-invoker's double-channel check dropped, so text given both ways is accepted  135-M02, core/invokers/done.go (`if len(args) != 1`),
+#       core/invokers/mutants_test.go, judged by TestDiffDone/stdin_and_argv
+# Sections 1-3 above still run the four commands through their shims, byte for byte.
+printf 'coverage - 135: the argv, "-", empty and double-channel claims of the four commands through the shims, 0 mutants (the 2 bash mutants are retired; 135-G01 is killed by 1016, 135-M02 by core/invokers)\n'

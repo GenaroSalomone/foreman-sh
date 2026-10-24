@@ -38,6 +38,8 @@ func gateArgv(verb string, args []string) []string {
 		return args
 	case "executor-gate":
 		return args
+	case "picker": // bin/hw's bare `hw`: the gate sees no words, and refuses with the picker's own name
+		return nil
 	}
 	return append([]string{verb}, args...)
 }

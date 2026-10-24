@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A ruling is declared by its caller and refuses unsafe mid-work injection.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+need_invokers   # C04 runs ask-invoker from a copy of bin/, which has no core/dist beside it: it is Go (go-060 S2)
 
 BIN="$TMP/bin2"; STUB="$TMP/stub"; mkdir -p "$BIN" "$STUB"
 cp "$ROOT"/bin/* "$BIN/" 2>/dev/null || true
@@ -129,72 +130,15 @@ idle_out="$(RULING_STATE=idle RULING_WAIT_RC=0 run_ruling "$BIN/channel-send")" 
 [ "$(grep -c '^wait-agent ' "$LOG" || true)" = 1 ] || fail "C05 idle ruling bypassed its ordered boundary check"
 pass "C05 a ruling at a clean idle boundary is delivered exactly once"
 
-# MUTATION ARMS RUN UNCONDITIONALLY. They used to sit behind
-# `if [ "${RULING_MUTATION_TEST:-0}" = 1 ]`, which `setup/test-hw` never set, so a 909-ok run
-# exercised none of them. The stated reason was "committed bytes only"; the arms
-# copy from $ROOT, the working tree, like every ungated arm here. See
-# setup/tests/46-mutation-arms-are-not-gated.sh and setup/mutation-coverage.
-  # M01 removes the immediate refusal. The same working target then reaches the
-  # ordinary wait, proving the test distinguishes the policy from a timeout.
-  M1="$TMP/m1"; mkdir -p "$M1"; cp "$BIN"/* "$M1/" 2>/dev/null || true
-  mutate_anchor 41-M01 "$M1/channel-send" 'if false; then'
-  chmod +x "$M1/channel-send"; cp "$BIN/herdr-rpc" "$M1/herdr-rpc"
-  mout="$(run_ruling "$M1/channel-send" || true)"
-  [ "$(grep -c '^wait-agent ' "$LOG" || true)" -ge 1 ] || fail "M01 SURVIVED: ruling still refused before the wait"
-  pass "mutant killed: M01 sends a declared ruling into the ordinary redirect gate"
-
-  # M02 makes ruling the default. A generic redirect is then refused before its
-  # ordinary gate, proving C02 is about preserved behavior rather than prose.
-  M2="$TMP/m2"; mkdir -p "$M2"; cp "$BIN"/* "$M2/" 2>/dev/null || true
-  mutate_anchor 41-M02 "$M2/channel-send" 'IS_RULING=1'
-  chmod +x "$M2/channel-send"; cp "$BIN/herdr-rpc" "$M2/herdr-rpc"
-  mredirect="$(run_redirect "$M2/channel-send" || true)"
-  [ "$(grep -c '^wait-agent ' "$LOG" || true)" = 0 ] || fail "M02 SURVIVED: generic redirect still used its ordinary gate"
-  case "$mredirect" in *"--ruling REFUSED"*) pass "mutant killed: M02 classifies every generic redirect as a ruling" ;; *) fail "M02 environment did not expose ruling-by-default: $mredirect" ;; esac
-
-  # M03 removes the native busy pre-POST refusal. The same server then records
-  # prompt_async, which C03 explicitly forbids.
-  M3="$TMP/m3"; mkdir -p "$M3"; cp "$BIN"/* "$M3/" 2>/dev/null || true
-  mutate_anchor 41-M03 "$M3/channel-send" 'if (false && !holdProven && (pending.length || (status && ["busy", "retry"].includes(status.type)))) {'
-  chmod +x "$M3/channel-send"
-  CHANNEL_DELIVERY_TIMEOUT_MS=500 CHANNEL_PERSISTENCE_TIMEOUT_MS=100 \
-    "$M3/channel-send" --ruling --require processed --id ruling-mutant \
-      opencode ses_executor "http://127.0.0.1:$PORT" "native mutant ruling" >/dev/null 2>&1 || true
-  mposts="$(curl -fsS "http://127.0.0.1:$PORT/admin" | jq -r .posts)"
-  [ "$mposts" -gt 0 ] || fail "M03 SURVIVED: native busy ruling still made no prompt_async POST"
-  pass "mutant killed: M03 removes native OpenCode pre-POST ruling refusal"
-
-  # M04 disconnects the known challenge caller from the marker. The resulting
-  # delivery still succeeds, but its reply command silently becomes an answer.
-  M4="$TMP/m4"; mkdir -p "$M4"; cp "$HARNESS/bin"/* "$M4/"
-  mutate_anchor 41-M04 "$M4/ask-invoker" 'REPLY_COMMAND="$(invoker_reply_command "$ENVELOPE_ID:reply" answer "$PENDING_REPLY")"'
-  chmod +x "$M4/ask-invoker"
-  run_challenge "$M4/ask-invoker" "$TMP/m4-work" "$TMP/m4-delivery"
-  # KILLED BY WHAT THE MUTANT SAID. `invoker_reply_command` prints two different
-  # commands, not one command with a flag missing: intent `ruling` prints
-  # `--ruling --reply-hold … "<your ruling>"`, intent `answer` prints
-  # `--report --reply-hold … "<your answer>"` (bin/invoker-common.sh). So the
-  # downgraded reply has text of its OWN — the mutant's delivery carries
-  # `--report --reply-hold … "<your answer>"`. The old shape was
-  # `*"--ruling"*) fail ;; *) pass`, which certifies the kill from the ABSENCE of
-  # the flag: a challenge that never got as far as printing a reply command has
-  # no `--ruling` either and passed it too.
-  case "$(cat "$TMP/m4-delivery")" in
-    *'"<your answer>"'*) pass "mutant killed: M04 downgrades the challenge reply to an ordinary answer" ;;
-    *"--ruling"*) fail "M04 SURVIVED: challenge still declared ruling" ;;
-    *) fail "M04 VACUOUS: the delivery carries neither reply command, so invoker_reply_command may never have run — got: $(cat "$TMP/m4-delivery" | tail -3 | tr '\n' ' ')" ;;
-  esac
-
-  # M05 rejects even a clean idle target, turning the safety boundary into a
-  # blanket ban. C05 requires one ordered delivery and kills that regression.
-  M5="$TMP/m5"; mkdir -p "$M5"; cp "$BIN"/* "$M5/" 2>/dev/null || true
-  mutate_anchor 41-M05 "$M5/channel-send" 'never) return 0 ;;'
-  chmod +x "$M5/channel-send"; cp "$BIN/herdr-rpc" "$M5/herdr-rpc"
-  midle="$(RULING_STATE=idle RULING_WAIT_RC=0 run_ruling "$M5/channel-send" || true)"
-  [ ! -s "$SENT" ] || fail "M05 SURVIVED: idle ruling still delivered"
-  case "$midle" in *"--ruling REFUSED"*) pass "mutant killed: M05 turns the clean idle boundary into a blanket refusal" ;; *) fail "M05 environment did not expose idle refusal: $midle" ;; esac
-
-  printf 'mapping - C01↔M01 Herdr working refusal; C02↔M02 generic redirect preservation; C03↔M03 native pre-POST refusal; C04↔M04 challenge wiring; C05↔M05 clean-boundary delivery\n'
-  printf 'coverage - 5 behavior claims, 5 dedicated ruling mutants killed\n'
+# THE FIVE MUTANTS OF THE BASH WENT WITH IT (go-060 S5: bin/channel-send and bin/ask-invoker are shims). What each held is held in Go:
+#   M01 (a declared ruling falls into the ordinary gate)        41-G01, core/channel_send_herdr.go, TestChannelSendRulingGate
+#   M02 (every generic redirect is a ruling)                    41-G02, core/channel_send.go,       TestChannelSendRulingGate
+#   M03 (the native busy ruling is POSTed)                      41-G03, core/channel_send_http.go,  TestChannelSendOpenCodeRulingRefusedBeforePOST
+#   M04 (the challenge reply is downgraded to an answer)        41-M04, core/invokers/ask.go (`intent = "ruling"`), TestDiffAsk/challenge_delivered
+#   M05 (a clean idle target is refused too)                    41-G05, core/channel_send_herdr.go, TestChannelSendRulingGate
+# 41-G01/G02/G03/G05 are the anchors setup/tests/1016 kills in process; 41-M04 is a row of core/invokers/mutants_test.go. C01-C05 above
+# still run each claim through the shims against the stub herdr and the native OpenCode stub.
+printf 'mapping - C01 Herdr working refusal; C02 generic redirect preservation; C03 native pre-POST refusal; C04 challenge wiring; C05 clean-boundary delivery\n'
+printf 'coverage - 41: 5 behavior claims, 0 mutants (the 5 bash mutants are retired; 41-G01/G02/G03/G05 are killed by 1016, 41-M04 by core/invokers)\n'
 
 [ -z "$SERVER_PID" ] || { kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; }

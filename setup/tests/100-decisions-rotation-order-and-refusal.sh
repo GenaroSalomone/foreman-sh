@@ -696,7 +696,7 @@ esac
   && pass "check exits 2 for a file INSIDE the budget with headings it cannot read — not 1, which means over budget" \
   || fail "check exited $rc for an inside-budget file with a bad heading; hw would report it as past the seek budget"
 # And hw must have words for 2 that are not the budget's words.
-grep -q 'headings the tool cannot read' "$ROOT/bin/hw" \
+rg -qF 'headings the tool cannot read' "$ROOT/core/status_quiet.go" \
   || fail "hw has no separate sentence for exit 2, so it still labels a heading problem as a budget problem"
 pass "hw distinguishes the two, so the warning names the remedy it actually has"
 # M14 — the two answers share code 1 again. Dies on the exit-code arm.

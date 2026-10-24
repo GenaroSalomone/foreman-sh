@@ -27,8 +27,9 @@
 #     bash setup/tests/66-exit-code-survives-a-pipe.sh
 #
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+need_invokers   # C09/C10 run done-invoker and ask-invoker from a copy of bin/, which has no core/dist beside it: they are Go (go-060 S2)
 
-CLAIMS=0; MUTANTS=0
+CLAIMS=0
 claim() { CLAIMS=$((CLAIMS + 1)); pass "$1"; }
 
 # A HERMETIC HARNESS, DRIVEN DIRECTLY — never the live channel. Exercising
@@ -111,8 +112,8 @@ esac
 # ── C0A. the guard covers exits that happen BEFORE the delivery machinery ───
 #
 # A usage error exits from the argument loop at the top of the file, long before
-# the delivery lock and its own EXIT trap exist. Two separate trap installations
-# are what cover both halves, and each has its own mutant below.
+# the delivery lock and its own EXIT trap exist. Two separate guard installations
+# are what cover both halves (66-G01 and 66-G02 hold them in Go, see MUTANTS below).
 USAGE="$(piped channel-send)"
 case "$USAGE" in
   *'MY EXIT CODE IS 1'*) claim "C0A a usage error through a pipe is disowned too, not only a failed delivery" ;;
@@ -212,122 +213,16 @@ done
 
 # ── MUTANTS ─────────────────────────────────────────────────────────────────
 #
-# One production mutant per behaviour claim that has one, each killed by text
-# ONLY THE MUTANT PRODUCES — never by the absence of the original, which is
-# exactly what a mutant that died before reaching the mutated line produces.
-# `saw_mutant` in _common.sh is that shape.
-# Each mutant edits the line a `# MUTATION-ANCHOR: 66-Mnn` marker in the binary
-# declares, not the prose it mutates; see mutate_anchor in _common.sh.
-mutant_bins() { # <name> → MUTANT_DIR, a bin/ copy the next mutate_anchor edits
-  local dir="$TMP/mutant-$1"; mkdir -p "$dir/bin"
-  cp "$ROOT"/bin/* "$dir/bin/" 2>/dev/null || true
-  cp "$H/bin/herdr" "$H/bin/herdr-rpc" "$dir/bin/"
-  MUTANT_DIR="$dir/bin"
-}
-mut_piped() { # <binary> [args...]
-  local bin="$1"; shift
-  { PATH="$MUTANT_DIR:$PATH" HW_INVOKER_WAIT_MS=1000 bash -c '
-      set +o pipefail
-      "$0" "$@" | tail -4
-      printf "RC=%s\n" "$?"' "$MUTANT_DIR/$bin" "$@"; } 2>&1
-}
-
-# M01 — THE EARLY TRAP, the one that covers every exit above the delivery
-# machinery. Removing it must lose the warning for a usage error, and it must
-# NOT lose it for a failed delivery: the second installation still covers that,
-# which is why two mutants are needed rather than one. Driven with no arguments
-# so the mutated gap is the path actually taken.
-mutant_bins M01; mutate_anchor 66-M01 "$MUTANT_DIR/channel-send" \
-  "printf 'channel-send: M01-EARLY-GUARD-REMOVED\\n' >&2"
-out="$(mut_piped channel-send || true)"
-case "$out" in
-  *'MY EXIT CODE IS 1'*) fail "M01 SURVIVED: a usage error was still disowned with the early trap removed" ;;
-esac
-saw_mutant "M01 removes the early guard, so an exit above the delivery machinery goes silent" "$out" \
-  'channel-send: M01-EARLY-GUARD-REMOVED'
-
-# M02 — the SECOND trap installation, the one that has to do two jobs. This is
-# the mutant that matters most: bash keeps one handler per signal, so a
-# `trap … EXIT` after the guard silently removes it for every exit past that
-# line, which is every real delivery outcome. The mutant restores exactly the
-# pre-fix single-purpose trap and announces itself.
-mutant_bins M02; mutate_anchor 66-M02 "$MUTANT_DIR/channel-send" \
-  "printf 'channel-send: M02-GUARD-DROPPED-BY-SECOND-TRAP\\n' >&2; trap '_release_lock || true' EXIT"
-out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
-case "$out" in
-  *'MY EXIT CODE IS 1'*) fail "M02 SURVIVED: the second trap replaced the guard and the banner still appeared" ;;
-esac
-saw_mutant "M02 lets the later EXIT trap replace the guard, losing it for every real outcome" "$out" \
-  'channel-send: M02-GUARD-DROPPED-BY-SECOND-TRAP'
-
-# M03 — `$?` read after a command instead of before it. `_release_lock` runs a
-# command and a command clobbers `$?`, so the guard sees 0 and says nothing. The
-# mutant prints the status it computed, which is the evidence of its own path.
-mutant_bins M03; mutate_anchor 66-M03 "$MUTANT_DIR/channel-send" \
-  "trap '_release_lock || true; printf \"channel-send: M03-RC-AFTER-CLEANUP=\$?\\n\" >&2; _cs_exit_guard \"\$?\"' EXIT"
-out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
-case "$out" in
-  *'MY EXIT CODE IS 1'*) fail "M03 SURVIVED: the guard still saw the real status after a clobbering command" ;;
-esac
-saw_mutant "M03 reads \$? after cleanup, so the guard sees 0 and a failure goes silent" "$out" \
-  'channel-send: M03-RC-AFTER-CLEANUP=0'
-
-# M04 — the tty test inverted, which is how a well-meaning refactor breaks this:
-# warn on a terminal (where it is false and gets muted) and stay silent through a
-# pipe (where it is the whole point).
-mutant_bins M04; mutate_anchor 66-M04 "$MUTANT_DIR/channel-send" \
-  'printf "channel-send: M04-TTY-TEST-INVERTED\\n" >&2; [ -t 1 ] || return 0'
-out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
-case "$out" in
-  *'MY EXIT CODE IS 1'*) fail "M04 SURVIVED: the banner appeared with the tty test inverted" ;;
-esac
-saw_mutant "M04 inverts the tty test, warning only where the warning is false" "$out" \
-  'channel-send: M04-TTY-TEST-INVERTED'
-
-# M05 — the guard fires but says nothing a reader can act on. This is the arm
-# that keeps the fix from decaying into a bare number: the brainer's failure was
-# not "no number", it was reading a number that belonged to tail.
-# The whole warning line is the replacement, with the disowning sentence swapped
-# for the mutant's own marker; the rest of the message is kept as it was.
-mutant_bins M05; mutate_anchor 66-M05 "$MUTANT_DIR/channel-send" \
-  $'printf \x27channel-send: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `channel-send … | tail` — then `$?` is TAIL\x27"\x27"\x27s status (0 whenever it reads a byte), M05-DISOWNING-REMOVED. If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the delivery fact is %s, not whatever the shell shows.\\n\x27 "$rc" "$rc" >&2'
-out="$(mut_piped channel-send herdr nosuch:pane - probe || true)"
-case "$out" in
-  *"NOT mine"*) fail "M05 SURVIVED: the disowning text is still there" ;;
-esac
-saw_mutant "M05 drops the sentence that says the shell's number is not the tool's" "$out" \
-  'M05-DISOWNING-REMOVED.'
-
-# M06 — the invokers' re-arm after `invoker_run_lock`. That library call installs
-# its own EXIT trap and holds it for the whole invocation, so without the re-arm
-# the guard exists only for the argument checks above it. The mutant announces
-# itself, then restores the pre-fix single-purpose trap.
-#
-# Driven at the point the lock is already taken: HW_INVOKER_PANE is supplied so
-# done-invoker gets past adoption, and the stub herdr-rpc's exit 4 makes the
-# delivery fail after the lock. If it ever stops reaching that far the arm is
-# VACUOUS rather than passing, which is what saw_mutant is for.
-mutant_bins M06; mutate_anchor 66-M06 "$MUTANT_DIR/done-invoker" \
-  'printf "done-invoker: M06-REARM-SKIPPED\\n" >&2; if false; then'
-out="$( ( cd "$TMP" && env -u HW_WORKDIR -u HW_RUN HW_INVOKER_PANE=w9:pB HOME="$TMP" \
-        PATH="$MUTANT_DIR:$PATH" bash -c '
-          set +o pipefail
-          "$0" "a report" | tail -4
-          printf "RC=%s\n" "$?"' "$MUTANT_DIR/done-invoker" 2>&1 ) || true )"
-case "$out" in
-  *'RC=0'*) ;;
-  *) fail "M06 VACUOUS: the mutant's pipeline did not report 0, so the shape under test is not the one that was run: $(printf '%s' "$out" | tail -3)" ;;
-esac
-# THE PREFIX IS LOAD-BEARING. done-invoker calls channel-send, which carries the
-# same guard and prints the same banner — so a bare `MY EXIT CODE IS` match reads
-# the CHILD's warning as the parent's and passes a mutant that removed the
-# parent's entirely. Every assertion about an invoker's own banner names the
-# invoker.
-case "$out" in
-  *'done-invoker: ══ MY EXIT CODE IS'*) fail "M06 SURVIVED: done-invoker's own banner appeared with the re-arm skipped, so the re-arm is not what carries it" ;;
-esac
-saw_mutant "M06 skips the guard re-arm, so invoker_run_lock's trap silently removes it" "$out" \
-  'done-invoker: M06-REARM-SKIPPED'
+# THE SIX BASH MUTANTS WENT WITH THE BASH (go-060 S5: bin/channel-send, bin/done-invoker and bin/ask-invoker are shims). Each one
+# edited a line of a bash body and was killed by text only the mutant printed. What each held is held in Go, by anchors killed in process:
+#   M01 the early guard removed (a usage error goes silent)           66-G01  core/channel_send.go  TestChannelSendExitGuard
+#   M02 a later trap replaces the guard                               66-G02  core/channel_send.go  TestChannelSendLock
+#   M03 `$?` read after cleanup, so the guard sees 0                  66-G03  core/channel_send.go  TestChannelSendSignalOutcomes
+#   M04 the tty test inverted                                         66-G04  core/channel_send.go  TestChannelSendExitGuard
+#   M05 the disowning sentence dropped                                66-G05  core/channel_send.go  TestChannelSendExitGuard
+#   M06 done-invoker's guard re-arm skipped                           66-M06  core/invokers/ctx.go  TestDiffAsk/delivered_herdr (core/invokers/mutants_test.go)
+# 66-G01..G05 are rows of setup/tests/contract-hw/mutants-cs, killed by setup/tests/1016; 66-M06 is a row of core/invokers/mutants_test.go.
+# C01-C0A and C07-C10 above still run the caller's view of all three binaries through their shims.
 
 [ "$CLAIMS" -ge 1 ] || fail "no behaviour claims were made"
-printf 'coverage - %s behaviour claims, %s dedicated production mutants\n' "$CLAIMS" 6
+printf 'coverage - %s behaviour claims, 0 dedicated production mutants (the 6 bash mutants are retired; 66-G01..G05 are killed by 1016, 66-M06 by core/invokers)\n' "$CLAIMS"

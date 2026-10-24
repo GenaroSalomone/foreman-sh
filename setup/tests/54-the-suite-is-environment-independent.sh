@@ -199,6 +199,7 @@ cs_norm() {
     | sed -E 's#in [0-9]+s rather than#in <N>s rather than#g'
 }
 CS_RUNNER="$ROOT/setup/test-channel-send"
+need_invokers   # test-channel-send runs ask-invoker from a copy of bin/ with no core/dist beside it; the Go invokers are not built by anything else here (go-060 S2)
 for _s in 24-done-closes-delivered.sh 23-invoker-env-file.sh; do
   bg_run "${_s%%-*}-clean"   tmp_norm clean   bash "$TESTS_DIR/$_s"
   bg_run "${_s%%-*}-polluted" tmp_norm pollute bash "$TESTS_DIR/$_s"
@@ -307,7 +308,7 @@ saw_mutant "M01 reverts the sweep to the three-name allowlist, and the lease var
 # own inputs and silently disables 31's and 36's live arms. The mutant is the
 # plausible over-correction, which is why it needs its own arm.
 mutant_tests M02; mutate_anchor 54-M02 "$MUTANT_DIR/_common.sh" \
-  'printf "M02-INPUTS-NOT-SPARED\n" >&2; _HW_TEST_INPUTS=" "'
+  'printf "M02-INPUTS-NOT-SPARED\n" >&2; _HW_TEST_INPUTS=" HW_CORE HW_IMPL "'   # the core stays spared: swept too, _common.sh stops (hw-core is required) before the probe reports anything
 sed "s|$COMMON|$MUTANT_DIR/_common.sh|" "$TMP/probe.sh" > "$MUTANT_DIR/probe-m02.sh"
 out="$(pollute HW_UNSTICK_BIN=/keep/unstick HW_CHECK_LIVE_REVIEW_DRIFT=1 \
         bash "$MUTANT_DIR/probe-m02.sh" 2>&1 || true)"

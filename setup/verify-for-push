@@ -39,6 +39,16 @@ cd "$ROOT"
 # write could see a file that exists but is momentarily empty — passing the
 # existence half of the check on content that was never actually verified.
 # `mv` within the same directory is atomic on every filesystem this runs on.
+# A VERDICT NAMES THE IMPLEMENTATION IT MEASURED (`impl=go|bash`, from HW_IMPL, go by default: shadow and anything
+# else is the Go default too). The suite is not the same suite under the bash rollback, so a verdict of one is
+# never read for the other (pre-push, release/cut, the incremental record, the has_verdict check below). A file
+# with no `impl=` line is a `go` one: every verdict before this ran with Go as the default.
+verdict_impl() { if [ "${HW_IMPL:-go}" = bash ]; then echo bash; else echo go; fi; }
+# verdict_impl_is_current <file> → 0 when <file> measured the implementation this run is under
+verdict_impl_is_current() {
+  local v; v="$(grep -m1 '^impl=' "$1" 2>/dev/null || true)"; v="${v#impl=}"
+  [ "${v:-go}" = "$(verdict_impl)" ]
+}
 # write_verdict <commit> <tree> <elapsed-seconds> <headline> [<base_tree> <jobs_rerun> <chain_depth> <platform>]
 # — the three after the headline make it an incremental verdict, `chain_depth` hops off a recorded real full run
 # (setup/verdict-incremental caps the chain; setup/release/cut accepts only depth 1). `platform` names where the
@@ -58,6 +68,7 @@ write_verdict() {
     echo "elapsed_seconds=$elapsed"
     echo "headline=$headline"
     echo "host=$(hostname)"
+    echo "impl=$(verdict_impl)"
     [ -z "$platform" ] || echo "platform=$platform"
     if [ -n "$base_tree" ]; then
       # A full verdict that names the run it stands on, `depth` hops from a real full run.
@@ -180,7 +191,8 @@ cache_file="$cache_dir/$tree"
 has_verdict=0
 if [ -z "$full_flag" ] && grep -qxF "tree=$tree" "$cache_file" 2>/dev/null \
    && grep -qxF "gate=full" "$cache_file" 2>/dev/null \
-   && grep -q '^headline=[0-9][0-9]* tests passed  (TRACKED only' "$cache_file" 2>/dev/null; then
+   && grep -q '^headline=[0-9][0-9]* tests passed  (TRACKED only' "$cache_file" 2>/dev/null \
+   && verdict_impl_is_current "$cache_file"; then
   has_verdict=1
 fi
 if [ "$has_verdict" = 1 ]; then  # MUTATION-ANCHOR: 850-M02

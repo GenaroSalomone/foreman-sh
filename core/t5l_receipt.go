@@ -312,7 +312,7 @@ func (l *lch) receiptModel(pane string, drc int) int {
 	} else {
 		for {
 			if l.agent == "pi" {
-				running, piThinking, src = l.piRuntimeRead()
+				running, piThinking, src = l.piRuntimeRead() // # MUTATION-ANCHOR: 986-G05
 			} else if l.agent == "claude" {
 				cfg := l.accountConfigDir
 				if cfg == "" {
@@ -450,6 +450,16 @@ func (l *lch) receiptVerdict() {
 		diverged = true
 	case strings.HasPrefix(m, "UNESTABLISHED"):
 		l.warn("UNESTABLISHED  model: " + strings.TrimPrefix(m, "UNESTABLISHED — "))
+		unestablished = true
+	}
+	// the thinking a pi session runs, against the one asked (pi clamps a level its model does not support); absent is not a fault
+	m = l.receiptGet("thinking_verdict")
+	switch {
+	case strings.HasPrefix(m, "DIVERGENCE"): // # MUTATION-ANCHOR: 986-G10
+		l.warn("DIVERGENCE  thinking: " + strings.TrimPrefix(m, "DIVERGENCE — "))
+		diverged = true
+	case strings.HasPrefix(m, "UNESTABLISHED"):
+		l.warn("UNESTABLISHED  thinking: " + strings.TrimPrefix(m, "UNESTABLISHED — "))
 		unestablished = true
 	}
 	// the effort: an opencode --effort is a claim until the live config says so

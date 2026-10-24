@@ -22,10 +22,25 @@ set -euo pipefail
 #
 # `${!HW_@}` is bash 3.2 prefix name expansion, and it yields an empty word list
 # rather than an error under `set -u` when nothing matches.
+# HW_CORE AND HW_INVOKERS ARE THE TWO NAMES KEPT, as in setup/tests/_common.sh: channel-send dies without an hw-core and ask-invoker and
+# done-invoker without the Go invokers binary (go-060 S2), and the harness's own bin/ copies have no core/dist beside them. They are the
+# binaries under test, not pane state; with none handed over the cases below fail naming setup/build-core --native, never on bash.
+# (HW_INVOKERS was swept with the rest until go-060 S5: the "failed ask delivery" case below died on "the Go invokers are not built".)
+_keep_core="${HW_CORE:-}"; _keep_inv="${HW_INVOKERS:-}"
 for _v in ${!HW_@}; do unset "$_v" 2>/dev/null || true; done  # MUTATION-ANCHOR: 54-M04
 unset _v 2>/dev/null || true
+[ -z "$_keep_core" ] || export HW_CORE="$_keep_core"
+[ -z "$_keep_inv" ] || export HW_INVOKERS="$_keep_inv"
+unset _keep_core _keep_inv
 
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Run alone (the pre-commit hook and the release cut do) nothing hands the binaries over, and the harness copies of channel-send,
+# ask-invoker and done-invoker have no core/dist beside them: use the ones setup/build-core built for this machine, else the cases die
+# naming it.
+_os="$(uname -s | tr 'A-Z' 'a-z')"; _arch="$(uname -m)"; case "$_arch" in x86_64) _arch=amd64 ;; aarch64) _arch=arm64 ;; esac
+[ -n "${HW_CORE:-}" ] || [ ! -x "$ROOT/core/dist/$_os-$_arch/hw-core" ] || export HW_CORE="$ROOT/core/dist/$_os-$_arch/hw-core"
+[ -n "${HW_INVOKERS:-}" ] || [ ! -x "$ROOT/core/dist/$_os-$_arch/invokers" ] || export HW_INVOKERS="$ROOT/core/dist/$_os-$_arch/invokers"
+unset _os _arch
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/channel-send-test.XXXXXX")"
 PORT_FILE="$TMP/port"
 SERVER_PID=""
@@ -715,15 +730,9 @@ case "$gate_out" in
   *) printf 'not ok - channel-send: the timeout did not report the cross-check attempt: %s\n' "$gate_out" >&2; exit 1 ;;
 esac
 
-# A MISSING LIBRARY DEGRADES, IT DOES NOT GUESS. An incomplete bin/ must wait as
-# it always did and say so — never invent a verdict it could not compute.
-rm -f "$GATE_BIN/state-witness.sh"
-gate_out="$(gate_run 'printf "{\"read\":{\"text\":\"an unchanging screen\"}}\n"; exit 0' 3000)"
-case "$gate_out" in
-  *"state-witness.sh is missing"*) pass "channel-send: a missing cross-check library is announced, not assumed" ;;
-  *) printf 'not ok - channel-send: a missing library was silent: %s\n' "$gate_out" >&2; exit 1 ;;
-esac
-case "$gate_out" in
-  *"NOT going to become idle"*) printf 'not ok - channel-send: it claimed a proved refusal with no library: %s\n' "$gate_out" >&2; exit 1 ;;
-  *) pass "channel-send: with no library it refuses to claim a verdict it cannot compute" ;;
-esac
+# A MISSING LIBRARY DEGRADES, IT DOES NOT GUESS: RETIRED WITH THE BASH (go-060 S5). The claim was that an incomplete bin/ with no
+# state-witness.sh waits as it always did and says "state-witness.sh is missing" instead of inventing a verdict. The library was a file only
+# the bash read; hw-core carries its witness inside the binary, so under Go there is no file to miss and no sentence to say, and this case
+# had run the bash body (a seam deleted since), the one implementation the claim was about. Deleting state-witness.sh from a bin/
+# copy is now a no-op for channel-send; what the two cases above hold (a settled receiver is refused fast, an unreadable cross-check never
+# becomes a refusal) is the whole of the witness's contract in Go.

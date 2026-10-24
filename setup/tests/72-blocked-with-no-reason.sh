@@ -146,19 +146,7 @@ expect_says "hw next: a genuinely stuck pane (no done token, --force) keeps the 
   "hw unstick" "$out"
 expect_silent "hw next: and is never told it already reported when it did not" "already reported" "$out"
 
-# ── mutation arm: unconditional, like every other subject here ─────────────
-# `hw` sources siblings from its own resolved directory, so the mutant needs
-# the whole bin/ copy, not a lone file — same lesson as 71's mutants.
-MUTANT="$TMP/mutant/bin"
-mkdir -p "$MUTANT"
-cp -R "$ROOT/bin/." "$MUTANT/"
-mutate_anchor 72-M01 "$(hw_lib_beside "$MUTANT")/next.sh" 'and false'
-rm -f "$MUTANT/hw.bak"
-chmod +x "$MUTANT/hw"
-out="$(W_TOKENS="$DONE_STUCK" W_STATUS=blocked "$MUTANT/hw" next wX:p1 --wait-ms 1000 --sdd none "next task" 2>&1 \
-  | sed 's/\x1b\[[0-9;]*m//g')" || true
-if [[ "$out" == *"hw unstick"* ]]; then
-  saw_mutant "M01 already-reported check on reason=stuck" "$out" "hw unstick"
-else
-  fail "M01 already-reported check on reason=stuck: mutant still suppressed hw unstick's own advice — the assertion above does not depend on this line: $out"
-fi
+# The one mutation arm this file ran (72-M01, `and false` on the already-reported check in lib/hw/next.sh, so a finished
+# reason=stuck pane is sent to hw unstick again) edited bash that go-060 S4 removed. Go holder: anchor 862-G10
+# (core/t4_next_gate.go, the done_state=delivered check); the assertions above ("task 2 dispatched", no `hw unstick`
+# advice for a reported pane) still run through the shim.

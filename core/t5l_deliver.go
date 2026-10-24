@@ -534,7 +534,7 @@ func (l *lch) deliverBrief(pane string) int {
 			l.codexUnproven(pane, "", c)
 			return 1
 		}
-		if paneVendor == "pi" {
+		if paneVendor == "pi" { // # MUTATION-ANCHOR: 986-G08
 			if l.piAdmit(pane, "a turn opened", nbytes, piBase) {
 				return 0
 			}

@@ -20,7 +20,9 @@ import (
 
 func (a *app) cmdDispatch() int {
 	if len(a.args) < 2 {
-		a.die("hw-core dispatch needs <project> <task>")
+		// bin/hw `[ $# -ge 2 ] || { _usage_short >&2; exit 64; }`: one word (or `-x`) is the usage, not a launch
+		fmt.Fprint(a.err, helpText("short-1"))
+		return 64
 	}
 	t5FillLaneFields(a.c.t, a.c.home)
 	d := &dsp{app: a}
@@ -42,7 +44,6 @@ func (d *dsp) run(argv []string) {
 			d.fsShared.flush()
 		}
 	}()
-	d.dispArgv = argv
 	// bin/hw "_need_val "$@"" / PROJ=… / TASK=…
 	d.proj = d.c.t.canonProject(argv[0])
 	d.task = argv[1]

@@ -6,9 +6,8 @@ package main
 // end. The files are the contract — `pending-ruling.<n>`, `ruling-delivered.<n>`,
 // `transcript.log` — and executor-turn-end and done-invoker read them.
 //
-// NOT PORTED HERE: resuming a task that reported --blocked (`_ruling_resume_blocked`).
-// That path sends through channel-send and the invoker library, which stay bash;
-// the verb hands it to bash whole (see resumeInBash).
+// Resuming a task that reported --blocked (`_ruling_resume_blocked`) is resumeBlocked: it sends through
+// channel-send, with the sender's route read the way `hw next` reads it.
 
 import (
 	"io"
@@ -17,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const t3RulingQueueCap = 5
@@ -467,7 +467,7 @@ loop:
 		t.die(why)
 	}
 	if st.verdict == "reported" && isFile(mkTaskDir(st.rundir)+"/blocked-waiting") {
-		return t.resumeInBash(pane, text, dry)
+		return t.resumeBlocked(pane, st.rundir, st.seq, text, dry)
 	}
 	if why := t3RulingRefusal(st.verdict, st.status, st.seq, pane); why != "" {
 		t.die(why)
@@ -505,25 +505,89 @@ loop:
 	return 0
 }
 
-// resumeInBash hands a ruling for a task that reported --blocked to the bash
-// implementation: it resumes the task through channel-send and the invoker
-// library, which are not ported. The text travels on argv after `--`, so nothing
-// the sender's shell could have mangled is mangled here.
-func (t *t3) resumeInBash(pane, text string, dry bool) int {
-	if t.fs.readonly { // shadow: bash is about to do exactly this, for real
+// resumeBlocked is _ruling_resume_blocked: RESUME A TASK THAT REPORTED BLOCKED, in the pane done-invoker kept for it.
+// The executor is idle — its turn ended with the report — so there is no turn end to queue for: the ruling is SENT now,
+// through the same route `hw next` uses. The task counter does not move: this is the same task, and its next
+// done-invoker reports it. ORDER: claim `blocked-waiting` and set `done` aside BEFORE the send, so the executor's own
+// done-invoker can never find the old marker; put both back if the send provably did not land.
+func (t *t3) resumeBlocked(pane, rundir, seq, text string, dry bool) int {
+	if t.fs.readonly { // a read-only run (HW_CORE_READONLY): the resume is a send, which nothing here performs
 		t.fs.rec(fsOp{Op: "delegated", Path: "ruling-resume"})
 		return 0
 	}
-	args := []string{"ruling", pane}
+	taskdir := mkTaskDir(rundir)
+	marker := taskdir + "/blocked-waiting"
 	if dry {
-		args = append(args, "--dry-run")
+		when := "?"
+		if n, err := strconv.ParseInt(blockedField(marker, "since"), 10, 64); err == nil {
+			when = time.Unix(n, 0).Format("02 Jan 15:04")
+		}
+		t.printf("  would RESUME %s: task %s reported BLOCKED and is waiting for a ruling (since %s); the ruling is sent to it now, the task reopens in the same session, and it reports again with its own done-invoker. Nothing is sent by this dry run\n",
+			pane, seq, when)
+		return 0
 	}
-	args = append(args, "--", text)
-	cmd := exec.Command(t.binDir()+"/hw", args...)
-	cmd.Env = append(os.Environ(), "HW_IMPL_RULING=bash")
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return exitStatus(err)
+	pid := strconv.Itoa(os.Getpid())
+	claim := taskdir + "/.blocked-waiting.resuming." + pid
+	if t.fs.rename(marker, claim) != nil {
+		t.die(pane + "'s blocked task " + seq + " stopped waiting while this ruling was being sent — it was resumed or closed by someone else. Nothing was sent.")
 	}
+	doneClaim := taskdir + "/.done.resuming." + pid
+	if t.fs.rename(taskdir+"/done", doneClaim) != nil {
+		t.fs.rename(claim, marker)
+		t.die("could not reopen task " + seq + " of " + t3Base(rundir) + " (its done marker would not move). Nothing was sent; it is still blocked-waiting.")
+	}
+	since := blockedField(claim, "since")
+
+	if !brReadable(t.binDir() + "/invoker-common.sh") { // _next_load_invoker_lib: the lib is sourced in bash; here only its presence is the contract
+		t.die("cannot find invoker-common.sh beside " + t.binDir() + " — this brain/bin is incomplete")
+	}
+	vendor, session, endpoint := t.nextResolveSender(pane)
+	route, target, ep := "herdr", pane, "-"
+	if nextVendorNative(vendor) && session != "" && endpoint != "" {
+		route, target, ep = vendor, session, endpoint
+	}
+	msg := "RULING FROM YOUR BRAINER, answering your --blocked report on task " + seq + ". It RESUMES THE SAME TASK in this session: keep what you have, act on the ruling — and if it contradicts what you already did, say so rather than quietly redoing it — then report again with done-invoker (no --retask: the task counter did not move).\n\n" + text
+	var args []string
+	if route == "opencode" {
+		args = []string{"--require", "processed", "--id", t3Base(rundir) + ":t" + seq + ":resume", route, target, ep, msg}
+	} else {
+		args = []string{route, target, ep, msg}
+	}
+	cmd := exec.Command(t.binDir()+"/channel-send", args...)
+	cmd.Stderr = t.err
+	sendRC := exitStatus(cmd.Run()) // stdout to /dev/null, as bash sends it
+	// 4 on a native route and 5 anywhere mean the message is, or may be, in the receiver: putting `done` back would
+	// refuse the report it is about to make.
+	switch sendRC {
+	case 4:
+		if route == "herdr" {
+			sendRC = 1
+		}
+	case 5:
+		t.warn("delivery to " + pane + " is UNCERTAIN (channel-send exit 5): the ruling may already be in its session, so the task is treated as resumed. Read the pane before sending anything again: herdr agent read " + pane + " --source recent-unwrapped")
+	}
+	switch sendRC {
+	case 0, 4, 5:
+	default:
+		t.fs.rename(doneClaim, taskdir+"/done")
+		t.fs.rename(claim, marker)
+		t.die("delivery to " + pane + " failed via " + route + " (exit " + itoa(sendRC) + "). Nothing changed: task " + seq + " is still blocked-waiting and its pane is untouched. Fix the transport and retry.")
+	}
+	if since == "" {
+		since = "?"
+	}
+	t.fs.appendTo(taskdir+"/blocked-resumed", []byte(strconv.FormatInt(time.Now().Unix(), 10)+" "+since+"\n"), 0o666)
+	// The task is open again: turns after the NEXT report are counted from zero, not on top of whatever happened while it waited.
+	t.fs.remove(rundir + "/turns-post-report")
+	t.fs.remove(claim)
+	t.fs.remove(doneClaim)
+	t.transcriptAppend(rundir, "RULING-RESUMED", "ruling:resume task="+seq, text)
+	t.ok(pane + " RESUMED: task " + seq + " had reported BLOCKED and was waiting; the ruling was sent via " + route + " and the task is open again in the same session. It reports again with its own done-invoker.")
 	return 0
+}
+
+// t3Base is basename(1) of a path.
+func t3Base(p string) string {
+	p = strings.TrimRight(p, "/")
+	return p[strings.LastIndexByte(p, '/')+1:]
 }

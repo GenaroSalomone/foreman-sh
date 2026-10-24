@@ -355,12 +355,15 @@ set -e
 brain_archive_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/brain-archive:" || true)"
 hw_count="$(printf '%s\n' "$bin_lint_out" | grep -cE "^$ROOT/(bin/hw|lib/hw/[a-z]+\.sh):" || true)"
 reconcile_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/hw-reconcile:" || true)"
-# THIS NUMBER IS A RATCHET AND IT ONLY GOES DOWN. hw went 10 -> 9 on 2026-09-07:
+# THIS NUMBER IS A RATCHET AND IT ONLY GOES DOWN. go-060 S4 (hw is a shim to hw-core; bin/hw's bash and
+# lib/hw/{status,done,next,reap,briefs,ledger,explorer}.sh are gone): hw went 9 -> 1, the one left being the shim's own
+# `shift 2` in the `outbox flush` route (bin/hw:79). The other eight were the bash bodies' and left with them.
+# hw went 10 -> 9 on 2026-09-07:
 # `_wt_disposition`'s second `n="$(git -C "$wt" status --porcelain 2>/dev/null
 # | wc -l …)"` was one of the accepted debts, and the fix that made a FAILED
 # `git status` produce `undetermined` instead of `safe` removed the whole
 # re-read. Paying a debt down must not read as a regression; ADDING one must.
-[ "$brain_archive_count:$hw_count:$reconcile_count" = "1:9:11" ] \
+[ "$brain_archive_count:$hw_count:$reconcile_count" = "1:1:11" ] \
   || fail "lint-shell: full-bin finding distribution changed (brain-archive:hw:hw-reconcile=$brain_archive_count:$hw_count:$reconcile_count)"
 # THE SUMMARY LINE IS NOT A FINDING, and hashing it made this ratchet fire on
 # things that are not findings. `lint-shell` now ends with "N finding(s) in M
@@ -385,8 +388,11 @@ actual_hash="$(printf '%s\n' "$normalized" | shasum -a 256 | cut -d ' ' -f1)"
 #   lint-shell's summary line gaining "in M file(s) read"; with that line now
 #   excluded above, the old and new normalized texts hash identically. The hash
 #   below moved only because the exclusion changed what is hashed.
+#   go-060 S4: 21 -> 13 findings (hw 9 -> 1: only the shim's `shift 2` remains; brain-archive 1 and hw-reconcile 11
+#   unchanged). The old set minus the eight bash-body findings is the new set; the scan of the pre-change tree
+#   reproduces fd2bbf67… with this very pipeline, so the move of the hash is the removed bash and nothing else.
 #   2026-10-18: `sort` became `LC_ALL=C sort` — Linux sorted the same 21 findings in another order and hashed
 #   d4273575…; the set did not change, only the collation that orders it. 14cb75e5… was macOS UTF-8 order.
-[ "$actual_hash" = fd2bbf67f2384d8c1fb7663cff0444eda4fca69f73c7b423548088c22b257480 ] \
+[ "$actual_hash" = 09d84dd2c12f09ca548a7be2b9a24a08a3efef0e9a3881ab0df818e720d96c9c ] \
   || fail "lint-shell: full-bin semantic finding set changed (sha256=$actual_hash) and needs fresh triage: $bin_lint_out"
-pass "lint-shell: full bin/* scan is automatic and its 21 active-errexit consumer findings are exact, not an untriaged dump"
+pass "lint-shell: full bin/* scan is automatic and its 13 active-errexit consumer findings are exact, not an untriaged dump"

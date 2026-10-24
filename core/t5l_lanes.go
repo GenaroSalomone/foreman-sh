@@ -8,14 +8,12 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 type llnState struct {
-	argv        []string        // the dispatch's argv, for handBackToBash (set where launch() has it)
 	portRemoved map[string]bool // read-only: lock directories a stale-lock reap "removed"
 }
 
@@ -92,27 +90,15 @@ func (l *lch) buildLane() {
 			return
 		}
 	}
-	l.handBackToBash(l.argv) // a hook someone wrote: it is bash's to source
+	l.refuseForeignHook(hook) // a hook someone wrote: hw no longer has the bash to source it into
 }
 
-// handBackToBash runs `<HW_CORE_BIN_DIR>/hw <argv>` with HW_IMPL=bash (and no per-verb switch), output and stdin
-// passed through, and ends with its status. Read-only, it ends at once with nothing printed.
-func (l *lch) handBackToBash(argv []string) {
-	if l.readonly {
-		panic(exitNow{0})
-	}
-	cmd := exec.Command(l.env("HW_CORE_BIN_DIR")+"/hw", argv...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, l.out, l.err
-	for _, kv := range l.environ() {
-		if !strings.HasPrefix(kv, "HW_IMPL=") && !strings.HasPrefix(kv, "HW_IMPL_") {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
-	cmd.Env = append(cmd.Env, "HW_IMPL=bash")
-	if err := cmd.Run(); err != nil {
-		panic(exitNow{exitStatus(err)})
-	}
-	panic(exitNow{0})
+// refuseForeignHook ends the dispatch for a build hook that is not one of the builders under lanes/. hw used to source such
+// a file into its own bash, at top level, with every variable and function hw had set (`step`, `ok`, `die`, `_agent_step`, …);
+// that bash was removed in 0.6.0 and nothing in Go can source into it, so the hook cannot run, and half of its contract
+// (a child process with no hw functions) would fail later and louder. Nothing was created.
+func (l *lch) refuseForeignHook(hook string) {
+	l.die(l.proj + " builds through " + hook + " (its `build` in projects.json), which is not one of hw's own builders under lanes/. hw used to source such a file into its own bash, and that bash was removed in 0.6.0: a builder is Go now. Nothing was created. Dispatch with --worktree none for a plain work directory.")
 }
 
 // ── what the plain lanes (setup, git-worktree) repeat ──

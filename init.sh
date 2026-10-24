@@ -327,7 +327,7 @@ else
   say "permissions: $PERMISSIONS ($PERMISSIONS_SRC) — change with: hw --permissions ask|skip"
   if [ "$before" = "$after" ]; then ok "brain $BRAIN and lane $LANE → $REPO were already in place: nothing changed"   # MUTATION-ANCHOR: 824-M03
   else chg "brain $BRAIN, lane $LANE → $REPO (links in $BIN)"; fi
-  # install.sh's own NOTE lines are the only place it says hw runs in bash (no Go, Go older than 1.22, --no-core):
+  # install.sh's own NOTE lines are the only place it says hw-core is not built (FOREMAN_SH_NO_CORE=1, the suite's seam; no Go refuses before this):
   # init keeps its log to itself, so without this the person never learns which half of hw they got (measured 2026-10-13)
   strip_ansi < "$LOG" | sed -n 's/^  NOTE  //p' | while IFS= read -r _note; do say "NOTE  $_note"; done   # MUTATION-ANCHOR: 824-M08
 fi

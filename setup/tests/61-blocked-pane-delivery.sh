@@ -93,23 +93,12 @@ case "$out" in
   *) fail "C02 awaiting-human refusal omitted the reason or remedy: $out" ;;
 esac
 
-# ── mutation arm: disconnect the plain-message witness check ────────────────
-M1="$TMP/m1"; mkdir -p "$M1"; cp "$BIN"/* "$M1/" 2>/dev/null || true
-python3 - "$M1/channel-send" <<'PY'
-import sys
-p = sys.argv[1]; s = open(p).read()
-old = '        else\n          # A PLAIN MESSAGE'
-new = '        elif false; then\n          # A PLAIN MESSAGE'
-assert s.count(old) == 1
-open(p, "w").write(s.replace(old, new))
-PY
-chmod +x "$M1/channel-send"; pin_bash "$M1/channel-send"  # a mutant of the bash source runs on bash whatever HW_IMPL the suite runs under
-: > "$LOG"; : > "$SENT"; : > "$TMP/witness-count"
-PATH="$STUB:$PATH" HW_INVOKER_WAIT_MS=300 MSG_HUMAN=0 MSG_WITNESS=static \
-  WITNESS_SAMPLES=2 WITNESS_INTERVAL_S=0 WITNESS_COUNT_FILE="$TMP/witness-count" \
-  "$M1/channel-send" --allow-turn-ended herdr wT:p1 - "a plain message" >/dev/null 2>&1 || true
-[ ! -s "$SENT" ] || fail "M01 SURVIVED: disabled plain-message witness check still reached pane input"
-pass "mutant killed: M01 removes the plain-message blocked-pane fallback"
+# ── the mutant of the bash went with it ────────────────────────────────────
+# THE ONE BASH MUTANT WENT WITH THE BASH (go-060 S5: bin/channel-send is a shim). It rewrote the `else` of the blocked-pane fallback into
+# `elif false` with a python edit (no anchor id), so a plain message never reached raw pane input. In Go that branch is the `default:` of
+# the agent_blocked switch in core/channel_send_herdr.go; disabling `if qn == "0" && pn == "0"` there turns
+# TestChannelSendBlockedPlainMessageEndpointSaysClear (core/channel_send_test.go) red (measured 2026-10-24, go-060 S5), and C01 here
+# asserts the same delivery through the shim. It carries no `<n>-G<nn>` anchor of setup/tests/1016.
 
-printf 'mapping - C01↔M01 no-human fallback; C02 awaiting-human refusal (shares M09-style witness wiring with 42-held-ruling-delivery.sh)\n'
-printf 'coverage - 2 behavior claims, 1 dedicated delivery mutant killed\n'
+printf 'mapping - C01 no-human fallback; C02 awaiting-human refusal (shares the witness wiring with 42-held-ruling-delivery.sh)\n'
+printf 'coverage - 61: 2 behavior claims, 0 mutants (the 1 bash mutant is retired; the Go test TestChannelSendBlockedPlainMessageEndpointSaysClear goes red on its Go equivalent)\n'

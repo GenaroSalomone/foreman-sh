@@ -4,6 +4,7 @@
 # waiting for a ruling instead of closing (590); every case here is a success.
 
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+need_invokers   # this subject runs the invokers from a copy of bin/, which has no core/dist beside it: they are Go (go-060 S2)
 
 make_case() {
   local name="$1" dir
@@ -218,39 +219,9 @@ run_summary_case whitespace-summary $' \t\n '
 [ ! -e "$TMP/whitespace-summary/events" ] || fail "done summary: whitespace-only string reached delivery or close"
 pass "done summary: whitespace-only text is not substantive"
 
-# Mutation: remove the content barrier. The old behavior must become visible as
-# a delivery and done marker, proving this test is not satisfied by another
-# precondition in the harness.
-make_case empty-mutant
-python3 - "$TMP/empty-mutant/bin/done-invoker" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read()
-old='  case "$SUMMARY" in\n    *[![:space:]]*) ;;\n    *) die "summary is empty. A completion report needs a substantive one-paragraph pointer to what was established and its engram ids; zero artifacts is valid, an empty summary is not. NOTHING was sent or marked." ;;\n  esac\n'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,''))
-PY
-chmod +x "$TMP/empty-mutant/bin/done-invoker"
-run_summary_case empty-mutant ""
-[ "$CASE_RC" = 0 ] || fail "done summary mutant: removing the barrier did not reproduce old acceptance"
-wait_close empty-mutant
-[ "$(cat "$TMP/empty-mutant/events")" = $'deliver\nclose done setup task\nartifacts '"$TMP"$'/empty-mutant/artifacts\nmarker-present\ninvoker-gone' ] \
-  || fail "done summary mutant: empty report did not traverse delivery and accounting"
-pass "mutant killed: removing the non-empty summary barrier restores the hollow done report"
-
-# Mutation: disconnect done-invoker from the task state proof. The ordinary
-# success stub above now models the blocked route's minimum authority and must
-# refuse before the marker is written.
-make_case report-proof-mutant
-python3 - "$TMP/report-proof-mutant/bin/done-invoker" <<'PY'
-import sys
-p=sys.argv[1]; s=open(p).read()
-old='if invoker_deliver "$MSG" "$STATE_DIR"; then'
-new='if invoker_deliver "$MSG"; then'
-assert s.count(old) == 1
-open(p,"w").write(s.replace(old,new))
-PY
-chmod +x "$TMP/report-proof-mutant/bin/done-invoker"
-run_case report-proof-mutant
-[ "$CASE_RC" != 0 ] || fail "M11 SURVIVED: done-invoker reported without passing its task state proof"
-[ ! -e "$TMP/report-proof-mutant/work/.hw/run/done" ] || fail "M11 SURVIVED: proofless report wrote the done marker"
-pass "mutant killed: M11 disconnects done-invoker from the dispatch-bound report proof"
+# Two bash mutants stood here, both inline edits of a copy of bin/done-invoker's bash (go-060 S5 deleted it): removing the non-empty summary
+# barrier (an empty report traversing delivery and accounting) and M11, disconnecting done-invoker from the dispatch-bound report proof
+# (invoker_deliver without the state dir). The Go holds both with goldens, not mutants: testdata/golden/done-invoker/empty_summary.json
+# (TestDiffDone/empty_summary: refusal, no delivery, no marker) and delivered_closes.json (the channel-send stub's argv in the disk tree
+# carries `--report --report-state <run dir>`); the two refusals and the "carries its dispatch-bound unreported task state to
+# channel-send" claim above are the same assertions, driven on the shim and the binary.

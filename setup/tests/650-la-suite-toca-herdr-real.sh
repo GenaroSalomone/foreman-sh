@@ -25,9 +25,11 @@
 #
 # Without herdr the subject skips with the reason; it never passes.
 #
-# HW650_HW: run against another bin/hw. The mutation arm at the end re-runs this
-# file with a copy whose `hw done` cannot close the tab, and must see it red.
+# HW650_HW: run against another bin/hw. (The mutation arm that re-ran this file against a copy of bin/hw that recorded the
+# pre-layout tab id is gone with the bash body; hw-core's twin is the anchor 847-B1-16, which reads the new tab id from the
+# layout.apply reply, run by contract-hw.)
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+need_invokers   # this subject runs done-invoker/ask-invoker, which are Go since go-060 S2 and have no core/dist beside a copy of bin/
 
 # _common.sh put herdr and herdr-rpc stubs first on PATH. This subject is the
 # one that must reach the real ones.
@@ -308,18 +310,3 @@ case "$(ps -p "$_srv" -o command= 2>/dev/null)" in
   *herdr*"$SESSION"*) fail "650 the private herdr server ($_srv) survived its teardown" ;;
 esac
 pass "650 teardown left no workspace, session or server behind"
-
-# ── the mutant: hw records the tab id it asked for, not the one it got ───────
-# layout.apply REPLACES the tab it is given and answers with a new id (bin/hw,
-# _build_space). Record the pre-layout id and `hw done` closes a tab that is
-# already gone, calls it "nothing to close, not a failure", and leaves the
-# executor's real tab running. Every stubbed subject writes its receipt by hand
-# and never parses a layout.apply reply, so only a live herdr shows this.
-[ -z "${HW650_HW:-}" ] || exit 0
-mut="$(mktemp "${TMPDIR:-/tmp}/hw650-mutant.XXXXXX")"
-cp "$ROOT/bin/hw" "$mut"
-mutate_anchor 650-M01 "$mut" 'live_tab=""'
-cmp -s "$ROOT/bin/hw" "$mut" && { rm -f "$mut"; fail "650 M01 the mutant did not change bin/hw"; }
-mout="$(HW650_HW="$mut" bash "$0" 2>&1)" && { rm -f "$mut"; fail "650 M01 SURVIVED: a run that recorded the pre-layout tab passed: $mout"; }
-rm -f "$mut"
-saw_mutant "650 M01 hw done closes the pre-layout tab and leaves the live one open" "$mout" "NOTHING TO CLOSE: tab"

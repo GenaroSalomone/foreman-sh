@@ -68,7 +68,6 @@ func (d *dsp) routeForecastCheck(proj, task, routeNow, detailNow string) {
 // launch is everything after the manifest on the fresh route. `d.run` calls it when the dispatch is not a dry run.
 func (d *dsp) launch() {
 	l := &lch{dsp: d}
-	l.argv = d.dispArgv
 	l.fs = d.sharedFs()
 	l.label = d.proj + ":" + d.task
 	l.branch = d.c.lanePath(d.proj, "branch", d.task)

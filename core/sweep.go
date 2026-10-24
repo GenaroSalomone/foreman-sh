@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -35,7 +36,7 @@ func (a *app) hwRunDirs(every bool) []string {
 			}
 		}
 	}
-	out := found
+	out := fdSortedOrder(found)
 	for _, r := range roots {
 		paths, _ := filepath.Glob(escapeGlob(r) + "/*/.hw/2*")
 		paths = sortLocale(paths, false) // a shell glob is in the locale's order, a Go one in bytes
@@ -46,6 +47,23 @@ func (a *app) hwRunDirs(every bool) []string {
 		}
 	}
 	return out
+}
+
+// fdSortedOrder puts what fd printed in the order fd prints it when its walk is quick: it holds results for ~100 ms and sorts them by
+// path, component by component, and a walk that takes longer (a loaded machine, a cold cache) streams them in thread order instead.
+// Taking the order here makes the list the same either way (870 tty-sw-dry, Linux full suite, 0600b run 4).
+func fdSortedOrder(paths []string) []string {
+	sorted := append([]string(nil), paths...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := strings.Split(strings.TrimSuffix(sorted[i], "/"), "/"), strings.Split(strings.TrimSuffix(sorted[j], "/"), "/")
+		for k := 0; k < len(a) && k < len(b); k++ {
+			if a[k] != b[k] {
+				return a[k] < b[k]
+			}
+		}
+		return len(a) < len(b)
+	})
+	return sorted
 }
 
 // escapeGlob quotes the characters filepath.Glob would read as a pattern, so a root is taken literally.

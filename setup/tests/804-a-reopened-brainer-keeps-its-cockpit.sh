@@ -59,7 +59,7 @@ run() {  # <label> <env assignments...> -- <brain args...>
   while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
   shift || true
   : > "$TMP/calls-$label"; rm -f "$TMP/writer-$label"
-  env -i PATH="$TMP/stub:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP/home" TMPDIR="$TMP" \
+  env -i HW_CORE="$HW_CORE" PATH="$TMP/stub:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP/home" TMPDIR="$TMP" \
       STUB_SPACE="$SPACE" STUB_CALLS="$TMP/calls-$label" STUB_STATE="$TMP/state" STUB_WRITER="$TMP/writer-$label" \
       "${envs[@]+"${envs[@]}"}" "$BH/bin/brain" setup "$@" > "$TMP/out-$label" 2>&1 || true
   settle "$label"
@@ -106,21 +106,9 @@ run off2 -- --reset --no-cockpit
 [ ! -e "$TMP/writer-off2" ] || fail "804: --no-cockpit still started the writer loop: $(cat "$TMP/writer-off2")"
 pass "804: FOREMAN_COCKPIT=0 and --no-cockpit start no writer; the default does"
 
-mut() {  # <name> <from> <to>
-  cp "$ROOT/bin/brain" "$TMP/mut-brain"
-  python3 -I - "$TMP/mut-brain" "$2" "$3" <<'PY' || fail "804: the mutant '$1' targets text that is not in bin/brain"
-import sys
-p, a, b = sys.argv[1:4]
-s = open(p).read()
-if a not in s: sys.exit(1)
-open(p, "w").write(s.replace(a, b, 1))
-PY
-  chmod +x "$TMP/mut-brain"
-  ( BRAIN_SOURCE="$TMP/mut-brain" bash "$0" --as-mutant ) >"$TMP/mut.out" 2>&1 && fail "804: mutant '$1' survived"
-  return 0
-}
-if [ "${1:-}" != --as-mutant ] && [ -z "${BRAIN_SOURCE:-}" ]; then
-  mut "reset/revive do not export the work root" 'herdr pane run "$pane" "export HW_COCKPIT_WORK=' 'herdr pane list "$pane" "export HW_COCKPIT_WORK='
-  mut "the writer ignores the opt-out" '[ "$NO_COCKPIT" = 0 ] && [ "${FOREMAN_COCKPIT:-1}" != 0 ] || return 0' ':'
-  pass "804: 2 mutants of bin/brain, each killed"
-fi
+# Mutants of bin/brain: the two bash mutants of this subject edited bin/brain's bash, which is gone (go-060 S5: bin/brain is a shim over
+# hw-core), and the assertions above are their survival controls. Their Go twins are anchored on the Go source and killed in process by
+# core/brain_mutants_test.go (rows of setup/tests/contract-hw/mutants-brain-go-launch, judged by TestBrain804*):
+#   reset/revive do not export the work root   go-804-M01  core/brain_launch.go
+#   the writer ignores the opt-out             go-804-M02  core/brain_helpers.go
+printf 'coverage - 804: 0 mutants (the 2 bash mutants are retired; go-804-M01 and go-804-M02 hold them in Go)\n'

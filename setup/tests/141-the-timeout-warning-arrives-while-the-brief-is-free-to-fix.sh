@@ -100,30 +100,6 @@ case "$out" in
   *) fail "dispatch: only the first pinned command was checked, so a second full-suite line reaches the close unannounced: $out" ;;
 esac
 
-# ── 4. THE DETECTOR IS ONE FUNCTION, asked at both moments ────────────────
-# Structural, and it is the point of the change rather than an implementation
-# detail: the close-side question and the dispatch-side question must not drift
-# into two different answers. 118 drives the close side of the same function.
-grep -q '^_verify_names_full_suite() {' "$ROOT/bin/hw" \
-  || fail "shape: _verify_names_full_suite is gone — the two moments are answering the question separately again"
-pass "shape: one detector answers it, at dispatch and at close"
-n="$(cat "$ROOT/bin/hw" "$ROOT/lib/hw/done.sh" | grep -c '_verify_names_full_suite' || true)"
-[ "${n:-0}" -ge 3 ] \
-  || fail "shape: _verify_names_full_suite appears $n times in bin/hw — its definition plus BOTH call sites should be there"
-pass "shape: it is called from both sites, not defined and used once"
-
-# ── 5. MUTATION: put the answer back where only the close can hear it ──────
-# Disable the dispatch-side call and nothing else. The close keeps warning —
-# which is exactly the shape that reads as "hw already tells you" while
-# costing 900 seconds every time.
-mkdir -p "$TMP/mut/bin"
-cp "$ROOT/bin/"* "$TMP/mut/bin/" 2>/dev/null || true
-mutate_anchor 141-M01 "$TMP/mut/bin/hw" ': "$_vc"  # M01: the dispatch no longer asks'
-chmod +x "$TMP/mut/bin/hw"
-mut_out="$("$TMP/mut/bin/hw" setup probe-full --brief "$FULL" --sdd none --no-report --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
-case "$mut_out" in
-  *"WILL TIME OUT AT CLOSE"*) fail "M01 SURVIVED: the dispatch still warned with its own check disabled" ;;
-esac
-# The mutant must still have DISPATCHED — otherwise the missing warning proves
-# only that hw died early, which is the vacuous kill this suite refuses.
-saw_mutant "M01 the dispatch-side check removed" "$mut_out" "verify      bash setup/test-hw"
+# (go-060 S4: the structural check that ONE bash function answered at both moments, and mutant M01 that disabled the dispatch-side
+# call in a copy of bin/hw, went with the bash body. The dispatch-side claim is held by Go anchor 844-141-M01 in core/t5_manifest.go;
+# the close side keeps its own detector, doneNamesFullSuite, so the two moments are no longer one function.)

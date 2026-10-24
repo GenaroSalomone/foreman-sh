@@ -194,8 +194,9 @@ make_harness prefix
 mutate_anchor 145-M01a "$HARNESS" 'printf "PREFIX-NO-HERDR-SWEEP\n" >&2; for _v in ; do'
 mutate_anchor 145-M01b "$HARNESS" ': # socket left where the caller pointed it'
 drive "$HARNESS" control
+# hw-core writes its requests as compact JSON (`"pane_id":"…"`); herdr-rpc, which this file once met, spaced them
 case "$DRIVE_LOG" in
-  *'"pane_id": "'"$LIVE_PANE"'"'*) : ;;
+  *'"pane_id":"'"$LIVE_PANE"'"'*) : ;;
   *) fail "C01 the control did not reproduce: a harness with no HERDR sweep sent nothing to the recorder, so the absence asserted below proves nothing — log: $(printf '%s' "$DRIVE_LOG" | head -2 | tr '\n' ' ')" ;;
 esac
 case "$DRIVE_LOG" in
@@ -265,7 +266,7 @@ claim "C04 \$HERDR_SOCKET_PATH is re-pointed at a path inside this run's TMP tha
 # is C01's control, re-asserted here so mutation-coverage counts the arm.
 drive "$TMP/harness-prefix/setup/tests/_common.sh" m01
 saw_mutant "M01 reverts both cuts and the fixture run id lands on a live pane again" \
-  "$DRIVE_LOG" "\"pane_id\": \"$LIVE_PANE\"" 'pane.report_metadata'
+  "$DRIVE_LOG" "\"pane_id\":\"$LIVE_PANE\"" 'pane.report_metadata'
 
 # M02 — only the identity sweep reverted; the address cut stays. The recorder
 # stays silent either way, so this arm is killed by the SURVIVING IDENTITY, which

@@ -1,8 +1,8 @@
 package main
 
 // hw-sandbox as a verb of hw-core: a port of bin/hw-sandbox — same stdout, stderr, exit status and on-disk effects. The bash stays
-// beside it as the rollback: bin/wrapper-go.sh (sourced by bin/hw-sandbox) execs `hw-core hw-sandbox "$@"` when HW_IMPL_HW_SANDBOX
-// (else HW_IMPL, else the switch file) says `go`. THE DEFAULT IS BASH.
+// beside it as the rollback: bin/wrapper-go.sh (sourced by bin/hw-sandbox) execs `hw-core hw-sandbox "$@"` unless HW_IMPL_HW_SANDBOX
+// (else the switch file's `hw-sandbox=` line) says `bash`. THE DEFAULT IS GO.
 //
 // The shim hands over HW_WRAPPER_ARGV0 (the bash's own $0). The bash finds the invokers it runs, and the file `arm` writes into the
 // launch shim, from where it lives; the Go does the same from that path.

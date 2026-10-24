@@ -26,9 +26,9 @@ lines for your shell profile: add them and open a new terminal.
   `herdr integration install claude`
 - [Claude Code](https://claude.com/claude-code), with its first run finished (below)
 - recommended: `engram` (memory, see [Memory](#memory-engram-is-recommended)); optional: `fzf` (the picker behind a bare `hw`)
-- optional: [Go](https://go.dev/dl) 1.22 or newer, which lets the installer build `hw-core`, the Go binary
+- [Go](https://go.dev/dl) 1.22 or newer, which the installer uses to build `hw-core`, the Go binary
   that runs `hw`, `brain`, `channel-send` and the invokers (see [The Go core and the way back](#the-go-core-and-the-way-back));
-  without it they run their bash implementation, and `--check` does not list Go as missing
+  without it the installer refuses before writing anything, and `--check` lists Go as missing
 - optional: the Bitwarden CLI (`npm i -g @bitwarden/cli`), only for a brief that declares `secrets:`
   (see [Secrets](#secrets-bitwarden))
 - for an OpenCode lane: [OpenCode](https://opencode.ai) 1.18.31 or newer, and herdr's OpenCode
@@ -188,7 +188,7 @@ for you), builds `~/brain` with a `demo` lane over a toy repository at `~/code/t
 (`--lane NAME --repo PATH` for your own), copies a sample brief to
 `~/brain/demo/briefs/hello.md` and ends with `hw demo hello … --dry-run`. Claude
 Code's first run and your PATH stay yours: `init` names them. Without a Go toolchain
-(1.22 or newer) it says in one `NOTE` line that the tools run their bash implementation. A second run changes
+(1.22 or newer) the install it runs refuses before writing anything, naming https://go.dev/dl. A second run changes
 nothing and says so. `--brain DIR` and `--bin-dir DIR` move what it writes.
 
 ## The command
@@ -422,8 +422,8 @@ skills. A re-task with `hw next` cannot add plugins to a live executor.
 | Where | What |
 |---|---|
 | `~/brain/bin`, `lib/hw`, `layouts`, `lanes/git-worktree.sh`, `setup/guards`, `cockpit` | the mechanism, copied from this checkout; refreshed on every run. `bin/hw` loads its modules from `lib/hw` (`reap`, `status`, `done`, `next`, `ledger`) and stops naming one that is missing |
-| `~/brain/core/dist/<os>-<arch>/hw-core` | only with Go 1.22 or newer on PATH and without `--no-core`: the Go binary that runs `hw`, `brain`, `channel-send` and the invokers, built from this checkout (see [The Go core and the way back](#the-go-core-and-the-way-back)) |
-| `~/.config/hw/impl` | only with `--no-core`, and only when the file does not exist: `default=bash`. Go needs no file (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured) |
+| `~/brain/core/dist/<os>-<arch>/hw-core` | the Go binary that runs `hw`, `brain`, `channel-send` and the invokers, built from this checkout with Go 1.22 or newer (required: without it the installer refuses; see [The Go core and the way back](#the-go-core-and-the-way-back)) |
+| `~/.config/hw/impl` | never written: Go needs no file (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured). An install that builds a core removes the byte-identical `default=bash` file an older `--no-core` install wrote; any other file is left as it is (a `bash` line in it is said once at run time, below) |
 | `~/brain/projects.json`, `guards.json` | your lanes and what the guards protect; created, then only added to |
 | `~/brain/<lane>/` | `CLAUDE.md`, `decisions.md`, `briefs/`, and `.claude/` with the read-only guard |
 | `~/brain/<lane>/.opencode-executor/` | an OpenCode lane only: the executor's guard plugin and its policy |
@@ -443,54 +443,51 @@ installer did not make, it refuses and names it before writing anything.
 
 ## The Go core and the way back
 
-From 0.5.0 `hw`, `brain`, `channel-send`, `ask-invoker` and `done-invoker` run in
-Go by default: `hw-core` is a Go binary (built with `invokers`, its twin for the
-two invokers), and with no `HW_IMPL` set and no switch file each of those commands
-hands its work to it. The bash implementation of each
-stays in 0.5.x as the way back, and 0.6.0 removes it. Both give the same
-answers; speed differs by verb (measured on one machine: `hw worktrees` about
-0.5 s in Go against 1.6 s in bash, `hw help` about 0.14 s against 0.07 s).
-`--agent pi` dispatches run in Go too. macOS and Linux only.
+`hw`, `brain`, `channel-send`, `ask-invoker` and `done-invoker` run in Go, with no
+switch: `hw-core` is a Go binary (built with `invokers`, its twin for the two
+invokers), and each of those commands hands its work to it. 0.5.0 made Go the default and
+kept bash one line away; 0.6.0 removed that bash. `hw-core` is required: the installer
+builds it and refuses without Go, and a command with no `hw-core` stops, naming
+`setup/build-core --native`. `--agent pi` dispatches run in Go too. macOS and Linux only.
 
 - **What is built.** When a Go toolchain 1.22 or newer is on PATH, the installer
   builds `hw-core` with `setup/build-core --native` into
   `~/brain/core/dist/<os>-<arch>/hw-core`, where the tools look for it. The build
   is reproducible (the same bytes every run), so a second run writes nothing. No
   switch file is written: Go is the default and needs none.
-- **The way back to bash.** `HW_IMPL=bash` puts every one of them on bash for that
-  command or shell; `HW_IMPL_<TOOL>=bash` (`HW_IMPL_BRAIN`, `HW_IMPL_CHANNEL_SEND`,
-  `HW_IMPL_ASK_INVOKER`, …) one tool. To make it permanent, put `default=bash` in
-  `~/.config/hw/impl` (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured), or
-  `<tool>=bash` to keep just one tool there. A `hw-core` that is missing, or older
-  than the sources in `core/`, never kills a tool: the bash answers and one line
-  says why.
-- **Without Go.** With no Go on PATH, or one older than 1.22, or with `--no-core`
-  (or `FOREMAN_SH_NO_CORE=1`), nothing is built and the installer exits 0; all but
-  the environment variable print one `NOTE` line. A `go` that does not answer `go version`
-  counts as unreadable, with its own `NOTE`. A `hw-core` an earlier install left is
-  removed, and the tools run their bash implementation: same answers. `--no-core`
-  also writes `default=bash` to the switch file when there is none, and a later
-  install that builds a core removes exactly that file. `--check` never lists Go as
-  missing. Install Go and run the installer again to move to Go.
-- **Which one runs.** For one tool, the first of these that says something wins:
-  `HW_IMPL_<TOOL>`, `HW_IMPL`, the switch file's `<tool>=<mode>` line, its default
-  line (`default=<mode>` or a bare word), and then `go`. `HW_IMPL` takes `bash`,
-  `go` or `shadow`; any other value in the environment stops the command (in the
-  switch file it warns and runs bash). `shadow` runs both for `hw`, prints bash's
-  answer and logs every difference to `~/.local/state/hw/shadow.jsonl`
-  (`hw shadow --help`): a diagnostic for whoever reports a difference, not a mode
-  to live in. `brain`, `channel-send` and the invokers have no shadow (they act, and
-  a second run would be a second effect): there it means bash.
-- **Still bash unless you ask for Go.** Eight small tools keep their bash as the
-  default in 0.5.0 and run in Go only when `HW_IMPL_<TOOL>=go` (or `HW_IMPL=go`, or
-  a `<tool>=go` line of the switch file) says so: the Stop hook
-  (`bin/hw-stop-hook.sh`, `HW_IMPL_STOP_HOOK`), `hw secret` (`HW_IMPL_HW_SECRET`) and six
+- **The way back is 0.5.x.** There is no bash left to switch to for these five:
+  `foreman-sh upgrade --to 0.5.0 --brain <brain>` installs the release that has it.
+  A `HW_IMPL=bash` in a shell profile, or a `default=bash` or bare `bash` line in
+  `~/.config/hw/impl` (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured), is said once per
+  state ("bash was removed in 0.6.0; running Go — delete this line") and Go runs: it never
+  stops a command, because a hook calls `hw` every turn. A `hw-core` that is missing stops the
+  tool, naming `setup/build-core --native`. One older than the sources in `core/`
+  (a checkout you pulled) is rebuilt with `setup/build-core --native` the first time
+  a tool meets it, when Go is on PATH, and the fresh one runs; with no Go, or a
+  build that fails, the old one runs and one line says so, once per state of the
+  binary (a failed build is not tried again until the sources change).
+- **Without Go.** With no Go on PATH, or one older than 1.22, or a `go` that does not
+  answer `go version` (unreadable), the installer refuses, exit 1, **before writing
+  anything**, and names https://go.dev/dl; `--check` lists Go among the missing
+  prerequisites and writes nothing. `--no-core` is refused too (it was removed in
+  0.6.0; `FOREMAN_SH_NO_CORE=1` remains only as the seam the test suite's own installs
+  use). A build that fails, or a Go that builds for another architecture than this
+  machine's, refuses as well and removes the `hw-core` an earlier install left, which
+  would run against this release's `bin/hw`. Install Go and run the installer again.
+- **Which one runs.** For the five, Go. `hw shadow` (a 0.5.x diagnostic that ran both and logged
+  the differences) is gone: it says so and exits 64. For the eight tools below, Go too, unless
+  `HW_IMPL_<TOOL>=bash` or a `<tool>=bash` line of the switch file says otherwise.
+- **Go by default, bash as the way back through 0.6.x.** Eight small tools run in Go since
+  0.6.0: the Stop hook (`bin/hw-stop-hook.sh`, still the registered script, which execs
+  `hw-core stop-hook`; `HW_IMPL_STOP_HOOK`), `hw secret` (`HW_IMPL_HW_SECRET`) and six
   wrappers: `browser-close`, `brain-archive`, `secret-unlock`, `opencode-auto`,
-  `codex-channel-session-hook.sh` and `hw-sandbox` (`HW_IMPL_BROWSER_CLOSE`, …). A switch
-  file with a bare `go` line, as an install before 0.5.0 wrote, also moves the Stop hook
-  and the six wrappers, but not `hw secret`. KNOWN-LIMITATIONS L16 has what differs.
+  `codex-channel-session-hook.sh` and `hw-sandbox` (`HW_IMPL_BROWSER_CLOSE`, …). Only the word
+  `bash` — in that variable, or on the tool's `<tool>=bash` line — keeps one on its bash;
+  the global `HW_IMPL` and a default line in the switch file no longer choose for them. Their
+  bash goes in 0.7.0. KNOWN-LIMITATIONS L16 has what differs.
 - **Lane hooks.** The export carries the builders of git-worktree lanes only; a lane
-  hook of another name is sourced by bash.
+  `build` hook of another name is refused before anything is created (`hw` has no bash left to source it
+  into); dispatch with `--worktree none` for a plain work directory.
 
 ## Secrets (Bitwarden)
 

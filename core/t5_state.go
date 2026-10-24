@@ -16,8 +16,7 @@ package main
 //     is how shadow runs Go first, and shadow never writes.
 
 type dsp struct {
-	fsShared *fsx     // see sharedFs
-	dispArgv []string // the dispatch argv, for the launch (handBackToBash)
+	fsShared *fsx // see sharedFs
 	*app
 	brState
 	vdState

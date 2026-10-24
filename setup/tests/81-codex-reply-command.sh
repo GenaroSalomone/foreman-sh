@@ -29,7 +29,6 @@
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 LIB="${INVOKER_LIB_SOURCE:-$ROOT/bin/invoker-common.sh}"
-HW_SRC="$ROOT/bin/hw"
 [ -r "$LIB" ] || fail "no invoker library at $LIB"
 
 # ── the harness ─────────────────────────────────────────────────────────────
@@ -181,19 +180,23 @@ esac
 pass "a claude executor's reply command is the herdr one it always was"
 
 # ── 10. one vendor list, in two files ───────────────────────────────────────
-# hw loads this library lazily and 80-codex-brief-delivery.sh extracts hw's own
-# classifier and drives it alone, so neither classifier can simply call the
-# other. Two copies of a three-line list are acceptable only while a test says
-# they agree; this is that test.
-labels() { # <file> <function-name> — the case labels of a case-only classifier
-  awk -v f="^${2}\\\\(\\\\) \\\\{" '$0 ~ f, /^}/' "$1" | grep -E '^\s+[^ ]+\) return [01] ;;' | sed 's/^[[:space:]]*//'
-}
-HW_LABELS="$(labels "$HW_SRC" _vendor_has_native_transport)"
-LIB_LABELS="$(labels "$LIB" invoker_vendor_has_native_transport)"
-[ -n "$HW_LABELS" ] || fail "could not extract _vendor_has_native_transport's case labels from bin/hw"
-[ -n "$LIB_LABELS" ] || fail "could not extract invoker_vendor_has_native_transport's case labels from $LIB"
-[ "$HW_LABELS" = "$LIB_LABELS" ] || fail "the two classifiers disagree — hw: [$HW_LABELS] library: [$LIB_LABELS]"
-pass "invoker_vendor_has_native_transport and hw's _vendor_has_native_transport carry the same vendor list"
+# hw's classifier is hw-core's (vendorHasNativeTransport, core/t5l_deliver.go; until go-060 S4 a bash function of bin/hw) and the
+# invoker library's is bash, loaded by the invokers, so neither can simply call the other. Two copies of a three-line list
+# are acceptable only while a test says they agree; this is that test.
+GO_SRC="$ROOT/core/t5l_deliver.go"
+GO_LABELS="$(python3 -I - "$GO_SRC" <<'PY'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r'^func vendorHasNativeTransport\(v string\) bool \{\n\tswitch v \{\n\tcase ([^:]+):\n\t\treturn false', src, re.M)
+if m:
+    print("|".join(x.strip() if x.strip() == '""' else x.strip().strip('"') for x in m.group(1).split(",")))
+PY
+)"
+LIB_LABELS="$(awk '/^invoker_vendor_has_native_transport\(\) \{/, /^}/' "$LIB" | grep -E '^\s+[^ ]+\) return 1 ;;' | sed 's/^[[:space:]]*//; s/) return 1 ;;//')"
+[ -n "$GO_LABELS" ] || fail "could not extract vendorHasNativeTransport's no-native vendors from $GO_SRC"
+[ -n "$LIB_LABELS" ] || fail "could not extract invoker_vendor_has_native_transport's no-native vendors from $LIB"
+[ "$GO_LABELS" = "$LIB_LABELS" ] || fail "the two classifiers disagree — hw-core: [$GO_LABELS] library: [$LIB_LABELS]"
+pass "invoker_vendor_has_native_transport and hw-core's vendorHasNativeTransport carry the same vendor list"
 
 # ── 11. no hand-coded route test survives in the library ────────────────────
 hand_coded="$(grep -c '\[ "\$INVOKER_SENDER_VENDOR" != claude \]' "$LIB" || true)"

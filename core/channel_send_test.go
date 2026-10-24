@@ -1286,3 +1286,24 @@ func TestChannelSendTheWaiterDoesNotReportTheDeathOurOwnKillCaused(t *testing.T)
 		t.Errorf("the signal path did not speak for the run (exit %d):\n%s", got, e.String())
 	}
 }
+
+// 73: each non-zero status of channel-send names its exact meaning on the banner, never the fallback of an unknown code. The
+// label mutants 73-G01..G03 (core/channel_send.go, setup/tests/contract-hw/mutants-cs) turn the case of 4, 5 and 6 into an unknown code.
+func TestChannelSendExitMeanings(t *testing.T) {
+	for _, c := range []struct {
+		rc   int
+		want string
+	}{
+		{4, "DELIVERED and provably in the receiver, but its TURN failed — do NOT resend"},
+		{5, "ADMITTED, persistence UNCONFIRMED — it may already be in the receiver; do not blind-retry"},
+		{6, "RECEIVER UNUSABLE — nothing was sent, and retrying cannot succeed"},
+	} {
+		got := csExitMeaning(c.rc)
+		if got != c.want {
+			t.Errorf("channel-send exit %d lost its exact meaning; got: %q", c.rc, got)
+		}
+		if strings.Contains(got, "a failure, not a delivery") {
+			t.Errorf("channel-send exit %d fell through to the fallback meaning: %q", c.rc, got)
+		}
+	}
+}

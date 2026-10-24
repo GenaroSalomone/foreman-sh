@@ -364,7 +364,7 @@ model_tier() {
     haiku|haiku-*|*haiku*)   printf '1' ;;
     sonnet|sonnet-*|*sonnet*) printf '2' ;;
     opus|opus-*|*opus*)      printf '3' ;;
-    *) : ;;  # MUTATION-ANCHOR: 159-M03
+    *) : ;;
   esac
 }
 
@@ -376,7 +376,7 @@ model_tier() {
 # are NOT top tier here: UNESTABLISHED, named in KNOWN-LIMITATIONS, not guessed.
 model_is_top_tier() {
   case "${1##*/}" in
-    *opus*|*fable*) return 0 ;;  # MUTATION-ANCHOR: 1003-M05
+    *opus*|*fable*) return 0 ;;
   esac
   return 1
 }

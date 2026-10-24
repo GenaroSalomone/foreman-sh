@@ -362,15 +362,8 @@ mutate_checker 'how(argv[1]), argv[1]))' '"foreman-sh", argv[1]))'
 out="$(mut_ask)"
 saw_mutant "M10 status names foreman-sh upgrade on an install that has no foreman-sh" "$out" "second ask in a day: [foreman-sh v2.0.0 is out (this brain has v1.0.0): foreman-sh upgrade"
 
-mutate_hw() {  # a copy of the brain, its hw never asking
-  rm -rf "$TMP/mut-brain-hw"; cp -R "$BR" "$TMP/mut-brain-hw"
-  replace_in "$TMP/mut-brain-hw/bin/hw" '  _status_par_start release _release_quiet
-' ''
-  pin_bash "$TMP/mut-brain-hw/bin/hw"  # a mutant of the bash source runs on bash whatever HW_IMPL the suite runs under
-}
-mutate_hw
-rm -f "$TMP/mut-brain-hw/.foreman/latest-release.json"
-set +e; out="$(cd "$TMP" && env -u HW_TASK -u HW_RUN HOME="$HOME" "$TMP/mut-brain-hw/bin/hw" status 2>&1 < /dev/null)"; set -e
-case "$out" in *"is out (this brain has v1.0.0)"*) said=yes ;; *) said=no ;; esac
-saw_mutant "M08 hw status never asks" "status printed the newer-release line: $said" "status printed the newer-release line: no"
-printf 'coverage - 680: 8 live claims, 10 mutants (10 must be named)\n'
+# 680-M08 (hw status never asks: `_status_par_start release _release_quiet` removed from bin/hw's bash) is gone with
+# the bash source (go-060 S4). hw status's own release line is still asserted end to end above (section 6, through
+# the shim); the Go side holds the call in core/status_full.go (the `release` job) and the line in core/status_quiet_test.go
+# TestReleaseGateAndAgentToolsQuiet.
+printf 'coverage - 680: 8 live claims, 9 mutants (9 must be named)\n'

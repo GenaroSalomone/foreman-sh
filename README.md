@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 foreman-sh is a harness, built on [herdr](https://herdr.dev) and run by a Go
-core with its bash implementation kept as the way back, that runs coding agents
+core (`hw-core`, which the installer builds), that runs coding agents
 in two roles:
 
 - a **brainer**, the planner, that reads your code, plans the work and writes
@@ -79,9 +79,9 @@ foreman-sh answers each one with a mechanism:
   names the one that needs you.
 - **Cleanup that is safe.** `hw reap` removes the worktree, branch and database
   of a task that is merged and clean, and nothing else.
-- **Go by default.** `hw`, `brain`, `channel-send` and the invokers run in
-  `hw-core`; `HW_IMPL=bash` puts them back on bash, which stays through 0.5.x and
-  leaves in 0.6.0 ([INSTALL.md](INSTALL.md#the-go-core-and-the-way-back),
+- **Go only.** `hw`, `brain`, `channel-send` and the invokers run in `hw-core`;
+  0.6.0 removed the bash and the switch to it, and the way back is 0.5.x
+  ([INSTALL.md](INSTALL.md#the-go-core-and-the-way-back),
   [L16](KNOWN-LIMITATIONS.md)).
 
 ## Requirements
@@ -97,9 +97,9 @@ foreman-sh answers each one with a mechanism:
   leaves them on ([INSTALL.md](INSTALL.md#permissions-skip-recommended-or-ask)).
 - `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`. On Linux, also
   Node 22.7 or newer.
-- Recommended: **Go 1.22 or newer**, for `hw-core`, which `install.sh` builds when Go is on
-  PATH. Without it the tools run their bash implementation, with the same
-  answers, and `--check` does not list Go as missing.
+- **Go 1.22 or newer**, for `hw-core`, which `install.sh` builds and the tools require.
+  Without it `install.sh` refuses before writing anything, naming https://go.dev/dl, and
+  `--check` lists Go as missing.
 
 On macOS, Homebrew installs all of these but Claude Code's first run (see the
 Quickstart). Each tool has a minimum version, kept in one file

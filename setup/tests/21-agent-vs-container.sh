@@ -85,14 +85,6 @@ case "$rc:$(tail_of)" in
   *) fail "container: intact space -> exit $rc: $(tail_of)" ;;
 esac
 
-# The count must come from the PANE list, which carries the vendor per pane —
-# not from `pane_count` (a lone shell counts) and not from the tab's
-# `agent_status`, which herdr prints as "-" for both "no agent" and "not yet
-# classified".
-sed -n '/^_live_agent_panes_in_tab() {/,/^}/p' "$ROOT/bin/hw" | grep -q 'agent != null' \
-  || fail "container: the agent count no longer asks the pane list for a vendor"
-pass "container: the check counts panes herdr reports an agent for, not pane_count or a tab status"
-
 # ── a launch whose agent never starts is a FAILED launch ───────────────────
 # The stub's `agent start` returns {} — no interactive_ready — so _agent_start
 # fails on its first pass, which is the shape of the real failure.
@@ -104,11 +96,3 @@ case "$rc:$out" in
   1:*"did NOT start"*"NOT running"*) pass "launch: an agent that fails to start exits 1 and says the task is not running" ;;
   *) fail "launch: _agent_start failure -> exit $rc: $(printf '%s' "$out" | tail -1)" ;;
 esac
-
-# THE `&&` LIST THAT WAS TWO BUGS IN ONE LINE. `[ -n "$BRIEF" ] && warn …` is an
-# && list whose exit status is the test's, so under `set -e` a launch with NO
-# brief died on that line — before the agent_ready receipt was written — while a
-# launch WITH one carried on to exit 0.
-grep -q '\[ -n "\$BRIEF" \] && warn "brief NOT delivered' "$ROOT/bin/hw" \
-  && fail "launch: the '[ -n \$BRIEF ] && warn' form is back — set -e reads its status as the block's"
-pass "launch: the brief-not-delivered warning is an if, not an && list whose status set -e will read"

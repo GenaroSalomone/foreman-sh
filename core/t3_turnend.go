@@ -257,6 +257,11 @@ func (t *t3) ctxJSON() string {
 		vendor = "claude"
 	}
 	payload := t.getenv("HW_TURN_END_PAYLOAD")
+	// pi knows its own window and its own count (ctx.getContextUsage(), the numbers its footer shows), so the adapter hands them
+	// over in the payload: a MEASURED percent, no transcript to parse and no window to assume.
+	if vendor == "pi" && payload != "" { // # MUTATION-ANCHOR: 986-G09
+		return piCtxJSON(payload)
+	}
 	if vendor != "claude" || payload == "" {
 		return ""
 	}
@@ -267,6 +272,30 @@ func (t *t3) ctxJSON() string {
 	}
 	out, _ := exec.Command(bin, "ctx", tp).Output()
 	return bashSub(string(out))
+}
+
+// piCtxJSON is the pi arm of _executor_ctx_json, the jq program `.ctx // empty | select((.tokens | type) == "number") |
+// {pct: (if (.pct | type) == "number" then .pct else null end), tokens: .tokens}`: pi's own count and percent as the turn's ctx.
+// A percent pi does not know yet is null; no token count (right after a compaction), no ctx at all or an unreadable payload
+// publishes nothing rather than a guess.
+func piCtxJSON(payload string) string {
+	vals, err := parseStream([]byte(payload))
+	if err != nil || len(vals) == 0 {
+		return ""
+	}
+	ctx, ok := vals[0].get("ctx")
+	if !ok || !ctx.truthy() {
+		return ""
+	}
+	tokens, ok := ctx.get("tokens")
+	if !ok || tokens.kind != vNum {
+		return ""
+	}
+	pct := "null"
+	if p, ok := ctx.get("pct"); ok && p.kind == vNum {
+		pct = p.toJSON()
+	}
+	return `{"pct":` + pct + `,"tokens":` + tokens.toJSON() + `}`
 }
 
 func t3IsExec(p string) bool {
@@ -528,7 +557,7 @@ func (t *t3) piTurnEndForeign(stateDir string) bool {
 	if payload[strings.LastIndexByte(payload, '/')+1:] == registered[strings.LastIndexByte(registered, '/')+1:] { // # MUTATION-ANCHOR: 986-T04
 		return false
 	}
-	return true
+	return true // # MUTATION-ANCHOR: 986-G12
 }
 
 func (t *t3) executorTurnEnd() int {

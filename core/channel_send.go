@@ -158,11 +158,11 @@ func csExitMeaning(rc int) string {
 	switch rc {
 	case 1:
 		return "NOT DELIVERED — nothing landed, nothing was lost, retry is free"
-	case 4:
+	case 4: // # MUTATION-ANCHOR: 73-G01
 		return "DELIVERED and provably in the receiver, but its TURN failed — do NOT resend"
-	case 5:
+	case 5: // # MUTATION-ANCHOR: 73-G02
 		return "ADMITTED, persistence UNCONFIRMED — it may already be in the receiver; do not blind-retry"
-	case 6:
+	case 6: // # MUTATION-ANCHOR: 73-G03
 		return "RECEIVER UNUSABLE — nothing was sent, and retrying cannot succeed"
 	}
 	return "a failure, not a delivery"

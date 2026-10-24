@@ -1,8 +1,8 @@
 package main
 
 // `hw-core stop-hook stop`: bin/hw-stop-hook.sh in Go. The Stop hook every wired Claude Code and Codex session runs at
-// each turn end, with its stdin the Stop payload. bin/hw-stop-hook.sh execs this when HW_IMPL_STOP_HOOK (or HW_IMPL, or
-// the `stop-hook=` line of the switch file) says `go`; the bash it carries is the rollback and stays.
+// each turn end, with its stdin the Stop payload. bin/hw-stop-hook.sh execs this unless HW_IMPL_STOP_HOOK (or the
+// `stop-hook=` line of the switch file) says `bash`; the bash it carries is the rollback through 0.6.x.
 //
 // What it does, in bash's own order (every branch is a line of the bash it ports, and a fix to one goes to both):
 //
@@ -13,7 +13,8 @@ package main
 //	guards 4-6   an hw EXECUTOR (HW_TASK, HW_RUN, HW_WORKDIR), whose current task has not reported, and whose session is
 //	             the one hw registered for the run
 //	turn end     `hw executor-turn-end --hook-json`, IN PROCESS (t3_turnend.go) instead of a second `hw` process: that
-//	             process is the most of what the bash hook costs. A switch that pins that verb to bash keeps it a process.
+//	             process is the most of what the bash hook costs. Always in process: `hw` has no bash body for the verb (go-060 S3/S4),
+//	             so a pin of it to bash would only have spawned the Go again, and an unset switch used to read as that pin.
 //
 // IT MUST NEVER BREAK A SESSION: the exit status is 0 whatever happens, a panic included, and stderr is never written.
 // What differs from the bash, on purpose: no python3, jq or `hw` has to be on PATH for the Go to run (the bash goes
@@ -24,7 +25,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -119,10 +119,6 @@ func (h *stopHook) turnEnd() {
 		}
 		return inner(k)
 	}
-	if m := implModeFor(getenv, "executor-turn-end"); m == "bash" || m == "shadow" { // # MUTATION-ANCHOR: 855-T01
-		h.turnEndProcess(getenv)
-		return
-	}
 	t := newTerm(h.out, io.Discard, false)
 	brain := brainRoot(getenv)
 	home := getenv("HOME")
@@ -150,71 +146,6 @@ func (h *stopHook) turnEnd() {
 		}()
 		a.cmdT3("executor-turn-end")
 	}()
-}
-
-// turnEndProcess is the bash hook's last line, for a machine that pins executor-turn-end to bash (or to shadow, which
-// `hw` runs): the `hw` beside this binary, its stderr dropped, its stdout the hook's.
-func (h *stopHook) turnEndProcess(getenv func(string) string) {
-	bin := getenv("HW_CORE_BIN_DIR")
-	if bin == "" {
-		return
-	}
-	hw := filepath.Join(bin, "hw")
-	if !t3IsExec(hw) {
-		return
-	}
-	cmd := exec.Command(hw, "executor-turn-end", "--hook-json")
-	cmd.Env = append(os.Environ(), "HW_TURN_END_PAYLOAD="+h.input)
-	cmd.Stdout = h.out
-	cmd.Run()
-}
-
-// implModeFor is bin/hw's _core_impl_for for the switch as the shell hooks read it: HW_IMPL_<VERB>, HW_IMPL, the
-// switch file's `<verb>=` line, the file's default line, bash.
-func implModeFor(getenv func(string) string, verb string) string {
-	up := strings.NewReplacer("-", "_").Replace(strings.ToUpper(verb))
-	if v := getenv("HW_IMPL_" + up); v != "" {
-		return v
-	}
-	if v := getenv("HW_IMPL"); v != "" {
-		return v
-	}
-	file := getenv("HW_IMPL_FILE")
-	if file == "" {
-		cfg := getenv("XDG_CONFIG_HOME")
-		if cfg == "" {
-			cfg = getenv("HOME") + "/.config"
-		}
-		file = cfg + "/hw/impl"
-	}
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return "bash"
-	}
-	def, mine := "", ""
-	for _, line := range strings.Split(string(data), "\n") {
-		if i := strings.IndexByte(line, '#'); i >= 0 {
-			line = line[:i]
-		}
-		line = strings.Join(strings.FieldsFunc(line, unicode.IsSpace), "")
-		switch {
-		case line == "":
-		case strings.Contains(line, "="):
-			k, v, _ := strings.Cut(line, "=")
-			if strings.NewReplacer("-", "_").Replace(strings.ToUpper(k)) == up {
-				mine = v
-			}
-		default:
-			def = line
-		}
-	}
-	if mine == "" {
-		mine = def
-	}
-	if mine == "" {
-		return "bash"
-	}
-	return mine
 }
 
 // ── the brainer's handback refusal: the Python heredoc of the bash ───────────────────────────────────────────────

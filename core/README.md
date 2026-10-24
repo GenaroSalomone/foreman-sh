@@ -4,33 +4,25 @@ The Go half of `bin/hw`, as a pilot (trains T0, T1, T2, T3 and T5, the dispatch 
 `receipt`, `log`, `handle` and `help` (T0), `worktrees` and the table of `status` (T1), and the marker writers
 (T3: `ruling`, `human-boundary`, `executor-turn-end`, `chaining-lease-start`/`-expire`, `outbox flush`, `output`,
 `stage`), and the dispatch (T5: `hw <lane> <task> …`, its dry run and its launch), ported byte for byte from the bash they replace. Nothing else is
-ported. From 0.5.0 Go is the default: with no `HW_IMPL` and nothing in the switch file `hw-core` answers, and
-`HW_IMPL=bash` (or `default=bash` in `~/.config/hw/impl`) is the one-line rollback (`bin/hw`, "hw-core: the verbs that run as a
-Go binary"; held by `setup/tests/1050-*`).
+ported. Since 0.6.0 Go is the only implementation of `bin/hw`, `bin/brain`, `bin/channel-send`, `bin/ask-invoker` and
+`bin/done-invoker` (go-060 S3): `HW_IMPL`, `HW_IMPL_<VERB>` and the switch file `~/.config/hw/impl` no longer choose. A `bash` or
+`shadow` in them is said once per state (`bin/impl-retired.sh`) and Go runs; `hw shadow` is gone (exit 64). `bin/hw` has no bash body left (go-060 S4):
+it is a shim that execs hw-core, and hw-core's two former re-entries into it, `hw ruling` of a task that reported `--blocked` and a lane
+build hook outside `lanes/`, were ported (`resumeBlocked`, and a refusal). The internal seam `HW_BASH_BODY=1` is gone (go-060 S5 deleted the last bash bodies, those of `bin/brain`,
+`bin/channel-send`, `bin/ask-invoker` and `bin/done-invoker`): setting it does nothing. The eight small tools keep their own `HW_IMPL_<TOOL>` switch until 0.7.0.
 
-    HW_IMPL=go     (default) exec hw-core for a ported verb
-    HW_IMPL=bash   the bash that ran before — the rollback
-    HW_IMPL=shadow run both, print bash's answer, append any difference to ${XDG_STATE_HOME:-~/.local/state}/hw/shadow.jsonl (a hw-core older than core/ is not run: bash answers, with one warning)
-    HW_IMPL_<VERB> overrides HW_IMPL for that verb (HW_IMPL_RECEIPT, _LOG, _HANDLE, _HELP, _STATUS, _WORKTREES, the T2 verbs below, the T3 writers: _RULING, _HUMAN_BOUNDARY, _EXECUTOR_TURN_END,
-                   _CHAINING_LEASE_START, _CHAINING_LEASE_EXPIRE, _OUTBOX, _OUTPUT, _STAGE, and T5a: _DISPATCH)
-
-`hw-core status` prints the TABLE of `hw status` (`cmd_status`, lib/hw/status.sh); `bin/hw` calls it where it called
-`cmd_status` and still prints the quiet checks after it (outbox, release, gate, tabs, hygiene, rules, decisions), which
-stay bash until a later train. `worktrees --quiet`, the audit `hw status` runs, goes through the same switch. In `shadow`,
-`worktrees --migrate` is never run twice: bash answers alone.
+`hw-core status-full` prints all of `hw status` (the table, `worktrees --quiet`, and the quiet checks after them: outbox, release,
+gate, tabs, hygiene, rules, decisions); `bin/hw` execs it with the argv as typed.
 
 Train T2 adds the read verbs that depend on T1: `reap` and `sweep` (dry runs), `reports`, `review-range`,
 `review-delta`, `preflight --json`, `outbox list`, and the `wait` family (`wait`, `wait-one`, `wait-monitor`, exit
 contract 2/5/6/7/8). The shim sends only the READ half of a verb to hw-core: `reap --apply`, `sweep --apply`,
-`outbox flush` (T3, below) are not T2's (a `reports` that repairs is T6's, and under `shadow` it is bash alone), and under `shadow` a real wait is answered by bash alone
-(running it twice would wait twice); a `--dry-run` wait is a reader and runs in both. `HW_IMPL_<VERB>` names are
-the verb upper-cased with `-` as `_` (HW_IMPL_REAP, _SWEEP, _REPORTS, _REVIEW_RANGE, _REVIEW_DELTA, _PREFLIGHT,
-_OUTBOX, _WAIT, _WAIT_ONE, _WAIT_MONITOR). What is not byte for byte is listed in `setup/contracts/hw-t2.md`.
+`outbox flush` (T3, below) are not T2's (a `reports` that repairs is T6's). What is not byte for byte is listed in `setup/contracts/hw-t2.md`.
 
 `worktrees` compares an agent's cwd with a worktree path as bash does: as written, except under msys/cygwin, where
 bash puts both through `realpath` (backslashes, case, `..`, links) and a native Windows hw-core does the same.
 `HW_CORE_PATH_RULES=windows|posix` forces one set of rules on any system (the contract cases use it); unset, the
-system decides. Shadow compares what bash and Go print without their colour, so a terminal never logs a difference.
+system decides.
 
 ## The marker writers (T3)
 
@@ -38,47 +30,36 @@ Hooks and invokers read what these verbs write (`turns`, `handback-refused`, `pe
 `receipt.jsonl`, the outbox's `.meta`), so the bytes are the contract (`setup/tests/840`, golden = bash's, 242 cases).
 Two things differ from the readers above:
 
-- **`shadow` never writes.** hw-core runs FIRST with `HW_CORE_READONLY=1` and `HW_CORE_PLAN=<file>`: every write goes
-  through `fsx` (`t3.go`), which records it (path, bytes, mode) instead of doing it; then bash writes for real; then
-  `hw-core shadow-verify <plan>` compares the plan with the files bash left, timestamps, epochs, tokens and pids
-  normalised, and a difference goes to `shadow.jsonl` as `differs: ["tree"]`. `chaining-lease-expire` and `outbox
-  flush`, whose effect is outside the run directory (a pane closed, a message sent), run in bash alone under shadow.
+- **`HW_CORE_READONLY=1` and `HW_CORE_PLAN=<file>` record instead of writing.** Every write goes through `fsx` (`t3.go`),
+  which records it (path, bytes, mode) instead of doing it, and `hw-core shadow-verify <plan>` compares the plan with the files
+  bash left, timestamps, epochs, tokens and pids normalised. This was the shim's `shadow` mode, retired in 0.6.0 (`bin/hw`
+  no longer drives it); the code stays in hw-core, held by its own tests (`t3_test.go`, `t5l_shadow_test.go`, `readonly_test.go`).
 - **Some of what the bash does stays an exec.** `holdfacts` (the validity of an `ask-invoker` hold), `cockpit-state` and
   `channel-send` are Python/bash helpers on `HW_CORE_BIN_DIR`; hw-core runs them as bash did and does not port them.
   The herdr metadata publish, the engram session renewal and the pane witness are native.
 
-`ruling` and `outbox` are brainer verbs: an executor (HW_TASK or HW_RUN set) is sent to bash, where the refusal text lives.
-`outbox list` is another train's.
+`ruling` and `outbox` are brainer verbs: an executor (HW_TASK or HW_RUN set) is refused first by hw-core's own gate
+(`executor_gate.go`). `outbox list` is another train's.
 
 ## The dispatch's dry run (T5)
 
-**Scope: T5a (the dry run) and T5b (the launch: the worktree, the database, the pane, the brief delivered).** Under
-`HW_IMPL=go` (or `HW_IMPL_DISPATCH=go`) `bin/hw` execs `hw-core dispatch <argv…>` for ANY dispatch, with or without
+**Scope: T5a (the dry run) and T5b (the launch: the worktree, the database, the pane, the brief delivered).** `bin/hw` execs `hw-core dispatch <argv…>` for ANY dispatch, with or without
 `--dry-run`; hw-core decides what the argv is, so a `--dry-run` that is only an option's value is parsed as the value
 and the dispatch is a launch. The launch's programs (herdr, git, jq, psql, the agent) are children of hw-core, run
 through one function (`t5l_exec.go`), as they were children of bash.
 
 `hw <lane> <task> … --dry-run` prints the manifest a brainer reads before it pays for an executor, then the warnings
 and refusals a launch would raise, and ends. What the dry run writes is the route
-forecast (`${TMPDIR:-/tmp}/hw-route-forecast-<lane>__<task>`, read by the launch that follows); under `shadow`
-bash answers for real and hw-core runs after it with `HW_CORE_READONLY=1` and writes nothing. The run id (a
+forecast (`${TMPDIR:-/tmp}/hw-route-forecast-<lane>__<task>`, read by the launch that follows). The run id (a
 timestamp and a pid) and the port opencode is told (the kernel's pick) differ between two processes by
-construction: the contract and `shadow.jsonl` read them as `@RUN@` and `@PORT@`. Under `shadow` bash answers into a
-file, not the terminal it was started on, so what it prints has no colour (the comparison reads both without it);
-`go` and `bash` colour as they always did. A shell error bash prints about its own arithmetic (`[: …: integer
+construction: the contract reads them as `@RUN@` and `@PORT@`. A shell error bash prints about its own arithmetic (`[: …: integer
 expression expected`) is not in the contract and hw-core does not reproduce it.
 
-**A launch under `shadow` is a writer, not a pair of answers** (it is not run twice: it makes a worktree, a database,
-a pane). hw-core runs FIRST with `HW_CORE_READONLY=1` and `HW_CORE_PLAN=<file>`; its reads (herdr, git) are real, the
-world not yet being changed; its mutating calls are recorded and answered with the synthetic reply the launch code
-carries; its file writes go through `fsx` and are recorded. Then bash launches for real, and `hw-core shadow-verify
---launch <plan>` holds the plan against what bash left: every planned file exists with the same bytes (run ids, ports,
-pane ids, pids, tokens, timestamps and temporary paths read as placeholders), every planned symlink points where bash
-pointed it, and what a child wrote beside them is not a difference. The plan's `exec` ops (a program, its argv joined
-by NUL, its directory) are NOT compared: bash's calls are not observable in production, so `shadow.jsonl` says
-`"calls":"not compared"` beside `differs`. bash's stdout and stderr are not captured (the launch is long and its
-user watches it), so they are not compared either: the verdict is the exit status and the files. Test 849 holds this
-shim; the byte comparison of the launch's answer is the contract world's (847).
+**The launch's shadow mode is retired** (0.6.0): the shim no longer runs hw-core first with `HW_CORE_READONLY=1` and
+`HW_CORE_PLAN=<file>` and then bash for real. The recording code stays in hw-core (`t5l_exec.go`, `t5l_state.go`, `t5l_shadow.go`:
+mutating calls recorded, file writes through `fsx`, `hw-core shadow-verify --launch <plan>` holding the plan against the files
+bash left, `exec` ops not compared) and is held by its own tests (`t5l_shadow_test.go`); the byte comparison of the launch's
+answer is the contract world's (847).
 
 The reuse route (a live, leased executor in the lane) prints the same manifest and then hands the brief's dry run to
 `<HW_CORE_BIN_DIR>/hw next … --dry-run`, a child process, as bash called `cmd_next`.
@@ -87,11 +68,11 @@ The port is in four areas, one file family each, all methods of the dispatch sta
 function `_check_brief_contract` is `checkBriefContract`): the flow and the manifest (`t5.go`, `t5_manifest.go`,
 `t5_lanefields.go`: the lane fields the T0/T1 loader left out, with lane_config_load's defaults), the brief and its
 contract (`t5_brief*.go`), vendors, models, accounts and guards (`t5_vendor*.go`), and sdd, reuse discovery, the
-route forecast and the invoker (`t5_reuse*.go`, `t5_sdd*.go`). Tests: 843 (contract, ~520 cases, bash/Go/shadow),
+route forecast and the invoker (`t5_reuse*.go`, `t5_sdd*.go`). Tests: 843 (contract, ~520 cases, bash/Go),
 844 (one mutant per decision), 845 (the shim), 846 (the `bin/hw: line N:` of the two shell complaints the dry run imitates: hw-core finds the line in `bin/hw` by its anchoring text, and 843 normalizes the number away, so only 846 notices a stale one). The cases are `contract-hw/cases-t5*`, the goldens `golden-t5/`
 (`contract-hw/regen-t5.sh`, bash only).
 
-A hw-core that is not built is not an error: `bin/hw` warns once and runs bash. `setup/build-core` builds it
+hw-core is required (go-060 S2): `bin/hw` with none built dies naming `setup/build-core --native`. `setup/build-core` builds it
 (five targets, reproducible, with sha256 sums) into `core/dist/<os>-<arch>/`, where the shim finds it.
 
 ## Why `core/` and not the brain root
@@ -145,11 +126,8 @@ in one line, and lets the export leave the pilot out with one `exclude core/` (`
 `train`, `suite`, `unstick`, `ledger` and `briefs` run in Go (`t6_<verb>.go`), as do the repairing form of
 `reports` and `worktrees --migrate` (which only lacked a shim route), `cockpit-state` and `secret` (hw-core runs
 `bin/cockpit-state` and `bin/hw-secret` as its child with the same stdio, as bash `exec`'d them) and `-V`/`--version`
-(answered before the lane table loads). The switch is the same (`HW_IMPL`, `HW_IMPL_<VERB>`; `HW_IMPL_VERSION` for `-V`),
-and `lib/hw/core-t6.sh` — sourced by `bin/hw` right after the T2 switch — holds it, so adding it moved no line of `bin/hw`
-that `setup/contracts/hw.md` cites. Under `shadow` these verbs answer in bash alone (they write: a merge, a restarted pane,
-an archived brief), and an executor (HW_TASK/HW_RUN set) goes to bash for `train`, `unstick` and `briefs`, where
-`_executor_refuse` words the refusal. The mutation anchors of their bash stay registered on the bash source: the Go ports
+(answered before the lane table loads). `bin/hw` routes them to hw-core with no switch (since 0.6.0), and an executor
+(HW_TASK/HW_RUN set) is refused first by hw-core's gate (`executor_gate.go`) for `train`, `unstick` and `briefs`. The mutation anchors of their bash stay registered on the bash source: the Go ports
 are held by `TestT6*` (in-process, `core/t6_*_test.go`), and a Go-side anchor would be a second marker of an id the registry
 keeps once.
 
@@ -157,12 +135,11 @@ keeps once.
 
 `hw-core channel-send <args>` is `bin/channel-send` in Go (`channel_send*.go`): the same command line, stdout, stderr,
 exit codes (0, 1, 4, 5, 6 — the table `--help` prints) and on-disk effects (the delivery lock, the reply hold, the
-task transcript). `bin/channel-send` keeps its bash as the rollback and execs hw-core when `HW_IMPL_CHANNEL_SEND` (else
-`HW_IMPL`, else the `channel-send=` or default line of the switch file `${HW_IMPL_FILE:-~/.config/hw/impl}`, the file `hw`
-and the invokers read) is `go`; `shadow` and unset run the bash. The programs it ran it still runs (`herdr`, `herdr-rpc`,
+task transcript). `bin/channel-send` execs hw-core (Go is the only implementation since 0.6.0: the file is a shim with no bash body, and
+`HW_IMPL=bash` is a one-line warning). The programs it ran it still runs (`herdr`, `herdr-rpc`,
 `holdfacts`, `claude-delivery-receipt.py`, `claude`, `codex`, `ps`, `find`); what it did with `jq`, two `python3`
-heredocs and two `node` scripts is native here. `setup/tests/1015` runs both on the same inputs and diffs them;
-`setup/tests/1016` kills a mutant of each mutation anchor (named `<n>-G<nn>`, the bash's `<n>-M<nn>`) with
+heredocs and two `node` scripts is native here. `setup/tests/1015` replays 84 scenarios against the goldens recorded from the bash once (the bash is gone);
+`setup/tests/1016` kills a mutant of each mutation anchor (named `<n>-G<nn>`, the bash's former `<n>-M<nn>`) with
 `channel_send_test.go`. Not byte for byte, and said so: the message of an unparseable JSON body (node's own parser
 text, imitated for the two common shapes) and the order of the session ids in the opencode-tui busy refusal
 (the endpoint's in node, sorted here).

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Execute complete invokers through publication AND every delivery outcome.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+need_invokers   # the cases run the invokers from a copy of bin/, which has no core/dist beside it: they are Go (go-060 S2)
 python3 - "${TIER1_CALLER_SOURCE_ROOT:-$ROOT}" "$TMP" <<'PY'
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 source, temporary = map(Path, sys.argv[1:])
-base_env = {k:v for k,v in os.environ.items() if not k.startswith('HW_')}
+base_env = {k:v for k,v in os.environ.items() if not k.startswith('HW_') or k == 'HW_INVOKERS'}
 outcomes = [('herdr', n) for n in (1,2,3,4,5,6,0)] + [('opencode', n) for n in (1,2,3,5,6,0,4)]
 
 # THE 84 CASES RUN FOUR AT A TIME AND ARE REPORTED IN ORDER. Each case owns

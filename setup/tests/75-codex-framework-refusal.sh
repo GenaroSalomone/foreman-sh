@@ -22,28 +22,9 @@ if [ "$ONLY_HANDOFF" != 1 ]; then
   case "$out" in *"OpenCode framework dispatch REFUSED BEFORE BUILDING ANYTHING"*"--sdd speckit"*) pass "OpenCode speckit launch is refused before planning or build" ;; *) fail "OpenCode speckit launch did not refuse honestly: $out" ;; esac
   case "$out" in *"dispatch setup:"*|*"agent args:"*) fail "OpenCode speckit reached planning/build preparation: $out" ;; esac
 
-  # M01 — make OpenCode/speckit legal in an isolated binary. The same fresh
-  # launch must reach planning, proving the refusal assertion observes this guard.
-  mut="$TMP/opencode-speckit-mut"; cp -R "$SOURCE_BIN" "$mut"
-  MUT_HW="$mut/hw" python3 - <<'PY'
-import os
-p = os.environ["MUT_HW"]
-s = open(p, encoding="utf-8").read()
-old = '''    opencode:speckit)
-      die "OpenCode framework dispatch REFUSED BEFORE BUILDING ANYTHING: --sdd $SDD_EFFECTIVE_MODE is Spec Kit, but this machine exposes Spec Kit only as Claude Code skills. Nothing was built. Use --agent claude for Spec Kit, or --sdd none for direct delivery."
-      ;;'''
-assert s.count(old) == 1, s.count(old)
-open(p, "w", encoding="utf-8").write(s.replace(old, '    opencode:speckit) return 0 ;;'))
-PY
-  # A separate, unconditional gate refuses --sdd speckit before building
-  # anything when no speckit-* skill is on disk, regardless of the vendor
-  # pair — so proving THIS mutation reaches planning also needs a real skill
-  # on disk, under a fake HOME, or that other gate would refuse it too and
-  # mask the mutant surviving.
-  pin_bash "$mut/hw"
-  m01home="$TMP/m01home"; mkdir -p "$m01home/.claude/skills/speckit-example"
-  out="$(env -u HW_INVOKER_PANE -u HW_CHAINING_ENABLED HOME="$m01home" "$mut/hw" setup codex-mut-opencode-speckit --agent opencode --model openai/gpt-5.6-terra --sdd speckit --no-report --no-brief --fresh --dry-run 2>&1 || true)"
-  case "$out" in *"dispatch setup:"*"dry run — nothing created"*) pass "mutant killed: M01 without OpenCode Speckit refusal the fresh launch reaches planning" ;; *) fail "M01 survived or misfired: $out" ;; esac
+  # go-060 S4: M01 (OpenCode/speckit made legal in an isolated copy of the bash bin/hw, then the same fresh launch
+  # must reach planning) edited a source that is gone. Held by hw-core's anchors 844-R150 (launch route,
+  # core/t5_sdd.go, case rt-sdd-alpha-opencode-speckit) and 862-G26 (`hw next`, golden next-sdd-opencode-speckit).
 fi
 
 # A launch request describes a fresh executor only if no reusable executor is
@@ -251,48 +232,11 @@ set -e
 [ "$(cat "$handoff_run/task")" = 3 ] && [ -d "$handoff_run/t3" ] && [ -s "$handoff/send.log" ] || fail "explicit OpenCode --sdd $explicit_mode did not create and deliver task 3"
 pass "explicit OpenCode --sdd none remains valid after a live Speckit surface"
 
-# M02 — reverse _resolve_effective_sdd_mode's precedence: inherited first,
-# live surface second. The historical none-dispatch fixture, with a live
-# Speckit skill still on disk at $handoff_wd from the case above, must then
-# send task 3 on the strength of the stale "none" dispatch record, proving the
-# live-first lookup in the real function is causal rather than a
-# diagnostic-only read.
-mut="$TMP/stale-framework-mut"; cp -R "$handoff_bin" "$mut"
-MUT_HW="$mut/hw" python3 - <<'PY'
-import os
-p = os.environ["MUT_HW"]
-s = open(p, encoding="utf-8").read()
-old = '''  mode="$requested"
-  if [ -z "$mode" ]; then
-    # A re-task may inherit a root dispatch record from before an explicit
-    # re-task changed this pane's surface. Prefer what is on disk for THIS
-    # directory — a machine-wide install alone does not put a directory in
-    # play; the recorded value is only the fallback when the disk says nothing.
-    _speckit_skills_in "$surface" >/dev/null && mode=speckit
-    [ -n "$mode" ] || mode="$inherited"
-  fi'''
-new = '''  mode="$requested"
-  if [ -z "$mode" ]; then
-    mode="$inherited"
-    [ -n "$mode" ] || { _speckit_skills_in "$surface" >/dev/null && mode=speckit; }
-  fi'''
-assert s.count(old) == 1, s.count(old)
-open(p, "w", encoding="utf-8").write(s.replace(old, new))
-PY
-pin_bash "$mut/hw"
-printf '2\n' > "$handoff_run/task"; rm -rf "$handoff_run/t3"
-printf '  framework   none  (chosen)\n' > "$handoff_run/dispatch"
-: > "$handoff/send.log"
-mkdir -p "$handoff_wd/.claude/skills/speckit-example"
-set +e
-out="$(HOME="$handoff_home" PATH="$handoff_stub:$PATH" HANDOFF_CWD="$handoff_wd" HANDOFF_VENDOR=opencode HANDOFF_SEND_LOG="$handoff/send.log" "$mut/hw" next pJD inherited-historical-none 2>&1)"
-rc=$?
-set -e
-if [ "$rc" = 0 ] && [ "$(cat "$handoff_run/task")" = 3 ] && [ -d "$handoff_run/t3" ] && [ -s "$handoff/send.log" ]; then
-  pass "mutant killed: M02 stale dispatch-first resolution sends OpenCode task 3 without measuring the live Speckit surface"
-else
-  fail "M02 survived or misfired: rc=$rc out=$out"
-fi
+# go-060 S4: M02 (the effective-mode precedence reversed: inherited first, live surface second) edited the
+# bash `_resolve_effective_sdd_mode`. The launch route's precedence is held by 844-R146, 844-R147 and 844-R148
+# (core/t5_sdd.go); the same precedence in `hw next` (core/t4_next_run.go, nextValidateSDDVendor) has NO Go
+# anchor, so the live-surface-first claim for a re-task is carried only by the historical-transaction
+# assertions above, which run the real hw-core.
 rm -rf "$handoff_wd/.claude"
 
 # The Codex transport must reject unsupported stronger receipts before queueing.
@@ -309,13 +253,7 @@ done
 [ ! -s "$TMP/queue.log" ] || fail "Codex queue ran despite unsupported receipt/id: $(cat "$TMP/queue.log")"
 pass "Codex transport rejects id and processed contracts before queueing"
 
-# Drive the real readiness function against its three observed buffers.
-awk '/^_codex_startup_ready\(\) \{/,/^}/' "$SOURCE" > "$TMP/ready.sh"
-ready() { READY_SCREEN="$1" READY_LOG="$TMP/ready.log" bash -c 'herdr(){ [ "$1 $2" = "agent read" ] && { printf "%s" "$READY_SCREEN"; return; }; printf "%s\n" "$*" >> "$READY_LOG"; }; source "$1"; _codex_startup_ready c' _ "$TMP/ready.sh"; }
-: > "$TMP/ready.log"; ready 'Do you trust the contents of this directory' || fail "trust dialog was not handled"
-grep -q 'agent send-keys c enter' "$TMP/ready.log" || fail "trust dialog did not receive enter"
-: > "$TMP/ready.log"; ready 'Hooks need review' && fail "hook trust dialog was accepted"
-: > "$TMP/ready.log"; ready 'Choose how you'\''d like Codex to proceed' && fail "model dialog was accepted"
-: > "$TMP/ready.log"; ready 'normal prompt' || fail "normal Codex prompt was rejected"
-[ ! -s "$TMP/ready.log" ] || fail "normal prompt received startup keys"
-pass "Codex readiness handles trust, refuses blocking dialogs, and leaves a normal prompt untouched"
+# Codex readiness (`_codex_startup_ready`: trust dialog answered, hook-trust and model-migration dialogs refused,
+# a normal prompt untouched) was driven here by extracting the bash function from bin/hw. It is hw-core's
+# codexStartupReady now: core/t5l_agent_test.go TestAgCodexStartupReady holds the trust and hook-trust cases;
+# the model-migration dialog and the untouched normal prompt have no Go test of their own (UNRESOLVED).

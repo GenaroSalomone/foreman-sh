@@ -50,7 +50,7 @@ run() {
   local v="$1"; shift
   rm -f "$TMP"/calls.* "$TMP/out"
   # shellcheck disable=SC2086
-  env -i PATH="$TMP/stub:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP/home" TMPDIR="$TMP" STUB_CALLS="$TMP/calls" \
+  env -i HW_CORE="$HW_CORE" PATH="$TMP/stub:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP/home" TMPDIR="$TMP" STUB_CALLS="$TMP/calls" \
       STUB_CLAUDE_VERSION="$v" ${ENVX:-} "$BH/bin/brain" "$@" > "$TMP/out" 2>&1 || true
 }
 flag_dir() { grep -A1 -x -- '--plugin-dir' "$TMP/calls.agent-start" 2>/dev/null | tail -1; }
@@ -118,40 +118,16 @@ run 2.1.400 demo; need_started "no manifest"
 cp "$TMP/deps.conf.keep" "$BH/lib/hw/deps.conf"
 pass "803: the cockpit's claude floor is read from lib/hw/deps.conf; with no manifest brain opens without the cockpit and says so"
 
-# Old/new: the base's brain never passes the flag. Skipped once the base has it (after the merge).
-old="$TMP/old-brain"
-if git -C "$ROOT" show "$(git -C "$ROOT" merge-base HEAD main 2>/dev/null)":bin/brain > "$old" 2>/dev/null && ! grep -q -- '--plugin-dir' "$old"; then
-  cp "$BH/bin/brain" "$TMP/new-brain"; cp "$old" "$BH/bin/brain"; chmod +x "$BH/bin/brain"
-  run 2.1.291 demo; need_started "old brain"
-  [ -z "$(flag_dir)" ] || fail "the old brain passed --plugin-dir"
-  cp "$TMP/new-brain" "$BH/bin/brain"
-  pass "803: old/new — the base's brain passes no flag at 2.1.291; this one does"
-fi
-
-# Mutants of bin/brain: each must turn one of the assertions above red.
-mut() {  # <name> <from> <to> <needle in output of a failing run>
-  cp "$ROOT/bin/brain" "$TMP/mut-brain"
-  python3 -I - "$TMP/mut-brain" "$2" "$3" <<'PY' || fail "803: the mutant '$1' targets text that is not in bin/brain"
-import sys
-p, a, b = sys.argv[1:4]
-s = open(p).read()
-if a not in s: sys.exit(1)
-open(p, "w").write(s.replace(a, b, 1))
-PY
-  chmod +x "$TMP/mut-brain"
-  ( BRAIN_SOURCE="$TMP/mut-brain" bash "$0" --as-mutant ) >"$TMP/mut.out" 2>&1 && fail "803: mutant '$1' survived"
-  return 0
-}
-if [ "${1:-}" != --as-mutant ] && [ -z "${BRAIN_SOURCE:-}" ]; then
-  mut "the flag is passed below the floor" '! _version_at_least "$cockpit_ver" "$cockpit_floor"' 'false'
-  mut "the opt-out is ignored" '[ "${FOREMAN_COCKPIT:-1}" != 0 ]; then
-    cockpit_dir' 'true; then
-    cockpit_dir'
-  mut "--no-cockpit is ignored" 'if [ "$NO_COCKPIT" = 0 ] && [ "${FOREMAN_COCKPIT:-1}" != 0 ]; then' 'if [ "${FOREMAN_COCKPIT:-1}" != 0 ]; then'
-  mut "the floor message is dropped" 'echo "brain: cockpit needs claude' ': "brain: cockpit needs claude'
-  mut "the flag goes to opencode too" 'agent_args=(-- --auto --port "$opencode_port")' 'agent_args=(-- --auto --port "$opencode_port" --plugin-dir "$BRAIN_BIN/../cockpit")'
-  mut "only the major version is compared" 'for i in 0 1 2; do' 'for i in 0; do'
-  mut "the flag points at a different folder" 'agent_args+=(--plugin-dir "$cockpit_dir")' 'agent_args+=(--plugin-dir "$BRAIN_BIN")'
-  mut "the work root is not passed to the pane" '[ "$kind" != claude ] || [ -z "${WORK:-}" ] ||' 'true ||'
-  pass "803: 8 mutants of bin/brain, each killed"
-fi
+# Mutants of bin/brain: the eight bash mutants of this subject edited bin/brain's bash, which is gone (go-060 S5: bin/brain is a shim over
+# hw-core), and each assertion above is the survival control of one. Their Go twins are anchored on the Go source and killed in process by
+# core/brain_mutants_test.go (rows of setup/tests/contract-hw/mutants-brain-go-launch, judged by TestBrain803*):
+#   the flag is passed below the floor        go-803-M01  core/brain_launch.go
+#   the opt-out is ignored                    go-803-M02  core/brain_launch.go
+#   --no-cockpit is ignored                   go-803-M03  core/brain_launch.go
+#   the floor message is dropped              go-803-M04  core/brain_launch.go
+#   the flag goes to opencode too             go-803-M05  core/brain_launch.go
+#   only the major version is compared        go-803-M06  core/brain_helpers.go
+#   the flag points at a different folder     go-803-M07  core/brain_launch.go
+#   the work root is not passed to the pane   go-803-M08  core/brain_launch.go
+# (The old/new arm that ran the base's bash brain is gone with it: the base's brain is a shim now, and it passes the flag.)
+printf 'coverage - 803: 0 mutants (the 8 bash mutants are retired; go-803-M01..M08 hold them in Go)\n'

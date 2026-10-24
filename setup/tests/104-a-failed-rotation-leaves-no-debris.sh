@@ -146,7 +146,7 @@ dec "$T4" check >/dev/null 2>&1 || rc=$?
 [ "$rc" = 3 ] \
   && pass "a stray temp is exit 3 — not 1 (over budget) and not 2 (bad headings)" \
   || fail "a stray temp exited $rc, which hw would label as some other problem"
-grep -q 'killed rotation' "$ROOT/bin/hw" \
+grep -q 'killed rotation' "$ROOT/core/status_quiet.go" \
   || fail "hw has no sentence for exit 3, so it would label a stray temp as a budget or heading problem"
 pass "hw has its own sentence for exit 3"
 # A clean tree is NOT exit 3, or the code says nothing.

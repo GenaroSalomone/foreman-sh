@@ -198,7 +198,7 @@ func piMatchInputs(data string, base int, exact, norm string) string {
 		}
 	}
 	switch {
-	case isExact:
+	case isExact: // # MUTATION-ANCHOR: 986-G07
 		return "exact"
 	case isNorm:
 		return "normalized"
@@ -306,7 +306,7 @@ func (l *lch) piReceiptThinking(got string) {
 	case got == asked:
 		verdict = "match — asked " + asked + ", running " + got
 	default:
-		verdict = "DIVERGENCE — asked thinking " + asked + ", the session runs " + got + " (pi clamps a level the model does not support)"
+		verdict = "DIVERGENCE — asked thinking " + asked + ", the session runs " + got + " (pi clamps a level the model does not support)" // # MUTATION-ANCHOR: 986-G06
 	}
 	l.receipt("thinking_verdict", verdict, "compared EFFORT with thinking_running")
 	if strings.HasPrefix(verdict, "DIVERGENCE") {

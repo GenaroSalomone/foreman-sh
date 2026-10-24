@@ -141,10 +141,10 @@ unset _v 2>/dev/null || true
 # deliberate opt-in off, which is the "an arm nobody runs is not coverage"
 # failure `setup/mutation-coverage` exists to catch — a fix that caused it would
 # be worse than the bug.
-# HW_IMPL (and HW_CORE, the binary it routes to, and HW_SHADOW_JSONL, where shadow writes) ARE INPUTS THIS DIRECTORY OWNS, since the Go pilot (core/): `HW_IMPL=go|shadow
-# bash setup/test-hw` runs the whole suite through hw-core for the verbs it has (bin/hw's
-# shim). Unset it and the answer is Go's, which is the default (0.5.0); HW_IMPL=bash is the rollback and runs the suite on bash.
-_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING HW_IMPL HW_CORE HW_SHADOW_JSONL HW_TEST_TMPROOT "  # MUTATION-ANCHOR: 54-M02
+# HW_IMPL and HW_CORE (the binary hw routes to) ARE INPUTS THIS DIRECTORY OWNS: `HW_IMPL=go bash setup/test-hw` runs the whole suite through hw-core
+# (the answer is Go's, which is the default). HW_IMPL no longer chooses for hw, brain, channel-send, ask-invoker or done-invoker (go-060 S3: bash/shadow
+# print one warning per state and Go runs); it still chooses for the small tools (stop hook, hw-secret, hw-sandbox, ...) until their own cut.
+_HW_TEST_INPUTS=" HW_UNSTICK_BIN HW_SOURCE HW_CHECK_LIVE_REVIEW_DRIFT HW_CHECK_LIVE_REVIEW_BINDING HW_IMPL HW_CORE HW_TEST_TMPROOT "  # MUTATION-ANCHOR: 54-M02
 for _v in ${!HW_@}; do  # MUTATION-ANCHOR: 54-M01
   case "$_HW_TEST_INPUTS" in *" $_v "*) continue ;; esac
   unset "$_v" 2>/dev/null || true
@@ -282,23 +282,38 @@ trap 'rm -rf "$TMP"' EXIT
 if [ -f "$ROOT/setup/gocache.sh" ]; then . "$ROOT/setup/gocache.sh"; HW_GOCACHE_DEFAULT="$(gocache_default)"   # a harness that copies only _common.sh (145) has none
 else HW_GOCACHE_DEFAULT="${TMPDIR:-/tmp}/hw-go-cache.v2"; fi
 # HW_CORE IS A SEAM, like HW_LIB_DIR above: a subject that runs hw from a COPY of bin/ has no
-# core/dist beside it, and with HW_IMPL=go|shadow (or none: go is the default) the shim would warn that hw-core is not
-# built. When the suite is asked for an implementation other than bash, it hands the shim the hw-core it has (the built
-# one, or one built here) — never a warning line the subject did not ask for. A machine with no Go toolchain that asked
-# for nothing runs the suite on bash, and says so once (the shim's own fallback would warn in every subject).
-if [ "${HW_IMPL:-go}" != bash ] && [ -z "${HW_CORE:-}" ]; then
-  # the export of this suite may not carry contract-hw/: without it there is no hw-core to hand over
+# core/dist beside it, and hw-core is REQUIRED (go-060 S2): hw, brain, channel-send and the invokers die without one. So when the
+# suite runs, it hands the shim the hw-core it has (the built one, or one built here)
+# — and when it has none, the run STOPS here (exit 1), never on bash: a green run on bash would say nothing about what ships.
+# (HW_IMPL=bash no longer runs a suite on bash: since go-060 S3 it is a warning and Go runs.)
+if [ -z "${HW_CORE:-}" ]; then
+  _core=""
+  # the export of this suite may not carry contract-hw/: it carries the builder (setup/build-core) and core/ instead
   if [ -f "$ROOT/setup/tests/contract-hw/world.sh" ]; then
     . "$ROOT/setup/tests/contract-hw/world.sh"
-    _core="$(contract_core_bin "$TMP/hw-core-build")" || { printf 'runner: HW_IMPL=%s and the go toolchain is here, but hw-core did not build\n' "${HW_IMPL:-go}" >&2; exit 1; }
-  else
-    _core=""
+    _core="$(contract_core_bin "$TMP/hw-core-build")" || { printf 'runner: the go toolchain is here, but hw-core did not build\n' >&2; exit 1; }
+  elif command -v go >/dev/null 2>&1 && [ -x "$ROOT/setup/build-core" ] && [ -d "$ROOT/core" ]; then
+    "$ROOT/setup/build-core" --native --out "$TMP/hw-core-build" >/dev/null 2>&1 || { printf 'runner: the go toolchain is here, but setup/build-core --native failed\n' >&2; exit 1; }
+    _core="$(printf '%s\n' "$TMP"/hw-core-build/*/hw-core | head -n 1)"; [ -x "$_core" ] || _core=""
   fi
   if [ -n "$_core" ]; then export HW_CORE="$_core"
-  elif [ -z "${HW_IMPL:-}" ]; then export HW_IMPL=bash; printf 'runner: no hw-core to hand over (no go toolchain, or no contract-hw/ in this suite), so this run is on bash\n' >&2
-  else printf 'runner: HW_IMPL=%s but there is no hw-core to hand over (no go toolchain, or no contract-hw/ in this suite) — the shim will fall back to bash with its warning\n' "${HW_IMPL:-go}" >&2; fi
+  else printf 'runner: no hw-core to hand over (no go toolchain, or no contract-hw/ and no setup/build-core in this suite): hw-core is required — install Go 1.22 or newer (https://go.dev/dl) and run setup/build-core --native\n' >&2; exit 1; fi
   unset _core
 fi
+# need_invokers — hands ask-invoker and done-invoker the Go binary they require (HW_INVOKERS, the seam the invokers read
+# first), for a subject that runs them from a copy of bin/ with no core/dist beside it. They die without it (go-060 S2) and it is a
+# build of its own (core/cmd/invokers), so only the subjects that run an invoker pay for it: the go toolchain is here or the
+# subject stops, never on bash. A caller that already exports HW_INVOKERS keeps its own.
+need_invokers() {
+  [ -z "${HW_INVOKERS:-}" ] || return 0
+  [ -d "$ROOT/core/cmd/invokers" ] && command -v go >/dev/null 2>&1 \
+    || { printf 'runner: this subject runs ask-invoker/done-invoker, which are Go (go-060 S2): install Go 1.22 or newer (https://go.dev/dl) and run setup/build-core --native\n' >&2; exit 1; }
+  mkdir -p "$TMP/invokers-build"
+  ( cd "$ROOT/core" && GOCACHE="${GOCACHE:-$HW_GOCACHE_DEFAULT}" GOPATH="$TMP/invokers-build/gopath" CGO_ENABLED=0 GOTOOLCHAIN=local \
+      go build -trimpath -o "$TMP/invokers-build/invokers" ./cmd/invokers ) >&2 \
+    || { printf 'runner: go build of core/cmd/invokers failed\n' >&2; exit 1; }
+  export HW_INVOKERS="$TMP/invokers-build/invokers"
+}
 # copy_tracked_tree <src> <dst> — a release ships the TRACKED tree, so a fixture that stands for a
 # release (or for a published repository) copies that and nothing else. The checkout's untracked
 # load (lane evidence, snapshots, .claude/.opencode caches, build output) was ~440 MB in the main
@@ -815,17 +830,6 @@ PYREC
   trap 'kill "$HR_PID" 2>/dev/null || true; rm -rf "$HR_DIR" "$TMP"' EXIT
 }
 
-# pin_bash <hw-copy> — the shim of a mutated COPY answers on bash, whatever HW_IMPL the suite runs under. For a
-# subject that builds the copy first and mutates a module under lib/ afterwards, where mutate_anchor cannot tell
-# which shim the module belongs to. Idempotent; only the copy is pinned.
-pin_bash() {
-  local f="$1" t
-  grep -q 'mutant of the bash source' "$f" 2>/dev/null && return 0
-  t="$(mktemp "${TMPDIR:-/tmp}/pin.XXXXXX")"
-  { head -n 1 "$f"; printf 'export HW_IMPL=bash  # mutate_anchor: this copy is a mutant of the bash source\n'; tail -n +2 "$f"; } > "$t"
-  cat "$t" > "$f"; rm -f "$t"
-}
-
 # mutate_anchor <id> <file> <replacement>
 #
 # A MUTANT IS ANCHORED ON A MARKER THE SOURCE DECLARES, NEVER ON ITS PROSE.
@@ -843,7 +847,7 @@ pin_bash() {
 mutate_anchor() {
   local id="$1" file="$2" repl="$3"
   [ $# -eq 3 ] || fail "mutate_anchor <id> <file> <replacement>"
-  MUTANT_KEEPS_IMPL="${MUTANT_KEEPS_IMPL:-}" MUTANT_SUITE_ROOT="$ROOT" python3 - "$id" "$file" "$repl" <<'PYANCHOR' || fail "mutate_anchor $id: anchor not applied in $file"
+  MUTANT_SUITE_ROOT="$ROOT" python3 - "$id" "$file" "$repl" <<'PYANCHOR' || fail "mutate_anchor $id: anchor not applied in $file"
 import os, pathlib, re, sys
 anchor_id, path, repl = sys.argv[1:4]
 p = pathlib.Path(path)
@@ -862,15 +866,22 @@ if ends:
     j = ends[0]
 indent = re.match(r"\s*", lines[i]).group(0)
 lines[i:j + 1] = [indent + r if r else r for r in repl.split("\n")]
-# A MUTANT OF THE BASH SOURCE RUNS ON BASH. Under HW_IMPL=go|shadow the verb is answered by hw-core, so the
-# mutated line never runs and the mutant is VACUOUS or SURVIVES for a reason that is no defect of the test.
-# The shim that decides is bin/hw, so it is the shim of the mutated copy that is pinned to HW_IMPL=bash (and
-# whatever it execs inherits it): the file itself when it is the shim, else the `hw` beside it (a helper in
-# bin/) or in, or beside, the root of the lib/ it sits under (a module in lib/hw/). Only the mutated copy is pinned; the
-# subject's own checks keep running under the HW_IMPL of the suite. A subject whose mutants are of the shim or of
-# the shadow itself sets MUTANT_KEEPS_IMPL=1 (890, 950-953, 955, 960, 842): the HW_IMPL it passes is the claim.
-pin = "export HW_IMPL=bash  # mutate_anchor: this copy is a mutant of the bash source"
+# A MUTANT OF THE BASH SOURCE RUNS ON BASH. brain, channel-send, ask-invoker, done-invoker and hw have no bash source any more
+# (go-060 S4, S5): a mutant of one is a mutant of a Go source, and a copy of their shim is never pinned. The eight small tools
+# (stop hook, hw-secret, ...) run Go by default (go-060 S6) and are brought back by their OWN word, HW_IMPL_<TOOL>=bash: a copy
+# of one of those is pinned to that, so the mutant under test is the bash that runs. Only the mutated copy is pinned; the
+# subject's own checks keep running as the suite runs.
+def pin_impl(base):
+    up = {"hw-stop-hook.sh": "STOP_HOOK"}.get(base) or base.replace(".sh", "").replace("-", "_").upper()
+    return "export HW_IMPL_%s=bash  # mutate_anchor: this copy is a mutant of the bash source" % up
+SMALL_TOOLS = {"hw-stop-hook.sh", "hw-secret", "hw-sandbox", "browser-close", "brain-archive", "secret-unlock", "opencode-auto", "codex-channel-session-hook.sh", "wrapper-go.sh"}
 def pin_shell(target):
+    base = os.path.basename(target)
+    if base not in SMALL_TOOLS:
+        return
+    if base == "wrapper-go.sh":
+        return  # the shim is sourced, not run: it has no shebang to pin under
+    pin = pin_impl(base)
     if os.path.islink(target) or not os.path.isfile(target):
         return
     t = pathlib.Path(target)
@@ -881,26 +892,11 @@ def pin_shell(target):
         if not re.search(r"\b(ba)?sh\b", tl[0]):
             return
         tl.insert(1, pin)
-    elif target.endswith(".sh"):
-        tl.insert(0, pin)
     else:
         return
     t.write_text("\n".join(tl))
 p.write_text("\n".join(lines))
-if os.environ.get("MUTANT_KEEPS_IMPL"):
-    sys.exit(0)  # a subject whose mutants are of the shim or shadow itself: the HW_IMPL it passes IS the claim
 pin_shell(path)
-d = os.path.dirname(os.path.abspath(path))
-cands = [os.path.join(d, "hw")]
-if "/lib/" in os.path.abspath(path):
-    root = os.path.abspath(path).split("/lib/")[0]
-    cands += [root + "/bin/hw", root + "/hw"]
-# A copy made BESIDE the real shim (780: bin/hw.m780.*) shares its `hw`: that one is the suite's own source and
-# is never written. The mutated copy itself was pinned above; a sibling is pinned only when it is another copy.
-src_root = os.path.realpath(os.environ.get("MUTANT_SUITE_ROOT") or "/nonexistent") + "/"
-for c in cands:
-    if os.path.basename(path) != "hw" and not os.path.realpath(c).startswith(src_root):
-        pin_shell(c)
 PYANCHOR
 }
 

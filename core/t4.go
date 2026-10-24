@@ -43,6 +43,15 @@ func (a *app) cmdT4(verb string) int {
 
 // hasApply reports whether argv carries `--apply` as a word of its own: bin/hw sends `reap` and `sweep` to the T4
 // writer on exactly that (`case " $* " in *" --apply "*`), and to the T2 reader on its absence.
+func hasHelp(args []string) bool {
+	for _, x := range args {
+		if x == "-h" || x == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
 func hasApply(args []string) bool {
 	for _, x := range args {
 		if x == "--apply" {

@@ -98,8 +98,9 @@ case "$out" in *"1 index(es) over 10 B"*) pass "budget: an index over the byte b
   *) fail "budget: an index over budget was not named: $out" ;; esac
 
 # ── 3. hw status runs it ────────────────────────────────────────────────────
-awk '/^cmd_status\(\) \{/,/^\}/' "$ROOT/lib/hw/status.sh" | grep -q '"$HW_BIN_DIR/memory-audit"' \
-  || fail "wiring: cmd_status does not run bin/memory-audit"
+# hw status is hw-core's `status-full`: its startAudits runs bin/memory-audit beside the engram label audit (core/status.go)
+rg -q 'filepath.Join\(bin, "memory-audit"\)' "$ROOT/core/status.go" \
+  || fail "wiring: hw-core's status does not run bin/memory-audit (core/status.go startAudits)"
 pass "wiring: hw status runs the audit after the engram label audit"
 
 # ── mutants: each removes one check and is killed by what it printed ────────
@@ -125,12 +126,7 @@ o="$(mut "$TMP/ma-M04" "$F")"
 case "$o" in *"nowhere-at-all"*) fail "660-M04 VACUOUS: the mutant still reported the slug: $o" ;;
   *"ghost (file missing)"*) pass "mutant killed: 660-M04 dangling slugs ignored (saw: the other findings, no slug)" ;;
   *) fail "660-M04 VACUOUS: the mutant reported nothing at all: $o" ;; esac
-cp "$ROOT/lib/hw/status.sh" "$TMP/m05-hw"; mutate_anchor 660-M05 "$TMP/m05-hw" ':'
-case "$(awk '/^cmd_status\(\) \{/,/^\}/' "$TMP/m05-hw")" in
-  *memory-audit\"*) fail "660-M05 VACUOUS: the mutant still runs the audit" ;;
-  *"--audit"*) pass "mutant killed: 660-M05 hw status without the audit (saw: cmd_status with no memory-audit call)" ;;
-  *) fail "660-M05 VACUOUS: the mutant's cmd_status could not be read" ;;
-esac
+# (660-M05, 'hw status without the audit', mutated cmd_status in lib/hw/status.sh; that bash is gone, the wiring is the rg above)
 
 # ── 4. the checks added 2026-10-18, each on a store with ONE defect ─────────
 # solo <dir> <slug> <frontmatter> [indexed]: a clean fixture plus one memory file.

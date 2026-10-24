@@ -243,53 +243,11 @@ noise="$(WITNESS_SLICE_MS=200 WITNESS_INTERVAL_S=0 WITNESS_SAMPLES=2 \
   || fail "state-witness: witness_wait emitted output with WITNESS_ON_VERDICT unset: $noise"
 
 # ── hw status names the same pair ────────────────────────────────────────────
-#
-# THE LIVE PROOF IS IN THE COMMIT: the same real parked executor, read by HEAD's
-# `hw status` and then by this one —
-#
-#   before   ! setup:stranded-pair-probe   done-NOT-delivered
-#                reported done, pane still open
-#   after    ! setup:stranded-pair-probe   done-STRANDED
-#                turn 1 ended 2026-08-27T19:00:39Z and the delivery had already
-#                failed — nothing in that pane is going to retry it
-#
-# `done-NOT-delivered` was never wrong, it was INCOMPLETE: it reads as a
-# delivery that might still land, and this one cannot. The `elif turn_ended`
-# branch that would have said so is unreachable from there — `done_tok` consumes
-# the chain — so the second fact was computed and dropped.
-#
-# What a fixture adds is the truth table, which the live pane can only ever
-# occupy one cell of. The classifier is EXTRACTED FROM bin/hw rather than
-# restated, so an edit to the real expression is what runs here.
-# MATCH THE ASSIGNMENT, NEVER THE OPERATORS. Grepping for the full expression
-# meant a mutant that changed `and` to `or` was killed by the grep failing —
-# so the truth table below never ran against the mutation it was written for,
-# and would not have caught it. It now extracts whatever the line says.
-STRAND_EXPR="$(grep -E '^[[:space:]]*stranded = ' "$ROOT/lib/hw/status.sh" | sed 's/^[[:space:]]*//' || true)"
-[ -n "$STRAND_EXPR" ] \
-  && pass "hw status: the stranded classifier is present in bin/hw" \
-  || fail "hw status: no 'stranded = ...' line in bin/hw — the pair is unnamed again"
-
-# turn_ended, done_state, done_newest -> expected
-# done_newest is the on-disk marker proving the brainer WAS told; with it, the
-# stale `undelivered` token is simply out of date and nothing is stranded.
-while IFS='|' read -r te ds dn want label; do
-  [ -n "$te" ] || continue
-  got="$(python3 - "$te" "$ds" "$dn" <<PY
-import sys
-turn_ended = sys.argv[1] == "1"
-done_state = sys.argv[2] or None
-done_newest = sys.argv[3] == "1"
-$STRAND_EXPR
-print("1" if stranded else "0")
-PY
-)"
-  [ "$got" = "$want" ] && pass "hw status: $label" \
-    || fail "hw status: $label — wanted stranded=$want, got $got"
-done <<'TABLE'
-1|undelivered|0|1|both halves and no delivery marker is STRANDED
-1||0|0|a turn that ended with no report published is not stranded
-0|undelivered|0|0|an undelivered report whose turn is still open is not stranded
-1|delivered|0|0|a delivered report is not stranded, whatever the turn did
-1|undelivered|1|0|an on-disk done marker outranks a stale undelivered token
-TABLE
+# `hw status` calls an ended turn whose delivery had already failed done-STRANDED, not
+# the incomplete done-NOT-delivered (measured live on setup:stranded-pair-probe).
+# This subject used to evaluate the classifier's expression, extracted from the bash
+# `hw status`, over a five-row truth table; that source is gone (go-060 S4), and the
+# expression (core/status.go: `stranded := turnEnded && done_state == "undelivered"
+# && !doneNewest`) is a Go one. The contract-hw goldens hold its cells: status-nosock
+# (beta:t-strand-done is done-STRANDED), status-beta (an undelivered report with the
+# turn still open is done-NOT-delivered), reported-done for a delivered one.

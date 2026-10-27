@@ -12,7 +12,7 @@
 # THE TWO GATES ARE NOT REDUNDANT AND NEITHER REPLACES THE OTHER. This one is
 # the earliest point at which the offending bytes exist; pre-push is the last
 # point every commit must pass regardless of how it was built, and it is what
-# still covers a clone where nobody ran setup/install-hooks.sh. They share ONE
+# still covers a clone where nobody ran setup/install/install-hooks.sh. They share ONE
 # detection — setup/hooks/attribution-pattern.sh — precisely so that "the two
 # gates disagree" cannot happen silently.
 #
@@ -30,7 +30,7 @@
 # Override with `git commit --no-verify` — the same escape hatch as every other
 # gate here, because a hook may be wrong and a human may have a reason.
 #
-# Installed by setup/install-hooks.sh as a bare symlink; see setup/hooks/README.md.
+# Installed by setup/install/install-hooks.sh as a bare symlink; see setup/hooks/README.md.
 set -euo pipefail
 
 MSG_FILE="${1:-}"

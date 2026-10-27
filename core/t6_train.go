@@ -5,7 +5,7 @@ package main
 // base advances to it without touching other brainers' uncommitted edits.
 //
 // A merge here never touches a working tree: `git merge-tree --write-tree` computes it, `commit-tree` records it,
-// `update-ref` moves the branch with the old value as a guard. The only conflict resolved is setup/test-budgets.json
+// `update-ref` moves the branch with the old value as a guard. The only conflict resolved is setup/suite-data/test-budgets.json
 // (t6_train_budgets.go). The base is advanced, not pushed.
 //
 // Every message is hw-train's own (`say` on stdout, `refuse` on stderr, status 1), not bin/hw's glyph helpers; only
@@ -29,7 +29,7 @@ import (
 const trainUsage = "usage: hw train add <project> <task> | status <project> | push <project>"
 
 // trainBudgetsPath is the one file whose conflict the train resolves.
-const trainBudgetsPath = "setup/test-budgets.json"
+const trainBudgetsPath = "setup/suite-data/test-budgets.json"
 
 type trainRun struct {
 	*app
@@ -635,10 +635,10 @@ func (r *trainRun) cmdPush() {
 		r.refuse("MAIN MOVED: %s is at %s, not in the verified %s — run hw train push %s again", r.base, r.short(h), r.short(c), r.proj)
 	}
 	r.advance(h, c)
-	hooks := r.co + "/setup/install-hooks.sh"
+	hooks := r.co + "/setup/install/install-hooks.sh"
 	if st, err := os.Stat(hooks); err == nil && st.Mode().IsRegular() {
-		if extRun(extCall{Name: "bash", Args: []string{"setup/install-hooks.sh"}, Dir: r.co}).RC != 0 {
-			r.say("WARNING: setup/install-hooks.sh failed after the advance — run it by hand")
+		if extRun(extCall{Name: "bash", Args: []string{"setup/install/install-hooks.sh"}, Dir: r.co}).RC != 0 {
+			r.say("WARNING: setup/install/install-hooks.sh failed after the advance — run it by hand")
 		}
 	}
 	r.say("%s advanced %s -> %s. Not pushed; to publish:", r.base, r.short(h), r.short(c))

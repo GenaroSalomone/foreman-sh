@@ -1,4 +1,4 @@
-# Native Windows (Git Bash) only: setup/mutation-coverage reads this file there and
+# Native Windows (Git Bash) only: setup/mutation/mutation-coverage reads this file there and
 # nowhere else. One row per arm, by its exact name, tab-separated:
 #   <subject file>	<arm>	<one-line reason>
 # No wildcards. A subject is exempt only when every arm it declares is listed.

@@ -4,7 +4,7 @@ about: A write the guards let through, or a harmless command they refuse
 labels: guard
 ---
 
-The guards are a tripwire, not a sandbox (see `THREAT-MODEL.md` and
+The guards are a tripwire, not a sandbox (see `docs/THREAT-MODEL.md` and
 `SECURITY.md`). A bypass that needs a deliberate attacker on your own machine is
 a vector to close, not a vulnerability; report a real vulnerability privately
 as `SECURITY.md` describes.

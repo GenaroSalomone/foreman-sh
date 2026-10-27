@@ -1,7 +1,7 @@
 # foreman-sh reference
 
 Every command, brief field, framework, cockpit control and lane setting, in one
-place. The [README](README.md) is the tour; this is the lookup.
+place. The [README](../README.md) is the tour; this is the lookup.
 
 ## Commands
 
@@ -23,7 +23,7 @@ place. The [README](README.md) is the tour; this is the lookup.
 | `hw preflight --json -- <hw argv>` | Read-only verdict on a dispatch you have not run: `{"level":"ok\|warn\|block","rules":[…]}`. Two rules today: an `--account` other than the lane's, and a release cut holding the suite. Exits 0 whatever the level; only a malformed call exits 1. |
 | `brain relaunch (--all\|<lane>…) [--dry-run]` | Reopen idle Claude Code brainers with the cockpit, keeping each one's conversation, pane and account. A working pane is skipped and named. |
 | `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove. `--apply` removes them, archiving `.artifacts`/`qa-report` to `archive/<lane>/<task>/` beside the work directory first. Dirty, unmerged or occupied work is never removed. Also lists executors kept after a `--blocked` report and left unanswered for 24h; `--apply` closes them. |
-| `hw train add <lane> <task>` | Merge a reported task's branch into `train-<lane>`. Only a `setup/test-budgets.json` conflict is resolved; any other is named. |
+| `hw train add <lane> <task>` | Merge a reported task's branch into `train-<lane>`. Only a `setup/suite-data/test-budgets.json` conflict is resolved; any other is named. |
 | `hw train push <lane>` | Run the full suite on the train, then move `main` to it, keeping uncommitted edits in the checkout. Pushes nothing. |
 
 `<pane>` is the executor's herdr pane, as `hw status` lists it. `hw help all`

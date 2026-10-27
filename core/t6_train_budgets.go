@@ -1,6 +1,6 @@
 package main
 
-// The three-way merge of setup/test-budgets.json that bin/hw-train ran as an inline python3 script: per key, a side
+// The three-way merge of setup/suite-data/test-budgets.json that bin/hw-train ran as an inline python3 script: per key, a side
 // that left a key as the base had it takes the other side's value (a deletion included), and where both changed it
 // the train's (ours) wins. Written the way setup/measure-tests.sh writes it: json.dumps(indent=2, sort_keys=True).
 

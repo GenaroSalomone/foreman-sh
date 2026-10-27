@@ -41,8 +41,8 @@ cp "$ROOT/setup/hooks/commit-msg" "$ROOT/setup/hooks/pre-commit" \
    "$ROOT/setup/hooks/pre-push" "$ROOT/setup/hooks/attribution-pattern.sh" \
    "$ROOT/setup/hooks/suite-trigger-pattern.sh" "$repo/setup/hooks/"
 cp "$ROOT/setup/hooks/decisions-check.py" "$repo/setup/hooks/" 2>/dev/null || true
-cp "$ROOT/setup/install-hooks.sh" "$repo/setup/"
-chmod +x "$repo/setup/install-hooks.sh" "$repo/setup/hooks/commit-msg" \
+mkdir -p "$repo/setup/install"; cp "$ROOT/setup/install/install-hooks.sh" "$repo/setup/install/"
+chmod +x "$repo/setup/install/install-hooks.sh" "$repo/setup/hooks/commit-msg" \
          "$repo/setup/hooks/pre-commit" "$repo/setup/hooks/pre-push"
 printf 'prose only\n' > "$repo/README.md"
 git -C "$repo" add -A
@@ -76,7 +76,7 @@ git -C "$repo" reset -q --soft HEAD~1 2>/dev/null || git -C "$repo" update-ref -
 git -C "$repo" add -A
 
 # ── install the hooks the documented way ────────────────────────────────────
-install_out="$(cd "$repo" && ./setup/install-hooks.sh 2>&1)" \
+install_out="$(cd "$repo" && ./setup/install/install-hooks.sh 2>&1)" \
   || fail "install: install-hooks.sh failed in the fixture: $install_out"
 case "$install_out" in
   *"commit-msg -> setup/hooks/commit-msg"*)

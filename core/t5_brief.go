@@ -1137,7 +1137,7 @@ func (d *dsp) brUser() string {
 }
 
 // brRemoteWords are the generic remote-access markers of _brief_remote_marker; the ones that name this machine's
-// hosts and tools are read from <bin>/../setup/remote-markers.txt, which the export leaves out.
+// hosts and tools are read from <bin>/../setup/suite-data/remote-markers.txt, which the export leaves out.
 var brRemoteWords = []string{"ops-investigator", "prod", "producción", "produccion", "production", "ssh", "VPS"}
 
 // remoteMarker is _brief_remote_marker: the first remote-access marker the brief's body (frontmatter excluded) names,
@@ -1151,7 +1151,7 @@ func (d *dsp) remoteMarker() string {
 		return ""
 	}
 	words := append([]string{}, brRemoteWords...)
-	if f, err := os.ReadFile(d.env("HW_CORE_BIN_DIR") + "/../setup/remote-markers.txt"); err == nil {
+	if f, err := os.ReadFile(d.env("HW_CORE_BIN_DIR") + "/../setup/suite-data/remote-markers.txt"); err == nil {
 		for _, l := range strings.Split(string(f), "\n") {
 			l, _, _ = strings.Cut(l, "#")
 			if w := strings.TrimSpace(l); w != "" {

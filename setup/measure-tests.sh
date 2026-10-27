@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Measures real wall-clock seconds per setup/tests/*.sh subject, run the same
 # way test-hw runs them (own bash process, git env stripped), and writes
-# setup/test-budgets.json — the file the fast/slow gate split is derived from.
+# setup/suite-data/test-budgets.json — the file the fast/slow gate split is derived from.
 #
 # Usage:
 #   bash setup/measure-tests.sh                 # re-measure EVERY subject file
@@ -16,18 +16,18 @@
 # own classification by running the full suite to decide whether to run the
 # full suite — the measurement is a value committed once (here) and read many
 # times (by test-hw's own completeness+threshold check, every fast run). This
-# script is the only place that WRITES setup/test-budgets.json; test-hw only
+# script is the only place that WRITES setup/suite-data/test-budgets.json; test-hw only
 # reads it.
 #
 # fast_gate_threshold_seconds is PRESERVED across a partial (named-files) run
 # and defaults to 2.0 — the value measured 2026-09-09 to keep the fast gate's
 # own sum in the tens of seconds — on a full regeneration that has none yet.
-# Change it by editing setup/test-budgets.json directly, or pass
+# Change it by editing setup/suite-data/test-budgets.json directly, or pass
 # MEASURE_TESTS_THRESHOLD=<n> to this script.
 set -uo pipefail
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS="$HERE/tests"
-OUT="$HERE/test-budgets.json"
+OUT="$HERE/suite-data/test-budgets.json"
 
 declare -a TARGETS
 if [ "$#" -gt 0 ]; then

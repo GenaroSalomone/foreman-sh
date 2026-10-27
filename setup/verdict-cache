@@ -10,8 +10,8 @@
     verdict-cache forget <key>               drop one
 
 THE KEY IS CONTENT, NEVER A NAME OR A COMMIT. sha256 over: the job's id; its own file; the bytes of every file it reads (a subject:
-setup/subject-deps.txt, MEASURED by setup/measure/subject-deps.py with the access-time method of go-test-deps.py; a go-test partition:
-setup/go-test-deps.txt, measured the same way, through the same rules `go-test-core.sh --affected` applies); the machinery every job rides
+setup/suite-data/subject-deps.txt, MEASURED by setup/measure/subject-deps.py with the access-time method of go-test-deps.py; a go-test partition:
+setup/suite-data/go-test-deps.txt, measured the same way, through the same rules `go-test-core.sh --affected` applies); the machinery every job rides
 on (the runner, the mutation-coverage check and its tables); the NAMES of each directory a read file lives in (a file ADDED to one moves the
 key — a subject that globs would read it); the toolchain (go, bash, python, the herdr binary's bytes, the platform); and an allowlist of
 HW_* knobs that change what a job checks. A subject nobody measured is keyed to the WHOLE tree: it misses on any change anywhere, which is
@@ -35,12 +35,12 @@ import time
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
 GO_CORE = "setup/go-test-core.sh"
-TABLE = "setup/go-test-partitions.txt"
-DEPS_GO = "setup/go-test-deps.txt"
-DEPS_SUBJECT = "setup/subject-deps.txt"
+TABLE = "setup/suite-data/go-test-partitions.txt"
+DEPS_GO = "setup/suite-data/go-test-deps.txt"
+DEPS_SUBJECT = "setup/suite-data/subject-deps.txt"
 # what every job rides on: a change here is a change to what a green means
-COMMON_FILES = ["setup/test-hw", "setup/mutation-coverage", "setup/mutation-anchors.tsv", "setup/mutation-exceptions.tsv",
-                "setup/mutation-exempt-native-windows.tsv", "setup/mutation-exempt-no-security.tsv", "setup/mutation-exempt-not-macos.tsv"]
+COMMON_FILES = ["setup/test-hw", "setup/mutation/mutation-coverage", "setup/mutation/mutation-anchors.tsv", "setup/mutation/mutation-exceptions.tsv",
+                "setup/mutation/mutation-exempt-native-windows.tsv", "setup/mutation/mutation-exempt-no-security.tsv", "setup/mutation/mutation-exempt-not-macos.tsv"]
 # the HW_* knobs that change WHAT a job checks (which implementation, which in-process switch), not how fast or where it runs
 ENV_ALLOW = re.compile(r"^HW_(IMPL_|INPROC_|CONTRACT_|C[0-9]+_)[A-Z0-9_]*$")
 RUN_STATE = {".hw", ".artifacts"}
@@ -180,7 +180,7 @@ def env_knobs():
     return "\n".join("%s=%s" % (k, v) for k, v in sorted(os.environ.items()) if ENV_ALLOW.match(k))
 
 
-# ── a subject's reads (setup/subject-deps.txt) ───────────────────────────────
+# ── a subject's reads (setup/suite-data/subject-deps.txt) ───────────────────────────────
 
 def parse_subject_deps():
     """measured subject -> its read paths; a subject with no SUBJECT line was never measured"""
@@ -225,7 +225,7 @@ def never_declared(rel):
     return False
 
 
-# ── a go-test partition's reads (setup/go-test-deps.txt + the table), the rules of `go-test-core.sh --affected` ──
+# ── a go-test partition's reads (setup/suite-data/go-test-deps.txt + the table), the rules of `go-test-core.sh --affected` ──
 
 def posix_ere(rx):
     return rx.replace("[[:space:]]", r"\s").replace("[[:alpha:]]", "[A-Za-z]").replace("[[:digit:]]", "[0-9]").replace("[[:alnum:]]", "[A-Za-z0-9]")

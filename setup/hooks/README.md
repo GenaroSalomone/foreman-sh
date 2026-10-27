@@ -2,8 +2,8 @@
 
 `.git/hooks` is not versioned, so a fresh clone has none of this. Install them all:
 
-    setup/install-hooks.sh            # install or repair
-    setup/install-hooks.sh --check    # say what is installed, change nothing
+    setup/install/install-hooks.sh            # install or repair
+    setup/install/install-hooks.sh --check    # say what is installed, change nothing
 
 It links the three entry points git invokes and nothing else. The files those
 hooks SHARE — `suite-trigger-pattern.sh`, `attribution-pattern.sh`,
@@ -20,7 +20,7 @@ installs into a fixture and runs the installed hook with no sibling present.
 
 **`pre-commit`** refuses a commit that mixes shared tooling (`bin/`, `shell/`,
 `layouts/`, `setup/plans/`, `setup/hooks/`, `CLAUDE.shared.md`, the root `CLAUDE.md`, `README.md`,
-`BRIEF-TEMPLATE.md`) with one project lane's files (`<project>/decisions*`,
+`docs/BRIEF-TEMPLATE.md`) with one project lane's files (`<project>/decisions*`,
 `<project>/briefs/`, `<project>/CLAUDE.md`, `<project>/.claude/`,
 `<project>/opencode.json`).
 

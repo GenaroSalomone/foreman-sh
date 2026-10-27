@@ -139,7 +139,7 @@ claim "C01 every HW_* the pane exported is swept, including an invented HW_CHAIN
 # NOT A NICETY. HW_CHECK_LIVE_REVIEW_DRIFT and HW_CHECK_LIVE_REVIEW_BINDING gate
 # an OPTIONAL LIVE ARM in 31 and 36. Sweeping them would silently turn a
 # deliberate opt-in off — "an arm nobody runs is not coverage", which is the
-# failure setup/mutation-coverage was written for. A fix that caused that would
+# failure setup/mutation/mutation-coverage was written for. A fix that caused that would
 # be worse than the bug it fixed.
 for k in "KEPT_UNSTICK=/keep/unstick" "KEPT_SOURCE=/keep/source" \
          "KEPT_DRIFT=1" "KEPT_BINDING=1"; do
@@ -362,7 +362,7 @@ saw_mutant "M04 the second runner enumerates two of four chaining names, so a ch
 # COUNTED, NOT `case`d. The first version of this arm was
 # `*"not ok"*) fail ;; *) pass` — a catch-all that passes on the ABSENCE of
 # "not ok", so a mutant that died before its first assertion would satisfy it.
-# setup/mutation-coverage refused it by name, and it was right: that is the
+# setup/mutation/mutation-coverage refused it by name, and it was right: that is the
 # 8f5c8ef shape this whole suite is built against. Both runs are now measured by
 # their own tallies, and the marker proves each one reached the mutated line.
 m04_clean="$(cat "$BG/m04-clean")"

@@ -34,7 +34,7 @@
 # something is missing, refused or failed — named. Exit 2: usage.
 set -uo pipefail
 
-SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # scripts/ sits one level under the checkout
 INIT_CMD="${FOREMAN_SH_INIT_CMD:-./install.sh init}"
 FRONT="${INIT_CMD% init}"
 BRAIN_DIR="" LANE="demo" REPO="" BIN_DIR="" YES=0 DRY=0 WITH_RP=0

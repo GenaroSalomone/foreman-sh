@@ -37,7 +37,7 @@ rm -f "$TMP/bin/herdr" "$TMP/bin/herdr-rpc"
 hash -r
 
 # On native Windows a missing tool is a failure, not a skip: there the gate
-# exempts 650's arm by name (setup/mutation-exempt-native-windows.tsv) for the
+# exempts 650's arm by name (setup/mutation/mutation-exempt-native-windows.tsv) for the
 # stop below, and a skip here would ride that into a pass.
 for _p in herdr jq python3; do
   command -v "$_p" >/dev/null 2>&1 && continue

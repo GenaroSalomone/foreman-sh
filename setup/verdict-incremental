@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """verdict-incremental — after a red full run, rerun only what the fix can have changed.
 
-    verdict-incremental plan   <root> [--full] [--tree <t>] [--out <file>]
-    verdict-incremental record <root> --results <file> --rc <n> --elapsed <s> [--tree <t> --commit <c>] [--base-tree <b>]
+    verdict-incremental plan   <root> [--full] [--tree <t>] [--out <file>] [--platform linux [--base-tree <b>]]
+    verdict-incremental record <root> --results <file> --rc <n> --elapsed <s> [--tree <t> --commit <c>] [--base-tree <b>] [--platform linux]
     verdict-incremental chain  <common-dir> <tree>
 
 WHY. The 0.3.7 train ran `setup/verify-for-push` six times in about five hours
@@ -26,7 +26,7 @@ least, and reruns ONLY:
     EVERY slow subject `touched` names (its budget cut is the pre-commit's
     economy; this is the full run, so nothing is cut);
   · the subjects that carry a mutant anchored on a changed file
-    (setup/mutation-anchors.tsv);
+    (setup/mutation/mutation-anchors.tsv);
   · the guard jobs, when a guard changed;
   · any job T1 never ran (a new subject);
   · of the in-process suite (setup/go-test-core.sh), only the partitions the fast gate's own map says the diff
@@ -163,11 +163,11 @@ def runner_files(root):
 
 
 # A `# MUTATION-ANCHOR: <id>` (or -END) comment closing a line, alone or several in a row. It is a
-# declaration read by setup/mutation-anchors.tsv and 540, never code: no subject's verdict moves with it.
+# declaration read by setup/mutation/mutation-anchors.tsv and 540, never code: no subject's verdict moves with it.
 ANCHOR_TAIL = re.compile(r"(?:[ \t]*#[ \t]*MUTATION-ANCHOR(?:-END)?:[ \t]*[A-Za-z0-9][\w.-]*)+[ \t]*$")  # MUTATION-ANCHOR: 820-M04
 
 
-# 540 judges every marker against setup/mutation-anchors.tsv, but its gate-when matches no runner path:
+# 540 judges every marker against setup/mutation/mutation-anchors.tsv, but its gate-when matches no runner path:
 # a marker-only runner change is trusted by the strip above, so the job that checks the markers is forced.
 ANCHOR_JOB = "540-las-anclas-de-mutacion-existen.sh"
 
@@ -234,13 +234,17 @@ def current_impl():
     return "bash" if os.environ.get("HW_IMPL", "go") == "bash" else "go"
 
 
-def usable_base(path, tree_from_name, chain=False):
+def usable_base(path, tree_from_name, chain=False, platform=""):
     """A record a plan may start from: a real full run, and with chain=True also a green incremental one
-    still under the hop cap (a new run off it would be at most MAX_CHAIN hops from the full run)."""
+    still under the hop cap (a new run off it would be at most MAX_CHAIN hops from the full run).
+    platform="linux" asks for a record the Linux suite wrote (`<tree>.linux.subjects`, `platform=linux`): rows of jobs as
+    that platform judged them are never a base for the other one."""
     rec = parse_record(path)
     if not rec:
         return None, "unreadable"
     h = rec["head"]
+    if (h.get("platform") or "") != platform:  # MUTATION-ANCHOR: 1130-M03
+        return None, "it measured platform=%s, this run is platform=%s" % (h.get("platform") or "host", platform or "host")
     if (h.get("impl") or "go") != current_impl():
         # A record is rows of jobs as ONE implementation judged them; a plan under the other would vouch for rows it never ran.
         return None, "it measured impl=%s, this run is impl=%s" % (h.get("impl") or "go", current_impl())
@@ -268,7 +272,7 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def cmd_record(root, results, rc, elapsed, tree=None, commit=None, base_tree=None):
+def cmd_record(root, results, rc, elapsed, tree=None, commit=None, base_tree=None, platform=""):
     # THE TREE THAT WAS TESTED, not the one HEAD points to when the run ends: a
     # full run lasts ~1000 s over a snapshot taken at its start, and another
     # agent committing into the shared tree meanwhile moves HEAD. Filing the
@@ -306,6 +310,10 @@ def cmd_record(root, results, rc, elapsed, tree=None, commit=None, base_tree=Non
     d = os.path.join(common_dir(root), "hw-push-verified")
     os.makedirs(d, exist_ok=True)
     kind, extra = "full", []
+    if platform and base_tree:
+        # A Linux base is a real full run, always: the release cut accepts one hop off it and no more.
+        print("verdict-incremental: a Linux record is a full run's — no incremental one is written", file=sys.stderr)
+        return 1
     if base_tree:
         # AN INCREMENTAL RUN'S RECORD: only a GREEN one is a base (a red leaves nothing to stand on), made of
         # its base's rows with the jobs this run re-ran written over them.
@@ -333,8 +341,10 @@ def cmd_record(root, results, rc, elapsed, tree=None, commit=None, base_tree=Non
             "recorded_at=" + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "elapsed_seconds=" + str(elapsed), "rc=" + str(rc), "runner_red=%d" % runner_red,
             "jobs=%d" % len(rows), "reds=%d" % reds] + extra
+    if platform:
+        head.append("platform=" + platform)
     body = "\n".join("\t".join(r) for r in rows)
-    write_atomic(os.path.join(d, tree + ".subjects"), "\n".join(head) + "\n\n" + body + "\n")
+    write_atomic(os.path.join(d, tree + (".%s" % platform if platform else "") + ".subjects"), "\n".join(head) + "\n\n" + body + "\n")
     print("verdict-incremental: recorded %d jobs (%d red) for tree %s%s" % (len(rows), reds, tree, " (incremental, chain_depth=%d)" % depth if base_tree else ""), file=sys.stderr)
     return 0
 
@@ -392,10 +402,10 @@ def is_guard_path(root, path):
 
 
 def fast_subjects(root, tests):
-    """Every subject setup/test-budgets.json classifies fast (what the fast gate runs)."""
+    """Every subject setup/suite-data/test-budgets.json classifies fast (what the fast gate runs)."""
     import json
     try:
-        b = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+        b = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))
         thr = b["fast_gate_threshold_seconds"]
         return sorted(n for n, v in b["files"].items() if v["seconds"] <= thr and n in tests)
     except (ValueError, KeyError, TypeError):
@@ -405,7 +415,7 @@ def fast_subjects(root, tests):
 def anchored_subjects(root, changed, tests):
     """Subjects whose mutants are anchored on a changed file: `<N>-Mxx<TAB><file>`."""
     out = {}
-    for line in read(os.path.join(root, "setup", "mutation-anchors.tsv")).split("\n"):
+    for line in read(os.path.join(root, "setup", "mutation", "mutation-anchors.tsv")).split("\n"):
         f = line.split("\t")
         if len(f) < 2 or f[1] not in changed:
             continue
@@ -453,7 +463,7 @@ def go_partitions(root, changed, rows):
     return sel, names
 
 
-def cmd_plan(root, full, out, expect_tree=None):
+def cmd_plan(root, full, out, expect_tree=None, platform="", only_base=None):
     def fallback(why):
         print("full %s" % why)
         return 0
@@ -475,11 +485,17 @@ def cmd_plan(root, full, out, expect_tree=None):
 
     best = None
     skipped = []
+    suffix = (".%s" % platform if platform else "") + ".subjects"
     for fn in sorted(os.listdir(d)) if os.path.isdir(d) else []:
-        if not fn.endswith(".subjects"):
+        if not fn.endswith(suffix):
             continue
-        base = fn[:-len(".subjects")]
-        rec, why = usable_base(os.path.join(d, fn), base, chain=True)  # MUTATION-ANCHOR: 820-M09
+        base = fn[:-len(suffix)]
+        if not HEX40.match(base):
+            continue  # the other platform's record (`<tree>.linux.subjects` is no base of a host plan) or a stray file
+        if only_base and base != only_base:
+            continue
+        # A Linux plan stands on a real full run only: the cut counts one hop from it, never two.
+        rec, why = usable_base(os.path.join(d, fn), base, chain=not platform, platform=platform)  # MUTATION-ANCHOR: 820-M09
         if rec is None:
             skipped.append("%s (%s)" % (base[:9], why))
             continue
@@ -500,6 +516,8 @@ def cmd_plan(root, full, out, expect_tree=None):
         key = (len(files), dist if dist is not None else 10 ** 9)
         if best is None or key < best[0]:
             best = (key, base, rec, files, dist)
+    if best is None and only_base:
+        return fallback("the asked-for base %s has no usable %srecord%s" % (only_base[:9], platform + " " if platform else "", " (skipped: %s)" % ", ".join(skipped[:3]) if skipped else ""))
     if best is None:
         return fallback("no recorded full run to start from%s" % (" (skipped: %s)" % ", ".join(skipped[:3]) if skipped else ""))
     _, base, rec, changed, dist = best  # MUTATION-ANCHOR: 820-M11
@@ -598,7 +616,9 @@ def cmd_chain(common, tree):
         print("an incremental verdict that does not name a base tree at one hop (chain_depth=%s, base_tree=%s)"
               % (v.get("chain_depth", "?"), base or "?"))
         return 1
-    rec, why = usable_base(os.path.join(d, base + ".subjects"), base)  # chain=False: the cut wants a REAL full run
+    # A Linux verdict stands on a Linux record of its base: the macOS rows of the same tree are another platform's claim.
+    plat = v.get("platform") or ""
+    rec, why = usable_base(os.path.join(d, base + (".%s" % plat if plat else "") + ".subjects"), base, platform=plat)  # chain=False: the cut wants a REAL full run
     if rec is None:
         print("its base %s is not a recorded real full run (%s)" % (base[:9], why))
         return 1
@@ -625,17 +645,17 @@ def main(argv):
     flags = set()
     i = 0
     while i < len(rest):
-        if rest[i] in ("--results", "--rc", "--elapsed", "--out", "--tree", "--commit", "--base-tree"):
+        if rest[i] in ("--results", "--rc", "--elapsed", "--out", "--tree", "--commit", "--base-tree", "--platform"):
             opt[rest[i]] = rest[i + 1] if i + 1 < len(rest) else ""
             i += 2
         else:
             flags.add(rest[i])
             i += 1
     if cmd == "plan":
-        return cmd_plan(root, "--full" in flags, opt.get("--out"), opt.get("--tree"))
+        return cmd_plan(root, "--full" in flags, opt.get("--out"), opt.get("--tree"), opt.get("--platform", ""), opt.get("--base-tree"))
     if cmd == "record":
         return cmd_record(root, opt.get("--results", ""), opt.get("--rc", "1"), opt.get("--elapsed", "0"),
-                          opt.get("--tree"), opt.get("--commit"), opt.get("--base-tree"))
+                          opt.get("--tree"), opt.get("--commit"), opt.get("--base-tree"), opt.get("--platform", ""))
     if cmd == "chain":
         return cmd_chain(argv[2], rest[0] if rest else "")
     print("verdict-incremental: unknown command %s" % cmd, file=sys.stderr)

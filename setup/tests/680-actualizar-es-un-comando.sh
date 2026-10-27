@@ -78,8 +78,9 @@ package() {  # <tree> <tag> — <tree> becomes <REL>/<tag>.tar.gz, one top direc
 }
 build_releases() {  # <mutate fn, or ":"> — v1.0.0 (what is installed) and v2.0.0 (the newest), both mutated alike
   rm -rf "$TMP/rel-v1" "$TMP/rel-v2"
+  # v1 is a release cut before the docs moved (its notes at the root: what a rollback --to reads), v2 one after (docs/)
   copy_tree "$TMP/rel-v1"; notes v1.0.0 "THE-OLD-RELEASE-IN-SHORT" > "$TMP/rel-v1/RELEASE-NOTES.md"
-  copy_tree "$TMP/rel-v2"; notes v2.0.0 "THE-NEW-RELEASE-IN-SHORT: it is faster" > "$TMP/rel-v2/RELEASE-NOTES.md"
+  copy_tree "$TMP/rel-v2"; mkdir -p "$TMP/rel-v2/docs"; notes v2.0.0 "THE-NEW-RELEASE-IN-SHORT: it is faster" > "$TMP/rel-v2/docs/RELEASE-NOTES.md"
   : > "$TMP/rel-v2/bin/probe-new-release"
   "$1" "$TMP/rel-v1"; "$1" "$TMP/rel-v2"
   package "$TMP/rel-v1" v1.0.0; package "$TMP/rel-v2" v2.0.0

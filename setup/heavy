@@ -39,6 +39,18 @@
 #              HW_INVOKER_PANE set, `channel-send --report`s it to that pane. One alert per frozen stretch; a thaw re-arms.
 #              `--status` shows `FROZEN since HH:MM` on the holder as soon as the watchdog has seen it frozen.
 #
+# OPT-IN: NOTHING HEAVY RUNS WHILE THE MAC IS IN USE (`--when-idle`, or HW_HEAVY_WHEN_IDLE=1). Never the default: the cut and run-suite.sh run
+# heavy work at background priority (taskpolicy -b) and never pause it (2026-10-26: the Linux full suite froze the machine its user was working on;
+# who vetoed pausing the work). macOS only: a host without ioreg reads as idle, so nothing pauses there. The console's idle time is `ioreg -c IOHIDSystem` HIDIdleTime (ns).
+#   start      the command (and its place in the queue) waits until the console has been idle >= HW_HEAVY_IDLE_MIN (15) minutes
+#   while it runs, every HW_HEAVY_IDLE_POLL (30 s): idle under HW_HEAVY_ACTIVE_SEC (60 s) -> the holder's whole process tree is
+#              SIGSTOPped and every container labelled `hw-heavy=<this run>` (HW_HEAVY_RUN, exported: `docker run --label
+#              hw-heavy=$HW_HEAVY_RUN`) is `docker pause`d; idle >= HW_HEAVY_IDLE_MIN again -> SIGCONT / `docker unpause`
+#   `--status` shows `PAUSED (user active) since HH:MM`; the FROZEN alert never fires for a pause this made itself.
+#   time not running (the wait to start, every pause) is written to HW_HEAVY_PAUSE_FILE as `<seconds> <since-epoch or 0>` when that is set:
+#              the release cut's cap does not count it. No ioreg (a Linux host) reads as idle. HW_HEAVY_IOREG names another ioreg.
+#   A heavy run started INSIDE another does not pause by itself: the outer holder governs (it exports HW_HEAVY_WHEN_IDLE_ACTIVE=1 when it does).
+#
 # HW_HEAVY_DIR (the directory above), HW_HEAVY_POLL (5 s), HW_HEAVY_REPORT (60 s) and HW_HEAVY_FREE (force the
 # free-memory reading, in percent) exist for the subject that holds this file (tests/1040), and so do HW_HEAVY_CLOCK
 # (a file holding the epoch the watchdog uses as "now") and HW_HEAVY_CHANNEL_SEND (the delivery command).
@@ -59,10 +71,18 @@ SQ="$D/heavy.short.queue"
 SL="$D/heavy.short.lock"
 SHORT_CAP=120
 GRACE="${HW_HEAVY_SHORT_GRACE:-5}"
+WHEN_IDLE=0; [ "${HW_HEAVY_WHEN_IDLE:-0}" != 1 ] || WHEN_IDLE=1
+IDLE_MIN="${HW_HEAVY_IDLE_MIN:-15}"
+IDLE_POLL="${HW_HEAVY_IDLE_POLL:-30}"
+ACTIVE_S="${HW_HEAVY_ACTIVE_SEC:-60}"
+IOREG="${HW_HEAVY_IOREG:-ioreg}"
+PAUSE_FILE="${HW_HEAVY_PAUSE_FILE:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: setup/heavy [--tag T] -- <cmd…>    run <cmd> in a heavy slot (FIFO), keep its exit code
+usage: setup/heavy [--tag T] [--when-idle] -- <cmd…>
+                                          run <cmd> in a heavy slot (FIFO), keep its exit code; --when-idle starts it only after
+                                          the console has been idle HW_HEAVY_IDLE_MIN (15) minutes and pauses it while the Mac is in use
        setup/heavy --short [--max S] [--tag T] -- <cmd…>
                                           run <cmd> in the short lane beside the slot holder: one short job at a
                                           time, killed at S seconds (default and cap 120) with exit 124
@@ -119,6 +139,7 @@ holder_text_at() {  # <lock dir> -> "tag pid N 4m02s" | "free" | "dead (tag pid 
   if alive "$OPID"; then
     case "$OSTART" in ''|*[!0-9]*) t="since $OSTART" ;; *) t="$(elapsed $(($(now) - OSTART)))" ;; esac
     printf '%s pid %s %s' "$OTAG" "$OPID" "$t"
+    if [ -s "$L/paused" ]; then read -r t < "$L/paused"; printf '  PAUSED (user active) since %s' "$(hhmm "$t")"; fi  # MUTATION-ANCHOR: 1131-H05
     if [ -s "$L/frozen" ]; then read -r t < "$L/frozen"; printf '  FROZEN since %s' "$(hhmm "$t")"; fi  # MUTATION-ANCHOR: 1040-H10
   else
     printf 'DEAD holder (%s pid %s)' "$OTAG" "$OPID"
@@ -175,11 +196,12 @@ EOF
 
 # ── --status ────────────────────────────────────────────────────────────────
 TAG="${HW_TASK:-$(basename "$PWD")}"
-SHORT=0; MAX=""
+SHORT=0; MAX=""; WI_FLAG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --status) mkdir -p "$Q" "$SQ"; status_text ""; exit 0 ;;  # MUTATION-ANCHOR: 1040-H07
     --short) SHORT=1; shift ;;
+    --when-idle) WHEN_IDLE=1; WI_FLAG=1; shift ;;
     --max) [ $# -ge 2 ] || usage; MAX="$2"; shift 2 ;;
     --max=*) MAX="${1#--max=}"; shift ;;
     --tag) [ $# -ge 2 ] || usage; TAG="$2"; shift 2 ;;
@@ -193,6 +215,10 @@ done
 TAG="$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9._-' '_')"
 case "$SLOTS" in ''|*[!0-9]*|0) echo "setup/heavy: HW_HEAVY_SLOTS must be a positive number, not '$SLOTS'" >&2; exit 2 ;; esac
 
+if [ "$SHORT" = 1 ]; then  # a short job is seconds: the environment's switch does not reach it, the flag is a misuse
+  [ "$WI_FLAG" = 0 ] || { echo "setup/heavy: --when-idle does not apply to --short (a short job is seconds)" >&2; exit 2; }
+  WHEN_IDLE=0
+fi
 if [ -n "$MAX" ] && [ "$SHORT" = 0 ]; then echo "setup/heavy: --max belongs to --short" >&2; exit 2; fi
 if [ "$SHORT" = 1 ]; then
   MAX="${MAX:-$SHORT_CAP}"
@@ -204,7 +230,82 @@ else
 fi
 mkdir -p "$MYQ" || exit 1
 
-HOLD=""; MYT=""; CPID=""; WPID=""; WD=""; CAPFILE=""
+HOLD=""; MYT=""; CPID=""; WPID=""; WD=""; CAPFILE=""; IPID=""
+
+# ── --when-idle: the console's idle time, the pause, and the clock the cut's cap does not count ──
+need_s() { awk -v m="$IDLE_MIN" 'BEGIN { printf "%d", m * 60 }'; }
+idle_secs() {  # whole seconds since the last keyboard/mouse event, nothing when this machine cannot say
+  local ns
+  command -v "$IOREG" >/dev/null 2>&1 || return 0
+  ns="$("$IOREG" -c IOHIDSystem 2>/dev/null | awk '/"HIDIdleTime"/ { print $NF; exit }')"
+  case "$ns" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%d' $((ns / 1000000000))
+}
+user_idle_enough() { local s; s="$(idle_secs)"; [ -n "$s" ] || return 0; [ "$s" -ge "$(need_s)" ]; }  # MUTATION-ANCHOR: 1131-H01
+user_active() { local s; s="$(idle_secs)"; [ -n "$s" ] || return 1; [ "$s" -lt "$ACTIVE_S" ]; }  # MUTATION-ANCHOR: 1131-H02
+# The time the command is not running, for the caller's own cap: `<seconds> <since-epoch or 0>`.
+acct_read() { ACC=0; ASINCE=0; [ -z "$PAUSE_FILE" ] || [ ! -r "$PAUSE_FILE" ] || read -r ACC ASINCE < "$PAUSE_FILE" 2>/dev/null || true; case "$ACC" in ''|*[!0-9]*) ACC=0 ;; esac; case "$ASINCE" in ''|*[!0-9]*) ASINCE=0 ;; esac; }
+acct_write() { [ -z "$PAUSE_FILE" ] || { printf '%s %s\n' "$1" "$2" > "$PAUSE_FILE.tmp.$$" && mv -f "$PAUSE_FILE.tmp.$$" "$PAUSE_FILE"; }; }
+acct_begin() { acct_read; acct_write "$ACC" "$(now)"; }
+acct_end() { acct_read; [ "$ASINCE" -gt 0 ] || return 0; acct_write $((ACC + $(now) - ASINCE)) 0; }
+wait_idle() {  # block until the console has been idle long enough; says so once a minute
+  local last=0 t s waited=0
+  user_idle_enough && return 0
+  acct_begin
+  while ! user_idle_enough; do
+    t="$(now)"
+    if [ $((t - last)) -ge "$REPORT" ]; then
+      last="$t"; s="$(idle_secs)"
+      echo "setup/heavy: $TAG waits for the console to be idle ${IDLE_MIN} min (idle now ${s:-?}s) — heavy work does not run while the Mac is in use" >&2
+    fi
+    sleep "$IDLE_POLL" & wait $!
+  done
+  acct_end
+}
+tree_pids() {  # <root pid> -> the pid and every descendant
+  ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
+    { kid[$1] = $2 }
+    END { for (p in kid) { q = p; h = 0; while (h < 64) { if (q == root) { print p; break } if (!(q in kid)) break; q = kid[q]; h++ } } }'
+}
+do_pause() {  # <root pid> <lock dir>: the tree and its containers stop; the marker is written FIRST so the frozen watchdog never reads this as a freeze
+  local p ids
+  date +%s > "$2/paused.tmp" && mv -f "$2/paused.tmp" "$2/paused"
+  acct_begin
+  for p in $(tree_pids "$1"); do kill -STOP "$p" 2>/dev/null || true; done
+  for p in $(tree_pids "$1"); do kill -STOP "$p" 2>/dev/null || true; done   # what the first sweep raced with
+  if command -v docker >/dev/null 2>&1; then
+    ids="$(docker ps -q --filter "label=hw-heavy=$$" 2>/dev/null | tr '\n' ' ')"
+    if [ -n "${ids// /}" ]; then printf '%s\n' "$ids" > "$2/paused.containers"; docker pause $ids >/dev/null 2>&1 || true; fi
+  fi
+}
+do_resume() {  # <root pid> <lock dir>
+  local p ids
+  [ -e "$2/paused" ] || return 0
+  if [ -s "$2/paused.containers" ]; then read -r ids < "$2/paused.containers"; docker unpause $ids >/dev/null 2>&1 || true; fi
+  for p in $(tree_pids "$1"); do kill -CONT "$p" 2>/dev/null || true; done  # MUTATION-ANCHOR: 1131-H03
+  rm -f "$2/paused" "$2/paused.containers"
+  acct_end
+}
+watch_idle() {  # <command pid> <lock dir>: every IDLE_POLL, pause while the user is active, resume once they have been away
+  while kill -0 "$1" 2>/dev/null; do
+    sleep "$IDLE_POLL" & wait $!
+    kill -0 "$1" 2>/dev/null || break
+    if [ -e "$2/paused" ]; then
+      ! user_idle_enough || do_resume "$1" "$2"
+    elif user_active; then
+      do_pause "$1" "$2"
+    fi
+  done
+}
+stop_idle_watch() {
+  [ -n "$IPID" ] || return 0
+  kill -KILL -- "-$IPID" 2>/dev/null || kill -KILL "$IPID" 2>/dev/null
+  wait "$IPID" 2>/dev/null; IPID=""
+}
+resume_now() {  # whatever a pause left stopped, so a TERM is not left pending on a stopped tree and a container is never left paused
+  [ -n "$HOLD" ] && [ -e "$HOLD/paused" ] || return 0
+  do_resume "${CPID:-0}" "$HOLD"
+}
 
 stop_watch() {  # the watchdog's own process group, so its `sleep` goes with it
   [ -n "$WPID" ] || return 0
@@ -213,6 +314,7 @@ stop_watch() {  # the watchdog's own process group, so its `sleep` goes with it
 }
 
 release() {  # only what this process took
+  stop_idle_watch; resume_now
   stop_watch
   [ -z "$MYT" ] || rm -f "$MYQ/$MYT"
   if [ -n "$HOLD" ]; then
@@ -224,6 +326,7 @@ release() {  # only what this process took
 on_signal() {  # <exit code>
   trap '' INT TERM
   [ -z "$WD" ] || kill -KILL -- "-$WD" 2>/dev/null
+  stop_idle_watch; resume_now
   if [ -n "$CPID" ]; then
     kill -TERM -- "-$CPID" 2>/dev/null || kill -TERM "$CPID" 2>/dev/null  # MUTATION-ANCHOR: 1040-H05
     wait "$CPID" 2>/dev/null
@@ -235,6 +338,8 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap release EXIT
 set -m   # the command gets its own process group, so a signal reaches everything it started
+
+[ "$WHEN_IDLE" = 0 ] || wait_idle
 
 # A name that sorts by arrival: nanoseconds when python3 has them, seconds+pid otherwise.
 stamp="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)"
@@ -259,6 +364,7 @@ reclaim_at() {  # <lock dir> <what to call it>
   fi
 }
 
+[ "$WHEN_IDLE" = 0 ] || acct_begin   # the wait for a slot is not the caller's running time either
 last=0; first=1
 while :; do
   head="$(live_tickets "$MYQ" | head -n 1)"  # MUTATION-ANCHOR: 1040-H01
@@ -286,6 +392,7 @@ while :; do
 done
 
 printf '%s %s %s\n' "$TAG" "$$" "$(now)" > "$HOLD/owner"
+[ "$WHEN_IDLE" = 0 ] || acct_end
 rm -f "$MYQ/$MYT"; MYT=""
 if [ "$SHORT" = 1 ]; then echo "setup/heavy: $TAG took the short lane (cap ${MAX}s)" >&2
 else echo "setup/heavy: $TAG took $(basename "$HOLD")" >&2; fi
@@ -336,6 +443,7 @@ watch_frozen() {  # <command pid> <lock dir>
   local since="" alerted=0 t
   while kill -0 "$1" 2>/dev/null; do
     sleep "$WATCH" & wait $!
+    if [ -e "$2/paused" ]; then since=""; alerted=0; rm -f "$2/frozen"; continue; fi  # a pause this made itself is not the guard's freeze  # MUTATION-ANCHOR: 1131-H04
     if tree_frozen "$1"; then
       t="$(wnow)"
       if [ -z "$since" ]; then since="$t"; alerted=0; printf '%s\n' "$since" > "$2/frozen.$$" && mv -f "$2/frozen.$$" "$2/frozen"; fi
@@ -349,13 +457,17 @@ watch_frozen() {  # <command pid> <lock dir>
 }
 HEAVY_BIN="$(cd -P "$(dirname "$0")/../bin" 2>/dev/null && pwd)"
 
+[ "$WHEN_IDLE" = 0 ] || wait_idle   # the slot may have taken a while: the Mac may be in use again
+
 preflight
 
-export HW_HEAVY_RUNNING=1
+export HW_HEAVY_RUNNING=1 HW_HEAVY_RUN="$$"
+[ "$WHEN_IDLE" = 0 ] || export HW_HEAVY_WHEN_IDLE_ACTIVE=1
 start="$(now)"; start_iso="$(date +%Y-%m-%dT%H:%M:%S)"
 "$@" <&0 &
 CPID=$!
 watch_frozen "$CPID" "$HOLD" & WPID=$!
+if [ "$WHEN_IDLE" = 1 ]; then watch_idle "$CPID" "$HOLD" & IPID=$!; fi
 if [ "$SHORT" = 1 ]; then
   # the watchdog: at the cap, TERM to the command's group, KILL after the grace. It sleeps in its own group so it can be
   # taken down whole once the command is over.
@@ -364,6 +476,7 @@ if [ "$SHORT" = 1 ]; then
   WD=$!
 fi
 wait "$CPID"; rc=$?
+stop_idle_watch; resume_now
 if [ -n "$WD" ]; then
   kill -KILL -- "-$WD" 2>/dev/null || kill -KILL "$WD" 2>/dev/null
   wait "$WD" 2>/dev/null

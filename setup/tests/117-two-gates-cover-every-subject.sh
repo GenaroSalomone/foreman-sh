@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The fast/slow gate split: every subject file lands in exactly one gate, the
-# split is derived from setup/test-budgets.json (never a hand-kept list), and
+# split is derived from setup/suite-data/test-budgets.json (never a hand-kept list), and
 # a file that runs slower than its committed number cannot quietly stay fast.
 #
 # suite-lane: exclusive — this subject drives a NESTED fast-gate runner over its
@@ -29,7 +29,7 @@ REAL_HW="$ROOT/setup/test-hw"
 # This is the invariant itself, checked against production data: a file that
 # stopped being classified is a file that stopped running in either gate, and
 # that must fail loudly rather than default silently into one side.
-BUDGETS="$ROOT/setup/test-budgets.json"
+BUDGETS="$ROOT/setup/suite-data/test-budgets.json"
 [ -f "$BUDGETS" ] || fail "gate: $BUDGETS is missing — this is what setup/measure-tests.sh produces"
 python3 - "$BUDGETS" "$ROOT/setup/tests" <<'PY' || exit 1
 import json, pathlib, sys
@@ -42,7 +42,7 @@ if on_disk != listed:
     extra = sorted(set(listed) - set(on_disk))
     print(f"not ok - gate: budgets.json and tests/ disagree — missing={missing} extra={extra}", file=sys.stderr)
     sys.exit(1)
-print(f"ok - gate: setup/test-budgets.json classifies all {len(on_disk)} subject files on disk, 1:1")
+print(f"ok - gate: setup/suite-data/test-budgets.json classifies all {len(on_disk)} subject files on disk, 1:1")
 PY
 threshold="$(python3 -c "import json; print(json.load(open('$BUDGETS'))['fast_gate_threshold_seconds'])")"
 [ -n "$threshold" ] || fail "gate: no fast_gate_threshold_seconds in $BUDGETS — the threshold has no owner"
@@ -64,11 +64,11 @@ mk_gate_repo() { # (no args) → prints the fixture root
   # here: a stray `.s.PGSQL.5432` socket file in /tmp aborted an earlier draft
   # of this fixture before it ever reached the gate logic being tested.
   local d; d="$(mktemp -d "$TMP/gaterepo-XXXXXX")/root"  # UNIQUE per call — a fixed path let one case's leftover stub files survive into the next case's completeness check, reported as spurious "unclassified" files that were really just uncleaned fixture debris.
-  mkdir -p "$d/setup/tests"
+  mkdir -p "$d/setup/tests" "$d/setup/suite-data" "$d/setup/mutation"
   cp "$REAL_HW" "$d/setup/test-hw"
   cp "$ROOT/setup/fast-gate-budget.sh" "$d/setup/fast-gate-budget.sh"
   cp "$ROOT/setup/test-hw-snapshot.py" "$d/setup/test-hw-snapshot.py"
-  cp "$ROOT/setup/mutation-coverage" "$d/setup/mutation-coverage"
+  cp "$ROOT/setup/mutation/mutation-coverage" "$d/setup/mutation/mutation-coverage"
   cp "$ROOT/setup/tests/_common.sh" "$d/setup/tests/_common.sh"
   ( cd "$d" && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE git init -q )
   printf '%s' "$d"
@@ -99,7 +99,7 @@ write_budgets() { # <dir> <threshold> <name=seconds> ...
     first=0
     body="$body\"$name\": {\"seconds\": $secs, \"exit\": 0}"
   done
-  printf '{"fast_gate_threshold_seconds": %s, "files": {%s}}\n' "$threshold" "$body" > "$d/setup/test-budgets.json"
+  printf '{"fast_gate_threshold_seconds": %s, "files": {%s}}\n' "$threshold" "$body" > "$d/setup/suite-data/test-budgets.json"
 }
 
 # ── C01: the fast gate runs only files classified at/under threshold ───────

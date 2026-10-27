@@ -10,7 +10,7 @@
 # setup/check-machine, which runs the same `--check` against it.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-installer="$ROOT/setup/install-opencode-background-state.sh"
+installer="$ROOT/setup/install/install-opencode-background-state.sh"
 patched="$FIXTURES/herdr-agent-state.js"
 [ -x "$installer" ] || fail "OpenCode background-state drift detector is executable"
 [ -f "$patched" ] || fail "OpenCode background-state drift detector found its patched-plugin fixture"

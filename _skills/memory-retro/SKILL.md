@@ -81,7 +81,7 @@ Stop after the batch. Re-run the counts; offer the next batch, do not loop.
 
 A "findings" row that never upserts is a save without `topic_key`. Report how
 many of the batch's sources had none; the cure is the executor instructions
-(`CLAUDE.shared.md`, `BRIEF-TEMPLATE.md`: `topic_key: <lane>/<task>/findings`),
+(`CLAUDE.shared.md`, `docs/BRIEF-TEMPLATE.md`: `topic_key: <lane>/<task>/findings`),
 not more judging. A cause you did not measure stays `UNESTABLISHED`.
 
 ## 5. Output

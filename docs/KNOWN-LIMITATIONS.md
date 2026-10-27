@@ -508,7 +508,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   `secret-unlock` and, where it is installed, the global guard
   `deny-bitwarden-secrets.py` (Claude, Codex, OpenCode). **This export ships
   `hw secret`, `secret-unlock` and the `secrets:` preflight, and does not ship the
-  guard or the LaunchAgent installer** (`setup/install-bw-unlock-agent.sh`): on a
+  guard or the LaunchAgent installer** (`setup/install/install-bw-unlock-agent.sh`): on a
   machine installed from it nothing refuses an agent's own `bw` call, so
   `hw secret run` is the sanctioned path and not an enforced one, and the vault
   is unlocked by a person with `secret-unlock`. The Keychain half
@@ -626,8 +626,8 @@ it leaves the brain directory, is unguarded even with the hook registered.
 ### L24. A suite job whose inputs did not change is replayed from its last green, so a change in a file it never read is unseen until a cold run
 - **Scope:** `setup/test-hw` with `setup/verdict-cache` (every subject, guard and go-test partition) and the per-mutant lookup in
   `core/mutant_verdict_test.go` (the in-process mutant corpora m826, m840, m844, m848, m861-866, m871).
-- **Impact:** a job's green is stored under the sha256 of its own file, the bytes of every file it reads (a subject: `setup/subject-deps.txt`,
-  a partition: `setup/go-test-deps.txt`, both measured by access time, not guessed), the names in the directories it read, the toolchain and
+- **Impact:** a job's green is stored under the sha256 of its own file, the bytes of every file it reads (a subject: `setup/suite-data/subject-deps.txt`,
+  a partition: `setup/suite-data/go-test-deps.txt`, both measured by access time, not guessed), the names in the directories it read, the toolchain and
   an allowlist of `HW_*` knobs, and replayed when those bytes come back; only greens are stored, written atomically. What is traded away:
   (1) a change in ANOTHER file that would make a job fail, or let an old mutant survive, is not seen, because that file was never in the
   job's reads; (2) a mutant's verdict is keyed by its anchor file, its test files, its cases and goldens and the toolchain only, so a change
@@ -643,7 +643,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   the cut). `HW_VERDICT_CACHE=<dir>` moves the store, `off` disables it; entries unused for 30 days are pruned.
 
 ### L26. Some claims about `hw`, `brain`, `channel-send` and the invokers lost their mutation test when the bash left, and have no Go mutant yet
-- **Scope:** the mutation-anchor registry (`setup/mutation-anchors.tsv`) and the subjects that killed mutants of the bash bodies of `hw`, `brain`,
+- **Scope:** the mutation-anchor registry (`setup/mutation/mutation-anchors.tsv`) and the subjects that killed mutants of the bash bodies of `hw`, `brain`,
   `channel-send`, `ask-invoker` and `done-invoker`, which 0.6.0 deleted.
 - **Impact:** a mutant of a bash body cannot be applied to code that is gone. Most of those claims moved to the Go side, where a Go mutant, a
   golden case or a unit test holds them; about 90 did not, and for them the claim is still asserted but no longer by a mutant that proves
@@ -798,7 +798,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   mutants 820-M04, M05, M06) and `setup/tests/999-*.sh`. `unverified`: that any real commit hits the
   `all`-before-gate-when path without also touching a path 540 names.
 - **Workaround:** run `bash setup/tests/540-las-anclas-de-mutacion-existen.sh` (about 5 s) before pushing a change to
-  markers or to `mutants-*`; the full suite still runs 540 on every release cut.
+  markers or to `mutants-*`; the full suite, run once per merged batch outside the cut, runs 540; a cut's incremental run does when its diff reaches it.
 
 ### L19. A chained incremental verdict compounds gate-select's blind spot, and fast gates outrank a full run
 - **Scope:** `setup/verdict-incremental` + `setup/verify-for-push` (a green incremental run leaves its own record, so

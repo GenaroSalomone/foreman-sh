@@ -40,8 +40,8 @@
 # answer to an ask comes back the way it always has: the brainer types it into
 # this pane through herdr, from outside.
 #
-# WHAT THE PROFILE DOES NOT STOP is in setup/export/overlay/THREAT-MODEL.md and
-# KNOWN-LIMITATIONS.md: TCP (engram, the network), a push over HTTPS, the run
+# WHAT THE PROFILE DOES NOT STOP is in setup/export/overlay/docs/THREAT-MODEL.md and
+# docs/KNOWN-LIMITATIONS.md: TCP (engram, the network), a push over HTTPS, the run
 # state under <workdir>/.hw, and anything Chrome needs --no-sandbox for.
 set -euo pipefail
 
@@ -128,7 +128,7 @@ _pi_session_dir_name() { printf -- '--%s--' "$(printf '%s' "${1#/}" | tr '/:' '-
 #     and NOTHING else of its config directory (see below);
 #   · the engram store. The executor's report IS a mem_save, and the MCP
 #     server opens the database directly (measured by executor-isolation-arch). That makes every
-#     lane's memory writable from inside — named in KNOWN-LIMITATIONS.md;
+#     lane's memory writable from inside — named in docs/KNOWN-LIMITATIONS.md;
 #   · the linked worktree's slice of the common .git (as exec-git.sb):
 #     objects, refs, logs, packed-refs and worktrees/<this one>. Never hooks/
 #     and never config — both run as the operator in every other checkout.

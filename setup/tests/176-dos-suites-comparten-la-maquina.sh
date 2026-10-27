@@ -91,11 +91,11 @@ EOS
 
 make_repo() { # <dir> <runner-source> [bare — no stamping subjects]
   local repo="$1" runner="$2" g
-  mkdir -p "$repo/setup/tests" "$repo/setup/guards"
+  mkdir -p "$repo/setup/tests" "$repo/setup/suite-data" "$repo/setup/mutation" "$repo/setup/guards"
   cp "$runner" "$repo/setup/test-hw"
-  cp "$ROOT/setup/test-hw-snapshot.py" "$ROOT/setup/mutation-coverage" "$ROOT/setup/fast-gate-budget.sh" "$repo/setup/"
+  cp "$ROOT/setup/mutation/mutation-coverage" "$repo/setup/mutation/"; cp "$ROOT/setup/test-hw-snapshot.py" "$ROOT/setup/fast-gate-budget.sh" "$repo/setup/"
   cp "$ROOT/setup/tests/_common.sh" "$repo/setup/tests/"
-  chmod +x "$repo/setup/test-hw" "$repo/setup/mutation-coverage"
+  chmod +x "$repo/setup/test-hw" "$repo/setup/mutation/mutation-coverage"
   # On native Windows the runner reads a holder's start through bin/'s layer;
   # without it Git Bash's own ps prints nothing for -o lstart=, and a holder this
   # script recorded through the layer reads as a different, dead process. And

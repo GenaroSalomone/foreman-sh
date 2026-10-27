@@ -33,6 +33,13 @@ jobs:
         with:
           node-version: '22'
 
+      # hw, brain and the invokers are hw-core since 0.6.0; the runner builds
+      # it, and macos-latest ships no Go.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache: false
+
       - name: Tools (Linux)
         if: runner.os == 'Linux'
         run: |

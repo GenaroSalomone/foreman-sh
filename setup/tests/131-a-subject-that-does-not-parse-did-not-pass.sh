@@ -2,7 +2,7 @@
 # MEASURED 2026-09-11, and found by accident. A comment was inserted into
 # 124-an-entry-command-that-does-not-exist-is-refused.sh in the middle of a
 # command substitution, leaving the file with an unterminated quote. It was
-# committed, and `setup/test-budgets.json` received `0.05s` for it — a file that
+# committed, and `setup/suite-data/test-budgets.json` received `0.05s` for it — a file that
 # had been taking 2.08s. 0.05s is not a fast test; it is the duration of not
 # running.
 #
@@ -50,13 +50,13 @@ pass "gate: the fixture does not parse, which is the condition both gates must c
 root="$TMP/fakeroot"; mkdir -p "$root/setup"
 cp -R "$ROOT/setup/." "$root/setup/"
 rm -f "$root/setup/tests"/[0-9]*.sh
-# the copy carries the real setup/retired-subjects.txt, whose globs match none of the stubs below, and the runner refuses a glob that matches no subject
-rm -f "$root/setup/retired-subjects.txt"
+# the copy carries the real setup/suite-data/retired-subjects.txt, whose globs match none of the stubs below, and the runner refuses a glob that matches no subject
+rm -f "$root/setup/suite-data/retired-subjects.txt"
 # nor the real time-budget gate: the runner asks setup/test-budget-gate only where the file exists ("a fixture with no gate asks nothing"), and a one-subject fixture estimates 0 s, so the real SUITE ceiling reads as stale and refuses a run this subject is not about
-rm -f "$root/setup/test-budget-gate" "$root/setup/test-budget-ceilings.tsv"
+rm -f "$root/setup/test-budget-gate" "$root/setup/suite-data/test-budget-ceilings.tsv"
 cp "$broken" "$root/setup/tests/01-broken.sh"
 budget='{"fast_gate_threshold_seconds": 2.0, "files": {"01-broken.sh": {"exit": 0, "seconds": 0.05}}}'
-printf '%s\n' "$budget" > "$root/setup/test-budgets.json"
+printf '%s\n' "$budget" > "$root/setup/suite-data/test-budgets.json"
 
 # ── the runner refuses it, before running it ────────────────────────────────
 set +e
@@ -81,7 +81,7 @@ case "$out" in
   *"does not parse, so it cannot be measured"*"no budget was written"*) pass "measure-tests refuses an unparseable subject instead of timing it" ;;
   *) fail "measure-tests' refusal does not name what is wrong: $out" ;;
 esac
-[ "$(cat "$root/setup/test-budgets.json")" = "$budget" ] \
+[ "$(cat "$root/setup/suite-data/test-budgets.json")" = "$budget" ] \
   || fail "measure-tests wrote a budget despite refusing — the manifest must record runs that happened"
 pass "the budget manifest is unchanged by a refused measurement"
 
@@ -94,7 +94,7 @@ ok_subject="$root/setup/tests/02-fine.sh"
 printf '#!/usr/bin/env bash\nprintf "ok - fine\\n"\n' > "$ok_subject"; chmod +x "$ok_subject"
 rm -f "$root/setup/tests/01-broken.sh"
 printf '{"fast_gate_threshold_seconds": 2.0, "files": {"02-fine.sh": {"exit": 1, "seconds": 0.42}}}\n' \
-  > "$root/setup/test-budgets.json"
+  > "$root/setup/suite-data/test-budgets.json"
 set +e
 out="$(cd "$root" && HW_TEST_GATE=fast bash "$root/setup/test-hw" 2>&1)"; rc=$?
 set -e
@@ -108,7 +108,7 @@ case "$out" in
   *) fail "the refusal names no way out: $out" ;;
 esac
 printf '{"fast_gate_threshold_seconds": 2.0, "files": {"02-fine.sh": {"exit": 0, "seconds": 0.42}}}\n' \
-  > "$root/setup/test-budgets.json"
+  > "$root/setup/suite-data/test-budgets.json"
 set +e
 out="$(cd "$root" && HW_TEST_GATE=fast bash "$root/setup/test-hw" 2>&1)"; rc=$?
 set -e
@@ -129,7 +129,7 @@ end = s.index('threshold = budgets["fast_gate_threshold_seconds"]', start)
 open(p, "w", encoding="utf-8").write(s[:start] + s[end:])
 PY
 printf '{"fast_gate_threshold_seconds": 2.0, "files": {"02-fine.sh": {"exit": 1, "seconds": 0.42}}}\n' \
-  > "$mut/setup/test-budgets.json"
+  > "$mut/setup/suite-data/test-budgets.json"
 set +e
 out="$(cd "$mut" && HW_TEST_GATE=fast bash "$mut/setup/test-hw" 2>&1)"; rc=$?
 set -e
@@ -154,7 +154,7 @@ PY
 set +e
 out="$(cd "$mut2" && bash "$mut2/setup/measure-tests.sh" 01-broken.sh 2>&1)"; rc=$?
 set -e
-if grep -q '"01-broken.sh"' "$mut2/setup/test-budgets.json"; then
+if grep -q '"01-broken.sh"' "$mut2/setup/suite-data/test-budgets.json"; then
   pass "mutant killed: M02 without the refusal measure-tests writes a budget for a file it could not run"
 else
   fail "M02 survived or misfired: rc=$rc out=$out"

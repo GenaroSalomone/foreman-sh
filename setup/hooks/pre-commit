@@ -37,18 +37,18 @@ fi
 # THE SUITE'S TIME BUDGET IS A GATE AT THE COMMIT THAT MAKES IT WORSE (2026-10-16: «un test de más de 10 min, o
 # una suite completa de más de 45, deja rojo el commit que lo hizo más lento y nombra qué test partir»).
 # setup/test-budget-gate answered that only when subject 965 ran in a full run, so a commit recording a 700 s
-# subject passed every gate it went through and was found at the next full run. It reads setup/test-budgets.json
-# and setup/test-budget-ceilings.tsv, in about a second, and none of those paths is in SUITE_TRIGGER_PATTERN, so
+# subject passed every gate it went through and was found at the next full run. It reads setup/suite-data/test-budgets.json
+# and setup/suite-data/test-budget-ceilings.tsv, in about a second, and none of those paths is in SUITE_TRIGGER_PATTERN, so
 # the gate below would not even start for them: it is asked here, over the STAGED blobs (a private index is what
 # is committed, not the working tree), whenever the commit touches the budget, its ceilings or the gate itself.
 tb_root="$(git rev-parse --show-toplevel)"
 if [ -f "$tb_root/setup/test-budget-gate" ] \
-   && printf '%s\n' "$staged" | grep -qE '^setup/(test-budgets\.json|test-budget-ceilings\.tsv|test-budget-gate)$' \
-   && git cat-file -e :setup/test-budgets.json 2>/dev/null; then
+   && printf '%s\n' "$staged" | grep -qE '^setup/(suite-data/test-budgets\.json|suite-data/test-budget-ceilings\.tsv|test-budget-gate)$' \
+   && git cat-file -e :setup/suite-data/test-budgets.json 2>/dev/null; then
   tb_dir="$(mktemp -d "${TMPDIR:-/tmp}/hw-precommit-budget.XXXXXX")"
-  git show :setup/test-budgets.json > "$tb_dir/test-budgets.json"
+  git show :setup/suite-data/test-budgets.json > "$tb_dir/test-budgets.json"
   : > "$tb_dir/ceilings.tsv"
-  if git cat-file -e :setup/test-budget-ceilings.tsv 2>/dev/null; then git show :setup/test-budget-ceilings.tsv > "$tb_dir/ceilings.tsv"; fi
+  if git cat-file -e :setup/suite-data/test-budget-ceilings.tsv 2>/dev/null; then git show :setup/suite-data/test-budget-ceilings.tsv > "$tb_dir/ceilings.tsv"; fi
   tb_rc=0
   tb_out="$(python3 "$tb_root/setup/test-budget-gate" "$tb_dir/test-budgets.json" "$tb_dir/ceilings.tsv" 2>&1)" || tb_rc=$?  # MUTATION-ANCHOR: 966-M01
   rm -rf "$tb_dir"
@@ -113,7 +113,7 @@ $(printf '%s\n' "$merge_markers" | sed 's/^/      /')"
   printf 'pre-commit: merge commit — the fast gate and the lane sweep are skipped here; this merge tree is gated at push (pre-push: a fast-gate verdict of its exact tree for task/*, the full suite for main and tags). Syntax and conflict markers checked.\n' >&2  # MUTATION-ANCHOR: 1060-M03
 fi
 
-tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|lib/|shell/|layouts/|setup/plans/|setup/hooks/|CLAUDE\.shared\.md|CLAUDE\.md$|README\.md|BRIEF-TEMPLATE\.md)' || true)"
+tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|lib/|shell/|layouts/|setup/plans/|setup/hooks/|CLAUDE\.shared\.md|CLAUDE\.md$|README\.md|docs/BRIEF-TEMPLATE\.md)' || true)"
 # THE LANES ARE A LIST IN setup/hooks/sweep-lanes, one per line, not a literal
 # here: which lanes a brain has is configuration, and this hook is mechanism.
 # `setup/` is NOT a lane for this purpose: setup/decisions.md is this repo's own
@@ -218,7 +218,7 @@ trap 'rm -f "$hook_changed"' EXIT
 printf '%s\n' "$staged" > "$hook_changed"
 hook_docs=0
 if ! printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN" \
-   && [ -f "$root/setup/gate-select" ] && [ -f "$root/setup/test-budgets.json" ] \
+   && [ -f "$root/setup/gate-select" ] && [ -f "$root/setup/suite-data/test-budgets.json" ] \
    && python3 "$root/setup/gate-select" "$root" "$hook_changed" "$SUITE_TRIGGER_PATTERN" 2>/dev/null | grep -q '^subject '; then
   hook_docs=1
 fi
@@ -269,7 +269,7 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
     # thing — 1856 tests at 13-40 minutes by 2026-09-07, and that cost is what
     # `setup/decisions.md` names as the reason `--no-verify` got reached for six
     # times. `HW_TEST_GATE=fast` runs only the subject files
-    # `setup/test-budgets.json` classifies at or under its measured threshold;
+    # `setup/suite-data/test-budgets.json` classifies at or under its measured threshold;
     # everything else still runs, mandatorily, in `setup/hooks/pre-push` for the
     # two remotes this repo allows — nothing is skipped, it is PAID LATER, at a
     # point that does not sit between every commit and the next thought.

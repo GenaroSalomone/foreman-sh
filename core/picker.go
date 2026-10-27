@@ -136,8 +136,11 @@ func (a *app) pickerNewBrief() int {
 		if err := os.MkdirAll(filepath.Dir(file), 0o777); err != nil {
 			a.die("cannot create " + filepath.Dir(file) + ": " + err.Error())
 		}
-		// a project may carry its own template; fall back to the shared one
+		// a project may carry its own template; fall back to the shared one (docs/, else the root it used to sit in)
 		tpl := filepath.Join(a.c.brain, proj, "BRIEF-TEMPLATE.md")
+		if !isFile(tpl) {
+			tpl = filepath.Join(a.c.brain, "docs", "BRIEF-TEMPLATE.md")
+		}
 		if !isFile(tpl) {
 			tpl = filepath.Join(a.c.brain, "BRIEF-TEMPLATE.md")
 		}

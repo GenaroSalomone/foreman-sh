@@ -3,14 +3,14 @@
 
     test-budget-gate [<test-budgets.json> [<test-budget-ceilings.tsv>]]
 
-Red (exit 1, naming the subject and the cheapest split) when, in setup/test-budgets.json:
+Red (exit 1, naming the subject and the cheapest split) when, in setup/suite-data/test-budgets.json:
   (a) any single subject's measured seconds exceed JOB_MAX (600) — one job that long is the floor of the whole
       suite however many workers there are (860 alone was 6600 s of a 26854 s suite, 2026-10-14);
   (b) the suite's estimated wall-clock exceeds WALL_MAX (45 min): max(longest job, total seconds / SLOTS).
 The estimate is the budgets' own sums over the default pool of 6 workers, not a run: a slow test turns red at the
 commit that records its measurement.
 
-An offender already there when this gate arrived is listed in setup/test-budget-ceilings.tsv with a CEILING it may
+An offender already there when this gate arrived is listed in setup/suite-data/test-budget-ceilings.tsv with a CEILING it may
 not grow past (`<subject>\t<ceiling seconds>\t<cheapest split>`); the line `SUITE\t<ceiling seconds>` does the same
 for (b). A ceiling is a debt with a number on it, and it only goes down: an entry whose subject is back under the
 limit is itself red ("remove it"), so the list shrinks as the splits land.
@@ -63,7 +63,7 @@ def main(budgets_path, ceilings_path):
 
 if __name__ == "__main__":
     here = __file__.rsplit("/", 1)[0] if "/" in __file__ else "."
-    b = sys.argv[1] if len(sys.argv) > 1 else here + "/test-budgets.json"
-    c = sys.argv[2] if len(sys.argv) > 2 else here + "/test-budget-ceilings.tsv"
+    b = sys.argv[1] if len(sys.argv) > 1 else here + "/suite-data/test-budgets.json"
+    c = sys.argv[2] if len(sys.argv) > 2 else here + "/suite-data/test-budget-ceilings.tsv"
     ceilings_path = c
     sys.exit(main(b, c))

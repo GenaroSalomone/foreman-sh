@@ -87,8 +87,14 @@ write_verdict() {
 # once its candidate gate has proved the checkout IS that tree and its full suite
 # ended green with a TRACKED only count, and by setup/linux/run-suite.sh after a green full run.
 if [ "${1:-}" = "--write-verdict" ]; then
-  { [ $# -eq 5 ] || { [ $# -eq 6 ] && [ "$6" = linux ]; }; } \
-    || { echo "verify-for-push: --write-verdict takes <commit> <tree> <elapsed> <headline> [linux]" >&2; exit 2; }
+  { [ $# -eq 5 ] || { [ $# -eq 6 ] && [ "$6" = linux ]; } || { [ $# -eq 8 ] && [ "$6" = linux ]; }; } \
+    || { echo "verify-for-push: --write-verdict takes <commit> <tree> <elapsed> <headline> [linux [<base_tree> <jobs_rerun>]]" >&2; exit 2; }
+  # An incremental one (the Linux suite's, setup/linux/run-suite.sh incremental): one hop off a real full run of <base_tree>.
+  if [ $# -eq 8 ]; then
+    case "$7" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+      *) echo "verify-for-push: --write-verdict wants a 40-hex base tree id" >&2; exit 2 ;; esac
+    case "$8" in ''|*[!0-9]*) echo "verify-for-push: --write-verdict jobs_rerun must be a whole number" >&2; exit 2 ;; esac
+  fi
   # the tree is a file name and the verdict's whole claim: 40 hex, and the tree OF that commit
   case "$2:$3" in
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
@@ -98,6 +104,11 @@ if [ "${1:-}" = "--write-verdict" ]; then
     || { echo "verify-for-push: --write-verdict: $3 is not the tree of commit $2" >&2; exit 2; }
   case "$4" in ''|*[!0-9]*) echo "verify-for-push: --write-verdict elapsed must be whole seconds" >&2; exit 2 ;; esac
   case "$5" in [0-9]*" tests passed  (TRACKED only"*) ;; *) echo "verify-for-push: --write-verdict refuses a headline that is not a TRACKED only count" >&2; exit 2 ;; esac
+  if [ $# -eq 8 ]; then
+    write_verdict "$2" "$3" "$4" "$5" "$7" "$8" 1 linux
+    echo "verify-for-push: recorded an incremental Linux verdict for tree $3, one hop off $7 (no suite run here)." >&2
+    exit 0
+  fi
   write_verdict "$2" "$3" "$4" "$5" "" "" 1 "${6:-}"
   echo "verify-for-push: recorded a full verdict for tree $3 (no suite run here)." >&2
   exit 0

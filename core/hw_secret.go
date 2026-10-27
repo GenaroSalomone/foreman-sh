@@ -381,7 +381,7 @@ func (w *hsWorld) cmdSetup() int {
 		why, _ := w.statusReason()
 		w.die("bw did not accept that password (or is not logged in): the Keychain item was removed. " + why)
 	}
-	fmt.Fprintf(w.out, "stored as the Keychain service %s and unlocked once; the LaunchAgent (setup/install-bw-unlock-agent.sh) keeps it unlocked\n", hsMasterService)
+	fmt.Fprintf(w.out, "stored as the Keychain service %s and unlocked once; the LaunchAgent (setup/install/install-bw-unlock-agent.sh) keeps it unlocked\n", hsMasterService)
 	return 0
 }
 

@@ -8,7 +8,7 @@
 #   · an uncommitted `${AGENT:-}` fix that only one working tree had;
 #   · a leaked pane environment (HW_CHAINING_LEASE_SECONDS) that made the same
 #     tree answer 1140 ok to a brainer and abort at 406 to an executor;
-#   · fifteen mutation arms `setup/mutation-coverage` could not see, so they
+#   · fifteen mutation arms `setup/mutation/mutation-coverage` could not see, so they
 #     passed because nothing looked;
 #   · an untracked file a tracked subject required.
 #
@@ -56,10 +56,10 @@ RUNNER="$ROOT/setup/test-hw"
 make_repo() { # <name> → sets REPO
   local name="$1"
   local repo="$TMP/$name"
-  mkdir -p "$repo/setup/tests" "$repo/setup/guards" "$repo/bin"
-  cp "$ROOT/setup/test-hw" "$ROOT/setup/test-hw-snapshot.py" "$ROOT/setup/mutation-coverage" "$ROOT/setup/fast-gate-budget.sh" "$repo/setup/"
+  mkdir -p "$repo/setup/tests" "$repo/setup/suite-data" "$repo/setup/mutation" "$repo/setup/guards" "$repo/bin"
+  cp "$ROOT/setup/mutation/mutation-coverage" "$repo/setup/mutation/"; cp "$ROOT/setup/test-hw" "$ROOT/setup/test-hw-snapshot.py" "$ROOT/setup/fast-gate-budget.sh" "$repo/setup/"
   cp "$ROOT/setup/tests/_common.sh" "$repo/setup/tests/"
-  chmod +x "$repo/setup/test-hw" "$repo/setup/mutation-coverage"
+  chmod +x "$repo/setup/test-hw" "$repo/setup/mutation/mutation-coverage"
   for g in test-deny-repo-writes.mjs test-deny-repo-writes-filesystem.mjs \
            test-opencode-hw-blocked-reason.mjs test-herdr-opencode-background-state.mjs; do
     printf '%s\n' '// stub: emits no ok lines, so the arithmetic below is the subject only' \

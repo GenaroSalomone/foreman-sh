@@ -69,7 +69,7 @@ foreman-sh answers each one with a mechanism:
   dispatch before anything is built, and `hw done` runs the brief's verification
   command itself and records its exit code.
 - **Your agent, your model.** Claude Code, OpenCode, pi and Codex
-  ([L3](KNOWN-LIMITATIONS.md)) run a lane's executors; every executor is handed a
+  ([L3](docs/KNOWN-LIMITATIONS.md)) run a lane's executors; every executor is handed a
   `cheap-explorer` subagent on its vendor's cheapest tier.
 - **Frameworks when you want them.** `--sdd none` makes the brief the whole
   contract; `--sdd speckit` goes through [Spec Kit](https://github.com/github/spec-kit)'s phases.
@@ -81,20 +81,20 @@ foreman-sh answers each one with a mechanism:
   of a task that is merged and clean, and nothing else.
 - **Go only.** `hw`, `brain`, `channel-send` and the invokers run in `hw-core`;
   0.6.0 removed the bash and the switch to it, and the way back is 0.5.x
-  ([INSTALL.md](INSTALL.md#the-go-core-and-the-way-back),
-  [L16](KNOWN-LIMITATIONS.md)).
+  ([INSTALL.md](docs/INSTALL.md#the-go-core-and-the-way-back),
+  [L16](docs/KNOWN-LIMITATIONS.md)).
 
 ## Requirements
 
 - **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts)
-  ([L1](KNOWN-LIMITATIONS.md)).
+  ([L1](docs/KNOWN-LIMITATIONS.md)).
 - **[herdr](https://herdr.dev)**, running, with its Claude Code integration:
   `herdr integration install claude`.
 - **[Claude Code](https://claude.com/claude-code)**, with its first run
   finished: run `claude --dangerously-skip-permissions`, complete the welcome
   and login, accept the warning, then `/exit`. Skipping permission prompts is
   the recommended setting, not a requirement: `install.sh --permissions ask`
-  leaves them on ([INSTALL.md](INSTALL.md#permissions-skip-recommended-or-ask)).
+  leaves them on ([INSTALL.md](docs/INSTALL.md#permissions-skip-recommended-or-ask)).
 - `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`. On Linux, also
   Node 22.7 or newer.
 - **Go 1.22 or newer**, for `hw-core`, which `install.sh` builds and the tools require.
@@ -104,18 +104,18 @@ foreman-sh answers each one with a mechanism:
 On macOS, Homebrew installs all of these but Claude Code's first run (see the
 Quickstart). Each tool has a minimum version, kept in one file
 (`lib/hw/deps.conf`); `install.sh --check` and `hw preflight` name the command
-that updates one ([INSTALL.md](INSTALL.md), [L15](KNOWN-LIMITATIONS.md)).
+that updates one ([INSTALL.md](docs/INSTALL.md), [L15](docs/KNOWN-LIMITATIONS.md)).
 
 [engram](https://github.com/Gentleman-Programming/engram) is recommended, and
 more tools are optional:
 
 - **engram** gives the brainer memory across sessions; without it,
-  nothing is saved between them ([L8](KNOWN-LIMITATIONS.md)). Install it with
+  nothing is saved between them ([L8](docs/KNOWN-LIMITATIONS.md)). Install it with
   `brew install gentleman-programming/tap/engram && engram setup claude-code`,
   and answer `y` when it asks about the allowlist.
 - **Judgment Day** is a blind review of a diff by two judges. Install it with
   `./install.sh --brain ~/brain --with-judgment-day`
-  ([L10](KNOWN-LIMITATIONS.md)).
+  ([L10](docs/KNOWN-LIMITATIONS.md)).
 - **Bitwarden CLI (`bw`)**, `npm i -g @bitwarden/cli`, for a brief that
   declares `secrets:` (see *Secrets* below).
 - **[OpenCode](https://opencode.ai)** 1.18.31 or newer, with
@@ -124,7 +124,7 @@ more tools are optional:
 - **pi**, measured against 1.1.0, set up with `herdr integration install pi`,
   runs a task's executor: `hw <lane> <task> --agent pi --model <provider/id> --sdd none`.
   In a `product_repo` lane it also guards the main checkout and sibling worktrees
-  ([L3b](KNOWN-LIMITATIONS.md)).
+  ([L3b](docs/KNOWN-LIMITATIONS.md)).
 
 ## Quickstart
 
@@ -150,7 +150,7 @@ foreman-sh init --dry-run   # the plan only; --yes answers its questions
 `init` names each missing tool with its install command, offers to install what
 Homebrew carries, builds `~/brain` with a `demo` lane on a toy repository and a
 sample brief, and proves them with `hw demo hello … --dry-run`. A second run
-changes nothing and says so ([INSTALL.md](INSTALL.md#quick-start-foreman-sh-init)).
+changes nothing and says so ([INSTALL.md](docs/INSTALL.md#quick-start-foreman-sh-init)).
 Steps 3 and 4 are the same path, one at a time.
 
 ### 3. Install, step by step
@@ -209,7 +209,7 @@ hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none             # laun
 ```
 
 `--no-report` is for the preview only, outside a pane `brain` opened
-([L7](KNOWN-LIMITATIONS.md)); the launch line has none. An executor opens in a
+([L7](docs/KNOWN-LIMITATIONS.md)); the launch line has none. An executor opens in a
 new herdr tab, writes `HELLO.md`, commits it on branch `task/hello`, and its
 report arrives in the brainer's session.
 
@@ -222,7 +222,7 @@ foreman-sh upgrade --brain ~/brain --dry-run    # says what it would do and chan
 
 `upgrade` replays the flags the install recorded, runs `--check` and prints the
 new release's "In short"; `hw status` tells you when a newer release exists
-([INSTALL.md](INSTALL.md#the-command)).
+([INSTALL.md](docs/INSTALL.md#the-command)).
 
 ## How it works
 
@@ -261,7 +261,7 @@ new release's "In short"; `hw status` tells you when a newer release exists
 | brief `plugins: [<name>, …]` | Review plugins loaded into that executor only. |
 
 `hw help all` lists every command and flag, `hw help <topic>` shows one part,
-and [REFERENCE.md](REFERENCE.md) has each row in full, with the frameworks, the
+and [REFERENCE.md](docs/REFERENCE.md) has each row in full, with the frameworks, the
 cockpit and every lane setting. `<pane>` is the executor's herdr pane, as
 `hw status` lists it.
 
@@ -273,8 +273,8 @@ each item exists before it builds anything. The executor runs
 `hw secret run <item>[.<field>] --as VAR -- <cmd>`: the value lands in `<cmd>`'s
 environment and is not printed or written. You unlock the vault with
 `secret-unlock`; on macOS the master password can stay in the login Keychain so
-`hw` unlocks it for you ([INSTALL.md](INSTALL.md#secrets-bitwarden),
-[L23](KNOWN-LIMITATIONS.md)).
+`hw` unlocks it for you ([INSTALL.md](docs/INSTALL.md#secrets-bitwarden),
+[L23](docs/KNOWN-LIMITATIONS.md)).
 
 ## The cockpit
 
@@ -295,7 +295,7 @@ Each control runs a command that already exists: `receipt`, `done`, `ruling`,
 `reply` and `verify`. Turn the cockpit off with `FOREMAN_COCKPIT=0` or
 `brain <lane> --no-cockpit`; `brain <lane> --resume <id>` reopens a brainer's own
 conversation with it. Every card line and control is in
-[REFERENCE.md](REFERENCE.md#the-cockpit).
+[REFERENCE.md](docs/REFERENCE.md#the-cockpit).
 
 ## Customize a lane
 
@@ -314,14 +314,14 @@ that lane:
 ```
 
 `hw <lane> <task> --dry-run` shows the note inside the prompt. Every field is in
-[REFERENCE.md](REFERENCE.md#customizing-a-lane-projectsjson), and
+[REFERENCE.md](docs/REFERENCE.md#customizing-a-lane-projectsjson), and
 `hw help lanes` prints it in short form.
 
 ## How it compares
 
 | | Isolation | Guards the brainer | Agents | UI |
 |---|---|---|---|---|
-| **foreman-sh** | worktree and branch per task | yes | Claude Code, OpenCode, pi, Codex ([L3](KNOWN-LIMITATIONS.md)) | herdr panes |
+| **foreman-sh** | worktree and branch per task | yes | Claude Code, OpenCode, pi, Codex ([L3](docs/KNOWN-LIMITATIONS.md)) | herdr panes |
 | [claude-squad](https://github.com/smtg-ai/claude-squad) | tmux and worktree per agent | — | Claude Code, Codex, Gemini, Aider | TUI |
 | [Conductor](https://www.conductor.build) | isolated workspaces | — | Claude Code, Codex, Cursor | macOS app |
 | [uzi](https://github.com/devflowinc/uzi) | worktree per agent | — | Claude Code, Codex and others | CLI and tmux |
@@ -341,12 +341,12 @@ What foreman-sh adds on top of isolation:
 
 ## Learn more
 
-- [`INSTALL.md`](INSTALL.md): every install option, OpenCode and engram.
-- [`REFERENCE.md`](REFERENCE.md): every command, brief field, cockpit control and lane setting.
-- [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md): what a brief can contain.
-- [`THREAT-MODEL.md`](THREAT-MODEL.md): what the guards stop, what they do not
+- [`INSTALL.md`](docs/INSTALL.md): every install option, OpenCode and engram.
+- [`REFERENCE.md`](docs/REFERENCE.md): every command, brief field, cockpit control and lane setting.
+- [`BRIEF-TEMPLATE.md`](docs/BRIEF-TEMPLATE.md): what a brief can contain.
+- [`THREAT-MODEL.md`](docs/THREAT-MODEL.md): what the guards stop, what they do not
   stop and the opt-in macOS `--sandbox`.
-- [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md): what this release does not
+- [`KNOWN-LIMITATIONS.md`](docs/KNOWN-LIMITATIONS.md): what this release does not
   do, or does only partly.
 - [`CHANGELOG.md`](CHANGELOG.md): what changed in each release.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).

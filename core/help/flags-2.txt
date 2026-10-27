@@ -11,7 +11,7 @@
                        its writes and cuts its control sockets; it reports
                        through an outbox. Same as `sandbox: true` in a brief.
                        macOS and Claude Code only; TCP stays open
-                       (THREAT-MODEL.md).
+                       (docs/THREAT-MODEL.md).
     --dry-run          print the dispatch, create nothing.
     --allow-stale-hooks launch even though the worktree's versioned hook settings
                        (.claude/settings*.json, .codex/hooks.json, opencode.json)
@@ -21,7 +21,7 @@
                        concurrent work — recorded in the manifest)
     --no-reuse-check   legacy exact alias for --fresh
 
-BRIEF KEYS (front-matter; BRIEF-TEMPLATE.md has the whole block)
+BRIEF KEYS (front-matter; docs/BRIEF-TEMPLATE.md has the whole block)
     sandbox: true      same as --sandbox; `false` never turns a --sandbox off.
     requires-agents: [primary:|subagent:]<name>[, …]
                        agents the task cannot do without. hw refuses the

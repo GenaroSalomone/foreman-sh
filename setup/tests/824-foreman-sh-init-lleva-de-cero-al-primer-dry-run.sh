@@ -41,7 +41,7 @@
 # Run alone:  bash setup/tests/824-foreman-sh-init-lleva-de-cero-al-primer-dry-run.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR OPENCODE_CONFIG_DIR OPENCODE_EXECUTOR_CONFIG
-[ -f "$ROOT/init.sh" ] || fail "init.sh is not in the tree — there is no \`init\` to test"
+[ -f "$ROOT/scripts/init.sh" ] || fail "scripts/init.sh is not in the tree — there is no \`init\` to test"
 
 # ── the world: stubs ahead of a copy of PATH that has no herdr, claude, engram or brew ──
 LOGS="$TMP/stub-log"; mkdir -p "$LOGS"
@@ -238,43 +238,44 @@ pass "a second init --yes changes no file, redoes no setup, and says there was n
 
 # ── the mutants: one changed line each, in a copy of init.sh inside a symlink farm ──
 MUT="$TMP/mut"; mkdir -p "$MUT"
-for e in "$ROOT"/* "$ROOT"/.[!.]*; do n="${e##*/}"; case "$n" in init.sh|.git) continue ;; esac; [ -e "$e" ] && ln -s "$e" "$MUT/$n"; done
+for e in "$ROOT"/* "$ROOT"/.[!.]*; do n="${e##*/}"; case "$n" in scripts|.git) continue ;; esac; [ -e "$e" ] && ln -s "$e" "$MUT/$n"; done
+mkdir -p "$MUT/scripts"; for e in "$ROOT"/scripts/*; do ln -s "$e" "$MUT/scripts/${e##*/}"; done   # init.sh is replaced by a mutated copy per case
 minit() { "$MUT/install.sh" init "$@" 2>&1 </dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
 
 # M01 — the prerequisite check dropped: the unmutated run above stopped before [2/7]
-cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M01 "$MUT/init.sh" 'if false; then'   # was: if [ "$MISSING" -gt 0 ]; then
+rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M01 "$MUT/scripts/init.sh" 'if false; then'   # was: if [ "$MISSING" -gt 0 ]; then
 saw_mutant "M01 the prerequisite check dropped" "$(PATH="$NOHERDR_PATH" minit --yes)" "[2/7] the Claude account"
 
 # M02 — the sample brief is written over what is there: the unmutated second run said "(left as it is)"
-cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M02 "$MUT/init.sh" 'if false; then ok "x"'   # was: if [ -f "$BRIEF" ]; then ok "… (left as it is)"
+rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M02 "$MUT/scripts/init.sh" 'if false; then ok "x"'   # was: if [ -f "$BRIEF" ]; then ok "… (left as it is)"
 saw_mutant "M02 the sample brief overwritten on a re-run" "$(minit --yes)" "+     $BRIEF" "init: done — 1 change(s)"
 
 # M03 — the measured fingerprint ignored: the unmutated second run said "were already in place"
-cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M03 "$MUT/init.sh" 'if false; then ok "x"'   # was: if [ "$before" = "$after" ]; then ok "… nothing changed"
+rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M03 "$MUT/scripts/init.sh" 'if false; then ok "x"'   # was: if [ "$before" = "$after" ]; then ok "… nothing changed"
 saw_mutant "M03 nothing-changed never concluded" "$(minit --yes)" "(links in " "init: done — 1 change(s)"
 
 # M04 — the in-run Homebrew offer dropped: the unmutated 2c run reached the dry-run dispatch
-cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M04 "$MUT/init.sh" 'if false; then'   # was: if [ "$MISSING" -gt 0 ] && type -P brew ... && [ "$DRY" = 0 ]; then
+rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M04 "$MUT/scripts/init.sh" 'if false; then'   # was: if [ "$MISSING" -gt 0 ] && type -P brew ... && [ "$DRY" = 0 ]; then
 saw_mutant "M04 the Homebrew offer dropped" "$(HOME="$TMP/home-brew-m" STUB_BREW_BIN="$TMP/brew-bin-m" PATH="$TMP/brew-bin-m:$NOHERDR_PATH" minit --yes)" "prerequisite(s) missing"
 
 # M05 — the Command Line Tools line dropped: the unmutated 2d run said "Command Line Tools"
-cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M05 "$MUT/init.sh" 'if false; then'   # was: if [ "$CLT_MISSING" -gt 0 ]; then
+rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M05 "$MUT/scripts/init.sh" 'if false; then'   # was: if [ "$CLT_MISSING" -gt 0 ]; then
 # positive evidence, not absence: the run REACHED the stop (so the mutated line ran), and the hint is gone
 m5="$(PATH="$STUBS:$NOGIT" minit --yes || true)"
 case "$m5" in *"prerequisite(s) missing"*) case "$m5" in *"Command Line Tools"*) m5=CLT-LINE-STILL-THERE ;; *) m5=CLT-LINE-GONE ;; esac ;; *) m5=RUN-NEVER-REACHED-THE-STOP ;; esac
 saw_mutant "M05 the Command Line Tools line dropped" "$m5" "CLT-LINE-GONE"
 
 # M06 — the copyable brew line printed even when only git is missing: the unmutated 2d run had none
-cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M06 "$MUT/init.sh" '  if type -P brew >/dev/null 2>&1; then'   # was: if [ "$((MISSING - CLT_MISSING))" -gt 0 ] && type -P brew ...
+rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M06 "$MUT/scripts/init.sh" '  if type -P brew >/dev/null 2>&1; then'   # was: if [ "$((MISSING - CLT_MISSING))" -gt 0 ] && type -P brew ...
 saw_mutant "M06 the brew line for what brew cannot install" "$(PATH="$STUBS:$NOGIT" minit --yes)" "--with-recommended &&"
 
 # M07 — the in-run offer fired by MISSING alone: the unmutated 2d run never asked
-cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M04 "$MUT/init.sh" 'if [ "$MISSING" -gt 0 ] && type -P brew >/dev/null 2>&1 && [ "$DRY" = 0 ]; then'   # was: [ "$((MISSING - CLT_MISSING))" -gt 0 ]
+rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M04 "$MUT/scripts/init.sh" 'if [ "$MISSING" -gt 0 ] && type -P brew >/dev/null 2>&1 && [ "$DRY" = 0 ]; then'   # was: [ "$((MISSING - CLT_MISSING))" -gt 0 ]
 saw_mutant "M07 the offer fired for what brew cannot install" "$(PATH="$STUBS:$NOGIT" minit --yes)" "prerequisites, again:"
 
 # M08 — install.sh's NOTE lines dropped: the unmutated 4c run carried the seam's NOTE
 if [ -d "$ROOT/core" ] && [ -f "$ROOT/setup/build-core" ]; then
-  cp "$ROOT/init.sh" "$MUT/init.sh"; mutate_anchor 824-M08 "$MUT/init.sh" '  :'   # was: ... sed -n 's/^  NOTE  //p' | while ... say "NOTE  $_note"
+  rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M08 "$MUT/scripts/init.sh" '  :'   # was: ... sed -n 's/^  NOTE  //p' | while ... say "NOTE  $_note"
   m8="$(HOME="$TMP/home-nogo-m" FOREMAN_SH_NO_CORE=1 PATH="$STUBS:$NOGO" minit --yes || true)"
   # positive evidence: the run REACHED its end (so the mutated line ran) and the NOTE is gone
   case "$m8" in *"init: done"*) case "$m8" in *"NOTE  hw-core is not built (FOREMAN_SH_NO_CORE=1"*) m8=NOTE-STILL-THERE ;; *) m8=NOTE-GONE ;; esac ;; *) m8=RUN-NEVER-FINISHED ;; esac

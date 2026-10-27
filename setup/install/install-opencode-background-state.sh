@@ -46,7 +46,7 @@ replacements = [
 //
 // This managed integration is intentionally patched by this harness's setup lane.
 // The canonical, reproducible repair and drift check live at:
-//   <brain>/setup/install-opencode-background-state.sh
+//   <brain>/setup/install/install-opencode-background-state.sh
 // `herdr integration install opencode` overwrites this file; `--check` must
 // fail immediately afterward until `--apply` repairs it.
 """),

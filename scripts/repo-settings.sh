@@ -3,7 +3,7 @@
 # commands. Run once by the maintainer after publishing; needs an authenticated
 # `gh` with admin on the repository.
 #
-#   bash repo-settings.sh [OWNER/NAME]   # default: the repository of the cwd
+#   bash scripts/repo-settings.sh [OWNER/NAME]   # default: the repository of the cwd
 set -euo pipefail
 
 REPO="${1:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"

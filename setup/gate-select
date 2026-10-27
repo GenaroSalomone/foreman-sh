@@ -66,8 +66,8 @@ import sys
 SUBJECT = re.compile(r"^setup/tests/[0-9][0-9]*-[^/]*\.sh$")
 # The runner and everything it loads: a change here can move any verdict.
 RUNNER = re.compile(
-    r"^setup/(test-hw|test-hw-snapshot\.py|fast-gate-budget\.sh|test-budgets\.json"
-    r"|mutation-coverage|gate-select|retired-subjects\.txt|go-test-core\.sh)$|^setup/tests/")
+    r"^setup/(test-hw|test-hw-snapshot\.py|fast-gate-budget\.sh|suite-data/test-budgets\.json"
+    r"|mutation/mutation-coverage|gate-select|suite-data/retired-subjects\.txt|go-test-core\.sh)$|^setup/tests/")
 GUARD = re.compile(
     r"^setup/guards/|^([^/]+/)?\.claude/hooks/deny-repo-writes\.py$"
     r"|^([^/]+/)?\.opencode/plugin/deny-repo-writes\.js$")
@@ -89,12 +89,12 @@ def read(path):
 
 
 def retired_globs(root):
-    """The globs of setup/retired-subjects.txt: subjects no gate runs (a missing file retires none).
+    """The globs of setup/suite-data/retired-subjects.txt: subjects no gate runs (a missing file retires none).
 
     The same format setup/test-hw reads: the first word of a line is a shell glob over the subject's file
     name, the rest is why; blank and `#` lines are ignored."""
     globs = []
-    for line in read(os.path.join(root, "setup", "retired-subjects.txt")).split("\n"):
+    for line in read(os.path.join(root, "setup", "suite-data", "retired-subjects.txt")).split("\n"):
         words = line.split()
         if words and not words[0].startswith("#"):
             globs.append(words[0])
@@ -254,7 +254,7 @@ def when_hits(root, changed):
     so naming cannot select it; this says which paths do, and costs nothing
     when none changed."""
     tests = os.path.join(root, "setup", "tests")
-    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    budgets = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))
     hits = {}
     gone = retired_globs(root)
     for n in budgets["files"]:
@@ -275,7 +275,7 @@ def when_hits(root, changed):
 def slow_hits(root, changed, trigger):
     """-> ({slow subject: (rank, first changed path naming it)}, {slow: seconds}, {those declaring gate-reference})."""
     tests = os.path.join(root, "setup", "tests")
-    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    budgets = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))
     threshold = budgets["fast_gate_threshold_seconds"]
     gone = retired_globs(root)
     slow = {n: v["seconds"] for n, v in budgets["files"].items()
@@ -319,7 +319,7 @@ def slow_hits(root, changed, trigger):
 
 def touched(root, changed, trigger):
     """The slow subjects that name a changed path, ranked and cut by budget."""
-    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    budgets = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))
     cap = budgets.get("touched_budget_seconds", 180)
     found, slow, pinned = slow_hits(root, changed, trigger)
     spent = 0.0
@@ -345,7 +345,7 @@ def main(argv):
         print("all no changed paths were named")
         return 0
     tests = os.path.join(root, "setup", "tests")
-    budgets = json.loads(read(os.path.join(root, "setup", "test-budgets.json")))
+    budgets = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))
     threshold = budgets["fast_gate_threshold_seconds"]
     gone = retired_globs(root)
     fast = sorted(n for n, v in budgets["files"].items()

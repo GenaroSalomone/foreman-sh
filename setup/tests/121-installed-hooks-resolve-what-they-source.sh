@@ -38,8 +38,8 @@ cp "$ROOT/setup/hooks/pre-push" "$ROOT/setup/hooks/pre-commit" \
    "$ROOT/setup/hooks/commit-msg" "$ROOT/setup/hooks/attribution-pattern.sh" \
    "$ROOT/setup/hooks/suite-trigger-pattern.sh" "$repo/setup/hooks/"
 cp "$ROOT/setup/hooks/decisions-check.py" "$repo/setup/hooks/" 2>/dev/null || true
-cp "$ROOT/setup/install-hooks.sh" "$repo/setup/"
-chmod +x "$repo/setup/install-hooks.sh" "$repo/setup/hooks/pre-push" \
+mkdir -p "$repo/setup/install"; cp "$ROOT/setup/install/install-hooks.sh" "$repo/setup/install/"
+chmod +x "$repo/setup/install/install-hooks.sh" "$repo/setup/hooks/pre-push" \
          "$repo/setup/hooks/pre-commit" "$repo/setup/hooks/commit-msg"
 printf 'prose only\n' > "$repo/README.md"
 git -C "$repo" add -A
@@ -47,7 +47,7 @@ git -C "$repo" -c user.name=Probe -c user.email=probe@example.invalid commit -qm
 head="$(git -C "$repo" rev-parse HEAD)"
 zero="0000000000000000000000000000000000000000"
 
-install_out="$(cd "$repo" && ./setup/install-hooks.sh 2>&1)" || fail "install-hooks.sh failed in the fixture: $install_out"
+install_out="$(cd "$repo" && ./setup/install/install-hooks.sh 2>&1)" || fail "install-hooks.sh failed in the fixture: $install_out"
 case "$install_out" in
   *"pre-commit -> setup/hooks/pre-commit"*"pre-push -> setup/hooks/pre-push"*"commit-msg -> setup/hooks/commit-msg"*)
     pass "install: the documented install is a command, and it links all three entry points" ;;

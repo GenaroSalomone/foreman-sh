@@ -15,7 +15,7 @@
 #
 # WHAT THIS REPLACES, measured 2026-09-30/10-01: the brainer integrated by hand
 # in a scratchpad clone — `git merge --no-ff --no-commit`, resolve-budgets.py
-# for setup/test-budgets.json, `commit-tree`, then chain-push.sh (suite, safe
+# for setup/suite-data/test-budgets.json, `commit-tree`, then chain-push.sh (suite, safe
 # advance of main, push). Those two scripts are the specification of this one.
 #
 # THE TRAIN IS A BRANCH, `train-<project>`. `refs/heads/train` already exists in
@@ -34,7 +34,7 @@
 #     the train runs it once per batch at `push` (setup/decisions.md,
 #     2026-09-30, "La suite completa corre una vez por tanda de merges").
 #
-# THE ONLY CONFLICT RESOLVED IS setup/test-budgets.json, and only when both
+# THE ONLY CONFLICT RESOLVED IS setup/suite-data/test-budgets.json, and only when both
 # sides parse: per key, three-way — a side that left a key as the base had it
 # takes the other side's value (a deletion included), and where both changed it
 # the train's wins, as resolve-budgets.py did. Every other conflict is named,
@@ -56,7 +56,7 @@ g rev-parse --verify --quiet "refs/heads/$BASE^{commit}" >/dev/null \
   || refuse "the base branch $BASE does not exist in $CO"
 T="train-$P"
 TREF="refs/heads/$T"
-BUDGETS="setup/test-budgets.json"
+BUDGETS="setup/suite-data/test-budgets.json"
 COMMON="$(cd "$CO" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
 STATE="$COMMON/hw-train"
 mkdir -p "$STATE"
@@ -278,8 +278,8 @@ cmd_push() {
   H="$(tip "refs/heads/$BASE")"
   has "$H" "$C" || refuse "MAIN MOVED: $BASE is at $(g rev-parse --short "$H"), not in the verified $(g rev-parse --short "$C") — run hw train push $P again"
   advance "$H" "$C"
-  [ ! -f "$CO/setup/install-hooks.sh" ] || (cd "$CO" && bash setup/install-hooks.sh >/dev/null 2>&1) \
-    || say "WARNING: setup/install-hooks.sh failed after the advance — run it by hand"
+  [ ! -f "$CO/setup/install/install-hooks.sh" ] || (cd "$CO" && bash setup/install/install-hooks.sh >/dev/null 2>&1) \
+    || say "WARNING: setup/install/install-hooks.sh failed after the advance — run it by hand"
   say "$BASE advanced $(g rev-parse --short "$H") -> $(g rev-parse --short "$C"). Not pushed; to publish:"
   for r in $(g remote); do printf '    git -C %s push %s %s\n' "$CO" "$r" "$BASE"; done
 }

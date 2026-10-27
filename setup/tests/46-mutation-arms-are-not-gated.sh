@@ -26,12 +26,12 @@
 # subject PRINTED has no false positives and no idiom to keep up with: any future
 # way of skipping an arm fails it.
 #
-# This subject drives `setup/mutation-coverage`, which the RUNNER applies to
+# This subject drives `setup/mutation/mutation-coverage`, which the RUNNER applies to
 # every subject file it runs. One copy of the predicate, two callers.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-COV="$ROOT/setup/mutation-coverage"
-[ -x "$COV" ] || fail "C00 setup/mutation-coverage is missing or not executable"
+COV="$ROOT/setup/mutation/mutation-coverage"
+[ -x "$COV" ] || fail "C00 setup/mutation/mutation-coverage is missing or not executable"
 
 FIX="$TMP/fix"; mkdir -p "$FIX"
 run_cov() { "$COV" "$1" "$2" >/dev/null 2>&1; printf '%s' "$?"; }
@@ -183,7 +183,7 @@ pass "C10 the shape refusal is decided before the exercised-arms check, so a vac
 # ── mutation arms, ungated on purpose — this file is the reason why ──────────
 # `mut <name>` prints the path of a copy of the predicate; the caller then edits it
 # with `mutate_anchor <id> "$path" <replacement>`. The edit lands on the line (or block) a `# MUTATION-ANCHOR: 46-Mnn`
-# marker in setup/mutation-coverage declares, not on the prose of that line; see
+# marker in setup/mutation/mutation-coverage declares, not on the prose of that line; see
 # mutate_anchor in _common.sh, which fails loudly when its anchor is gone, so a
 # harness that cannot build its mutant never reads as a surviving one.
 mut() {

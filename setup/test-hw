@@ -145,16 +145,16 @@ if [ "${#ALL[@]}" -ne "$(( ${#FILES[@]} + 1 ))" ]; then
 fi
 [ -f "$TESTS/_common.sh" ] || { printf 'not ok - runner: tests/_common.sh is missing\n' >&2; exit 1; }
 
-# ── RETIRED SUBJECTS: listed in setup/retired-subjects.txt, run by NO gate ──
+# ── RETIRED SUBJECTS: listed in setup/suite-data/retired-subjects.txt, run by NO gate ──
 #
 # 2026-10-15, by the maintainer's order: the on-disk contract-golden corpora and their mutation anchors leave the runner (the
 # fast gate's touched subjects, the full run and the push gate), and `go test` over core/ (setup/go-test-core.sh, a job
 # of every gate below) runs in their place. The file lists one shell glob per line over a subject's file name, then a
 # one-line why. THE LIST IS THE ONLY WAY A SUBJECT LEAVES: a glob that matches no subject is refused (a typo would run
 # the old suite and say nothing), and the skip is counted and said in ONE line, every run. The files stay on disk and
-# in setup/test-budgets.json (the 1:1 check reads the glob, not this list); gate-select reads the same list, so a
+# in setup/suite-data/test-budgets.json (the 1:1 check reads the glob, not this list); gate-select reads the same list, so a
 # retired subject never takes a touched slot. A tree with no list (a fixture runner) retires nothing.
-RETIRED_FILE="$HERE/retired-subjects.txt"
+RETIRED_FILE="$HERE/suite-data/retired-subjects.txt"
 RETIRED_GLOBS=(); RETIRED_N=0
 if [ -f "$RETIRED_FILE" ]; then
   while read -r _rg _rest || [ -n "$_rg" ]; do
@@ -181,7 +181,7 @@ if [ "${#RETIRED_GLOBS[@]}" -gt 0 ]; then
   done
   FILES=(${_kept[@]+"${_kept[@]}"})
   unset _g _hit _kept
-  printf 'runner: RETIRED %s subject(s) skipped in this gate — the contract-golden and mutation-anchor corpora listed in setup/retired-subjects.txt; go test ./core/... (setup/go-test-core.sh) runs in their place\n' "$RETIRED_N" >&2
+  printf 'runner: RETIRED %s subject(s) skipped in this gate — the contract-golden and mutation-anchor corpora listed in setup/suite-data/retired-subjects.txt; go test ./core/... (setup/go-test-core.sh) runs in their place\n' "$RETIRED_N" >&2
 fi
 
 # ── THE FAST GATE, derived from measurement rather than a hand-kept list ────
@@ -192,7 +192,7 @@ fi
 # tracked/untracked accounting, the mutation-coverage gate, the guard block —
 # changes unless a caller opts in.
 #
-# THE CLASSIFICATION IS NOT A LIST SOMEONE MAINTAINS. `setup/test-budgets.json`
+# THE CLASSIFICATION IS NOT A LIST SOMEONE MAINTAINS. `setup/suite-data/test-budgets.json`
 # holds a REAL measured duration per subject file (from `setup/measure-tests.sh`)
 # and one owned threshold; "fast" is simply "measured at or under the
 # threshold" — computed here, not authored. What IS committed is the
@@ -216,14 +216,14 @@ if [ "$HW_TEST_GATE" = fast ]; then
   # An executor's own verify (no HW_TEST_CHANGED: pre-commit has its own line, no nested run) takes 8-12 minutes: said
   # first, because a foreground call dies at the agent's 120 s tool timeout and a sleep loop past it is the same wait twice.
   [ -n "${HW_TEST_CHANGED:-}" ] || [ -n "${TEST_HW_NESTED:-}" ] || printf 'runner: the fast gate takes minutes (8-12 measured). An agent: run it with run_in_background and wait for the completion notification; never sleep-poll it past the 120 s tool timeout.\n' >&2  # MUTATION-ANCHOR: 995-M03
-  BUDGETS="$HERE/test-budgets.json"
+  BUDGETS="$HERE/suite-data/test-budgets.json"
   [ -f "$BUDGETS" ] || { printf 'not ok - runner: %s is missing — run setup/measure-tests.sh before the fast gate can run\n' "$BUDGETS" >&2; exit 1; }
   # THE TIME BUDGET IS A GATE AT THE COMMIT, not only when subject 965 runs (2026-10-16): the fast gate is the
   # verify an executor runs before a commit-tree commit that no hook sees, so it asks setup/test-budget-gate
   # first — about a second, over the budgets this run is about to read — and a subject over its limit, or an
   # estimated suite over its ceiling, is red here, naming the subject to split. A fixture with no gate asks nothing.
   if [ -f "$HERE/test-budget-gate" ]; then
-    _tb_rc=0; _tb_ceil="$HERE/test-budget-ceilings.tsv"; [ -f "$_tb_ceil" ] || _tb_ceil=""
+    _tb_rc=0; _tb_ceil="$HERE/suite-data/test-budget-ceilings.tsv"; [ -f "$_tb_ceil" ] || _tb_ceil=""
     _tb_out="$(python3 "$HERE/test-budget-gate" "$BUDGETS" "$_tb_ceil" 2>&1)" || _tb_rc=$?  # MUTATION-ANCHOR: 966-M02
     if [ "$_tb_rc" -ne 0 ]; then
       printf 'not ok - runner: the suite is over its time budget (setup/test-budget-gate), so the fast gate does not start:\n%s\n' "$_tb_out" >&2
@@ -280,7 +280,7 @@ for n in on_disk:
 PY
 )" || _gate_py_rc=$?
   if [ "$_gate_py_rc" -ne 0 ]; then
-    printf 'not ok - runner: setup/test-budgets.json does not match %s 1:1 — %s\nRegenerate with: bash setup/measure-tests.sh\n' \
+    printf 'not ok - runner: setup/suite-data/test-budgets.json does not match %s 1:1 — %s\nRegenerate with: bash setup/measure-tests.sh\n' \
       "$TESTS" "$(printf '%s\n' "$_gate_py_out" | tail -n +2 | tr '\n' '; ')" >&2
     exit 1
   fi
@@ -1195,16 +1195,16 @@ fi
 # costs nothing, and it covers every subject rather than the ones someone
 # remembered to list. It reads what a subject PRINTED, never how its source is
 # written — an earlier source-shape scan flagged four innocents, and a check that
-# cries wolf is ignored within a day. The predicate is `setup/mutation-coverage`,
+# cries wolf is ignored within a day. The predicate is `setup/mutation/mutation-coverage`,
 # one copy, driven against fixtures with its own mutants by tests/46.
-COVERAGE="$HERE/mutation-coverage"
+COVERAGE="$HERE/mutation/mutation-coverage"
 [ -x "$COVERAGE" ] || { printf 'not ok - runner: %s is missing or not executable, so mutation coverage is unchecked\n' "$COVERAGE" >&2; exit 1; }
 
 # ── HOW MANY AT ONCE, AND THE THREE THINGS THAT STAY ONE AT A TIME ──────────
 #
 # THE SUITE HAD TO FIT IN THE CLOSE BUDGET. `hw` gives a close verification 900s
 # (`_VERIFY_TIMEOUT`, bin/hw) and the subjects measure 1119s of work between them
-# (setup/test-budgets.json, 2026-09-16) — so no brief in this lane could name
+# (setup/suite-data/test-budgets.json, 2026-09-16) — so no brief in this lane could name
 # `bash setup/test-hw` in its own `## Verification` without the timeout killing
 # the close at exit 124 over work that was fine. Raising the clock hides that;
 # running the subjects at the same time is what actually shortens it.
@@ -1450,7 +1450,7 @@ _timing_of() { # <subject path> → retry | no
        END { if (!found) print "no" }' "$1" 2>/dev/null || printf 'no'
 }
 JOB_PATH=(); JOB_KIND=(); JOB_LANE=(); JOB_HINT=()
-# JOB_ARG is sparse: only a go-test job has one (its partition of setup/go-test-partitions.txt), read as ${JOB_ARG[i]:-}
+# JOB_ARG is sparse: only a go-test job has one (its partition of setup/suite-data/go-test-partitions.txt), read as ${JOB_ARG[i]:-}
 JOB_ARG=()
 _job_name() { # <idx> → the job's name in every line the runner prints: the file, and for a go-test partition `:<partition>`
   case "${JOB_ARG[$1]:-}" in
@@ -1463,7 +1463,7 @@ for f in ${FILES[@]+"${FILES[@]}"}; do
 done
 # THE IN-PROCESS SUITE IS A SET OF JOBS IN EVERY GATE (fast, touched, full, a selected pre-commit run): `go test` over core/,
 # the Go module of hw-core, through setup/go-test-core.sh with the shared GOCACHE, cut into the partitions of
-# setup/go-test-partitions.txt (a contract shard, a corpus' mutants...) so they run in parallel in the pool, each its own
+# setup/suite-data/go-test-partitions.txt (a contract shard, a corpus' mutants...) so they run in parallel in the pool, each its own
 # job. They take the place of the retired corpora, so a red `go test` or a SKIPPED in-process test fails the gate like any
 # subject, and a list of retired subjects with no such jobs to replace them is refused. The full run queues every partition;
 # the fast and touched gates queue only those the changed paths can reach (go-test-core.sh --affected), and ALL of them when
@@ -1471,7 +1471,7 @@ done
 if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
   _gt_all="$(bash "$HERE/go-test-core.sh" --list 2>/dev/null)" || _gt_all=""
   if [ -z "$_gt_all" ]; then
-    printf 'not ok - runner: setup/go-test-core.sh --list names no partition (setup/go-test-partitions.txt), so the in-process suite has nothing to run\n' >&2
+    printf 'not ok - runner: setup/go-test-core.sh --list names no partition (setup/suite-data/go-test-partitions.txt), so the in-process suite has nothing to run\n' >&2
     exit 1
   fi
   _gt_pick="$(printf '%s\n' "$_gt_all" | cut -f1)"
@@ -1494,7 +1494,7 @@ if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
     _gt_names="$(printf '%s\n' "$_gt_all" | cut -f1)"
     for _gt_n in $_gt_named; do
       [ "$_gt_n" != - ] || continue
-      grep -qx -- "$_gt_n" <<<"$_gt_names" || { printf 'not ok - runner: HW_TEST_ONLY names go-test-core.sh:%s, which is no partition of setup/go-test-partitions.txt\n' "$_gt_n" >&2; exit 1; }
+      grep -qx -- "$_gt_n" <<<"$_gt_names" || { printf 'not ok - runner: HW_TEST_ONLY names go-test-core.sh:%s, which is no partition of setup/suite-data/go-test-partitions.txt\n' "$_gt_n" >&2; exit 1; }
     done
     _gt_keep=""
     for _gt_n in $_gt_pick; do
@@ -1802,7 +1802,7 @@ fi
 # LONGEST FIRST, or the run is as long as whatever happens to start last.
 # `111-refuse-the-unwinnable-wait.sh` is 227s of the 1119s total; started late it
 # is a tail nobody else is filling. The durations are the ones
-# `setup/measure-tests.sh` already committed in setup/test-budgets.json for the
+# `setup/measure-tests.sh` already committed in setup/suite-data/test-budgets.json for the
 # fast gate, read here as a SCHEDULING HINT and nothing else. A stale, missing or
 # unparseable hint costs wall clock and cannot change a verdict, because the
 # print order below is the glob order either way — which is why every failure
@@ -1818,7 +1818,7 @@ if [ "$JOBS" -gt 1 ]; then
   # program from stdin, and the heredoc IS that stdin — a pipe into it is
   # swallowed and `sys.stdin.read()` returns the empty string, which here would
   # silently mean "no schedule" and cost the whole point of this block.
-  SCHED_ORDER="$(python3 - "$HERE/test-budgets.json" "$JOBDIR/schedule.in" <<'PY' || true
+  SCHED_ORDER="$(python3 - "$HERE/suite-data/test-budgets.json" "$JOBDIR/schedule.in" <<'PY' || true
 import json, pathlib, sys
 try:
     budgets = json.loads(pathlib.Path(sys.argv[1]).read_text())["files"]
@@ -1868,7 +1868,7 @@ _run_job() {
     # only reports the syntax error when it reaches the end. A file broken near
     # its end therefore prints its whole run of `ok -` lines, dies at EOF, and can
     # still exit 0 -- measured that day on 124, which went from 2.08s to 0.05s
-    # with `exit=0` recorded in setup/test-budgets.json. The duration collapse was
+    # with `exit=0` recorded in setup/suite-data/test-budgets.json. The duration collapse was
     # the only signal and nothing read it.
     #
     # BEFORE, NOT AFTER. `bash -n` is the whole file's verdict in one pass and
@@ -1888,7 +1888,7 @@ _run_job() {
       # file for the runner's own overhead. The old sequential loop bracketed
       # exactly this, and the bracket is the assertion.
       started="$(date +%s)"
-      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f"
+      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" fg_capped "$HERE/suite-data/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f"
       rc=$?
       # A TIMING SUBJECT THAT FAILED IS RUN ONCE MORE (the subject by itself, not the suite), and only one that
       # declared it (_timing_of). The first run's output is kept aside, so the
@@ -1897,7 +1897,7 @@ _run_job() {
         retried=1; first_rc="$rc"
         mv -f "$JOBDIR/$idx.out" "$JOBDIR/$idx.first.out"
         mv -f "$JOBDIR/$idx.err" "$JOBDIR/$idx.first.err"
-        fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f"
+        fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" fg_capped "$HERE/suite-data/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f"
         rc=$?
       fi
       ended="$(date +%s)"
@@ -1911,7 +1911,7 @@ _run_job() {
         _try=0
         while [ "$wall_ms" -gt "$_b_ms" ] && [ "$_try" -lt 2 ]; do
           _try=$((_try + 1))
-          fg_time_cmd "$JOBDIR/$idx.rerun.out" "$JOBDIR/$idx.rerun.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f" || { rerun_rc=$?; break; }
+          fg_time_cmd "$JOBDIR/$idx.rerun.out" "$JOBDIR/$idx.rerun.err" fg_capped "$HERE/suite-data/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.timeout" bash "$f" || { rerun_rc=$?; break; }
           [ "$FG_WALL_MS" -ge "$wall_ms" ] || wall_ms="$FG_WALL_MS"
           if [ "$cpu_ms" -le 0 ] || { [ "$FG_CPU_MS" -gt 0 ] && [ "$FG_CPU_MS" -lt "$cpu_ms" ]; }; then cpu_ms="$FG_CPU_MS"; fi
         done
@@ -1972,8 +1972,8 @@ NONEXCL_LEFT=$((JOB_TOTAL - EXCLUSIVE_OWED))
 # ── A JOB RUNS ONLY WHEN WHAT IT READS CHANGED (setup/verdict-cache, sem-8) ─────────────────────────────────────────────────────
 #
 # A release suite is hours of jobs whose inputs did not move: 6 h on 2026-10-21, no paid CI to spread it. Before anything is queued,
-# `verdict-cache plan` keys every job by the BYTES of everything it reads (a subject: setup/subject-deps.txt; a go-test partition:
-# setup/go-test-deps.txt; one nobody measured: the whole tree, which is today's behaviour) and answers hit/miss/never. A HIT is a green
+# `verdict-cache plan` keys every job by the BYTES of everything it reads (a subject: setup/suite-data/subject-deps.txt; a go-test partition:
+# setup/suite-data/go-test-deps.txt; one nobody measured: the whole tree, which is today's behaviour) and answers hit/miss/never. A HIT is a green
 # this tree's inputs already earned: its stored log becomes the job's output and its status is written HERE, so the job never takes a
 # worker, never waits for the timing lane and spawns nothing; it is counted and printed like any job (the tally reads its `ok -`
 # lines). A MISS runs as always and, once the loop below has judged it green, stores its log (never a red; the entry is renamed in).
@@ -2388,7 +2388,7 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
     fi
     case "$_fg_res" in
       refuse)
-        printf '\nnot ok - runner: setup/tests/%s took %sms (best of up to 3 runs, CPU %sms) in the fast gate, over the %sms budget in setup/test-budgets.json — judged on %s (%s; %s) — re-measure with setup/measure-tests.sh and, if it is really this slow, its classification belongs in the slow set\n' \
+        printf '\nnot ok - runner: setup/tests/%s took %sms (best of up to 3 runs, CPU %sms) in the fast gate, over the %sms budget in setup/suite-data/test-budgets.json — judged on %s (%s; %s) — re-measure with setup/measure-tests.sh and, if it is really this slow, its classification belongs in the slow set\n' \
           "$(basename "$f")" "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "$_fg_mode" "$_fg_why" "$_fg_ldesc" >&2
         _job_red 1 "setup/tests/$(basename "$f") over its fast-gate budget (${_fg_wall}ms > ${_fg_budget_ms}ms)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; } ;;
     esac
@@ -2434,7 +2434,7 @@ for _d in $TIMEOUT_DEFER; do
   if [ "$POOL_ON" = 1 ]; then
     until _pool_excl_step "$_d"; do sleep 0.5; done  # MUTATION-ANCHOR: 851-M03
   fi
-  rc=0; fg_time_cmd "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" fg_capped "$HERE/test-budgets.json" "$_name" "$JOBDIR/$_d.timeout" bash "$f" || rc=$?
+  rc=0; fg_time_cmd "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" fg_capped "$HERE/suite-data/test-budgets.json" "$_name" "$JOBDIR/$_d.timeout" bash "$f" || rc=$?
   _retry_wall="$FG_WALL_MS"
   [ "$POOL_ON" != 1 ] || _pool_excl_release
   cat "$JOBDIR/$_d.out"
@@ -2464,7 +2464,7 @@ for _d in $TIMEOUT_DEFER; do
     # the fast gate's own number is the subject's own: alone, it must still fit
     _fg_budget_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$_name=//p")" "$FG_FACTOR")"
     if [ "$_retry_wall" -gt "$_fg_budget_ms" ]; then
-      printf '\nnot ok - runner: setup/tests/%s took %sms alone on its retry after a timeout, over the %sms fast-gate budget in setup/test-budgets.json\n' \
+      printf '\nnot ok - runner: setup/tests/%s took %sms alone on its retry after a timeout, over the %sms fast-gate budget in setup/suite-data/test-budgets.json\n' \
         "$_name" "$_retry_wall" "$_fg_budget_ms" >&2
       _retry_bad="setup/tests/$_name over its fast-gate budget (${_retry_wall}ms > ${_fg_budget_ms}ms) on its retry after a timeout"
     fi
@@ -2488,7 +2488,7 @@ _retry_job() { # <idx> → the job's own command run again into $JOBDIR/<idx>.rt
   local idx="$1" f="${JOB_PATH[$1]}" kind="${JOB_KIND[$1]}" _r=bash
   rm -f "$JOBDIR/$idx.rt.timeout"
   if [ "$kind" = subject ]; then
-    fg_time_cmd "$JOBDIR/$idx.rt.out" "$JOBDIR/$idx.rt.err" fg_capped "$HERE/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.rt.timeout" bash "$f"
+    fg_time_cmd "$JOBDIR/$idx.rt.out" "$JOBDIR/$idx.rt.err" fg_capped "$HERE/suite-data/test-budgets.json" "$(basename "$f")" "$JOBDIR/$idx.rt.timeout" bash "$f"
     return
   fi
   [ "$kind" != guard-node ] || _r=node
@@ -2500,7 +2500,7 @@ _retry_job() { # <idx> → the job's own command run again into $JOBDIR/<idx>.rt
   fi
 }
 if [ "$DEFER_N" -gt 0 ] && [ "$RED_COUNT" -eq "$DEFER_N" ] && [ "$DEFER_N" -le "$RETRY_MAX" ]; then
-  _ledger="${HW_TEST_FLAKY_LEDGER:-${TEST_HW_LIVE_ROOT:-$SOURCE_ROOT}/setup/flaky-ledger.tsv}"
+  _ledger="${HW_TEST_FLAKY_LEDGER:-${TEST_HW_LIVE_ROOT:-$SOURCE_ROOT}/setup/suite-data/flaky-ledger.tsv}"
   _still=""
   for _d in $DEFER_RED; do
     f="${JOB_PATH[$_d]}"; _i="$_d"; _jn="$(_job_name "$_d")"
@@ -2658,7 +2658,7 @@ fi
 #
 # So the honest reading of the number is CONTEXT-SCOPED: "this many checks
 # concluded, in the environment this run had". Non-vacuity is not the runner's to
-# assert and cannot be — `setup/mutation-coverage` establishes it for declared
+# assert and cannot be — `setup/mutation/mutation-coverage` establishes it for declared
 # mutation arms only, and every other assertion is as good as the subject that
 # wrote it. The remedy is per subject and it is the shape tests/105 now uses:
 # make the probe emit proof it ran, and fail when the proof is missing. Do not
@@ -2719,7 +2719,7 @@ else
     printf '  no untracked subjects ran, so this is the whole suite\n'
   fi
   if [ "$RETIRED_N" -gt 0 ]; then
-    printf '  RETIRED: %s subject(s) of setup/retired-subjects.txt did not run in this gate; go test ./core/... ran in their place — a retired corpus with no in-process port yet is UNCOVERED\n' "$RETIRED_N"
+    printf '  RETIRED: %s subject(s) of setup/suite-data/retired-subjects.txt did not run in this gate; go test ./core/... ran in their place — a retired corpus with no in-process port yet is UNCOVERED\n' "$RETIRED_N"
   fi
   if [ "$GATE_SELECTED" = 1 ]; then
     printf 'runner: no fast-gate verdict cached — a SELECTED run is not the whole fast gate\n' >&2

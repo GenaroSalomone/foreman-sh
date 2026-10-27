@@ -4,6 +4,32 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.6.1] — 2026-10-27
+
+### Changed
+- A release cut of a small change no longer pays the whole Linux suite. When no verdict covers the candidate's exact
+  tree but a first-parent ancestor has a Linux full verdict, the cut runs only the jobs the diff reaches, in the same
+  container, and records a one-hop incremental Linux verdict. The full suite runs once per merged batch instead.
+- The Linux suite and the release cut's Linux step run under `setup/heavy` at background priority (`taskpolicy -b` on
+  macOS) and are never paused. `HW_HEAVY_WHEN_IDLE=1` (or `setup/heavy --when-idle`) opts in to waiting for an idle Mac
+  and pausing while it is in use; the cut's 30-minute cap does not count that time.
+- After `--publish` the cut waits for the public CI of the pushed commit and ends with `RELEASE PUBLISHED, CI RED: <url>`
+  and a non-zero exit when it is red.
+- The repository root is tidier. The reference documents moved into `docs/` (`INSTALL.md`, `REFERENCE.md`,
+  `KNOWN-LIMITATIONS.md`, `THREAT-MODEL.md`, `BRIEF-TEMPLATE.md`, `RELEASE-NOTES.md`) and the helper scripts into
+  `scripts/` (`init.sh`, `install-deps.sh`, `repo-settings.sh`). `README.md`, `LICENSE`, `CHANGELOG.md`,
+  `CONTRIBUTING.md`, `SECURITY.md` and `install.sh` stay at the root, so the one-line install URL and the links
+  GitHub shows do not change. `foreman-sh init` and `install.sh --with-recommended` run the moved scripts as before;
+  an upgrade to or from a release that still has the notes at the root reads them from either place.
+- Pushing `main` takes the same Linux full verdict the release cut takes: one Linux run (`setup/linux/run-suite.sh full`,
+  in Docker) covers both, and a macOS full verdict still works. The refusal now names both ways in. A `gate=fast`
+  verdict never opens `main`.
+
+### Fixed
+- CI's macOS fast gate is green again: the runner installs Go before the suite,
+  since `hw`, `brain` and the invokers are `hw-core` from 0.6.0 on and
+  `macos-latest` ships no Go.
+
 ## [0.6.0] — 2026-10-24
 
 ### Added
@@ -55,7 +81,7 @@ All notable changes to this project are recorded here. The format follows
   exits non-zero does not stop the run (up to three of them): at the end each is run once
   more, alone, with nothing else of the run beside it. Green alone, the run passes, prints
   `flaky - <subject> (red in the pool, green alone)`, appends a row (date, commit, subject,
-  first failing line) to `setup/flaky-ledger.tsv` and says so in its number:
+  first failing line) to `setup/suite-data/flaky-ledger.tsv` and says so in its number:
   `N tests passed  (TRACKED only — …; FLAKES ABSORBED: n, each red in the pool and green alone)`,
   which is the headline the verdict records. Red alone, the run fails as before.
   Measured 2026-10-24: five Linux full runs of ~40 min were each red on one job, a
@@ -114,7 +140,7 @@ All notable changes to this project are recorded here. The format follows
 - The bash bodies of `bin/brain`, `bin/channel-send`, `bin/ask-invoker` and `bin/done-invoker` (about 5,300 lines), and with them
   the internal seam `HW_BASH_BODY=1`: setting it does nothing, for any tool.
 - The suite's bash pins: `pin_bash` and `MUTANT_KEEPS_IMPL` in `setup/tests/_common.sh`. Every mutation anchor the four bodies
-  carried (89 rows of `setup/mutation-anchors.tsv`) is retired; the claim each held now rests on a Go anchor, a golden or a Go test.
+  carried (89 rows of `setup/mutation/mutation-anchors.tsv`) is retired; the claim each held now rests on a Go anchor, a golden or a Go test.
 - `hw shadow`: it says "removed in 0.6.0" and exits 64. `lib/hw/shadow.sh`, the
   `HW_SHADOW_JSONL` log and the `shadow` mode of every tool are gone.
 - The implementation switch of `bin/hw`, `bin/brain`, `bin/channel-send`, `bin/ask-invoker`
@@ -290,7 +316,7 @@ The release candidate 0.4.0-rc.5, promoted with no change.
   checks the vault and each item before building anything. A value reaches a command only through
   `hw secret run <item>[.<field>] --as VAR -- <cmd>`, into that command's environment: never printed,
   never on disk or in argv. `secret-unlock` keeps the master password in the login Keychain and a
-  LaunchAgent (`setup/install-bw-unlock-agent.sh`) unlocks the vault on its own. A guard for agents
+  LaunchAgent (`setup/install/install-bw-unlock-agent.sh`) unlocks the vault on its own. A guard for agents
   refuses `bw get|unlock|export|list|serve`, the session file and `BW_SESSION`. KNOWN-LIMITATIONS L23.
 - The review a build closes with is the brief's choice, in every lane and every `--sdd` mode:
   `review: judgment-day` (the default when absent, as before), `review: plugins` (the close names only
@@ -312,7 +338,7 @@ The release candidate 0.4.0-rc.5, promoted with no change.
 - The contract and mutant tests run in process, in Go: the same cases, the same output bytes and the
   same mutants caught as the shell suites they replace, split in parallel partitions of under 10
   minutes each. A gate is red when a partition is skipped. The retired shell subjects are listed in
-  `setup/retired-subjects.txt`.
+  `setup/suite-data/retired-subjects.txt`.
 - The docs say which implementation runs. `HW_IMPL` takes `bash`, `go` or `shadow`; without it
   and without `~/.config/hw/impl`, `hw` runs bash, and the installer writes that file with `go`
   when it builds `hw-core`, so a machine installed with Go runs the ported verbs in Go.
@@ -1019,7 +1045,7 @@ The release candidate 0.4.0-rc.5, promoted with no change.
 ### Added
 - `hw train add <lane> <task>` merges a task's branch into `train-<lane>`
   without touching a working tree or running pre-commit. A conflict in
-  `setup/test-budgets.json` is resolved key by key against the merge base; any
+  `setup/suite-data/test-budgets.json` is resolved key by key against the merge base; any
   other conflict stops the merge and names the file, the tasks on the train
   that touched it, and the incoming task that should resolve it.
 - `hw train push <lane>` runs `setup/verify-for-push` on the train and moves
@@ -1044,7 +1070,7 @@ The release candidate 0.4.0-rc.5, promoted with no change.
   the cap is reported `FAILED` and stops there. Executor sessions and
   compactions do not run it; `HW_HOUSEKEEPING=0` turns it off.
 - `setup/test-hw` cuts a subject that overruns its ceiling: its budget in
-  `setup/test-budgets.json` times `HW_TEST_TIMEOUT_FACTOR` (default 5), never
+  `setup/suite-data/test-budgets.json` times `HW_TEST_TIMEOUT_FACTOR` (default 5), never
   under `HW_TEST_TIMEOUT_FLOOR` seconds (default 60, the whole ceiling of a
   subject with no budget). Only that subject's process group is killed; the
   run names it, with its time and ceiling, as red. `HW_TEST_TIMEOUT_FACTOR=0`
@@ -1271,7 +1297,7 @@ executor no longer holds the brainer's commands.
   put task worktrees in `~/work`, beside the brain, where the installer puts
   them.
 - `install.sh`, run again over an existing brain, adds the executor's
-  `bin/hw` line to `setup/brain-guard-programs.txt` when it has none, and
+  `bin/hw` line to `setup/suite-data/brain-guard-programs.txt` when it has none, and
   keeps every other line (`RELEASE-NOTES.md`, "Upgrading").
 
 ### Fixed

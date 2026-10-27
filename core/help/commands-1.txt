@@ -17,7 +17,7 @@ OTHER COMMANDS
     hw output none | outside <ref>  executor declaration of no-tree / external output
     hw stage                        brainer check: which executor declared each staged path
     hw train add <project> <task>   merge the task's branch into train-<project>; only a
-                                    setup/test-budgets.json conflict is resolved, any other
+                                    setup/suite-data/test-budgets.json conflict is resolved, any other
                                     is named with the task that should resolve it
     hw train status <project>       the tasks the train carries over the base
     hw train push <project>         full suite (setup/verify-for-push) on the train, then

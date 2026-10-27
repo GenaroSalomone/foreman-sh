@@ -156,7 +156,7 @@ fg_drift_warn() {
 # THE PER-TEST CEILING (decided 2026-10-01, setup/decisions.md). A subject that
 # hangs used to hang the whole suite: the runner timed things and killed
 # nothing, so test 481 held `verify-for-push` for 1h50 and a suite-pool slot.
-# The ceiling is the subject's committed budget (setup/test-budgets.json) x
+# The ceiling is the subject's committed budget (setup/suite-data/test-budgets.json) x
 # HW_TEST_TIMEOUT_FACTOR (default 5), never under HW_TEST_TIMEOUT_FLOOR seconds
 # (default 60: it is also the whole ceiling of a subject with no budget, and
 # keeps a 0.2s subject from being cut at 1s on a busy machine). Factor 0 turns

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""merge-test-budgets — git merge driver for setup/test-budgets.json.
+"""merge-test-budgets — git merge driver for setup/suite-data/test-budgets.json.
 
     merge-test-budgets BASE OURS THEIRS      # git runs it as  %O %A %B
 
 Every branch that adds or edits a test re-measures it, so every branch rewrites
-setup/test-budgets.json: one new key in `files` and a new `measured_at`. Two such
+setup/suite-data/test-budgets.json: one new key in `files` and a new `measured_at`. Two such
 branches touch neighbouring lines of one JSON object and git's text merge stops
 on all of them, though the two changes never disagree. This driver merges the
 DOCUMENT, not the lines, and writes the result to OURS in the format
@@ -20,7 +20,7 @@ setup/measure-tests.sh writes (indent 2, sorted keys, trailing newline):
     budget, a key one side removed and the other re-measured) is a real
     conflict: exit 1 with the key named, OURS left as it was.
 
-Installed by setup/install-hooks.sh (`merge.test-budgets.driver`) and bound to
+Installed by setup/install/install-hooks.sh (`merge.test-budgets.driver`) and bound to
 the file by .gitattributes. Without that config git merges the file as text, as
 it always did.
 """

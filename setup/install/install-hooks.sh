@@ -19,8 +19,8 @@
 # thing that was forgotten. setup/tests/121 drives the INSTALLED hooks to hold
 # that: it installs into a fixture and runs pre-push with no sibling present.
 #
-#   setup/install-hooks.sh            install (or repair) the hooks
-#   setup/install-hooks.sh --check    say what is installed; change nothing
+#   setup/install/install-hooks.sh            install (or repair) the hooks
+#   setup/install/install-hooks.sh --check    say what is installed; change nothing
 #
 # Exit 0 installed/verified, 1 something is wrong and is named.
 set -euo pipefail
@@ -32,7 +32,7 @@ case "${1:-}" in
   *) echo "usage: install-hooks.sh [--check]" >&2; exit 2 ;;
 esac
 
-ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # The COMMON dir, not `.git`: in a linked worktree `.git` is a file and the
 # hooks live in the main checkout's directory, which is the one git reads.
 # Named refusal, not a bare assignment: under `set -e` a failing rev-parse would
@@ -79,7 +79,7 @@ for hook in pre-commit pre-push commit-msg; do
 done
 
 # THE BUDGETS MERGE DRIVER. Every branch that touches a test re-measures it into
-# setup/test-budgets.json, so two branches always met there as a text conflict
+# setup/suite-data/test-budgets.json, so two branches always met there as a text conflict
 # that was never a disagreement. .gitattributes binds the file to the driver
 # `test-budgets`; this names the program behind it. In the repository config
 # (the common one, so every worktree has it), never the user's: it is this
@@ -90,11 +90,11 @@ if [ -f "$ROOT/setup/merge-test-budgets" ]; then
     if [ "$(git -C "$ROOT" config --get merge.test-budgets.driver || true)" = "$driver" ]; then
       echo "install-hooks: merge driver test-budgets installed"
     else
-      echo "install-hooks: merge driver test-budgets is NOT configured (git would merge setup/test-budgets.json as text)" >&2
+      echo "install-hooks: merge driver test-budgets is NOT configured (git would merge setup/suite-data/test-budgets.json as text)" >&2
       rc=1
     fi
   else
-    git -C "$ROOT" config merge.test-budgets.name "setup/test-budgets.json, merged by key" \
+    git -C "$ROOT" config merge.test-budgets.name "setup/suite-data/test-budgets.json, merged by key" \
       && git -C "$ROOT" config merge.test-budgets.driver "$driver" \
       && echo "install-hooks: merge driver test-budgets -> setup/merge-test-budgets" \
       || { echo "install-hooks: could not configure the test-budgets merge driver" >&2; rc=1; }

@@ -57,7 +57,7 @@ _self="${BASH_SOURCE[0]:-}"
 if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
   _repo="${FOREMAN_SH_REPO:-https://github.com/GenaroSalomone/foreman-sh}"
   for _need in git curl; do
-    # git must RUN: on a Mac without the Command Line Tools /usr/bin/git is a shim that exits 1 (see init.sh tool_runs)
+    # git must RUN: on a Mac without the Command Line Tools /usr/bin/git is a shim that exits 1 (see scripts/init.sh tool_runs)
     { type -P "$_need" >/dev/null 2>&1 && { [ "$_need" != git ] || git --version >/dev/null 2>&1; }; } || { printf 'install: %s is required to fetch foreman-sh and was not found on PATH\n' "$_need" >&2; exit 1; }
   done
   _refs="$(git ls-remote --tags --refs "$_repo" 'v*' 2>/dev/null)" || { printf 'install: cannot list the tags of %s\n' "$_repo" >&2; exit 1; }
@@ -106,12 +106,12 @@ INSTALL_CMD="./install.sh"
 [ -z "${FOREMAN_SH_INSTALLED_FROM:-}" ] || INSTALL_CMD="curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s --"
 # A package (the Homebrew formula) runs this file through its own command and names it.
 INSTALL_CMD="${FOREMAN_SH_INSTALL_CMD:-$INSTALL_CMD}"
-# `init` is the guided first run (init.sh): prerequisites, a brain, a first lane, a sample brief and a
+# `init` is the guided first run (scripts/init.sh): prerequisites, a brain, a first lane, a sample brief and a
 # dry-run dispatch, in one command. It is dispatched before the flags below, which know nothing of it.
 if [ "${1:-}" = init ]; then
   shift
-  [ -f "$SRC/init.sh" ] || { printf 'install: init.sh is not in %s\n' "$SRC" >&2; exit 1; }
-  FOREMAN_SH_INIT_CMD="$INSTALL_CMD init" exec bash "$SRC/init.sh" "$@"
+  [ -f "$SRC/scripts/init.sh" ] || { printf 'install: scripts/init.sh is not in %s\n' "$SRC" >&2; exit 1; }
+  FOREMAN_SH_INIT_CMD="$INSTALL_CMD init" exec bash "$SRC/scripts/init.sh" "$@"
 fi
 # The version floors live in lib/hw/deps.conf,
 # the one file hw, brain and this script all read. Sourced from the tree being installed.
@@ -236,7 +236,7 @@ fi
 [ -z "$BASE" ] || [ -n "$LANE" ] || die "--base only means something with --lane"
 [ -z "$VENDOR" ] || [ -n "$LANE" ] || die "--vendor only means something with --lane"
 # Codex is not offered: nothing here can prove a Codex executor end to end today
-# (INSTALL.md, "Limits, stated").
+# (docs/INSTALL.md, "Limits, stated").
 case "$VENDOR" in
   ""|claude|opencode) ;;
   *) die "--vendor must be claude or opencode (got: $VENDOR) — Codex lanes are not installed by this script" ;;
@@ -414,10 +414,12 @@ EOF
   printf '\ncheck\n'
   env -u FOREMAN_SH_UPGRADE_TARGET bash "$SRC/install.sh" --brain "$BR" --check || rc=$?
   printf '\nupgraded %s -> %s\n' "$cur" "$tag"
-  if ver_note="$(in_short "$SRC/RELEASE-NOTES.md")"; then
+  # docs/RELEASE-NOTES.md since the docs moved; a release cut before that has it at the root
+  notes_file="$SRC/docs/RELEASE-NOTES.md"; [ -f "$notes_file" ] || notes_file="$SRC/RELEASE-NOTES.md"
+  if ver_note="$(in_short "$notes_file")"; then
     printf '\nIn short (%s)\n%s\n' "$tag" "$ver_note"
   else
-    printf '\n%s has no "In short" section in its RELEASE-NOTES.md; the full notes are in that file and CHANGELOG.md\n' "$tag"
+    printf '\n%s has no "In short" section in its RELEASE-NOTES.md; the full notes are in docs/RELEASE-NOTES.md and CHANGELOG.md\n' "$tag"
   fi
   [ "$rc" = 0 ] || printf '\nupgrade: installed, but --check found something to fix (above)\n' >&2
   exit "$rc"
@@ -669,8 +671,8 @@ FIXES
 # ── 0. --with-recommended: the dependencies, installed because they were asked for ──
 if [ "$WITH_REC" = 1 ]; then
   rec_rc=0
-  if [ "$CHECK" = 1 ]; then bash "$SRC/install-deps.sh" --plan || rec_rc=$?
-  else bash "$SRC/install-deps.sh" || rec_rc=$?; fi
+  if [ "$CHECK" = 1 ]; then bash "$SRC/scripts/install-deps.sh" --plan || rec_rc=$?
+  else bash "$SRC/scripts/install-deps.sh" || rec_rc=$?; fi
   hash -r
   [ -n "$BRAIN_DIR" ] || exit "$rec_rc"
   printf '\n'
@@ -765,10 +767,10 @@ MODEL_GIVEN="$MODEL"
 bash_major="${BASH_VERSINFO[0]}"
 case "$(uname -s)" in
   Darwin) ok "macOS" ;;
-  Linux)  ok "Linux (tested in a container; no macOS Keychain — see KNOWN-LIMITATIONS.md)" ;;
+  Linux)  ok "Linux (tested in a container; no macOS Keychain — see docs/KNOWN-LIMITATIONS.md)" ;;
   MINGW*|MSYS*|CYGWIN*)
-    # Native Windows installs, and says what is and is not proven (INSTALL.md, Windows).
-    say "WARN  native Windows (Git Bash): measured by the setup suite on a CI runner with herdr and the agents stubbed; a real machine is unverified (KNOWN-LIMITATIONS.md L1b). WSL2 is the proven way"
+    # Native Windows installs, and says what is and is not proven (docs/INSTALL.md, Windows).
+    say "WARN  native Windows (Git Bash): measured by the setup suite on a CI runner with herdr and the agents stubbed; a real machine is unverified (docs/KNOWN-LIMITATIONS.md L1b). WSL2 is the proven way"
     # The guard's hook is Windows Python run from Git Bash; an MSYS2 or Cygwin
     # python3 first on PATH makes every hook refuse (it cannot decide there).
     case "$(python3 -c 'import os, sys; print(os.name, sys.platform)' 2>/dev/null)" in
@@ -1264,15 +1266,18 @@ sync_dir "$SRC/setup/guards/brain-guard" "$BRAIN/setup/guards/brain-guard"
 # One line of it is mechanism, though: the guard allows an executor's `hw`
 # only through a `bin/hw first=…` line, so a list written before that line
 # existed gets the source's, appended, and nothing else is touched.
-_gp="$BRAIN/setup/brain-guard-programs.txt"
-if [ ! -f "$_gp" ]; then put "$SRC/setup/brain-guard-programs.txt" "$_gp"
-elif grep -Eq '^bin/hw[[:space:]]' "$_gp" || ! grep -Eq '^bin/hw[[:space:]]' "$SRC/setup/brain-guard-programs.txt"; then
-  ok "setup/brain-guard-programs.txt (yours, kept)"
+mkdir -p "$BRAIN/setup/suite-data"
+_gp="$BRAIN/setup/suite-data/brain-guard-programs.txt"
+# a list written where it lived before setup/suite-data/ existed is moved, not replaced
+if [ -f "$BRAIN/setup/brain-guard-programs.txt" ] && [ ! -f "$_gp" ]; then mv "$BRAIN/setup/brain-guard-programs.txt" "$_gp"; chg "setup/brain-guard-programs.txt moved to setup/suite-data/"; fi
+if [ ! -f "$_gp" ]; then put "$SRC/setup/suite-data/brain-guard-programs.txt" "$_gp"
+elif grep -Eq '^bin/hw[[:space:]]' "$_gp" || ! grep -Eq '^bin/hw[[:space:]]' "$SRC/setup/suite-data/brain-guard-programs.txt"; then
+  ok "setup/suite-data/brain-guard-programs.txt (yours, kept)"
 else
   { [ -z "$(tail -c1 "$_gp")" ] || echo
     echo "# The executor's own hw verbs, added by install.sh (the guard no longer allows hw without this line)."
-    grep -E '^bin/hw[[:space:]]' "$SRC/setup/brain-guard-programs.txt"; } >> "$_gp"
-  chg "setup/brain-guard-programs.txt (yours, kept) — the executor's bin/hw line added"
+    grep -E '^bin/hw[[:space:]]' "$SRC/setup/suite-data/brain-guard-programs.txt"; } >> "$_gp"
+  chg "setup/suite-data/brain-guard-programs.txt (yours, kept) — the executor's bin/hw line added"
 fi
 # Every OpenCode executor's copy of the guard module is mechanism too, so a
 # guard fix reaches it on ANY run — not only on one that names its lane.

@@ -139,7 +139,7 @@ unset _v 2>/dev/null || true
 #   HW_CHECK_LIVE_REVIEW_BINDING   36-review-binding-producer.sh:232
 # The last two GATE AN OPTIONAL LIVE ARM. Sweeping them would silently turn a
 # deliberate opt-in off, which is the "an arm nobody runs is not coverage"
-# failure `setup/mutation-coverage` exists to catch — a fix that caused it would
+# failure `setup/mutation/mutation-coverage` exists to catch — a fix that caused it would
 # be worse than the bug.
 # HW_IMPL and HW_CORE (the binary hw routes to) ARE INPUTS THIS DIRECTORY OWNS: `HW_IMPL=go bash setup/test-hw` runs the whole suite through hw-core
 # (the answer is Go's, which is the default). HW_IMPL no longer chooses for hw, brain, channel-send, ask-invoker or done-invoker (go-060 S3: bash/shadow
@@ -565,7 +565,7 @@ link_tool() {
 # and at least one must be in the mutant's output. A mutant that could not run
 # fails here as VACUOUS, with the tail of what it actually printed, instead of
 # passing as dead. Kill lines it prints carry the `mutant killed:` marker, so
-# setup/mutation-coverage counts them as exercised arms.
+# setup/mutation/mutation-coverage counts them as exercised arms.
 saw_mutant() {
   local arm="$1" out="$2"; shift 2
   [ $# -ge 1 ] || fail "$arm: saw_mutant needs at least one needle — a kill with no evidence is the defect this helper exists to refuse"
@@ -842,7 +842,7 @@ PYREC
 # is anchored by a second `# MUTATION-ANCHOR-END: <id>` line: the span from one to
 # the other, both included, is what is replaced. The
 # id must occur exactly once or the call dies: a mutant that did not apply is a
-# vacuous arm, never a kill. `setup/mutation-anchors.tsv` registers every id and
+# vacuous arm, never a kill. `setup/mutation/mutation-anchors.tsv` registers every id and
 # the source file that carries it; `setup/tests/540-*` holds the registry honest.
 mutate_anchor() {
   local id="$1" file="$2" repl="$3"
@@ -908,7 +908,7 @@ PYANCHOR
 # 2026-10-07: twelve mutants took 275s one by one and 99s side by side). `par_run` forks a
 # subshell, so the `fail` (an `exit 1`) inside it ends that job only; its stdout and stderr are
 # kept, and `par_wait` replays them in start order — the same lines a serial run prints, in the
-# same order, which is what setup/mutation-coverage reads — and fails the subject, naming the
+# same order, which is what setup/mutation/mutation-coverage reads — and fails the subject, naming the
 # job, if any of them did. At most HW_TEST_PAR (default 4) are in flight: a subject is one pooled
 # job, and the pool counts jobs, not the processes a job starts.
 #

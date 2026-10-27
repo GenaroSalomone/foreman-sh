@@ -373,7 +373,7 @@ model_tier() {
 # a cheap explorer (road-pace-build, 2026-10-14: opus, `kind: build`, read the code itself). Claude's opus and
 # fable qualify, on the LAST path segment like the ladder (so opencode's `anthropic/claude-opus-5` does too).
 # Models hw cannot rank (openai/gpt-5.6-sol is a build-only pin by its own decision; gpt-6-astra, deepseek-v4-pro)
-# are NOT top tier here: UNESTABLISHED, named in KNOWN-LIMITATIONS, not guessed.
+# are NOT top tier here: UNESTABLISHED, named in docs/KNOWN-LIMITATIONS, not guessed.
 model_is_top_tier() {
   case "${1##*/}" in
     *opus*|*fable*) return 0 ;;

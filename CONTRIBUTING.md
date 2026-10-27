@@ -24,7 +24,7 @@ A vulnerability is not an issue: see [`SECURITY.md`](SECURITY.md).
    `GITHUB_ACTIONS=true`) every per-subject time budget of the fast gate is
    multiplied by 3, and the runner prints that it is: a shared runner cannot
    judge wall-clock time. `HW_TEST_BUDGET_FACTOR=<n>` sets the factor
-   yourself; the budgets themselves are in `setup/test-budgets.json`.
+   yourself; the budgets themselves are in `setup/suite-data/test-budgets.json`.
    A subject that hangs is cut at its budget times `HW_TEST_TIMEOUT_FACTOR`
    (default 5, floor `HW_TEST_TIMEOUT_FLOOR` seconds, default 60; 0 turns it
    off): only its process group is killed and the run names it as red. The

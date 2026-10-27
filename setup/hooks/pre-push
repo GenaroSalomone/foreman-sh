@@ -22,7 +22,7 @@ PUSHED_REFS="$(cat)"
 # which runs NO hooks at all. A commit-msg hook would not have seen a single one
 # of those four, and still would not today. pre-push is the last gate every
 # commit must pass regardless of how it was built, and it is also the only one a
-# clone that never ran setup/install-hooks.sh has at all. commit-msg (added
+# clone that never ran setup/install/install-hooks.sh has at all. commit-msg (added
 # 2026-09-16) catches an ordinary `git commit` at the moment the mistake is free
 # to fix; this gate is what catches everything else. Neither replaces the other.
 #
@@ -245,6 +245,11 @@ verdict_impl_is_current() {
 # means a fast run cached under the full name (a mutated or older runner) still
 # cannot open main. A verdict with no gate line is a full one: verify-for-push
 # wrote every verdict before gates existed, and still writes `gate=full`.
+# THE PLATFORM IS NOT READ HERE, ON PURPOSE (2026-10-26): a `platform=linux` verdict
+# (setup/linux/run-suite.sh full, written by setup/verify-for-push --write-verdict
+# ... linux, plain or the one-hop incremental the cut records) is the same suite
+# measured in Docker and opens a push exactly as a macOS one does; the cut reads
+# it too, so one heavy Linux run covers both. Held by setup/tests/1125.
 full_verdict() {
   verdict_impl_is_current "$1" || return 1  # MUTATION-ANCHOR: 1125-M01
   grep -qF "tree=$2" "$1" 2>/dev/null && ! grep -qxF "gate=fast" "$1" 2>/dev/null  # MUTATION-ANCHOR: 250-M03
@@ -493,7 +498,7 @@ VA
 done <<EOF
 $PUSHED_REFS
 EOF
-if [ -n "$missing" ]; then
+if [ -n "$missing" ]; then  # MUTATION-ANCHOR: 1125-M03
   {
     echo "pre-push: no cached full-suite verdict for what you are about to push to '$1'."
     printf '%s\n' "$missing"
@@ -507,7 +512,9 @@ if [ -n "$missing" ]; then
       printf '%s\n' "$ahead"
       echo
     fi
-    echo "Otherwise run it yourself, then push again:  bash setup/verify-for-push"
+    echo "Otherwise run it yourself, then push again — either verdict opens the push:"
+    echo "  setup/linux/run-suite.sh full   (Linux, in Docker — preferred: the release cut accepts the same verdict)"  # MUTATION-ANCHOR: 1125-M02
+    echo "  bash setup/verify-for-push      (macOS)"
     echo "(a refs/heads/task/* destination needs only the fast gate:  HW_TEST_GATE=fast bash setup/test-hw)"
     echo "If you are certain: git push --no-verify"
   } >&2

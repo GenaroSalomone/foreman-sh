@@ -101,12 +101,12 @@ BIN_TOOLS = {"done-invoker", "ask-invoker", "channel-send",
              "browser-close", "herdr-rpc"}
 
 # Other programs of brain a product executor runs, measured, one per line in
-# `setup/brain-guard-programs.txt` beside this directory: they name lanes and
+# `setup/suite-data/brain-guard-programs.txt` beside this directory: they name lanes and
 # systems, and this directory names none (setup/tests/195). A line is
 #   <path relative to brain> [via=<interpreter>] [first=<arg>[,<arg>…]]
 # `first=` is the closed list of allowed first arguments.
 PROGRAMS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
-                             "brain-guard-programs.txt")
+                             "suite-data", "brain-guard-programs.txt")
 INTERPRETERS = {"python3", "python", "bash", "sh", "zsh", "node", "perl", "ruby"}
 
 
@@ -797,7 +797,7 @@ def _channel_send_refusal(args, env):
 
 
 def _programs_named(cfg):
-    return ", ".join(sorted("bin/" + t for t in BIN_TOOLS)) + " and the ones in setup/brain-guard-programs.txt"
+    return ", ".join(sorted("bin/" + t for t in BIN_TOOLS)) + " and the ones in setup/suite-data/brain-guard-programs.txt"
 
 
 def _path_ok(cfg, word, cwd):

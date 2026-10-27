@@ -29,7 +29,7 @@
 #              beats finding out at minute 40.
 #
 #   sandbox:   true — run the executor inside the macOS sandbox, as --sandbox
-#              (Claude Code on macOS only; THREAT-MODEL.md)
+#              (Claude Code on macOS only; docs/THREAT-MODEL.md)
 #   requires-agents: [primary:|subagent:]<name>, …
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
@@ -38,6 +38,8 @@
 #              over the branch; plugins names only the review skills of `plugins:` (below)
 #              and no Judgment Day; none adds no review note. Any other value is refused
 #              before anything is built (rdd is retired: it warns and runs judgment-day).
+#              review: decides what the CLOSE asks for; plugins: (below) decides what LOADS
+#              into the executor, for the whole session. They meet only at review: plugins.
 #   plugins:   [thermo, ponytail, pstack]  (any subset)
 #              Review plugins (pinned, complete: their hooks run in THIS executor only) loaded
 #              into it: claude gets one --plugin-dir each (hook writes go to $HW_ARTIFACTS/plugin-state),
@@ -47,7 +49,7 @@
 #              before anything is built, naming that command. Nothing is installed globally
 #              and nothing is written to ~/.claude or ~/.pi. A re-task (`hw next`) cannot add one.
 #   boundary:  <what must never cross> — the task is not done without an
-#              approved design judgment (INSTALL.md, Judgment Day)
+#              approved design judgment (docs/INSTALL.md, Judgment Day)
 #
 # A declaration is a CHECK, not a source: it never supplies a flag hw would
 # otherwise ask for, except `sandbox: true`, which is the flag. The brief keys

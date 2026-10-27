@@ -168,7 +168,7 @@ pass "993: FOREMAN_SH_NO_CORE=1, the suite's seam, builds nothing, says so, and 
 # ── mutants of install.sh, in a source tree of its own (it installs what lies beside it), with a builder that is a stub ──
 MS="$TMP/mutant-src"; mkdir -p "$MS/lanes" "$MS/setup" "$MS/core"
 cp -R "$ROOT/bin" "$ROOT/layouts" "$ROOT/lib" "$MS/"; cp "$ROOT/lanes/git-worktree.sh" "$MS/lanes/"
-cp -R "$ROOT/setup/guards" "$MS/setup/"; cp "$ROOT/setup/brain-guard-programs.txt" "$MS/setup/"
+cp -R "$ROOT/setup/guards" "$MS/setup/"; mkdir -p "$MS/setup/suite-data"; cp "$ROOT/setup/suite-data/brain-guard-programs.txt" "$MS/setup/suite-data/"
 cat > "$MS/setup/build-core" <<EOF
 #!/usr/bin/env bash
 out=""; while [ \$# -gt 0 ]; do case "\$1" in --out) out="\$2"; shift ;; esac; shift; done

@@ -685,6 +685,7 @@ func (d *dsp) dispatchManifest(dir string) {
 			d.warn("everything else (worktree, branch, engram, hw done) will say '" + d.task + "'")
 		}
 	}
+	d.refuseUnrunnableVerification(verifyCmds)
 	if verifyCmds == "" && d.brief != "" { // # MUTATION-ANCHOR: 844-M48
 		d.warn("nothing in this brief can be RUN to verify the work: hw will measure nothing at close")
 		d.warn("put the command in a fenced block under Testing/Verification and hw runs it in hw done")

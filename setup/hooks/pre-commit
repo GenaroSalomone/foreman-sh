@@ -216,6 +216,31 @@ root="$(git rev-parse --show-toplevel)"
 hook_changed="$(mktemp "${TMPDIR:-/tmp}/hw-precommit-changed.XXXXXX")"
 trap 'rm -f "$hook_changed"' EXIT
 printf '%s\n' "$staged" > "$hook_changed"
+# A NUMBER OR AN ANCHOR PREFIX THAT MAIN ALREADY OWNS UNDER ANOTHER FILE IS WARNED, never refused (el-gate-explica-su-rojo, S6; retros
+# 2026-10-16): two executors picked the same `setup/tests/N-*` number, or the same `MUTATION-ANCHOR: N-` prefix, and
+# the clash showed up at the merge, as a red nobody's diff explained. This is the one place both are in front of the author: staged files
+# against `main`'s tree. Skipped on a merge and when there is no `main` (a fixture, a fresh clone).
+if [ "$hook_merge" != 1 ] && git rev-parse --verify -q main^{tree} >/dev/null 2>&1; then
+  hook_main_tests="$(git ls-tree -r --name-only main -- setup/tests/ 2>/dev/null || true)"
+  while IFS= read -r hook_new; do
+    case "$hook_new" in setup/tests/[0-9]*-*.sh) ;; *) continue ;; esac
+    hook_num="${hook_new#setup/tests/}"; hook_num="${hook_num%%-*}"
+    hook_clash="$(printf '%s\n' "$hook_main_tests" | grep -E "^setup/tests/${hook_num}-[^/]*\.sh$" | grep -vxF "$hook_new" | head -1 || true)"  # MUTATION-ANCHOR: 108-M03
+    [ -z "$hook_clash" ] || printf 'pre-commit: WARNING: %s takes test number %s, and main already has %s under that number. Two subjects with one number collide at the merge; take the next free one. (A warning, not a refusal.)\n' "$hook_new" "$hook_num" "$hook_clash" >&2
+  done <<< "$(git diff --cached --name-only --diff-filter=A)"
+  # an anchor prefix: every `MUTATION-ANCHOR: N-` this commit ADDS, in a file other than the one main already carries that prefix in
+  hook_cur=""
+  while IFS= read -r hook_line; do
+    case "$hook_line" in
+      '+++ b/'*) hook_cur="${hook_line#+++ b/}" ;;
+      '+'*MUTATION-ANCHOR:\ [0-9]*-*)
+        hook_pref="$(printf '%s' "$hook_line" | sed -n 's/.*MUTATION-ANCHOR: \([0-9][0-9]*\)-.*/\1/p' | head -1)"
+        [ -n "$hook_pref" ] || continue
+        hook_owner="$(git grep -l -e "MUTATION-ANCHOR: ${hook_pref}-" main -- setup bin 2>/dev/null | sed 's/^main://' | grep -vxF "$hook_cur" | head -1 || true)"  # MUTATION-ANCHOR: 108-M04
+        [ -z "$hook_owner" ] || printf 'pre-commit: WARNING: %s adds a MUTATION-ANCHOR with prefix %s-, and main already carries that prefix in %s. Another subject owns it; anchors of two subjects under one prefix make mutate_anchor and the registry ambiguous. (A warning, not a refusal.)\n' "$hook_cur" "$hook_pref" "$hook_owner" >&2 ;;
+    esac
+  done <<< "$(git diff --cached -U0 --diff-filter=AM -- setup bin 2>/dev/null | grep -E '^(\+\+\+ b/|\+.*MUTATION-ANCHOR: [0-9])' || true)"
+fi
 hook_docs=0
 if ! printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN" \
    && [ -f "$root/setup/gate-select" ] && [ -f "$root/setup/suite-data/test-budgets.json" ] \
@@ -320,6 +345,15 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
                "${hook_git_config_unset[@]+"${hook_git_config_unset[@]}"}" \
                HW_TEST_CHANGED="$hook_changed" HW_TEST_GATE=fast bash "$root/setup/test-hw" 2>&1)" || hook_rc=$?
     hook_elapsed=$(( $(date +%s) - hook_started ))
+    # THE GATE'S WHOLE OUTPUT IS KEPT, not only the `not ok` lines the diagnosis below quotes: a red whose cause scrolled past
+    # (a time-only refusal, a red under load) cost an executor half an hour to reconstruct (retros 2026-10-16).
+    # One file per repository, overwritten by the next run that actually ran the gate; a reused verdict ran nothing and leaves it alone.
+    hook_out_file=""
+    if [ -z "$hook_reused" ]; then
+      hook_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || hook_common=""
+      [ -z "$hook_common" ] || hook_out_file="$hook_common/hw-precommit-last.out"
+      [ -z "$hook_out_file" ] || printf '%s\n' "$out" > "$hook_out_file" 2>/dev/null || hook_out_file=""  # MUTATION-ANCHOR: 108-M01
+    fi
     # THE SUITE'S NUMBER TRAVELS WITH ITS OWN CAVEAT, or it does not travel.
     #
     # `setup/test-hw` prints "N tests passed  (TRACKED only — the number this
@@ -384,12 +418,19 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
         printf '%s\n' "$stage_out" | sed 's/^/    /'
         [ "$stage_rc" -eq 0 ] || echo "    (one or more paths remain UNATTRIBUTED or AMBIGUOUS; that is an honest refusal, not a guessed owner)"
         echo
-        echo "Run it yourself:  HW_TEST_GATE=fast bash setup/test-hw"
+        echo "Run it yourself:  HW_TEST_GATE=fast bash setup/test-hw --keep-going   (first run with --keep-going, so every red shows in one pass)"
         echo "The full suite (mandatory before push) is:  bash setup/test-hw"
         echo "If the test is the thing that is wrong, fix the test in this commit."
         echo "Shared-tree recovery: do NOT use \`git commit -- <paths>\`; it commits working-tree bytes, not a private index."
         echo "Use the private-index/commit-tree recipe in setup/CLAUDE.md instead."
         echo "If you are certain: git commit --no-verify"
+        # THE REDS AGAIN, AS THE LAST LINES, where the eye lands after the attribution block above has pushed them off the screen.
+        if printf '%s\n' "$out" | grep -qE '^not ok'; then  # MUTATION-ANCHOR: 108-M02
+          echo
+          echo "  the red lines of the gate, again:"
+          printf '%s\n' "$out" | grep -E '^not ok' | sed 's/^/    /'
+        fi
+        [ -z "$hook_out_file" ] || [ ! -f "$hook_out_file" ] || echo "  the gate's full output: $hook_out_file"
       } >&2
       exit 1
     fi

@@ -23,7 +23,7 @@
     },
     "106-decisions-entry-linter.sh": {
       "exit": 0,
-      "seconds": 0.7
+      "seconds": 2.28
     },
     "107-decisions-staged-index-rotation.sh": {
       "exit": 0,
@@ -346,6 +346,6 @@
       "seconds": 120.0
     }
   },
-  "measured_at": "2026-10-24T19:24:34Z",
+  "measured_at": "2026-10-30T07:53:31Z",
   "touched_budget_seconds": 90
 }

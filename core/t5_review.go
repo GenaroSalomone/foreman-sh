@@ -30,8 +30,66 @@ func reviewRawOf(fm string) string {
 	return bashSub(reviewCommentRe.ReplaceAllString(lower, ""))
 }
 
+// reviewListOf reads `review: [judgment-day, thermo, ponytail]`: the items, and whether the value is a list at all.
+// A list is the one field that says what the close runs AND what loads: each plugin item is loaded like a `plugins:` entry.
+func reviewListOf(raw string) ([]string, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(raw), "[") {
+		return nil, false
+	}
+	return pluginsOfValue(raw), true
+}
+
+// reviewListMode is the mode a list stands for: judgment-day when it names it (the plugin skills are named beside it), plugins when
+// it names only plugins, none when it is empty. false when an item is neither judgment-day nor a plugin with a review skill.
+func reviewListMode(items []string) (string, bool) {
+	jd := false
+	for _, it := range items {
+		if it == "judgment-day" {
+			jd = true
+		} else if reviewSkillsOfPlugin(it) == nil {
+			return it, false
+		}
+	}
+	switch {
+	case jd:
+		return "judgment-day", true // # MUTATION-ANCHOR: 1150-G09
+	case len(items) == 0:
+		return "none", true
+	}
+	return "plugins", true
+}
+
+// reviewPluginsOfList is the plugin items of a `review:` list: what the brief asks hw to load for its review.
+func reviewPluginsOfList(raw string) []string {
+	items, _ := reviewListOf(raw)
+	var out []string
+	for _, it := range items {
+		if it != "judgment-day" {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// pluginsWithReview is the brief's `plugins:` plus the plugin items of its `review:` list, once each, `plugins:` first.
+func pluginsWithReview(declared []string, reviewRaw string) []string {
+	out := append([]string{}, declared...)
+	for _, n := range reviewPluginsOfList(reviewRaw) {
+		if !has(declared, n) { // # MUTATION-ANCHOR: 1150-G10
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // reviewModeOf is _brief_review_mode: the mode, or the raw value and false when it is not one hw knows.
 func reviewModeOf(raw string) (string, bool) {
+	if items, isList := reviewListOf(raw); isList {
+		if m, ok := reviewListMode(items); ok {
+			return m, true
+		}
+		return raw, false
+	}
 	switch raw {
 	case "", "rdd", "judgment-day":
 		return "judgment-day", true // # MUTATION-ANCHOR: 1020-G01
@@ -72,13 +130,39 @@ func reviewSkillsOf(plugins []string) []string {
 	return out
 }
 
+// reviewSkillsQualified is the review skills of the declared plugins by full name, `plugin:skill`, one per plugin that
+// carries it (thermo and pstack each carry thermo-nuclear-code-quality-review, and declaring both asks for both). It
+// is what the receipt holds and what done-invoker proves from the transcript: a bare name matches a look-alike by substring.
+func reviewSkillsQualified(plugins []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range plugins {
+		for _, sk := range reviewSkillsOfPlugin(n) {
+			if full := n + ":" + sk; !seen[full] {
+				seen[full] = true
+				out = append(out, full)
+			}
+		}
+	}
+	return out
+}
+
+// reviewSkillsToInvoke is the qualified names as the closing's prose says them: the Skill tool takes the full name.
+func reviewSkillsToInvoke(plugins []string) string {
+	return strings.Join(reviewSkillsQualified(plugins), ", ")
+}
+
 // reviewGateOf is _review_gate over what the brief says: it dies (die is the caller's) on a value that is not
 // one of the three, warns on the retired `rdd`, and refuses `plugins` with no plugin to name. The mode returned
 // is the one the brief chose.
 func reviewGateOf(raw string, plugins []string, die, warn func(string)) string {
 	mode, ok := reviewModeOf(raw)
 	if !ok {
-		die("the brief declares review: " + mode + " — it takes judgment-day, plugins or none. NOTHING was built.")
+		if _, isList := reviewListOf(raw); isList {
+			die("the brief declares review: " + mode + " — a list takes judgment-day and plugins with a review skill (thermo, ponytail, pstack). NOTHING was built.")
+		} else {
+			die("the brief declares review: " + mode + " — it takes judgment-day, plugins or none. NOTHING was built.")
+		}
 	}
 	if raw == "rdd" {
 		warn("brief declares review: rdd, which is retired (gentle-ai left hw): running review: judgment-day instead")
@@ -97,7 +181,46 @@ func reviewEffectOf(mode string, plugins []string) string {
 	case "none":
 		return "no review note at the close"
 	}
+	if sk := reviewSkillsOf(plugins); len(sk) > 0 {
+		return "the Judgment Day closing, preceded by the review skills of the brief's plugins (" + strings.Join(sk, ", ") + ")"
+	}
 	return "the Judgment Day closing"
+}
+
+// pluginReviewSkillsNamed is what the closing of a build names as plugin review skills: the plugins' skills for
+// `review: plugins`, and for `review: judgment-day` the same ones beside the Judgment Day note (which a base ref
+// gates). It is the receipt's value and what done-invoker holds the report to, so both read ONE answer.
+func pluginReviewSkillsNamed(mode string, baseRef string, build bool, plugins []string) []string {
+	if !build {
+		return nil
+	}
+	switch mode {
+	case "plugins":
+		return reviewSkillsOf(plugins) // # MUTATION-ANCHOR: 1150-G01
+	case "judgment-day":
+		if baseRef != "" { // # MUTATION-ANCHOR: 1150-G02
+			return reviewSkillsOf(plugins)
+		}
+	}
+	return nil
+}
+
+// judgmentDayWithPlugins is the Judgment Day closing plus the step that names the plugin review skills: run over
+// the same committed range, before Judgment Day, and the report says each one ran or was skipped.
+func judgmentDayWithPlugins(note string, plugins []string) string {
+	sk := reviewSkillsOf(plugins)
+	if len(sk) == 0 { // # MUTATION-ANCHOR: 1150-G03
+		return note
+	}
+	return bashSub(note + `
+
+This brief also declares review plugins, so the closing has one more step, BEFORE
+the Judgment Day of step 2: run these review skills over the same committed range
+("$(hw review-range)"..HEAD), each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `. Judgment Day does not replace them.
+A skill that is not among your available skills is not installed. The report names
+each skill you ran and what it left open; a skill you did not run gets a line
+"review-skip: <skill> — <why>". done-invoker reads your transcript for each
+Skill call and refuses a done report that has neither.`)
 }
 
 // reviewReceiptSource is the receipt's third column.
@@ -113,7 +236,7 @@ func reviewPluginsNote(plugins []string) string {
    messages — not one commit at the end. The review target is what you
    committed; uncommitted work is not reviewed and is not delivered.
 2. Before done-invoker, run these review skills over your committed diff, the
-   ones of the plugins this brief declares: ` + strings.Join(reviewSkillsOf(plugins), ", ") + `. A skill that is not among your
+   ones of the plugins this brief declares, each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `. A skill that is not among your
    available skills is not installed: say so in the report and close normally.
    Do NOT run the judgment-day skill: this brief chose its review, and two
    verdicts on one candidate is the cost it removes.

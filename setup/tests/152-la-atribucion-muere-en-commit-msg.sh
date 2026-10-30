@@ -562,3 +562,151 @@ case "$m03_out" in
   *) fail "M03: the mutant neither exited 0 nor refused — it may have died before reaching the mutated pattern: $m03_out" ;;
 esac
 cp "$ROOT/setup/hooks/attribution-pattern.sh" "$repo/setup/hooks/attribution-pattern.sh"
+
+# ── THE SAME RULE IN A PR BODY: deny-pr-attribution (anchors 152-P01..P06) ──
+# MEASURED 2026-10-14 (retro of a product-lane run, data-migrations-runner): the rule is held for commits (commit-msg,
+# pre-push) and, until this guard, for nothing else. `gh pr create` runs no git hook; an executor shipped the
+# "Generated with Claude Code" footer in a PR body and spent four calls taking it out. Ported 2026-10-29 from the pre-Go
+# branch task/guardas-y-ro-fetch (ea116036). The installer is NOT run here: registration is global, and the brainer's.
+#
+# old (no guard for PR bodies): exit=0 for a body with the footer; new: exit=2, "the PR body carries AI attribution (line 3, column 1: ...)".
+# Claims: `gh pr create|edit` whose body (--body, -b, --body=, --body-file/-F, a `$(cat <<EOF)` heredoc, `-F -`) has a line
+# matching THIS file's pattern is refused and the reason names the line; a clean body, a human Co-Authored-By, a quoted
+# (indented) trailer, `gh pr view`, and a mention in an echo or a commit message are data and pass; it is judged behind
+# wrappers; the pattern is the one setup/hooks/attribution-pattern.sh holds; the OpenCode adapter judges with the same Python;
+# the installer registers it once. P01..P06: one mutant per branch, each anchored on the guard.
+GUARD="$ROOT/setup/guards/deny-pr-attribution.py"
+PRWORK="$TMP/prcwd"; mkdir -p "$PRWORK"
+# the guard loads its tokenizer from beside itself, so every copy of it travels with one
+mkdir -p "$TMP/prg"; cp "$GUARD" "$ROOT/setup/guards/deny-pr-attribution.opencode.js" "$ROOT/setup/guards/deny-sd-shell-var.py" "$TMP/prg/"
+GUARD="$TMP/prg/deny-pr-attribution.py"
+
+judge() {  # <command> [guard] — prints the exit code, stderr to $TMP/err
+  jq -n --arg c "$1" --arg d "$PRWORK" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}' \
+    | python3 "${2:-$GUARD}" 2>"$TMP/err"
+  printf '%s' "$?"
+}
+refused() { local got; got="$(judge "$1")"; [ "$got" = 2 ] || fail "refused: \`$1\` exited $got, not 2 — $2"; pass "refused: $2"; }
+allowed() { local got; got="$(judge "$1")"; [ "$got" = 0 ] || fail "allowed: \`$1\` exited $got ($(cat "$TMP/err")) — $2"; pass "allowed: $2"; }
+
+FOOTER='🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+TRAILER='Co-Authored-By: Claude <noreply@anthropic.com>'
+
+# ── the incident, and its other spellings ──────────────────────────────────
+refused "gh pr create --title t --body \"Fix it
+
+$FOOTER\"" "the footer in an inline --body"
+grep -q 'line 3, column 1' "$TMP/err" || fail "the refusal does not name the line: $(cat "$TMP/err")"
+pass "the refusal names the offending line and column"
+refused "gh pr create --title t --body \"\$(cat <<'EOF'
+## Summary
+- it's fine
+
+$FOOTER
+EOF
+)\"" "the footer in a \$(cat <<EOF) body, the way agents write it"
+refused "gh pr edit 12 --body \"x
+$TRAILER\"" "gh pr edit, Co-Authored-By trailer"
+refused "gh pr create -b \"x
+$FOOTER\"" "-b"
+refused "gh pr create --body=\"x
+$FOOTER\"" "--body=VALUE"
+printf 'Summary\n\n%s\n' "$FOOTER" > "$PRWORK/body.md"
+refused "gh pr create --title t --body-file body.md" "--body-file, a relative path read from the hook's cwd"
+refused "gh pr create --title t -F $PRWORK/body.md" "-F, an absolute path"
+refused "gh pr create --title t --body-file - <<'EOF'
+Summary
+
+$FOOTER
+EOF" "--body-file - with a heredoc"
+refused "cd x && gh pr create --body \"y
+$FOOTER\"" "behind a chain"
+refused "bash -c 'gh pr create --body \"y
+$FOOTER\"'" "behind sh -c"
+
+# ── what stays legitimate ──────────────────────────────────────────────────
+allowed "gh pr create --title t --body \"Fix the bug\"" "a clean body"
+allowed "gh pr create --title t --body \"x
+Co-Authored-By: Maria Perez <maria@example.com>\"" "a human co-author is legitimate"
+allowed "gh pr create --body \"x
+  $TRAILER\"" "an indented quotation is not a trailer (the column-0 anchor of attribution-pattern.sh)"
+allowed "gh pr view 12 --json body" "gh pr view"
+allowed "gh pr create --title t --body-file missing.md" "a file that is not there cannot be judged"
+printf 'Clean body\n' > "$PRWORK/clean.md"
+allowed "gh pr create --title t --body-file clean.md" "a clean body file"
+allowed "echo '$TRAILER' && gh pr create --title t --body \"clean\"" "a mention outside the body"
+allowed "git commit -F - <<'MSG'
+fix: the gate for gh pr create
+
+$FOOTER
+MSG" "a commit message is the commit gates' job, not this one's"
+allowed "gh issue create --body \"x
+$FOOTER\"" "only gh pr create|edit"
+allowed "ls" "no gh at all"
+
+# ── ONE PATTERN: the copy in the guard is the one the commit gates hold ────
+prwant="$(sed -n "s/^ATTRIBUTION_PATTERN='\(.*\)'  # MUTATION-ANCHOR.*/\1/p" "$ROOT/setup/hooks/attribution-pattern.sh")"
+prgot="$(python3 -c "
+import importlib.util,sys
+s=importlib.util.spec_from_file_location('g',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.ATTRIBUTION_PATTERN)" "$GUARD")"
+[ -n "$prwant" ] && [ "$prwant" = "$prgot" ] || fail "the guard's pattern drifted from setup/hooks/attribution-pattern.sh: [$prwant] vs [$prgot]"
+pass "the guard's pattern is attribution-pattern.sh's"
+
+# ── the OpenCode adapter judges with the same Python ───────────────────────
+out="$(node --input-type=module -e '
+  const { pathToFileURL } = await import("node:url");
+  const { DenyPrAttribution } = await import(pathToFileURL(process.argv[1]).href);
+  const p = await DenyPrAttribution();
+  const run = async (command) => {
+    try { await p["tool.execute.before"]({ tool: "bash" }, { args: { command } }); return "allowed"; }
+    catch (e) { return e.message.startsWith("BLOCKED (deny-pr-attribution)") ? "refused" : "error:" + e.message; }
+  };
+  console.log(await run("gh pr create --body \"x\n" + process.argv[2] + "\""));
+  console.log(await run("gh pr create --body clean"));
+' "$TMP/prg/deny-pr-attribution.opencode.js" "$FOOTER" 2>&1)" || true
+[ "$out" = "$(printf 'refused\nallowed')" ] || fail "the OpenCode adapter did not judge like the hook: $out"
+pass "the OpenCode adapter refuses the footer and allows a clean body"
+
+# ── the installer registers the hook once, in a HOME of its own ────────────
+PRH="$TMP/prhome"; mkdir -p "$PRH/.claude" "$PRH/.claude-personal"
+for d in .claude .claude-personal; do
+  jq -n '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:"/usr/bin/python3 /x/block-keychain-secret-read.py"}]}]}}' > "$PRH/$d/settings.json"
+done
+HOME="$PRH" bash "$ROOT/setup/install/install-pr-attribution-guard.sh" >/dev/null 2>&1 || fail "the installer failed"
+HOME="$PRH" bash "$ROOT/setup/install/install-pr-attribution-guard.sh" >/dev/null 2>&1 || fail "the installer failed on its second run"
+for d in .claude .claude-personal; do
+  n="$(jq '[.hooks.PreToolUse[].hooks[].command | select(endswith("deny-pr-attribution.py"))] | length' "$PRH/$d/settings.json")"
+  [ "$n" = 1 ] || fail "$d/settings.json carries the hook $n times, not once"
+done
+[ -x "$PRH/.claude/hooks/deny-pr-attribution.py" ] && [ -x "$PRH/.claude/hooks/deny-sd-shell-var.py" ] \
+  || fail "the installer did not copy the guard and its tokenizer to ~/.claude/hooks"
+rc=0
+jq -n --arg c "gh pr create --body \"x
+$FOOTER\"" '{tool_name:"Bash",tool_input:{command:$c}}' | python3 "$PRH/.claude/hooks/deny-pr-attribution.py" 2>/dev/null || rc=$?
+[ "$rc" = 2 ] || fail "the INSTALLED copy exited $rc, not 2 (it must find its tokenizer beside itself)"
+pass "the installer copies the guard and registers it exactly once per account; the installed copy refuses"
+
+# ── M01..M06: one mutant per branch ────────────────────────────────────────
+# A mutant sits beside the tokenizer copy in $TMP/g so that it loads it like the real one.
+SAW() { # <id> <command> <exit the mutant wrongly gives> <claim>
+  local got; got="$(judge "$2" "$MUT")"
+  [ "$got" = "$3" ] && saw_mutant "$1 $4" "exit $got" "exit $3" \
+    || fail "$1 VACUOUS: the mutant still judged \`$2\` right (exit $got) — the test proves nothing about it"
+}
+PRINLINE="gh pr create --body \"x
+$FOOTER\""
+MUT="$TMP/prg/mutant-M01.py"; cp "$GUARD" "$MUT"; mutate_anchor 152-P01 "$MUT" 'ATTRIBUTION_PATTERN = r"^(zzz-never)"'
+SAW P01 "$PRINLINE" 0 "the pattern matches nothing: the footer passes"
+MUT="$TMP/prg/mutant-M02.py"; cp "$GUARD" "$MUT"; mutate_anchor 152-P02 "$MUT" 'if False:'
+SAW P02 "$PRINLINE" 0 "a hit is never refused (the old setup)"
+MUT="$TMP/prg/mutant-M03.py"; cp "$GUARD" "$MUT"; mutate_anchor 152-P03 "$MUT" 'if True:'
+SAW P03 "$PRINLINE" 0 "the cheap gate skips every command"
+MUT="$TMP/prg/mutant-M04.py"; cp "$GUARD" "$MUT"; mutate_anchor 152-P04 "$MUT" 'texts = [text]'
+SAW P04 "gh pr create --body-file - <<'EOF'
+$FOOTER
+EOF" 0 "a heredoc body is not read"
+MUT="$TMP/prg/mutant-M05.py"; cp "$GUARD" "$MUT"; mutate_anchor 152-P05 "$MUT" 'texts = []'
+SAW P05 "gh pr create --body-file body.md" 0 "a body file is not read"
+MUT="$TMP/prg/mutant-M06.py"; cp "$GUARD" "$MUT"; mutate_anchor 152-P06 "$MUT" 'if len(args) < 2 or args[0][0] != "pr" or args[1][0] not in ("create",):'
+SAW P06 "gh pr edit 3 --body \"x
+$FOOTER\"" 0 "gh pr edit is not judged"

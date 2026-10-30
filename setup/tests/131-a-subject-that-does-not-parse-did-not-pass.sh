@@ -159,3 +159,23 @@ if grep -q '"01-broken.sh"' "$mut2/setup/suite-data/test-budgets.json"; then
 else
   fail "M02 survived or misfired: rc=$rc out=$out"
 fi
+
+# ── measure-tests judges what it measured (el-gate-explica-su-rojo, S3) ─────
+# It ends by running setup/test-budget-gate on the manifest it just wrote: a measurement that breaks the suite's time budget is red
+# HERE, not at some later fast-gate run in another commit. A stale SUITE ceiling is the cheap way to make the gate red on one fast subject.
+ms="$TMP/ms"; mkdir -p "$ms/setup/tests" "$ms/setup/suite-data"
+cp "$ROOT/setup/measure-tests.sh" "$ROOT/setup/test-budget-gate" "$ms/setup/"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$ms/setup/tests/01-fine.sh"
+printf '{"fast_gate_threshold_seconds": 2.0, "files": {}}\n' > "$ms/setup/suite-data/test-budgets.json"
+set +e; out="$(cd "$ms" && bash setup/measure-tests.sh 01-fine.sh 2>&1)"; rc=$?; set -e
+[ "$rc" = 0 ] && case "$out" in *'ok - 1 subjects, none over'*) true ;; *) false ;; esac \
+  || fail "131 S3: a clean measurement was not judged green by the budget gate (rc $rc): $out"
+printf 'SUITE\t99999\n' > "$ms/setup/suite-data/test-budget-ceilings.tsv"
+set +e; out="$(cd "$ms" && bash setup/measure-tests.sh 01-fine.sh 2>&1)"; rc=$?; set -e
+[ "$rc" != 0 ] && case "$out" in *'not ok - SUITE ceiling'*) true ;; *) false ;; esac \
+  || fail "131 S3: a measurement that breaks the budget gate was not red (rc $rc): $out"
+pass "131 S3: measure-tests ends by running setup/test-budget-gate on what it measured: green when it holds, red (exit 1) and naming the line when it does not"
+cp -R "$ms" "$TMP/ms-mut"; mutate_anchor 131-M03 "$TMP/ms-mut/setup/measure-tests.sh" ':'
+set +e; out="$(cd "$TMP/ms-mut" && bash setup/measure-tests.sh 01-fine.sh 2>&1)"; rc=$?; set -e
+[ "$rc" = 0 ] || fail "131-M03 VACUOUS: the mutant measure-tests still exited $rc: $out"
+saw_mutant "131-M03 a measure-tests that does not ask the budget gate calls a broken budget green" "RC=$rc$(printf '%s' "$out" | grep -c 'SUITE ceiling' || true)" 'RC=00'

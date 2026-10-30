@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"hwcore/internal/engramhealth"
 )
 
 var reUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
@@ -554,11 +556,11 @@ func (b *brainRun) engramServeVerdict(u string) (string, int) {
 			return r
 		}, string(data))
 	}
-	health, ok := b.httpGet(u+"/health", 3*time.Second)
-	if !ok {
-		return "no engram serve answers at " + u, 3
+	probe := engramhealth.Get(u+"/health", engramhealth.Budget(b.getenv("HW_ENGRAM_HEALTH_TIMEOUT")))
+	if !probe.OK {
+		return engramhealth.Refusal(u, probe), 3
 	}
-	got := bjRawOr(health, "instance_id")
+	got := bjRawOr(probe.Body, "instance_id")
 	if want == "" {
 		return "cannot prove the serve at " + u + " is this store: " + dir + "/.instance-id is missing", 3
 	}

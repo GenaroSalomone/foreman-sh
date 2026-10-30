@@ -77,6 +77,9 @@ func (l *lch) buildBriefText() {
 	if note := l.briefSecretsNote(); note != "" {
 		l.briefText = psep(note, l.briefText)
 	}
+	if note := l.copyBriefAssets(); note != "" {
+		l.briefText = psep(note, l.briefText)
+	}
 	l.briefText = psep(epistemic, l.briefText)
 }
 

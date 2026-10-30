@@ -191,6 +191,7 @@ func (d *dsp) run(argv []string) {
 	d.checkRequested()
 	d.checkAuthorizes()
 	d.checkSecrets()
+	d.checkBriefAssets()
 	d.checkTask(d.task)
 	d.checkAgentNameFree(d.task)
 	if !d.c.t.known(d.proj) {

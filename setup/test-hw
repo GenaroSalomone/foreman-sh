@@ -2196,6 +2196,19 @@ RETRIED_COUNT=0; RETRIED_LINES=""
 # stay red exactly as before. The run stays green only by naming it:
 # `retried after timeout: <test>`.
 TIMEOUT_DEFER=""; TIMEOUT_RETRIED_COUNT=0; TIMEOUT_RETRIED_LINES=""
+# A SUBJECT REFUSED ONLY FOR OVERRUNNING ITS FAST-GATE BUDGET IS RE-RUN ONCE, ALONE, AFTER EVERY OTHER JOB.
+# MEASURED 2026-10-27, the 0.6.1 cut #1: gate export-suite (the export's fast gate) went red because subject 106 read 2739ms
+# against a 2700ms budget (best of 3 re-runs, CPU 3668ms, load1=3.38 on 14 cpus); run alone it took 2471 and 2444ms. The cause of
+# the 300ms is UNESTABLISHED; what is measured is that alone it fits. The three in-gate re-runs (setup/fast-gate-budget.sh, point 2)
+# already ran under whatever else the machine was doing, so the refusal is not final: the subject runs once more at the end of the
+# run, with nothing of this run beside it, and fg_decide judges THAT reading. Fits -> the run stays green, naming it
+# (`budget overrun under load: <subject> <ms>/<budget>`); still over -> red, with the refusal it always had. ONLY a refusal for time is
+# retried, and only a subject that PASSED every run: one that failed an assertion (rc, or a failed timing re-run) is red on the spot
+# and never run again. At most RETRY_MAX of them are deferred: a fourth over-budget subject is the tree or the machine, not a spike.
+# HW_TEST_NO_RETRY=1 turns it off.
+BUDGET_DEFER=""; BUDGET_DEFER_N=0; BUDGET_RETRIED_COUNT=0; BUDGET_RETRIED_LINES=""
+BUDGET_RETRY_ON=1
+case "${HW_TEST_NO_RETRY:-}" in 1|yes|true) BUDGET_RETRY_ON=0 ;; esac
 KEEP_GOING=0
 case "${HW_TEST_KEEP_GOING:-}" in 1|yes|true) KEEP_GOING=1 ;; esac
 RED_LINES=""; RED_RC=0; RED_COUNT=0
@@ -2235,6 +2248,17 @@ _report_unretried() {
     _cut_line "$_un" "$_uel" "$_ucap" "; the run stopped on another red before it could be retried alone"
     rm -f "$JOBDIR/$_u.timeout.first"
   done
+  for _u in $BUDGET_DEFER; do
+    [ -s "$JOBDIR/$_u.budget.first" ] || continue
+    cat "$JOBDIR/$_u.budget.first" >&2
+    printf '  (it was to be re-run alone at the end of the run, which stopped on another red first)\n' >&2
+    rm -f "$JOBDIR/$_u.budget.first"
+  done
+}
+# the refusal a subject over its fast-gate budget is named with (the one line, so the deferred path and the final one say the same)
+_budget_refusal() { # <name> <wall> <cpu> <budget> <mode> <why> <load description>
+  printf '\nnot ok - runner: setup/tests/%s took %sms (best of up to 3 runs, CPU %sms) in the fast gate, over the %sms budget in setup/suite-data/test-budgets.json — judged on %s (%s; %s) — re-measure with setup/measure-tests.sh and, if it is really this slow, its classification belongs in the slow set\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" >&2
 }
 _job_red() {
   local _defer="$_RED_DEFER"; _RED_DEFER=0
@@ -2388,8 +2412,15 @@ while [ "$_i" -lt "$JOB_TOTAL" ]; do
     fi
     case "$_fg_res" in
       refuse)
-        printf '\nnot ok - runner: setup/tests/%s took %sms (best of up to 3 runs, CPU %sms) in the fast gate, over the %sms budget in setup/suite-data/test-budgets.json — judged on %s (%s; %s) — re-measure with setup/measure-tests.sh and, if it is really this slow, its classification belongs in the slow set\n' \
-          "$(basename "$f")" "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "$_fg_mode" "$_fg_why" "$_fg_ldesc" >&2
+        if [ "$BUDGET_RETRY_ON" = 1 ] && [ "$BUDGET_DEFER_N" -lt "$RETRY_MAX" ] && [ "$RED_COUNT" -eq 0 ]; then  # MUTATION-ANCHOR: 217-M01
+          _budget_refusal "$(basename "$f")" "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "$_fg_mode" "$_fg_why" "$_fg_ldesc" > "$JOBDIR/$_i.budget.first" 2>&1
+          printf 'runner: setup/tests/%s read %sms in the fast gate, over its %sms budget — it is re-run once, alone, after every other job\n' \
+            "$(basename "$f")" "$_fg_wall" "$_fg_budget_ms" >&2
+          BUDGET_DEFER="$BUDGET_DEFER $_i"; BUDGET_DEFER_N=$((BUDGET_DEFER_N + 1))
+          rm -f "$JOBDIR/$_i.out" "$JOBDIR/$_i.err" "$JOBDIR/$_i.cov" "$JOBDIR/$_i.parse"
+          _i=$((_i + 1)); NEXT_EMIT="$_i"; continue
+        fi
+        _budget_refusal "$(basename "$f")" "$_fg_wall" "$_fg_cpu" "$_fg_budget_ms" "$_fg_mode" "$_fg_why" "$_fg_ldesc"
         _job_red 1 "setup/tests/$(basename "$f") over its fast-gate budget (${_fg_wall}ms > ${_fg_budget_ms}ms)" || { _i=$((_i + 1)); NEXT_EMIT="$_i"; continue; } ;;
     esac
   fi
@@ -2480,6 +2511,41 @@ for _d in $TIMEOUT_DEFER; do
     printf 'retried after timeout: %s (first run cut after %ss over its %ss ceiling; alone it passed in %sms)\n' "$_name" "$_to_el" "$_to_cap" "$_retry_wall"
   fi
   rm -f "$JOBDIR/$_d.out" "$JOBDIR/$_d.err" "$JOBDIR/$_d.cov" "$JOBDIR/$_d.timeout" "$JOBDIR/$_d.timeout.first"
+done
+# THE SUBJECTS REFUSED ONLY FOR TIME, re-run once each with nothing else of this run beside them (see BUDGET_DEFER above). Its `ok` lines
+# were tallied on the first run; this reading is only judged, so nothing is counted twice.
+for _b in $BUDGET_DEFER; do
+  f="${JOB_PATH[$_b]}"; _name="$(basename "$f")"; _i="$_b"
+  _first_refusal="$(cat "$JOBDIR/$_b.budget.first" 2>/dev/null)"; rm -f "$JOBDIR/$_b.budget.first" "$JOBDIR/$_b.out" "$JOBDIR/$_b.err"
+  if [ "$POOL_ON" = 1 ]; then
+    until _pool_excl_step "$_b"; do sleep 0.5; done
+  fi
+  rc=0; fg_time_cmd "$JOBDIR/$_b.out" "$JOBDIR/$_b.err" fg_capped "$HERE/suite-data/test-budgets.json" "$_name" "$JOBDIR/$_b.timeout" bash "$f" || rc=$?
+  _alone_wall="$FG_WALL_MS"; _alone_cpu="$FG_CPU_MS"
+  [ "$POOL_ON" != 1 ] || _pool_excl_release
+  _fg_budget_ms="$(fg_budget_ms "$FAST_THRESHOLD_SECONDS" "$(printf '%s\n' "$_FG_OWN" | sed -n "s/^$_name=//p")" "$FG_FACTOR")"
+  if [ "$rc" -ne 0 ]; then
+    cat "$JOBDIR/$_b.out"; [ ! -s "$JOBDIR/$_b.err" ] || cat "$JOBDIR/$_b.err" >&2
+    printf '\nnot ok - runner: setup/tests/%s failed (exit %s) on its re-run alone after a budget overrun — a subject that passes once and fails once is not in the fast gate\n' "$_name" "$rc" >&2
+    _job_red "$rc" "setup/tests/$_name failed (exit $rc) on its re-run alone after a budget overrun" || true
+  else
+    read -r _fg_load _fg_ncpu <<< "$(fg_load_ncpu)"
+    _fg_probe=""; [ "$_alone_wall" -le "$_fg_budget_ms" ] || _fg_probe="$(fg_probe_x100)"
+    read -r _fg_res _fg_mode _fg_why <<< "$(fg_decide "$_alone_wall" "$_alone_cpu" "$_fg_budget_ms" "${_fg_load:-}" "${_fg_ncpu:-}" "$_fg_probe")"
+    if [ "$_fg_res" = pass ]; then  # MUTATION-ANCHOR: 217-M02
+      BUDGET_RETRIED_COUNT=$((BUDGET_RETRIED_COUNT + 1))
+      BUDGET_RETRIED_LINES="$BUDGET_RETRIED_LINES
+  budget overrun under load: $_name ${_alone_wall}ms/${_fg_budget_ms}ms alone"
+      printf 'budget overrun under load: %s %sms/%sms (refused once in the pool, alone it fits)\n' "$_name" "$_alone_wall" "$_fg_budget_ms"
+    else
+      _fg_ldesc="load1=$(( ${_fg_load:-0} / 100 )).$(printf '%02d' $(( ${_fg_load:-0} % 100 ))) on ${_fg_ncpu:-?} cpus"
+      printf '%s\n' "$_first_refusal" >&2
+      printf '\nnot ok - runner: setup/tests/%s took %sms alone on its re-run after a budget overrun (CPU %sms), over the %sms budget in setup/suite-data/test-budgets.json — judged on %s (%s; %s)\n' \
+        "$_name" "$_alone_wall" "$_alone_cpu" "$_fg_budget_ms" "$_fg_mode" "$_fg_why" "$_fg_ldesc" >&2
+      _job_red 1 "setup/tests/$_name over its fast-gate budget (${_alone_wall}ms > ${_fg_budget_ms}ms) alone, on its re-run" || true
+    fi
+  fi
+  rm -f "$JOBDIR/$_b.out" "$JOBDIR/$_b.err" "$JOBDIR/$_b.timeout"
 done
 # THE REDS THE RETRY MAY ABSORB (see RETRY_ON), run one at a time with nothing else of this run beside them. Only when
 # EVERY red of the run was deferred and there are at most RETRY_MAX of them: a plain red (no exit to retry) or a
@@ -2670,6 +2736,9 @@ if [ "$RETRIED_COUNT" -gt 0 ]; then
 fi
 if [ "$FLAKE_COUNT" -gt 0 ]; then
   printf '\nFLAKES ABSORBED: %s job(s) were red in the pool and green alone on their single retry:%s\n' "$FLAKE_COUNT" "$FLAKE_LINES"
+fi
+if [ "$BUDGET_RETRIED_COUNT" -gt 0 ]; then
+  printf '\nBUDGET OVERRUNS ABSORBED: %s subject(s) were over their fast-gate budget in the run and inside it on their single re-run, alone:%s\n' "$BUDGET_RETRIED_COUNT" "$BUDGET_RETRIED_LINES"
 fi
 if [ "$TIMEOUT_RETRIED_COUNT" -gt 0 ]; then
   printf '\nRETRIED AFTER TIMEOUT: %s subject(s) were cut by their ceiling once and passed on their single retry, alone:%s\n' "$TIMEOUT_RETRIED_COUNT" "$TIMEOUT_RETRIED_LINES"

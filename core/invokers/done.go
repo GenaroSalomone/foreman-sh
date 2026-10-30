@@ -193,7 +193,7 @@ loop:
 			ok := false
 			seenNote := ""
 			for _, id := range ids {
-				proj := engramObservationProject(id, url)
+				proj := c.engramObservationProject(id, url)
 				if proj == label {
 					ok = true
 					break
@@ -226,6 +226,19 @@ loop:
 				return err
 			}
 			checksNote = n
+		}
+	}
+
+	// -- a closing that named plugin review skills closes on each one's run, or its review-skip
+	if status == "done" {
+		if skills := receiptValue(receipt, "plugin_review_t"+c.taskSeq()); skills != "" { // # MUTATION-ANCHOR: 1150-G04
+			key := "plugin_review_t" + c.taskSeq()
+			proof, why := c.ReadTranscriptProof(receipt, receiptAt(receipt, key))
+			note, err := PluginReviewGate(skills, summary, proof, why)
+			if err != nil {
+				return err
+			}
+			checksNote += note
 		}
 	}
 

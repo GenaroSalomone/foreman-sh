@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# safe-mutate <file>... -- <command> [args...]
+#
+# A MUTATION RUN THAT CANNOT LOSE UNCOMMITTED WORK, with no hook in the way. Mutation testing edits a file in place and puts it back; the
+# put-back used to be `git checkout -- <file>`, which also throws away every uncommitted byte the file held before the run (setup/CLAUDE.md:
+# "commit the verified fix before mutating"; retro 2026-10-16: the guard that was meant to catch it was a hook, and a run
+# under another vendor or `--no-verify` has none).
+#
+# Before <command> runs: `git stash create` pins the whole dirty tree as a commit object under refs/hw-mutation-safety/<stamp> (it does not
+# touch the stash stack, which is shared by every worktree — see the environment note on bare `git stash`), and each <file> is copied
+# aside. <command> mutates what it likes. On ANY exit (success, failure, INT, TERM) each <file> is restored byte for byte from its copy, and
+# the ref is dropped when the restore is verified; if a restore cannot be verified the ref stays and its name is printed.
+set -uo pipefail
+files=()
+while [ $# -gt 0 ] && [ "$1" != -- ]; do files+=("$1"); shift; done
+[ $# -ge 2 ] && [ "${#files[@]}" -gt 0 ] || { echo "usage: safe-mutate <file>... -- <command> [args...]" >&2; exit 2; }
+shift
+for f in "${files[@]}"; do [ -f "$f" ] || { echo "safe-mutate: $f is not a file" >&2; exit 2; }; done
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "safe-mutate: not inside a git work tree" >&2; exit 2; }
+
+bak="$(mktemp -d "${TMPDIR:-/tmp}/safe-mutate.XXXXXX")"
+ref=""
+snap="$(git -C "$top" stash create 2>/dev/null || true)"
+if [ -n "$snap" ]; then
+  ref="refs/hw-mutation-safety/$(date +%Y%m%dT%H%M%S)-$$"
+  git -C "$top" update-ref "$ref" "$snap" 2>/dev/null || ref=""
+fi
+i=0
+for f in "${files[@]}"; do i=$((i + 1)); cp -p "$f" "$bak/$i"; done
+
+restore() { # MUTATION-ANCHOR: 1140-M01
+  local rc=0 n=0 g
+  for g in "${files[@]}"; do
+    n=$((n + 1))
+    cp -p "$bak/$n" "$g" 2>/dev/null && cmp -s "$bak/$n" "$g" || { echo "safe-mutate: could NOT restore $g" >&2; rc=1; }
+  done
+  if [ "$rc" = 0 ]; then
+    rm -rf "$bak"
+    [ -z "$ref" ] || git -C "$top" update-ref -d "$ref" 2>/dev/null || true
+  else
+    echo "safe-mutate: the originals are in $bak${ref:+ and the whole tree at $ref}" >&2
+  fi
+  return "$rc"
+}
+trap 'restore; exit $?' INT TERM
+cmd_rc=0
+"$@" || cmd_rc=$?
+restore || exit 1
+exit "$cmd_rc"

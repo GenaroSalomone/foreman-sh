@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"hwcore/internal/engramhealth"
 )
 
 func (t *t3) operator() string {
@@ -511,17 +513,11 @@ func (t *t3) engramServeIsOurs(url string) bool {
 	if b, err := os.ReadFile(dir + "/.instance-id"); err == nil {
 		want = strings.Join(strings.Fields(string(b)), "")
 	}
-	cl := &http.Client{Timeout: 3 * time.Second}
-	resp, err := cl.Get(url + "/health")
-	if err != nil {
+	probe := engramhealth.Get(url+"/health", engramhealth.Budget(t.getenv("HW_ENGRAM_HEALTH_TIMEOUT")))
+	if !probe.OK {
 		return false
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return false
-	}
-	b, _ := io.ReadAll(resp.Body)
-	got := jqRawOr(string(b), "", "instance_id")
+	got := jqRawOr(probe.Body, "", "instance_id")
 	return want != "" && got != "" && got == want
 }
 

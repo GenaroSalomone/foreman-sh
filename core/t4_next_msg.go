@@ -180,7 +180,7 @@ func (a *app) nextBriefPreamble(e nextMsgEnv) string {
 		p = bashSub(p + "\n\n" + bashSub("Judge the design before the code. This brief declares a boundary:\n\n    boundary: "+nextFmValue("boundary", e.brief)+"\n\nBefore your first code commit, write your design to one file under\n$HW_ARTIFACTS — the boundary, the mechanism, the input space it decides over,\nand what an input nobody anticipated gets — and run the judgment-day skill in\nDESIGN MODE over it (references/design-mode.md). Then write\n$HW_ARTIFACTS/design-judgment.md with these lines:\n\n    boundary: <the line above, exactly>\n    design: <the design file>\n    design_sha256: <its sha256>\n    JUDGMENT: APPROVED            (or ESCALATED)\n\nAn APPROVED verdict lists, one amendment: line each, the bypass classes both\njudges confirmed and the approach can close; your code closes them, and\n"+end+" is where that is checked. done-invoker\nrefuses a done report without an APPROVED verdict whose design still hashes to\ndesign_sha256. An ESCALATED design is a blocker, not a\nprompt to code anyway: report it with done-invoker --blocked, naming the\nbypass classes the judges found. Two rejected designs mean the approach is\nyour brainer's call."))
 	}
 	if jd {
-		p = bashSub(p + "\n\n" + nextJudgmentDayNote)
+		p = bashSub(p + "\n\n" + judgmentDayWithPlugins(nextJudgmentDayNote, e.plugins))
 	} else if e.reviewMode == "plugins" && nextIsBuild(e.brief) { // # MUTATION-ANCHOR: 1020-G07
 		p = bashSub(p + "\n\n" + reviewPluginsNote(e.plugins))
 	}

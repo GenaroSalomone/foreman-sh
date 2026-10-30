@@ -240,6 +240,23 @@ func (a *app) reviveBrainGuardOn(proj string) bool {
 	return isFile(d+"/brain-guard/hooks/hooks.json") && isFile(d+"/brain-guard.opencode.json") && isFile(d+"/deny-brain-writes.js") && isFile(d+"/deny_brain_writes.py")
 }
 
+// revivePluginDirs is pluginsArgs for a run that already exists: one directory per plugin the run's receipt says the
+// brief declared (`plugins`, written at dispatch), as <brain>/plugins/<name>, only where the pinned copy is installed.
+func (a *app) revivePluginDirs(rundir string) []string {
+	v, rc := reviveReceiptLast(rundir+"/receipt.jsonl", "plugins")
+	if rc != 0 || v == "" || strings.HasPrefix(v, "NOT APPLIED") {
+		return nil
+	}
+	var out []string
+	for _, n := range strings.Split(v, ",") {
+		dir := a.reviveBrainRoot() + "/plugins/" + n
+		if n != "" && isFile(dir+"/.claude-plugin/plugin.json") {
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
 // reviveFrameworkArgs is the block of cmd_revive that, after the tab exists, adds to AGENT_ARGS what the
 // recorded resume could not carry: INJECTED, NOT REPLAYED.
 func (a *app) reviveFrameworkArgs(st *reviveRunState, vendor, cmdArgs, rundir string) {
@@ -268,6 +285,12 @@ func (a *app) reviveFrameworkArgs(st *reviveRunState, vendor, cmdArgs, rundir st
 		}
 		if a.reviveBrainGuardOn(st.proj) {
 			plugin := a.reviveBrainRoot() + "/setup/guards/brain-guard"
+			if !reviveHasWord(args, "--plugin-dir "+plugin) {
+				args += " --plugin-dir " + plugin
+			}
+		}
+		// the brief's review plugins: the recorded `--resume` line carried them, and a hand-edited one may not
+		for _, plugin := range a.revivePluginDirs(rundir) { // # MUTATION-ANCHOR: 1150-G06
 			if !reviveHasWord(args, "--plugin-dir "+plugin) {
 				args += " --plugin-dir " + plugin
 			}

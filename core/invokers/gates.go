@@ -146,6 +146,76 @@ func DesignGate(artifactsRoot, boundary string) error {
 	return nil
 }
 
+// PluginReviewGate holds a done report to the plugin review skills the closing named: comma-joined, each one
+// `plugin:skill` (a bare name, from an older receipt, is the skill part of any plugin). A skill is released by the executor's own transcript — a Skill tool_use of exactly that name, or an
+// Agent whose subagent_type is — or by `review-skip: <skill> — <why>` in the report. With no transcript (proof nil)
+// the report text must name the skill as a whole token, and the note returned says the check was unverified.
+func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string) (note string, err error) {
+	var missing, shown []string
+	for _, sk := range strings.Split(skills, ",") {
+		if sk == "" {
+			continue
+		}
+		shown = append(shown, sk)
+		switch {
+		case reviewSkipped(summary, sk):
+		case proof != nil && proof.Has(sk): // # MUTATION-ANCHOR: 1150-G11
+		case proof == nil && mentionsToken(summary, sk): // # MUTATION-ANCHOR: 1150-G05
+		default:
+			missing = append(missing, sk)
+		}
+	}
+	if len(missing) == 0 {
+		if proof == nil {
+			return "\nplugin review: unverified: transcript not reachable (" + why + "); the report text names each skill", nil
+		}
+		return "", nil
+	}
+	proofIs := "your transcript (and your subagents') has no Skill call or subagent of that exact name"
+	if proof == nil {
+		proofIs = "unverified: transcript not reachable (" + why + "), and the report does not name it as a whole token"
+	}
+	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each with the Skill tool over your committed range under its full name (plugin:skill), or write a line  review-skip: <skill> — <why>  for one you cannot run (not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
+}
+
+// reviewSkipped is a `review-skip: <skill>` line naming the skill (full name or its bare skill part).
+func reviewSkipped(summary, skill string) bool {
+	bare := skill[strings.LastIndex(skill, ":")+1:]
+	for _, seg := range strings.Split(summary, "review-skip:")[1:] {
+		seg = strings.TrimLeft(seg, " \t`*")
+		for _, n := range []string{skill, bare} {
+			if strings.HasPrefix(seg, n) && !isNameChar(seg, len(n)) { // # MUTATION-ANCHOR: 1150-G14
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mentionsToken is name as a whole token of s: a longer name around it (`…-subagent`, a `plugin:` prefix) is not it.
+func mentionsToken(s, name string) bool {
+	for i := 0; ; {
+		j := strings.Index(s[i:], name)
+		if j < 0 {
+			return false
+		}
+		j += i
+		if (j == 0 || !isNameChar(s, j-1)) && !isNameChar(s, j+len(name)) {
+			return true
+		}
+		i = j + 1
+	}
+}
+
+// isNameChar is true when s[i] exists and continues a skill name.
+func isNameChar(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return c == '-' || c == '_' || c == ':' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
 // awkSpace is awk's [ \t].
 func awkSpace(c byte) bool { return c == ' ' || c == '\t' }
 

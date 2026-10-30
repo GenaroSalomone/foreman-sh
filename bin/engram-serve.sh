@@ -64,6 +64,37 @@ engram_serve_wait() {
   return 0
 }
 
+# The probe every HTTP read of the serve goes through (core/internal/engramhealth is its Go twin). A serve under load answers
+# /health in 2-3 s (measured 2026-10-29), so a short budget read a slow serve as a dead one: one try waits
+# HW_ENGRAM_HEALTH_TIMEOUT seconds (default 10), a transport failure is tried twice, an HTTP status of 400 and over is an
+# answer and is not retried.
+engram_health_budget() {
+  case "${HW_ENGRAM_HEALTH_TIMEOUT:-}" in ''|*[!0-9.]*|.|0|*.*.*) printf 10 ;; *) printf '%s' "$HW_ENGRAM_HEALTH_TIMEOUT" ;; esac
+}
+
+# engram_probe_get <url> — 0 with the body in $_eh_body; 1 when it did not answer. Either way $_eh_budget, $_eh_tries and
+# $_eh_status (0: no answer came) say how it went; engram_probe_refusal turns them into the line.
+engram_probe_get() {
+  local raw rc
+  _eh_budget="$(engram_health_budget)"; _eh_tries=0; _eh_status=0; _eh_body=""
+  while [ "$_eh_tries" -lt 2 ]; do
+    _eh_tries=$((_eh_tries + 1))
+    raw="$(curl -s -m "$_eh_budget" -w '%{http_code}' "$1" 2>/dev/null)" && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || continue
+    _eh_status="${raw: -3}"; _eh_body="${raw%???}"
+    [ "$_eh_status" -lt 400 ] && return 0
+    return 1
+  done
+  return 1
+}
+
+engram_probe_refusal() {
+  local n=tries
+  [ "$_eh_tries" -eq 1 ] && n=try
+  printf 'no engram serve answered at %s within %s s (%s %s)' "$1" "$_eh_budget" "$_eh_tries" "$n"
+  [ "$_eh_status" -eq 0 ] || printf ': it answered HTTP %s' "$_eh_status"
+}
+
 # engram_serve_verdict [url] — one line on stdout, and:
 #   0  the serve at url is this environment's store (instance ids match)
 #   2  a serve answers, and it is ANOTHER store: never write to it
@@ -76,9 +107,10 @@ engram_serve_verdict() {
   # "No such file or directory" (measured 2026-09-30, empty HOME).
   want=""
   if [ -r "$dir/.instance-id" ]; then want="$(tr -d '[:space:]' < "$dir/.instance-id" 2>/dev/null || true)"; fi
-  if ! health="$(curl -sf -m 3 "$url/health" 2>/dev/null)"; then
-    printf 'no engram serve answers at %s' "$url"; return 3
+  if ! engram_probe_get "$url/health"; then
+    engram_probe_refusal "$url"; return 3
   fi
+  health="$_eh_body"
   got="$(printf '%s' "$health" | jq -r '.instance_id // empty' 2>/dev/null || true)"
   if [ -z "$want" ]; then
     printf 'cannot prove the serve at %s is this store: %s/.instance-id is missing' "$url" "$dir"; return 3
@@ -112,5 +144,6 @@ engram_session_post() {
 # excludes deleted rows (store.GetObservation: deleted_at IS NULL).
 engram_observation_project() {
   local id="$1" url="${2:-$(engram_serve_url)}"
-  curl -sf -m 3 "$url/observations/$id" 2>/dev/null | jq -r '.project // empty' 2>/dev/null || true
+  engram_probe_get "$url/observations/$id" || return 0
+  printf '%s' "$_eh_body" | jq -r '.project // empty' 2>/dev/null || true
 }

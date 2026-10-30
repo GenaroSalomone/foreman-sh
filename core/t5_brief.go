@@ -31,6 +31,7 @@ type brState struct {
 	brAuthorizes  string
 	brAuthMarker  string
 	brSecrets     string
+	brAssets      []string
 	brSddResolved bool
 	brLaneTried   bool
 	brLaneRoot    *jval
@@ -1553,6 +1554,49 @@ const brAwkVerify = `
       print line
     }
   `
+
+// brAwkVerifySection is the awk program that finds a Verification section hw could not run anything from: the heading
+// of the first verification-class section, or nothing. Only a verification heading counts (not Testing/Tests/QA, which
+// brAwkVerify also reads but which name sections about tests to WRITE as often as to run), and a line starting with
+// None / Ninguno / Ninguna / N/A makes the section legal (an audit writes «None: it reads, it does not change»).
+const brAwkVerifySection = `
+    /^[ \t]*` + "```" + `/ { fence = !fence; next }
+    !fence && /^#+[ \t]/ {
+      insec = 0
+      if (tolower($0) ~ /(^|[^a-z])(verification|verificaci|verificar|how to verify)/) { insec = 1; found = 1; if (head == "") head = $0 }
+      next
+    }
+    insec && tolower($0) ~ /^[ \t>*_-]*(none|ninguno|ninguna|n\/a)([^a-z]|$)/ { none = 1 }
+    END { if (found && !none) print head }
+  `
+
+// briefVerifySectionUnrunnable is the heading of the brief's Verification section when it exists and says no "None";
+// empty otherwise. awk failing ends the dispatch like briefVerifyCmds.
+func (d *dsp) briefVerifySectionUnrunnable(brief string) string {
+	if brief == "" || !brReadable(brief) {
+		return ""
+	}
+	out, errText, rc := brExecErr("awk", brAwkVerifySection, brief)
+	if rc != 0 {
+		d.err.Write([]byte(errText))
+		panic(exitNow{rc})
+	}
+	return brSub(out)
+}
+
+// refuseUnrunnableVerification ends the dispatch when the brief wrote a `## Verification` hw cannot run (verifyCmds is
+// what briefVerifyCmds found). MEASURED 2026-10-14 (retros of recompute-name-guard-apply and overtime-meal-break-design,
+// the product lane): a prose Verification reached the close as «NOT VERIFIED» after an hour of work, because the
+// dispatch only warned and a warning at dispatch is read by no one. No Verification heading at all, or a `## Testing`
+// of prose, still only warns (the caller).
+func (d *dsp) refuseUnrunnableVerification(verifyCmds string) {
+	if verifyCmds != "" || d.brief == "" {
+		return
+	}
+	if sec := d.briefVerifySectionUnrunnable(d.brief); sec != "" {
+		d.die("the brief's `" + sec + "` section has no command hw can RUN, so nothing would be verified at close (NOT VERIFIED). Put the command in a fenced block under it, or start a line with `None: <why>` if this task has nothing to run (an audit). NOTHING was built.") // # MUTATION-ANCHOR: 10-V01
+	}
+}
 
 // briefVerifyCmds is _brief_verify_cmds: the commands of the Testing/Verification fences (or indented code), one per
 // line. awk failing ends the dispatch the way `set -e` ends bash on `verify_cmds="$(…)"`.

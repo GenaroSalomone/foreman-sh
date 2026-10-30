@@ -277,7 +277,7 @@ func nextReviewMode(brief string) string {
 
 // nextPluginsDeclared is _plugins_declared over the NEW brief (hw next reads it fresh, never a memo of another).
 func nextPluginsDeclared(brief string) []string {
-	return pluginsOfValue(nextDecl(nextBriefDeclares(brief), "plugins"))
+	return pluginsWithReview(pluginsOfValue(nextDecl(nextBriefDeclares(brief), "plugins")), reviewRawOf(nextFmValue("review", brief)))
 }
 
 // nextReviewGate is `( BRIEF=<brief>; _review_gate )`: a bad value, or `plugins` with nothing to name, refuses the
@@ -296,6 +296,16 @@ func (a *app) nextReviewReceipt(rundir, key, brief string) {
 		return
 	}
 	a.receiptInto(rundir, key, mode, reviewReceiptSource(brief, mode, nextPluginsDeclared(brief)))
+}
+
+// nextPluginReviewReceipt is the plugin review skills the NEW brief's closing names, keyed by task like the review above.
+func (a *app) nextPluginReviewReceipt(rundir, key, brief string) {
+	sk := pluginReviewSkillsNamed(nextReviewMode(brief), a.nextEnvVal(rundir, "HW_REVIEW_BASE_REF"), nextIsBuild(brief), nextPluginsDeclared(brief))
+	if len(sk) == 0 { // # MUTATION-ANCHOR: 1150-G08
+		return
+	}
+	a.receiptInto(rundir, key, strings.Join(reviewSkillsQualified(nextPluginsDeclared(brief)), ","),
+		"brief plugins: and review: in "+brief+" at hw next — done-invoker proves each skill from the transcript, or takes a review-skip: line")
 }
 
 func nextGitOut(dir string, args ...string) (string, error) {

@@ -299,7 +299,7 @@ done-invoker instead of judging it.`)
 		preamble = pjoin(preamble, l.designJudgmentNote(l.briefBoundary()))
 	}
 	if l.judgmentDayApplies() {
-		preamble = pjoin(preamble, judgmentDayNote)
+		preamble = pjoin(preamble, judgmentDayWithPlugins(judgmentDayNote, l.pluginsDeclared()))
 	} else if l.pluginsReviewApplies() {
 		preamble = pjoin(preamble, reviewPluginsNote(l.pluginsDeclared()))
 	}

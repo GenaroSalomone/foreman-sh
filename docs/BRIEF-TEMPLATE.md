@@ -33,13 +33,17 @@
 #   requires-agents: [primary:|subagent:]<name>, …
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
-#   review:    judgment-day | plugins | none — the review the close names, in every lane
-#              and --sdd mode. judgment-day (the default when absent) orders Judgment Day
-#              over the branch; plugins names only the review skills of `plugins:` (below)
-#              and no Judgment Day; none adds no review note. Any other value is refused
-#              before anything is built (rdd is retired: it warns and runs judgment-day).
-#              review: decides what the CLOSE asks for; plugins: (below) decides what LOADS
-#              into the executor, for the whole session. They meet only at review: plugins.
+#   review:    judgment-day | plugins | none, or ONE list: [judgment-day, thermo, ponytail, pstack]
+#              — the review the close names, in every lane and --sdd mode. judgment-day (the
+#              default when absent) orders Judgment Day over the branch; plugins names only the
+#              review skills of `plugins:` (below) and no Judgment Day; none adds no review note.
+#              The list says it all in one field: hw LOADS the plugin of each plugin item (the
+#              `plugins:` path), the close names every item (Judgment Day, plus each plugin's
+#              review skill run first over the same committed range), and done-invoker refuses a
+#              done report that names no run of a skill, or `review-skip: <skill> — <why>`.
+#              judgment-day + `plugins:` with review skills (the scalar form) closes the same way.
+#              Any other value or item is refused before anything is built (rdd is retired: it
+#              warns and runs judgment-day). Keep `plugins:` (below) for plugins that are not review.
 #   plugins:   [thermo, ponytail, pstack]  (any subset)
 #              Review plugins (pinned, complete: their hooks run in THIS executor only) loaded
 #              into it: claude gets one --plugin-dir each (hook writes go to $HW_ARTIFACTS/plugin-state),
@@ -65,6 +69,11 @@
 <What the agent cannot infer from the code alone: history, prior attempts,
 constraints that live in someone's head.>
 
+<One line per premise the task rests on, so a measured fact cannot pass for an assumed one:>
+Premisa: <claim> | <fuente> | medida o asumida
+<Before an explore brief: `decisions index <lane> --all` for the idea, so a ruling that rules it out is found first.>
+<A file the brief needs the executor to open (a screenshot, a fixture) lives in `brain/<lane>/briefs/assets/` and the brief names it as `briefs/assets/<file>`: `hw` refuses the dispatch if it does not exist and copies it to `$HW_ARTIFACTS/brief-assets/`, because the brain guard blocks the executor from opening the brain path.>
+
 ## In scope
 - <thing>
 
@@ -73,6 +82,7 @@ constraints that live in someone's head.>
 
 ## Done when
 - [ ] <observable, checkable condition>
+- [ ] <A build with a UI change only: product-judge ACCEPT, at most 3 rounds; after the third, `done-invoker --blocked` naming what is still rejected.>
 
 ## Testing / Verification
 
@@ -100,6 +110,14 @@ run them before it, and never a bare `go test ./...` over `core/` with `HW_INPRO
 A partition is `setup/go-test-core.sh <name>` (`--list` names them), alone only when the
 brief's change can reach just that one.
 
+A gate's FIRST run is `HW_TEST_GATE=fast bash setup/test-hw --keep-going`: every red shows in one
+pass instead of one per run (half an hour measured, retros 2026-10-16). When
+a commit's hook is the red, its full gate output is in `$(git rev-parse --git-common-dir)/hw-precommit-last.out`.
+
+A brief about TIME (a budget, a wait, a speed-up) names a deterministic proxy first — a count of
+processes, calls or files — and a wall-clock number only as the second measure: seconds move with the
+machine's load, a count does not.
+
 Anything else here — which directions to run it in, what a fixture must pin, how
 to reproduce the old behaviour — is for the executor and hw never touches it.
 
@@ -109,6 +127,12 @@ that nothing was measured. It is not a gate and it does not block anything. It
 just means the report is the only claim there is, which is what it was on
 2026-08-25 when three executors in a row shipped correct code with a
 verification nobody had run.>
+
+## QA
+<A browser or deployed-build check: QA is handed one string that only the new build carries (a commit sha, or a marker in the bundle) and FAILS if it is not there. A 200 alone does not prove the new build.>
+
+## Reviewing PRs
+<One detached checkout per PR (`git worktree add --detach <dir> <ref>`); never review inside the executor's own worktree.>
 
 ## Mechanism
 <...and, if this task should run under a framework the directory does not

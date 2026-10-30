@@ -88,6 +88,17 @@ func (l *lch) subagentModelReceiptSource() string {
 // brainGuardOn is `_brain_guard_on`: it applies AND it is on disk.
 func (l *lch) brainGuardOn() bool { return l.brainGuardApplies() && l.brainGuardPresent() }
 
+// pluginReviewReceipt is THE PLUGIN REVIEW SKILLS THE CLOSING NAMED, keyed by task 1: done-invoker refuses a done
+// report with no evidence that each ran.
+func (l *lch) pluginReviewReceipt(dir string) {
+	sk := pluginReviewSkillsNamed(l.reviewMode(), l.env("HW_REVIEW_BASE_REF"), l.checksGateApplies(), l.pluginsDeclared())
+	if len(sk) == 0 { // # MUTATION-ANCHOR: 1150-G07
+		return
+	}
+	l.receiptInto(dir, "plugin_review_t1", strings.Join(reviewSkillsQualified(l.pluginsDeclared()), ","),
+		"brief plugins: and review: in "+l.brief+" at dispatch — done-invoker proves each skill from the transcript, or takes a review-skip: line")
+}
+
 // checksGateApplies is `_checks_gate_applies`: a build leaves checks.md.
 func (l *lch) checksGateApplies() bool {
 	switch l.briefKindForClose() {
@@ -609,6 +620,7 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		l.receiptInto(dir, "checks_required_t1", "required",
 			"kind build (declared or undeclared) at dispatch — done-invoker requires $HW_ARTIFACTS/checks.md")
 	}
+	l.pluginReviewReceipt(dir)
 	if l.reportToChosen {
 		l.receiptInto(dir, "report_route",
 			invoker+" — chosen by --report-to (lane postcondition deliberately overridden)",

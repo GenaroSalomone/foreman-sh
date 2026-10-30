@@ -174,6 +174,9 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 		a.receiptInto(s.rundir, "checks_required_t"+nextSeq, "required",
 			"kind build (declared or undeclared) at hw next — done-invoker requires $HW_ARTIFACTS/checks.md")
 	}
+	if s.brief != "" {
+		a.nextPluginReviewReceipt(s.rundir, "plugin_review_t"+nextSeq, s.brief)
+	}
 	// THE REVIEW THE NEW BRIEF CHOSE, keyed by task like the boundary above.
 	if s.brief != "" {
 		a.nextReviewReceipt(s.rundir, "review_t"+nextSeq, s.brief)

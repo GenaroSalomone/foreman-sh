@@ -2,11 +2,10 @@ package invokers
 
 import (
 	"encoding/json"
-	"io"
-	"net/http"
 	"os"
 	"strings"
-	"time"
+
+	"hwcore/internal/engramhealth"
 )
 
 // engramServeURL is engram_serve_url.
@@ -27,20 +26,9 @@ func (c *Ctx) engramStoreDir() string {
 	return c.get("HOME") + "/.engram"
 }
 
-// curlGet is `curl -sf -m <seconds> url`: the body, ok false on a transport
-// error or an HTTP status of 400 and over.
-func curlGet(url string, seconds int) (string, bool) {
-	cl := &http.Client{Timeout: time.Duration(seconds) * time.Second}
-	resp, err := cl.Get(url)
-	if err != nil {
-		return "", false
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
-	if err != nil || resp.StatusCode >= 400 {
-		return "", false
-	}
-	return string(b), true
+// engramGet is `curl -sf` of the serve under the shared budget (HW_ENGRAM_HEALTH_TIMEOUT, default 10 s) and its one retry.
+func (c *Ctx) engramGet(url string) engramhealth.Result {
+	return engramhealth.Get(url, engramhealth.Budget(c.get("HW_ENGRAM_HEALTH_TIMEOUT")))
 }
 
 // engramVerdict is engram_serve_verdict: one line, and 0 this store, 2 another
@@ -51,10 +39,11 @@ func (c *Ctx) engramVerdict(url string) (string, int) {
 	if b, err := os.ReadFile(dir + "/.instance-id"); err == nil {
 		want = strings.Join(strings.Fields(string(b)), "")
 	}
-	health, ok := curlGet(url+"/health", 3)
-	if !ok {
-		return "no engram serve answers at " + url, 3
+	probe := c.engramGet(url + "/health")
+	if !probe.OK {
+		return engramhealth.Refusal(url, probe), 3
 	}
+	health := probe.Body
 	got := ""
 	var h map[string]any
 	if json.Unmarshal([]byte(health), &h) == nil {
@@ -75,13 +64,13 @@ func (c *Ctx) engramVerdict(url string) (string, int) {
 
 // engramObservationProject is engram_observation_project: the project of a live
 // observation, or "".
-func engramObservationProject(id, url string) string {
-	body, ok := curlGet(url+"/observations/"+id, 3)
-	if !ok {
+func (c *Ctx) engramObservationProject(id, url string) string {
+	body := c.engramGet(url + "/observations/" + id)
+	if !body.OK {
 		return ""
 	}
 	var o map[string]any
-	if json.Unmarshal([]byte(body), &o) != nil {
+	if json.Unmarshal([]byte(body.Body), &o) != nil {
 		return ""
 	}
 	if v, ok := o["project"]; ok && v != nil && v != false {

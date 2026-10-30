@@ -106,3 +106,11 @@ if "touched_budget_seconds" in existing:
 pathlib.Path(out_path).write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
 print(f"wrote {out_path}: {len(files)} files classified, threshold {threshold}s")
 PY
+
+# THE MEASUREMENT IS JUDGED WHERE IT IS MADE (el-gate-explica-su-rojo, S3; retros 2026-10-16): a subject measured over JOB_MAX, or a
+# suite estimate over WALL_MAX, used to turn red at the NEXT fast gate run, minutes later and in someone else's commit. setup/test-budget-gate
+# reads the manifest this script has just written and says the same thing now. A fixture without the gate asks nothing, as in test-hw.
+if [ -f "$HERE/test-budget-gate" ]; then
+  ceilings="$HERE/suite-data/test-budget-ceilings.tsv"; [ -f "$ceilings" ] || ceilings=""
+  python3 "$HERE/test-budget-gate" "$OUT" "$ceilings" >&2 || exit 1  # MUTATION-ANCHOR: 131-M03
+fi

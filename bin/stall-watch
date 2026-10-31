@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# stall-watch <run-state-dir> <turn-count> <what-it-waits-on>
+#
+# THE TIMER FOR AN EXECUTOR THAT ENDED ITS TURN LEGALLY AND WENT QUIET: waiting on a background child, on a reply to its ask/challenge, or on
+# a human-boundary. `hw executor-turn-end` (core/t3_turnend.go) starts one, detached, at each such turn end; nobody else wakes after N
+# minutes, because nobody polls (2026-10-29: a product executor sat 17 h behind an orphaned hand-made lock, `hw status` said `working`).
+#
+# It sleeps HW_STALL_POLL (30 s) at a time and ends silently when the wait is over: a NEW turn (the `turns` count moved), the
+# task reported (`done`), or the pane gone. Still the same turn after HW_STALL_MIN (20) minutes (HW_STALL_AFTER_SEC overrides, for
+# the subject that holds this file, tests/1141): it writes `<run-state-dir>/stalled` (`<epoch> <turns>`: `hw status` shows
+# `STALLED since HH:MM`; the next turn end removes it), one line in ~/.cache/hw/stall-alerts.log, and, with HW_INVOKER_PANE set,
+# `channel-send --report`s the pane. ONE alert per stall: the marker names the turn it alerted for, and a later watcher of the
+# same turn finds it and stays quiet. A long legitimate wait (a heavy run, an unanswered ask) alerts too: the message says to look, not that it is dead.
+set -u
+
+STATE="${1:-}"; TURNS="${2:-}"; WHAT="${3:-a legal wait}"
+[ -d "$STATE" ] && [ -n "$TURNS" ] || exit 0
+
+D="${HW_STALL_DIR:-$HOME/.cache/hw}"
+ALERTS="$D/stall-alerts.log"
+POLL="${HW_STALL_POLL:-30}"
+LIMIT="${HW_STALL_AFTER_SEC:-$(( ${HW_STALL_MIN:-20} * 60 ))}"
+BIN="$(cd -P "$(dirname "$0")" 2>/dev/null && pwd)"
+now() { date +%s; }
+hhmm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || printf '?'; }  # BSD, then GNU
+cur_turns() { [ ! -r "$STATE/turns" ] || tr -dc '0-9' < "$STATE/turns"; }
+reported() {  # `done` in the current task's dir (the run dir, or t<N> from task 2 on), and no `reopened` beside it
+  local n="" dir="$STATE"
+  [ ! -r "$STATE/task" ] || n="$(tr -dc '0-9' < "$STATE/task")"
+  case "$n" in ""|0|1) ;; *) dir="$STATE/t$n" ;; esac
+  [ -e "$dir/done" ] && [ ! -e "$dir/reopened" ]
+}
+pane_alive() { [ -z "${HERDR_PANE_ID:-}" ] || herdr agent get "$HERDR_PANE_ID" >/dev/null 2>&1; }
+
+mkdir -p "$D" 2>/dev/null
+start="$(now)"
+while :; do
+  sleep "$POLL" & wait $!
+  [ "$(cur_turns)" = "$TURNS" ] || exit 0
+  reported && exit 0
+  t="$(now)"
+  [ $((t - start)) -ge "$LIMIT" ] || continue
+  pane_alive || exit 0
+  # the marker is the claim: noclobber makes exactly one of several watchers of one stall win it. A marker of another turn is stale.
+  # A `cut` that failed prints nothing, the same bytes as a marker of another turn: it reads as stale and goes, and the claim below
+  # is made again. The direction is the safe one for a watcher, one duplicate alert at worst and never a stall left unsaid.
+  [ ! -e "$STATE/stalled" ] || [ "$(cut -d' ' -f2 "$STATE/stalled" 2>/dev/null)" = "$TURNS" ] || rm -f "$STATE/stalled"  # lint-shell: measured-elsewhere
+  ( set -C; printf '%s %s\n' "$start" "$TURNS" > "$STATE/stalled" ) 2>/dev/null || exit 0   # this stall was alerted
+  mins=$(( (t - start) / 60 ))
+  msg="stall: ${HW_PROJECT:-?}:${HW_TASK:-?} (pane ${HERDR_PANE_ID:-?}) ended its turn at $(hhmm "$start"), waiting on ${WHAT}, and has had no new turn for ${mins} min (HW_STALL_MIN=$((LIMIT / 60))). \`hw status\` shows it STALLED. It may be legitimate (a long heavy run, \`setup/heavy --status\`; an ask you have not answered) or stuck (an orphaned lock, a stopped holder): look at the pane, then rule it, or \`hw unstick\`/\`hw done\` it."
+  printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$msg" >> "$ALERTS"
+  [ -n "${HW_INVOKER_PANE:-}" ] || exit 0
+  cs="${HW_STALL_CHANNEL_SEND:-$BIN/channel-send}"
+  rc=0; "$cs" --report herdr "$HW_INVOKER_PANE" - "$msg" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 0 ] || printf '%s stall-watch: the alert above did not reach pane %s (channel-send exit %s)\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$HW_INVOKER_PANE" "$rc" >> "$ALERTS"
+  exit 0
+done

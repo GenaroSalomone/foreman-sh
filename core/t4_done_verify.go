@@ -80,6 +80,53 @@ func doneCachedVerdict(common, tree, cmd string) (string, bool) {
 	return "", false
 }
 
+// doneGateCmd is the pinned line with the one flag test-hw has stripped: `--keep-going` changes when a red stops the
+// run, not what a green run means, so `HW_TEST_GATE=fast bash setup/test-hw --keep-going` is the fast gate.
+func doneGateCmd(cmd string) string {
+	if c := strings.TrimSuffix(cmd, " --keep-going"); c == doneFastGate || c == doneFullSuite {
+		return c
+	}
+	return cmd
+}
+
+// doneCmdVerdictDir is where setup/heavy leaves `<sha256 of the command>.<tree>` after a green run of that command
+// that left the working tree byte for byte as it found it.
+const doneCmdVerdictDir = "hw-cmd-verified"
+
+var doneReHeavy = regexp.MustCompile(`^setup/heavy((?: --tag \S+| --short| --when-idle| --max [0-9]+)*) -- (.+)$`)
+
+// doneHeavyInner is the command a pinned `setup/heavy [--tag T] -- <cmd…>` hands to the slot: what heavy records.
+func doneHeavyInner(cmd string) (string, bool) {
+	m := doneReHeavy.FindStringSubmatch(cmd)
+	if m == nil {
+		return "", false
+	}
+	return m[2], true
+}
+
+// doneCmdVerdict is the verdict file for this command on this tree: its mtime-free body is `verified_at=`.
+func doneCmdVerdict(common, tree, inner string) (string, bool) {
+	sum := sha256.Sum256([]byte(inner))
+	f := common + "/" + doneCmdVerdictDir + "/" + hex.EncodeToString(sum[:]) + "." + tree
+	if !readableFile(f) {
+		return "", false
+	}
+	lines, _ := doneFileLines(f)
+	hasTree, hasCmd := false, false
+	for _, l := range lines {
+		if l == "tree="+tree {
+			hasTree = true
+		}
+		if l == "cmd="+inner {
+			hasCmd = true
+		}
+	}
+	if !hasTree || !hasCmd {
+		return "", false
+	}
+	return doneFirstKey(f, "verified_at"), true
+}
+
 // doneDocsCoverScript is the subshell of _verify_docs_cover, run as bash runs it: the lib pre-push sources, asked
 // the same question.
 const doneDocsCoverScript = `wd="$1" common="$2" tree="$3" lib="$4"
@@ -159,7 +206,8 @@ func (d *doneRun) verifyShortcut(rundir, wd, pin string) bool {
 	if len(hits) != 1 {
 		return false
 	}
-	cmd := doneTrimSpace(hits[0])
+	pinned := doneTrimSpace(hits[0])
+	cmd := doneGateCmd(pinned)
 	treeOut, rc := doneGit(wd, "rev-parse", "--verify", "-q", "HEAD^{tree}")
 	if rc != 0 {
 		return false
@@ -172,6 +220,15 @@ func (d *doneRun) verifyShortcut(rundir, wd, pin string) bool {
 	common := bashSub(commonOut)
 	if !strings.HasPrefix(common, "/") {
 		common = wd + "/" + common
+	}
+	if inner, ok := doneHeavyInner(cmd); ok {
+		if when, ok := doneCmdVerdict(common, tree, inner); ok {
+			d.receiptInto(rundir, "verify_run",
+				"cached — green run of the same command on tree "+tree+" from "+when,
+				common+"/"+doneCmdVerdictDir+"/ names this command and HEAD's tree "+tree+" (setup/heavy wrote it after a green run that left the tree as it found it), "+wd+" is clean; "+pinned+" was not re-run")
+			d.ok("VERIFIED (cached)  green run of the same command on tree " + tree + " from " + when + "  " + pinned)
+			return true
+		}
 	}
 	hit, ok := doneCachedVerdict(common, tree, cmd)
 	if !ok {
@@ -189,8 +246,8 @@ func (d *doneRun) verifyShortcut(rundir, wd, pin string) bool {
 		vt, vc, vp := parts[0], parts[1], strings.TrimRight(parts[2], "\n")
 		d.receiptInto(rundir, "verify_run",
 			"cached — green full verdict for tree "+vt+" ("+vc+"); differs only in lane docs: "+vp,
-			common+"/hw-push-verified/"+vt+" is a full green verdict; HEAD's tree "+tree+" differs from it only in lane documentation (docs_only_diff_covers), "+wd+" is clean; "+cmd+" was not re-run")
-		d.ok("VERIFIED (cached)  green full verdict for tree " + vt + " (" + vc + "); differs only in lane docs: " + vp + "  " + cmd)
+			common+"/hw-push-verified/"+vt+" is a full green verdict; HEAD's tree "+tree+" differs from it only in lane documentation (docs_only_diff_covers), "+wd+" is clean; "+pinned+" was not re-run")
+		d.ok("VERIFIED (cached)  green full verdict for tree " + vt + " (" + vc + "); differs only in lane docs: " + vp + "  " + pinned)
 		return true
 	}
 	hTree, hWhen := hit, ""
@@ -202,8 +259,8 @@ func (d *doneRun) verifyShortcut(rundir, wd, pin string) bool {
 	}
 	d.receiptInto(rundir, "verify_run",
 		"cached — green verdict for tree "+hTree+" from "+hWhen,
-		common+"/hw-push-verified/"+hTree+"[.fast] named HEAD's tree, "+wd+" is clean; "+cmd+" was not re-run")
-	d.ok("VERIFIED (cached)  green verdict for tree " + hTree + " from " + hWhen + "  " + cmd)
+		common+"/hw-push-verified/"+hTree+"[.fast] named HEAD's tree, "+wd+" is clean; "+pinned+" was not re-run")
+	d.ok("VERIFIED (cached)  green verdict for tree " + hTree + " from " + hWhen + "  " + pinned)
 	return true
 }
 

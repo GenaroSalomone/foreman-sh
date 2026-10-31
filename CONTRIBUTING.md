@@ -12,29 +12,35 @@ A vulnerability is not an issue: see [`SECURITY.md`](SECURITY.md).
 
 ## Changing something
 
-1. Open a pull request with the test that fails without your change. A
-   behaviour fix ships its test; a refactor changes no expectation.
-2. Run the fast gate before you send it:
+1. Clone the repository (the [README](README.md#2-install) has the command)
+   and run the fast gate once in it, to see it green before you start:
 
    ```sh
    HW_TEST_GATE=fast bash setup/test-hw
    ```
 
-   CI runs the same gate on Linux and macOS. On a CI host (`CI=true` or
-   `GITHUB_ACTIONS=true`) every per-subject time budget of the fast gate is
-   multiplied by 3, and the runner prints that it is: a shared runner cannot
-   judge wall-clock time. `HW_TEST_BUDGET_FACTOR=<n>` sets the factor
-   yourself; the budgets themselves are in `setup/suite-data/test-budgets.json`.
-   A subject that hangs is cut at its budget times `HW_TEST_TIMEOUT_FACTOR`
-   (default 5, floor `HW_TEST_TIMEOUT_FLOOR` seconds, default 60; 0 turns it
-   off): only its process group is killed and the run names it as red. The
-   ceiling is spent in loaded seconds: on a machine with more load than cpus a
-   second of wall counts less, up to `HW_TEST_TIMEOUT_LOAD_MAX` (default 4)
-   times less, so a healthy subject on a busy machine is not cut.
-3. A change to what a guard allows or refuses comes with a vector in
+2. Open a pull request with the test that fails without your change. A
+   behaviour fix ships its test; a refactor changes no expectation.
+3. Run the fast gate again before you send it. CI runs the same gate on Linux
+   and macOS.
+4. A change to what a guard allows or refuses comes with a vector in
    `setup/guards/` for the new case.
-4. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
+5. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
    and carry no AI attribution.
+
+## How the gate measures time
+
+On a CI host (`CI=true` or `GITHUB_ACTIONS=true`) every per-subject time budget
+of the fast gate is multiplied by 3, and the runner prints that it is: a shared
+runner cannot judge wall-clock time. `HW_TEST_BUDGET_FACTOR=<n>` sets the factor
+yourself; the budgets themselves are in `setup/suite-data/test-budgets.json`.
+
+A subject that hangs is cut at its budget times `HW_TEST_TIMEOUT_FACTOR`
+(default 5, floor `HW_TEST_TIMEOUT_FLOOR` seconds, default 60; 0 turns it
+off): only its process group is killed and the run names it as red. The
+ceiling is spent in loaded seconds: on a machine with more load than cpus a
+second of wall counts less, up to `HW_TEST_TIMEOUT_LOAD_MAX` (default 4)
+times less, so a healthy subject on a busy machine is not cut.
 
 ## The git hooks
 

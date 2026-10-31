@@ -90,7 +90,7 @@ func (l *lch) piProjectSkillsPrepare() bool {
 // LOAD-BEARING AS THE EXPORT: base_env copies this process, so a brainer that carries one must not hand it to another vendor.
 func (l *lch) piExportEnv(cwd string) {
 	if l.agent != "pi" {
-		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "PI_SUBAGENT_EXTRA_AGENT_DIRS")
+		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS")
 		return
 	}
 	if l.brainGuardOn() {
@@ -115,6 +115,11 @@ func (l *lch) piExportEnv(cwd string) {
 	} else {
 		l.unsetEnv("PI_SUBAGENT_EXTRA_AGENT_DIRS")
 	}
+	if dirs := l.piClaudeAgentDirs(cwd); dirs != "" {
+		l.setEnv("HW_PI_CLAUDE_AGENT_DIRS", dirs)
+	} else {
+		l.unsetEnv("HW_PI_CLAUDE_AGENT_DIRS")
+	}
 }
 
 // piHwEnvFlags is the `pi` block of _hw_env: the same, in the `--env K=V` form of a pane split (`--here`).
@@ -135,6 +140,9 @@ func (l *lch) piHwEnvFlags(cwd string) string {
 	s += " --env HW_PI_SUBAGENTS_DIR=" + l.piSubagentsDir()
 	if dirs := l.piAgentDirs(cwd); dirs != "" {
 		s += " --env PI_SUBAGENT_EXTRA_AGENT_DIRS=" + dirs
+	}
+	if dirs := l.piClaudeAgentDirs(cwd); dirs != "" {
+		s += " --env HW_PI_CLAUDE_AGENT_DIRS=" + dirs
 	}
 	return s
 }
@@ -323,39 +331,37 @@ func (l *lch) piPromptApplies(specialists string) bool {
 	return vendor == "pi" && (specialists != "" || l.piOpsProcedureFile() != "")
 }
 
-// piSpecialistNote is _pi_specialist_note: pi-subagents does not read `.claude/agents`, so the specialists are told apart
-// into the ones pi can delegate to (the worktree tracks a pi copy and hw made it reachable) and the ones it cannot, and
-// ops-investigator, whose job is a PROCEDURE, travels as text.
+// piSpecialistNote is _pi_specialist_note: pi-subagents does not read `.claude/agents`, so hw-executor.ts registers the
+// specialists with it at session start and the note says how they are called and what differs from Claude. The ones a
+// tracked `.pi/agents` copy provides keep their own rule (the copy pins a model this machine cannot run); with no
+// pi-subagents the specialists are not delegable. ops-investigator, whose job is a PROCEDURE, travels as text.
 func (l *lch) piSpecialistNote(list string) string {
 	proc := l.piOpsProcedureFile()
 	deleg := l.piDelegableAgents(l.workdir(), list)
-	var rest []string
-	for _, n := range strings.Fields(list) {
-		if !has(strings.Fields(deleg), n) {
-			rest = append(rest, n)
-		}
-	}
+	reg := l.piRegisteredAgents(l.workdir(), list)
 	model := orDefaultStr(l.env("HW_PI_ASKED_MODEL"), l.model)
 	var b strings.Builder
-	if deleg != "" {
+	if deleg != "" || reg != "" {
 		b.WriteString("This executor is pi. The specialist subagents of this lane (" + list + ") are Claude Code agents, and pi-subagents does\n" +
-			"not read `.claude/agents`. DELEGABLE: " + deleg + " — this repo tracks a pi copy of each in `.pi/agents`, and hw has pointed\n" +
-			"pi-subagents at this worktree's. Call the `subagent` tool with agent \"<name>\" and ALWAYS pass `model: \"" + orDefaultStr(model, "the opencode-go model you run on") + "\"`:\n" +
-			"their files pin an openai-codex model this machine's login cannot refresh (measured: a 401 and a failed mission),\n" +
-			"so a call without `model` fails. Your guards travel with each child (a child's write into a protected tree or read of\n" +
-			"a secret path is refused like yours). Remote access is still NOT granted by delegating: ops-worker reaches remote hosts over\n" +
-			"ssh, and runs only what your brief authorizes (destination and operation, quoted from the operator\n" +
-			"with its requested_by line); otherwise stay local and report it blocked.")
-		if len(rest) > 0 {
-			b.WriteString("\nNOT delegable (only in `.claude/agents`): " + strings.Join(rest, " ") + " — do their job inline with your own tools, or report it blocked.")
+			"not read `.claude/agents`: hw-executor.ts registers them with it when your session starts, so you CAN delegate. Call the\n" +
+			"`subagent` tool with agent \"<name>\" (the `name:` in the file's frontmatter; the tool's list action shows the names). A\n" +
+			"specialist runs on YOUR model, not the `model:` its file names (a Claude alias such as sonnet is not a pi model), with pi's\n" +
+			"counterparts of the tools its file lists (read, grep, find, bash, edit, write); Task, WebFetch, WebSearch and MCP tools\n" +
+			"have none and are dropped, so what it needed them for it cannot do. Your guards travel with each child (a child's write\n" +
+			"into a protected tree or read of a secret path is refused like yours). Remote access is still NOT granted by delegating:\n" +
+			"a specialist that reaches remote hosts over ssh runs only what your brief authorizes (destination and operation, quoted\n" +
+			"from the operator with its requested_by line); otherwise stay local and report it blocked.")
+		if deleg != "" {
+			b.WriteString("\n" + deleg + " also has a pi copy in `.pi/agents`, which pi-subagents loads by itself: its file pins an openai-codex model this\n" +
+				"machine's login cannot refresh (measured: a 401 and a failed mission), so a call for it ALWAYS passes `model: \"" + orDefaultStr(model, "the opencode-go model you run on") + "\"`.")
 		}
 	} else {
 		shown := ""
 		if list != "" {
 			shown = " (" + list + ")"
 		}
-		b.WriteString("This executor is pi. The specialist subagents of this lane" + shown + " are Claude Code agents, and pi-subagents does\n" +
-			"not discover `.claude/agents`: you CANNOT delegate to them, so do not try, and do not report one of them\n" +
+		b.WriteString("This executor is pi. The specialist subagents of this lane" + shown + " are Claude Code agents, and pi-subagents is not\n" +
+			"loaded in this executor, so you CANNOT delegate to them: do not try, and do not report one of them\n" +
 			"missing as a blocker. If one of their jobs is yours, do it inline with your own tools, or report it blocked.")
 	}
 	if proc == "" {

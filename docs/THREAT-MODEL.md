@@ -5,6 +5,19 @@ harness assumes about the machine it runs on. The limitations register,
 [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md), carries the measured detail
 (L5 for the guards).
 
+## In short
+
+- **Assumed:** one operator, one machine, one OS account, and agents that are
+  cooperative but fallible, not adversarial.
+- **Stopped:** a brainer's write into a protected repository, and an
+  executor's reach into the brain, by guards that are a tripwire. On macOS,
+  `--sandbox` adds a kernel boundary around one executor's writes and control
+  sockets.
+- **Not stopped:** a path computed at run time, an executor's writes outside the
+  brain, and anything a Codex executor does: it has no guard.
+- **Not a goal:** containing an agent that works to get around the guards. For a
+  hard boundary, see the last section.
+
 ## What the harness assumes
 
 - One operator, one machine, one OS account. Every brainer and executor runs

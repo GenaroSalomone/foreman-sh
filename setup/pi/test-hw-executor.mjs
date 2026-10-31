@@ -12,6 +12,9 @@
 //                     to point at a tree whose bin/hw is a stub)
 //   runtime           pi-runtime.json, pi-inputs.jsonl, the child that is not the root
 //   fallback          the quota fallback, and the pure functions behind it
+//   specialists       the lane's `.claude/agents` registered with pi-subagents (HW_PI_CLAUDE_AGENT_DIRS):
+//                     tools mapped, model left to the executor, a `.pi/agents` copy left alone
+//                     (needs HW_PI_SUBAGENTS_DIR to hold a stub src/agents/frontmatter.js)
 const [adapter, mode] = process.argv.slice(2);
 const mod = await import(adapter);
 // One fake ExtensionAPI per loaded instance: pi-subagents' child loads the extension again, so a
@@ -376,6 +379,29 @@ if (mode === "guard") {
   ok(r === undefined, "a child's turn end is not handed to hw");
   const g = await call("tool_call", { type: "tool_call", toolCallId: "t", toolName: "mcp__engram__mem_save", input: {} }, ctx);
   ok(g?.block === true, "the guard still applies in a child");
+} else if (mode === "specialists") {
+  const { readFileSync, existsSync } = await import("node:fs");
+  const regs = [], disposed = [];
+  pi.events = { emit(name, req) {
+    regs.push({ name, req });
+    req.result = req.name === "collides" ? { ok: false, error: new Error("Runtime agent collides") } : { ok: true, registration: { dispose() { disposed.push(req.name); } } };
+  } };
+  const dir = `${process.env.HW_WORKDIR}/.hw/${process.env.HW_RUN}`;
+  const ctx = fakeCtx({ file: "/s/root.jsonl" });
+  await call("session_start", { type: "session_start", reason: "startup" }, ctx);
+  const by = Object.fromEntries(regs.map((r) => [r.req.name, r.req.definition]));
+  ok(regs.length > 0 && regs.every((r) => r.name === "pi-subagents:runtime-agent-register:v1" && r.req.version === 1), "each specialist goes through pi-subagents' runtime-agent event, version 1");
+  ok(JSON.stringify(Object.keys(by).sort()) === JSON.stringify(["collides", "plain", "qa-tester"]), "the frontmatter name is the agent's name; jd-*, a no-description file and a name a .pi/agents copy provides are not registered");
+  ok(JSON.stringify(by["qa-tester"]?.tools) === JSON.stringify(["read", "grep", "find", "bash"]), "Claude's Read, Grep, Glob, Bash become pi's read, grep, find, bash; Task and mcp__* are dropped");
+  ok(by["qa-tester"] && !("model" in by["qa-tester"]), "the file's model: sonnet is not carried: pi would answer 'Unknown subagent model'");
+  ok(by["qa-tester"]?.systemPrompt.startsWith("You are the QA runner") && !/^---/.test(by["qa-tester"].systemPrompt), "the body of the file is the prompt, the frontmatter is not");
+  ok(by["qa-tester"]?.defaultAsync === false, "foreground by default: a background child needs a host package this pi may not have");
+  ok(by.plain && !("tools" in by.plain), "a file with no tools: line keeps every tool, as in Claude");
+  const row = (existsSync(`${dir}/receipt.jsonl`) ? readFileSync(`${dir}/receipt.jsonl`, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((x) => x.key === "pi_specialists");
+  ok(row && /registered plain qa-tester/.test(row.value) && /Task/.test(row.value) && /mcp__engram__mem_save/.test(row.value), "the receipt row names what was registered and which tools had no pi counterpart");
+  ok(row && /collides \(Runtime agent collides\)/.test(row.value) && /copy \(a \.pi\/agents copy provides it\)/.test(row.value), "a refusal by pi-subagents and a skipped copy are in the row, not silent");
+  await call("session_shutdown", { type: "session_shutdown" }, ctx);
+  ok(disposed.includes("qa-tester") && disposed.includes("plain"), "the registrations are disposed with the session");
 } else {
   console.error(`unknown mode ${mode}`); process.exit(2);
 }

@@ -318,7 +318,7 @@ FAST_TOTAL="${#FILES[@]}"
 # that errors: each is the WHOLE fast gate, said once, never a smaller one.
 #
 # A SELECTED RUN IS NOT THE FAST GATE, so it caches no fast verdict: pre-push
-# accepts `<tree>.fast` for task/* pushes, and that file has to mean all 104.
+# accepts `<tree>.fast` (any push, and the release cut), and that file has to mean all 104.
 # Full runs ignore HW_TEST_CHANGED; the floor at push does not move.
 GATE_SELECTED=0; GATE_GUARDS=0; GATE_CHANGED=""
 # the changed paths of this gate, one per line, when it knows them: what narrows the in-process partitions (the job table below)
@@ -458,7 +458,10 @@ fi
 # verdict for every ref, `task/*` included, and the brainer's on the merge tree.
 # The merge tree is the one that reaches main, so the executor's full run bought
 # nothing the brainer's did not. pre-push now accepts, for `refs/heads/task/*`
-# ONLY, a fast-gate verdict of the exact tree; main still needs a full one.
+# ONLY, a fast-gate verdict of the exact tree; main still needed a full one.
+# 2026-10-30: main takes it too, and so does the release cut (the Linux full suite took 78-112 min and the only users are on macOS), so
+# the verdict names the implementation it measured (`impl=go|bash`, from HW_IMPL, go by default: shadow and anything else is the Go default
+# too) exactly as a full one does, and no reader opens it for the other.
 #
 # SAME CACHE, OTHER NAME: `<tree>.fast`, never `<tree>`. Every full-verdict
 # reader in pre-push reads `<tree>` or skips any name that is not 40 hex, so a
@@ -537,6 +540,7 @@ _fast_verdict_write() { # <headline>
        printf 'tree=%s\n' "$FAST_VERDICT_TREE"
        printf 'source=%s\n' "$FAST_VERDICT_SOURCE"
        printf 'gate=fast\n'
+       if [ "${HW_IMPL:-go}" = bash ]; then printf 'impl=bash\n'; else printf 'impl=go\n'; fi
        printf 'verified_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
        printf 'headline=%s\n' "$1"
        printf 'host=%s\n' "$(hostname)"
@@ -552,19 +556,19 @@ _fast_verdict_write() { # <headline>
         return 0
       fi
       rm -f "$tmp" 2>/dev/null || true
-      printf 'runner: could not hand the fast-gate verdict to the snapshot check at %s — a task/* push will ask for one\n' "$TEST_HW_FAST_VERDICT_HANDOFF" >&2
+      printf 'runner: could not hand the fast-gate verdict to the snapshot check at %s — a push will ask for one\n' "$TEST_HW_FAST_VERDICT_HANDOFF" >&2
       return 0
     fi
     if mv -f "$tmp" "$f" 2>/dev/null; then
-      printf 'runner: fast-gate verdict cached for tree %s (gate=fast) — pre-push accepts it for refs/heads/task/* only, never main\n' \
+      printf 'runner: fast-gate verdict cached for tree %s (gate=fast) — pre-push and the release cut accept it for the exact tree\n' \
         "$FAST_VERDICT_TREE" >&2
       return 0
     fi
     rm -f "$tmp" 2>/dev/null || true
-    printf 'runner: could not write the fast-gate verdict at %s — a task/* push will ask for one\n' "$f" >&2
+    printf 'runner: could not write the fast-gate verdict at %s — a push will ask for one\n' "$f" >&2
   else
     rm -f "$tmp" 2>/dev/null || true
-    printf 'runner: could not write the fast-gate verdict at %s — a task/* push will ask for one\n' "$f" >&2
+    printf 'runner: could not write the fast-gate verdict at %s — a push will ask for one\n' "$f" >&2
   fi
 }
 if [ "$HW_TEST_GATE" = fast ]; then _fast_verdict_prepare; fi
@@ -1719,7 +1723,18 @@ _gocache_trim_at_exit() {
   gocache_trim "$cache" "${HW_TEST_GOCACHE_CAP_MB:-4096}" "$POOL_DIR" ${old:+"$old"}
 }
 WITNESS_PID=""
-trap 'rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _gocache_trim_at_exit; _queue_release; _gate_release' EXIT  # MUTATION-ANCHOR: 1004-M07
+# _reap_job_groups — on ANY exit (a signal, a `set -e` death, a normal end), KILL what a job left in its group: a job still running, or
+# one frozen by the memory guard whose suite is over and which nobody would ever resume. The pid of a job that ended is not signalled
+# alone: only its group, which is empty by then unless something leaked.
+JOB_PID=()
+_reap_job_groups() {
+  local p
+  for p in ${JOB_PID[@]+"${JOB_PID[@]}"}; do
+    [ "$p" -gt 1 ] 2>/dev/null || continue
+    kill -KILL -- "-$p" 2>/dev/null || true
+  done
+}
+trap '_reap_job_groups; rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _gocache_trim_at_exit; _queue_release; _gate_release' EXIT  # MUTATION-ANCHOR: 1004-M07
 
 # ── THE PANE A FULL RUN IS STARTED FROM IS A WITNESS, NOT A TARGET ──────────
 #
@@ -1954,6 +1969,36 @@ _kill_tree() {
   kill -TERM "$pid" 2>/dev/null || true
 }
 
+# _tree_pids <pid> — the pid and every descendant it still has, walked by ppid BEFORE anything dies (a killed parent reparents its
+# children to pid 1 and the walk can no longer find them).
+_tree_pids() {
+  local pid="$1" child
+  printf '%s\n' "$pid"
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do _tree_pids "$child"; done
+}
+
+# _kill_job <pid> — end one job and EVERYTHING it started, stopped or not. Each job runs in its own process group (_launch_job), so the
+# group reaches what ppid does not (a grandchild whose parent already exited); the ppid walk reaches what left the group (a child that
+# ran under `set -m`). TERM first so a subject's own EXIT trap can clean its $TMP — and CONT with it, because a TERM left pending on a
+# process the one-test-at-a-time guard SIGSTOPped is never delivered: that is how 72 stopped orphans outlived their suites for days
+# (2026-10-30). A subject runs under fg_capped in a session of its own, so every pid of the tree is also KILLed as a group of its own.
+# Whatever still lives after HW_TEST_KILL_GRACE seconds (default 3) gets KILL, which no state defers.
+_kill_job() {
+  local pid="$1" p pids n=0 grace="${HW_TEST_KILL_GRACE:-3}"
+  [ "$pid" -gt 1 ] 2>/dev/null || return 0
+  pids="$(_tree_pids "$pid")"
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  for p in $pids; do kill -TERM "$p" 2>/dev/null || true; done
+  kill -CONT -- "-$pid" 2>/dev/null || true
+  for p in $pids; do kill -CONT "$p" 2>/dev/null || true; done
+  while [ "$n" -lt $((grace * 10)) ]; do
+    kill -0 "$pid" 2>/dev/null || { kill -0 -- "-$pid" 2>/dev/null || break; }
+    sleep 0.1; n=$((n + 1))
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || true  # MUTATION-ANCHOR: 1134-M01
+  for p in $pids; do kill -KILL -- "-$p" 2>/dev/null || true; kill -KILL "$p" 2>/dev/null || true; done  # MUTATION-ANCHOR-END: 1134-M01
+}
+
 ACTIVE=""; RUNNING=0; ABORTED=0; NEXT_EMIT=0
 # THE EXCLUSIVE JOBS ARE COUNTED, not searched for on every top-up: while any of
 # them is still owed, NOTHING else may start, so this counter is the gate.
@@ -2051,8 +2096,12 @@ _launch_job() {
   fi
   [ -z "$TIMINGS" ] || JOB_LAUNCH_AT[$idx]="$(date +%s)"
   JOB_SLOT_SEEN[$idx]="${JOB_SLOT[$idx]:-}"
+  # ITS OWN PROCESS GROUP (`set -m` makes the background subshell a group leader): a signal, an abort or the exit trap can then end the
+  # job's whole group, which a shared group (the runner's own) never allowed without taking the runner with it.
+  set -m
   _run_job "$idx" &
   JOB_PID[$idx]=$!
+  set +m
   JOB_LAUNCHED[$idx]=1
   if [ "${JOB_LANE[$idx]}" != exclusive ]; then NONEXCL_LEFT=$((NONEXCL_LEFT - 1)); fi
   ACTIVE="$ACTIVE $idx"
@@ -2169,7 +2218,7 @@ _top_up() {
 _stop_everything() {
   local idx
   ABORTED=1
-  for idx in $ACTIVE; do _kill_tree "${JOB_PID[$idx]}"; done
+  for idx in $ACTIVE; do _kill_job "${JOB_PID[$idx]}"; done
   for idx in $ACTIVE; do wait "${JOB_PID[$idx]}" 2>/dev/null || true; done
   ACTIVE=""
   _pool_release_all

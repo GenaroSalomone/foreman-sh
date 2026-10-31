@@ -42,12 +42,18 @@
 //      pi gives an mcp.json server precedence over a registered one of the same
 //      name, so the proxy cannot take its name — it takes its place instead.
 //
+//   6. THE LANE'S SPECIALISTS. pi-subagents reads no `.claude/agents`; hw names the
+//      ones the worktree carries (`HW_PI_CLAUDE_AGENT_DIRS`, PATH-style) and this
+//      registers each as a RUNTIME agent through pi-subagents' process-local event,
+//      translated in memory at session start (`claudeAgentDefinition`): nothing is
+//      copied or rewritten on disk.
+//
 // Inert outside an hw executor (HW_TASK/HW_RUN/HW_WORKDIR), except the guard,
 // which is policy for any session that loads this file.
 
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -720,6 +726,74 @@ function engramProxyServer(): Record<string, unknown> | null {
   };
 }
 
+// ── 6. the lane's specialists ───────────────────────────────────────────────
+// Claude's tool names → pi's. What pi has no counterpart for is dropped, and the drop is a receipt row: Task/Agent
+// (a child's children), WebFetch/WebSearch, TodoWrite and every mcp__* (a foreground child loads no ambient extension).
+const CLAUDE_TOOLS: Record<string, string> = {
+  read: "read", grep: "grep", glob: "find", bash: "bash", edit: "edit", multiedit: "edit", write: "write", ls: "ls",
+};
+// What hw's own specialist list leaves out (`_specialist_agents`): the framework and review agents.
+const NOT_SPECIALIST = /^(?:sdd-|speckit-|review-|jd-)/;
+
+export function mapClaudeTools(list: string[]): { tools: string[]; dropped: string[] } {
+  const tools: string[] = [], dropped: string[] = [];
+  for (const t of list) {
+    const to = CLAUDE_TOOLS[t.toLowerCase()];
+    if (!to) dropped.push(t);
+    else if (!tools.includes(to)) tools.push(to);
+  }
+  return { tools, dropped };
+}
+
+// A Claude agent file → pi-subagents' runtime definition. `parse` is pi-subagents' own frontmatter reader, so the
+// file is read the way a pi agent file is. `model` is left out on purpose: a Claude alias (sonnet, opus) is not a pi
+// model, and a definition without one follows the executor's. No `tools:` line means every tool, as in Claude.
+export function claudeAgentDefinition(content: string, parse: any) {
+  const { frontmatter: fm, body } = parse.parseFrontmatter(content);
+  if (!fm?.name || !fm?.description) return null;
+  const declared = parse.parseFrontmatterList(fm.tools);
+  const mapped = declared ? mapClaudeTools(declared) : { tools: undefined, dropped: [] as string[] };
+  return {
+    name: String(fm.name),
+    definition: { description: String(fm.description), systemPrompt: body, defaultAsync: false, ...(mapped.tools ? { tools: mapped.tools } : {}) },
+    dropped: mapped.dropped,
+  };
+}
+
+// Registers every specialist of HW_PI_CLAUDE_AGENT_DIRS and returns what it did, for the receipt. A name a `.pi/agents`
+// copy already provides (PI_SUBAGENT_EXTRA_AGENT_DIRS) is left to that copy.
+async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ registered: string[]; skipped: string[]; dropped: string[]; disposers: Array<() => void> }> {
+  const out = { registered: [] as string[], skipped: [] as string[], dropped: [] as string[], disposers: [] as Array<() => void> };
+  const dirs = (process.env.HW_PI_CLAUDE_AGENT_DIRS || "").split(":").filter(Boolean);
+  if (!dirs.length || typeof pi.events?.emit !== "function") return out;
+  const parse = await import(pathToFileURL(join(sub, "src", "agents", "frontmatter.js")).href);
+  const own = new Set<string>();
+  for (const d of (process.env.PI_SUBAGENT_EXTRA_AGENT_DIRS || "").split(":").filter(Boolean)) {
+    try { for (const f of readdirSync(d)) if (f.endsWith(".md")) own.add(f.slice(0, -3)); } catch { /* absent */ }
+  }
+  for (const d of dirs) {
+    let files: string[] = [];
+    try { files = readdirSync(d).filter((f) => f.endsWith(".md")).sort(); } catch { continue; }
+    for (const f of files) {
+      const base = f.slice(0, -3);
+      if (NOT_SPECIALIST.test(base)) continue;
+      try {
+        const def = claudeAgentDefinition(readFileSync(join(d, f), "utf8"), parse);
+        if (!def) { out.skipped.push(`${base} (no name/description)`); continue; }
+        if (own.has(base)) { out.skipped.push(`${def.name} (a .pi/agents copy provides it)`); continue; }
+        const req: any = { version: 1, name: def.name, definition: def.definition };
+        pi.events.emit("pi-subagents:runtime-agent-register:v1", req);
+        if (!req.result) { out.skipped.push(`${def.name} (pi-subagents did not answer)`); continue; }
+        if (!req.result.ok) { out.skipped.push(`${def.name} (${String(req.result.error?.message ?? req.result.error).slice(0, 80)})`); continue; }
+        out.registered.push(def.name);
+        out.disposers.push(() => req.result.registration?.dispose?.());
+        for (const t of def.dropped) if (!out.dropped.includes(t)) out.dropped.push(t);
+      } catch (e: any) { out.skipped.push(`${base} (${String(e?.message ?? e).slice(0, 80)})`); }
+    }
+  }
+  return out;
+}
+
 const ROOT_SESSION = Symbol.for("hw.pi.root-session");
 
 export default function (pi: any) {
@@ -761,6 +835,7 @@ export default function (pi: any) {
   // pi-subagents names its children in the environment (PI_SUBAGENT_CHILD=1), in-process or detached:
   // the case a process-wide flag cannot see, because a detached runner is another process.
   const MCP_FLAG = Symbol.for("hw.pi.mcp-registered");
+  const SPECIALISTS_FLAG = Symbol.for("hw.pi.specialists-registered");
   const subagentChild = process.env.PI_SUBAGENT_CHILD === "1";
   const server = engramProxyServer();
   if (server && typeof pi.registerMcpServer === "function" && !G[MCP_FLAG] && !subagentChild) {
@@ -833,11 +908,25 @@ export default function (pi: any) {
     } catch (e: any) {
       receiptRow("pi_child_guard", `NOT REGISTERED — ${String(e?.message ?? e).slice(0, 200)}`, "hw-executor.ts session_start");
     }
+    // The lane's `.claude/agents`, registered where pi-subagents is loaded and the guard travels with the children.
+    try {
+      const sub = process.env.HW_PI_SUBAGENTS_DIR
+        || join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "npm", "node_modules", "pi-subagents");
+      if (process.env.HW_PI_CLAUDE_AGENT_DIRS && G[Symbol.for("hw.pi.required-child")] && !G[SPECIALISTS_FLAG]) {
+        const r = await registerClaudeSpecialists(pi, sub);
+        G[SPECIALISTS_FLAG] = r.disposers;
+        receiptRow("pi_specialists", `registered ${r.registered.join(" ") || "none"}${r.skipped.length ? `; skipped ${r.skipped.join(", ")}` : ""}${r.dropped.length ? `; tools with no pi counterpart dropped: ${r.dropped.join(" ")}` : ""}`, "hw-executor.ts session_start");
+      }
+    } catch (e: any) {
+      receiptRow("pi_specialists", `NOT REGISTERED — ${String(e?.message ?? e).slice(0, 200)}`, "hw-executor.ts session_start");
+    }
   });
   pi.on("session_shutdown", () => {
     if (!isRoot) return; // a child's shutdown is not the process's
     try { G[Symbol.for("hw.pi.required-child")]?.dispose?.(); } catch { /* idempotent */ }
     G[Symbol.for("hw.pi.required-child")] = undefined;
+    for (const d of G[SPECIALISTS_FLAG] ?? []) { try { d(); } catch { /* idempotent */ } }
+    G[SPECIALISTS_FLAG] = undefined;
     G[MCP_FLAG] = undefined;
   });
 

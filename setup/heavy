@@ -26,8 +26,10 @@
 # (setup/build-core) does not queue a second time when it is already inside a slot or a short job.
 #
 # While it waits it says, once a minute on stderr, who holds each slot (tag, pid, elapsed) and your position.
-# It releases on exit and on INT/TERM (the command's process group is TERMed) and exits with the command's own
-# code (128+N for a signal). It removes only a lock whose owner file names its own pid.
+# It releases on exit and on INT/TERM and exits with the command's own code (128+N for a signal). It removes only a lock whose
+# owner file names its own pid. On INT/TERM the command's process group is TERMed and CONTinued (a TERM stays pending on a process the
+# one-test-at-a-time guard SIGSTOPped), then KILLed after HW_HEAVY_KILL_GRACE (3 s): nothing it started outlives it. When the command
+# ends by itself, whatever it left in its group is KILLed too (a leftover the guard stops later would have no one to resume it).
 #
 # A run that cannot make progress says so (2026-10-20: a release cut sat frozen 15 h, SIGSTOPped by the
 # `one-test-at-a-time` LaunchAgent, and nobody was told). This file only READS that guard's published numbers; it never
@@ -40,7 +42,7 @@
 #              `--status` shows `FROZEN since HH:MM` on the holder as soon as the watchdog has seen it frozen.
 #
 # OPT-IN: NOTHING HEAVY RUNS WHILE THE MAC IS IN USE (`--when-idle`, or HW_HEAVY_WHEN_IDLE=1). Never the default: the cut and run-suite.sh run
-# heavy work at background priority (taskpolicy -b) and never pause it (2026-10-26: the Linux full suite froze the machine its user was working on;
+# heavy work at background priority (taskpolicy -b; the FAST GATE at `nice -n 10` only: efficiency cores cost ~3.5x its CPU, measured on subject 103, 3.2 s vs 10.8 s, so its budgets read red under -b) and never pause it (2026-10-26: the Linux full suite froze the machine its user was working on;
 # who vetoed pausing the work). macOS only: a host without ioreg reads as idle, so nothing pauses there. The console's idle time is `ioreg -c IOHIDSystem` HIDIdleTime (ns).
 #   start      the command (and its place in the queue) waits until the console has been idle >= HW_HEAVY_IDLE_MIN (15) minutes
 #   while it runs, every HW_HEAVY_IDLE_POLL (30 s): idle under HW_HEAVY_ACTIVE_SEC (60 s) -> the holder's whole process tree is
@@ -71,6 +73,7 @@ SQ="$D/heavy.short.queue"
 SL="$D/heavy.short.lock"
 SHORT_CAP=120
 GRACE="${HW_HEAVY_SHORT_GRACE:-5}"
+KILL_GRACE="${HW_HEAVY_KILL_GRACE:-3}"
 WHEN_IDLE=0; [ "${HW_HEAVY_WHEN_IDLE:-0}" != 1 ] || WHEN_IDLE=1
 IDLE_MIN="${HW_HEAVY_IDLE_MIN:-15}"
 IDLE_POLL="${HW_HEAVY_IDLE_POLL:-30}"
@@ -92,7 +95,15 @@ EOF
 }
 
 lockdir() { if [ "$1" = 1 ]; then printf '%s' "$D/heavy.lock"; else printf '%s' "$D/heavy.lock.$1"; fi; }
-alive() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
+# A zombie answers `kill -0` and will never run again (2026-10-30: a queued run, a zombie under a stopped zsh, held the queue 35 min): it is dead.
+alive() {
+  local st
+  case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$1" 2>/dev/null || return 1
+  st="$(ps -o stat= -p "$1" 2>/dev/null)"; st="${st# }"
+  case "$st" in Z*) return 1 ;; esac  # MUTATION-ANCHOR: 1040-H16
+  return 0
+}
 now() { date +%s; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 
@@ -146,11 +157,39 @@ holder_text_at() {  # <lock dir> -> "tag pid N 4m02s" | "free" | "dead (tag pid 
   fi
 }
 
-live_tickets() {  # [queue dir] live ticket names, oldest first; a ticket whose pid is dead is dropped
-  local f n q="${1:-$Q}"
+# A holder or a waiter belongs to an hw run, named by its environment when it queued: `<workdir>/.hw/<run>`, kept in the ticket's
+# second line and in the lock's `run` file (another process's environment cannot be read back on macOS). Once that run's current
+# task has reported (the done marker `done-invoker` writes, as bin/hw's _run_reported reads it: not reopened, not blocked-waiting)
+# nobody is left to read the result, so the run is reclaimed and its process tree ended instead of keeping the slot.
+run_of_env() { [ -z "${HW_WORKDIR:-}" ] || [ -z "${HW_RUN:-}" ] || printf '%s/.hw/%s' "$HW_WORKDIR" "$HW_RUN"; }
+run_reported() {  # <run dir>
+  local rd="$1" seq b
+  [ -n "$rd" ] && [ -d "$rd" ] || return 1
+  seq=""; [ ! -r "$rd/task" ] || seq="$(tr -dc '0-9' < "$rd/task")"
+  case "$seq" in ''|0|1) b="$rd" ;; *) b="$rd/t$seq" ;; esac
+  [ -f "$b/done" ] && [ ! -f "$b/reopened" ] && [ ! -f "$b/blocked-waiting" ]  # MUTATION-ANCHOR: 1040-H17
+}
+end_tree() {  # <root pid>: TERM and CONT (a TERM stays pending on a stopped process), KILL what outlives the grace
+  local p n=0 pids; pids="$(tree_pids "$1")"
+  for p in $pids; do kill -TERM "$p" 2>/dev/null || true; kill -CONT "$p" 2>/dev/null || true; done
+  while [ "$n" -lt $((KILL_GRACE * 10)) ] && kill -0 "$1" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done
+  for p in $pids; do kill -KILL "$p" 2>/dev/null || true; done
+}
+reap_reported() {  # <pid> <tag> <run dir>: end its tree and say so in heavy.log; never the caller itself or a caller of the same run
+  [ "$1" != "$$" ] && [ "$3" != "$(run_of_env)" ] || return 1
+  run_reported "$3" || return 1
+  end_tree "$1"
+  printf '%s %s 0 143 reclaimed:%s run %s had reported (pid %s)\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$(date +%Y-%m-%dT%H:%M:%S)" "$2" "$3" "$1" >> "$LOG"
+  return 0
+}
+
+live_tickets() {  # [queue dir] live ticket names, oldest first; a ticket whose pid is dead, or whose run reported, is dropped
+  local f n tag="" run="" q="${1:-$Q}"
   for f in "$q"/*; do
     [ -e "$f" ] || continue
     n="${f##*/}"
+    tag=""; run=""; { IFS= read -r tag; IFS= read -r run; } < "$f" 2>/dev/null || true
+    if [ -n "$run" ] && alive "${n#*.}" && reap_reported "${n#*.}" "$tag" "$run"; then rm -f "$f"; continue; fi
     if alive "${n#*.}"; then printf '%s\n' "$n"; else rm -f "$f"; fi  # MUTATION-ANCHOR: 1040-H06
   done
 }
@@ -177,7 +216,7 @@ EOF
     while IFS= read -r t; do
       [ -n "$t" ] || continue
       i=$((i + 1))
-      printf 'heavy: queue %s: %s pid %s%s\n' "$i" "$(cat "$Q/$t" 2>/dev/null)" "${t#*.}" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
+      printf 'heavy: queue %s: %s pid %s%s\n' "$i" "$(head -n 1 "$Q/$t" 2>/dev/null)" "${t#*.}" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
     done <<EOF
 $(live_tickets)
 EOF
@@ -188,7 +227,7 @@ EOF
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     i=$((i + 1))
-    printf 'heavy: short queue %s: %s pid %s%s\n' "$i" "$(cat "$SQ/$t" 2>/dev/null)" "${t#*.}" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
+    printf 'heavy: short queue %s: %s pid %s%s\n' "$i" "$(head -n 1 "$SQ/$t" 2>/dev/null)" "${t#*.}" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
   done <<EOF
 $(live_tickets "$SQ")
 EOF
@@ -324,11 +363,16 @@ release() {  # only what this process took
   fi
 }
 on_signal() {  # <exit code>
+  local n
   trap '' INT TERM
   [ -z "$WD" ] || kill -KILL -- "-$WD" 2>/dev/null
   stop_idle_watch; resume_now
   if [ -n "$CPID" ]; then
     kill -TERM -- "-$CPID" 2>/dev/null || kill -TERM "$CPID" 2>/dev/null  # MUTATION-ANCHOR: 1040-H05
+    kill -CONT -- "-$CPID" 2>/dev/null || true  # a TERM stays pending on a stopped process
+    n=0
+    while [ "$n" -lt $((KILL_GRACE * 10)) ] && kill -0 "$CPID" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done
+    kill -KILL -- "-$CPID" 2>/dev/null || true  # MUTATION-ANCHOR: 1134-M04
     wait "$CPID" 2>/dev/null
   fi
   release
@@ -345,17 +389,24 @@ set -m   # the command gets its own process group, so a signal reaches everythin
 stamp="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)"
 [ -n "$stamp" ] || stamp="$(now)000000000"
 MYT="$stamp.$$"
-printf '%s\n' "$TAG" > "$MYQ/$MYT"
+{ printf '%s\n' "$TAG"; run_of_env; printf '\n'; } > "$MYQ/$MYT"
 
 # A slot whose owner pid is dead is the head's to reclaim, and it says so. An owner file that never appeared is
 # given a minute: the lock is made with mkdir, and the owner written a moment later.
 reclaim_if_stale() { reclaim_at "$(lockdir "$1")" "slot $1"; }
+reclaim_reported() {  # <lock dir> <what to call it>: a live holder (OTAG OPID read) keeps the slot, frozen or not, until its hw run has reported
+  local run=""
+  [ -r "$1/run" ] && read -r run < "$1/run" 2>/dev/null
+  [ -n "$run" ] && reap_reported "$OPID" "$OTAG" "$run" || return 0
+  echo "setup/heavy: $2 is held by $OTAG (pid $OPID), whose hw run has already reported — reclaimed it" >&2
+  rm -rf "$1"
+}
 reclaim_at() {  # <lock dir> <what to call it>
   local L="$1"
   [ -d "$L" ] || return 0
   read_owner "$L"
   if [ -n "$OPID" ]; then
-    alive "$OPID" && return 0  # MUTATION-ANCHOR: 1040-H02
+    alive "$OPID" && { reclaim_reported "$L" "$2"; return 0; }  # MUTATION-ANCHOR: 1040-H02
     echo "setup/heavy: $2 is held by $OTAG (pid $OPID), which is dead — reclaiming it" >&2
     rm -rf "$L"
   elif [ $(($(now) - $(mtime "$L"))) -gt 60 ]; then
@@ -392,6 +443,7 @@ while :; do
 done
 
 printf '%s %s %s\n' "$TAG" "$$" "$(now)" > "$HOLD/owner"
+{ run_of_env; printf '\n'; } > "$HOLD/run"
 [ "$WHEN_IDLE" = 0 ] || acct_end
 rm -f "$MYQ/$MYT"; MYT=""
 if [ "$SHORT" = 1 ]; then echo "setup/heavy: $TAG took the short lane (cap ${MAX}s)" >&2
@@ -411,6 +463,13 @@ preflight() {
     echo "setup/heavy: HW_HEAVY_REQUIRE_FREE=1 and ${f}% is free — refusing to start $TAG (exit 75)" >&2
     exit 75
   fi
+}
+
+# What the command left in its process group when it ended. A child that outlives its parent is reparented to launchd and, if the
+# one-test-at-a-time guard then SIGSTOPs it, nobody will ever resume it (the 72 orphans of 2026-10-30): so nothing of the command's
+# group outlives the run. KILL reaches a stopped process too.
+kill_group_leftovers() {  # <group leader pid>
+  kill -KILL -- "-$1" 2>/dev/null || true  # MUTATION-ANCHOR: 1134-M05
 }
 
 # WATCHDOG. Reads the holder's process tree (the command's own process group leader and every descendant) once per HW_HEAVY_WATCH;
@@ -463,6 +522,35 @@ preflight
 
 export HW_HEAVY_RUNNING=1 HW_HEAVY_RUN="$$"
 [ "$WHEN_IDLE" = 0 ] || export HW_HEAVY_WHEN_IDLE_ACTIVE=1
+# THE VERDICT OF A RUN. `hw done` re-runs the brief's pinned verification, and one that sat 900 s in this queue was cut
+# red (exit 124) though the command takes ~160 s: when this command ran green on a tree it left byte for byte as it found
+# it, say so, keyed by the command and the tree, and `hw done` reads it instead of running it again (core/t4_done_verify.go).
+# `git add -A` into a COPY of the index names the tree a commit of the working tree would record, as test-hw does.
+wt_tree() {  # -> the tree id of the cwd's working tree, nothing outside a git checkout
+  local idx tree=""
+  git rev-parse --git-dir >/dev/null 2>&1 || return 1
+  idx="$(mktemp "${TMPDIR:-/tmp}/hw-heavy-index.XXXXXX")" || return 1
+  if cp "$(git rev-parse --path-format=absolute --git-path index 2>/dev/null)" "$idx" 2>/dev/null \
+     || { rm -f "$idx"; GIT_INDEX_FILE="$idx" git read-tree HEAD 2>/dev/null; }; then
+    GIT_INDEX_FILE="$idx" git add -A 2>/dev/null && tree="$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)" || tree=""
+  fi
+  rm -f "$idx" 2>/dev/null
+  [ -n "$tree" ] && printf '%s' "$tree"
+}
+record_verdict() {  # <tree before> <the command as one line>
+  local after common sum d f cmdline="$2"
+  [ -n "$1" ] || return 0
+  after="$(wt_tree)" || return 0
+  [ "$after" = "$1" ] || return 0   # the bytes moved while it ran: it tested a tree nobody has
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  sum="$(printf '%s' "$cmdline" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"; [ -n "$sum" ] || return 0
+  d="$common/hw-cmd-verified"; f="$d/$sum.$after"
+  mkdir -p "$d" 2>/dev/null || return 0
+  { printf 'tree=%s\n' "$after"; printf 'cmd=%s\n' "$cmdline"; printf 'verified_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$f.tmp.$$" 2>/dev/null \
+    && mv -f "$f.tmp.$$" "$f" 2>/dev/null || rm -f "$f.tmp.$$" 2>/dev/null
+  return 0
+}
+TREE0=""; [ "$SHORT" = 1 ] || TREE0="$(wt_tree)" || TREE0=""
 start="$(now)"; start_iso="$(date +%Y-%m-%dT%H:%M:%S)"
 "$@" <&0 &
 CPID=$!
@@ -476,7 +564,11 @@ if [ "$SHORT" = 1 ]; then
   WD=$!
 fi
 wait "$CPID"; rc=$?
+# `wait` under `set -m` also returns when the command is only STOPPED (rc 128+SIGSTOP) on bash 4.4+ (Linux, brew), where 3.2 keeps waiting:
+# a frozen run is not an ended one, and the slot is its until it is gone (F22, measured red on Linux 2026-10-30).
+while kill -0 "$CPID" 2>/dev/null; do sleep 0.2; wait "$CPID"; rc=$?; done
 stop_idle_watch; resume_now
+kill_group_leftovers "$CPID"
 if [ -n "$WD" ]; then
   kill -KILL -- "-$WD" 2>/dev/null || kill -KILL "$WD" 2>/dev/null
   wait "$WD" 2>/dev/null
@@ -492,5 +584,6 @@ stop_watch
 end="$(now)"; end_iso="$(date +%Y-%m-%dT%H:%M:%S)"
 LOGTAG="$TAG"; [ "$SHORT" = 0 ] || LOGTAG="short:$TAG"
 printf '%s %s %s %s %s %s\n' "$start_iso" "$end_iso" $((end - start)) "$rc" "$LOGTAG" "$*" >> "$LOG"  # MUTATION-ANCHOR: 1040-H08
+[ "$rc" != 0 ] || record_verdict "$TREE0" "$*"
 release
 exit "$rc"  # MUTATION-ANCHOR: 1040-H04

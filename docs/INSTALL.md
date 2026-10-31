@@ -15,7 +15,7 @@ lines for your shell profile: add them and open a new terminal.
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-- macOS, or Linux (Debian/Ubuntu-class, bash 5; tested in a container, see
+- macOS, or Linux (Debian/Ubuntu-class, bash 5; Linux works, not verified per release, see
   `KNOWN-LIMITATIONS.md` L1). Windows is not supported (see [Windows](#windows) below).
 - `git`, `jq` 1.7 or newer, `python3`, `sd`, `fd` and `rg` (`hw` calls all three).
   On Linux (Debian: `apt install sd fd-find ripgrep`, then link `fdfind` as `fd`)
@@ -398,6 +398,13 @@ in its frontmatter. `hw` loads them into **that executor only**: a Claude Code e
 in the dry run. Nothing is installed globally; what a hook writes goes to `$HW_ARTIFACTS/plugin-state`,
 never to `~/.claude` or `~/.pi`; the receipt of the run records the field.
 
+When a brief closes with these plugins' reviews (`review:`, below), each plugin has one focus and every piece runs once:
+`thermo` — maintainability (`thermo-nuclear-code-quality-review`); `ponytail` — senior review: correct, safe, load,
+tested, fast, lean (`ponytail-review`); `pstack` — the diff's security and correctness (`thermo-nuclear-review`), what
+breaks outside the diff, proved by running code (`blast-radius`), needless comments and workaround code (the
+`comment-sicko` agent) and maintainability (`thermo-nuclear-code-quality-review`). A piece two plugins carry runs once,
+from the first plugin declared: `[thermo, pstack]` runs thermo's code-quality review and pstack's other three.
+
 **Installing them is an optional step, off by default.** The plugins are pinned copies under
 `setup/vendor/plugins/<name>/` (the upstream sha, a sha256 manifest and the license are in each;
 `setup/vendor/plugins/verify` checks them offline). Installing them only copies them, after checking
@@ -562,7 +569,8 @@ recall context when it is registered (see Memory above).
 **Which review a build closes with is the brief's choice**, in every lane and
 every `--sdd` mode: `review: judgment-day` (the default when the key is absent)
 orders Judgment Day over the branch at the close; `review: plugins` names only
-the review skills of the brief's `plugins:` (`thermo`, `ponytail`, `pstack`) and
+the review pieces of the brief's `plugins:` (`thermo`, `ponytail`, `pstack`: skills, and
+`pstack`'s `comment-sicko` agent, launched with the Agent tool as `pstack:comment-sicko`; each piece once) and
 no Judgment Day; `review: none` adds no review note. Any other value refuses the
 dispatch, naming those three. The choice is printed in the dispatch manifest and
 recorded in the run's receipt.

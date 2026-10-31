@@ -5,17 +5,14 @@
 [![CI](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml/badge.svg)](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-foreman-sh is a harness, built on [herdr](https://herdr.dev) and run by a Go
-core (`hw-core`, which the installer builds), that runs coding agents
-in two roles:
+foreman-sh runs coding agents in two roles, on top of [herdr](https://herdr.dev):
 
 - a **brainer**, the planner, that reads your code, plans the work and writes
   briefs, but cannot touch your repository;
 - **executors** that each take one brief, work in a git worktree of their own
   and report back when they are done.
 
-You talk to the brainer. It sends out the work, and the results come back to
-it.
+You talk to the brainer. It sends out the work, and the results come back to it.
 
 ```mermaid
 sequenceDiagram
@@ -30,37 +27,35 @@ sequenceDiagram
     B->>You: what was done, and what is next
 ```
 
-Not related to Ruby's `foreman`.
+**Install on macOS:** `brew install GenaroSalomone/tap/foreman-sh && foreman-sh init`
+builds a brain with a demo lane and ends with a dry-run dispatch. Linux, step by
+step and requirements: [Quickstart](#quickstart). Not related to Ruby's `foreman`.
 
 ## Why
 
-Put several coding agents on one repository and three things go wrong:
+Put several coding agents on one repository and three things go wrong. Each has a
+mechanism here:
 
-- **The planner starts editing**, and changes land that nobody reviewed.
-- **Agents step on each other** in a shared checkout.
-- **Results get lost** in a pane nobody is watching.
-
-foreman-sh answers each one with a mechanism:
-
-- a guard that refuses the brainer's writes;
-- one worktree and one branch per task;
-- a report that lands in the brainer's session by itself.
+| What goes wrong | What foreman-sh does |
+|---|---|
+| The planner starts editing, and changes land that nobody reviewed. | A guard refuses the brainer's writes to your repository. |
+| Agents step on each other in a shared checkout. | One worktree and one branch per task. |
+| Results get lost in a pane nobody is watching. | A report lands in the brainer's session by itself. |
 
 ## Concepts
 
 | Term | Meaning |
 |---|---|
-| **Brain** | The directory the installer creates (`~/brain` in these examples). It holds foreman-sh's commands, its configuration and one folder per lane, outside every repository. |
+| **Brain** | The directory the installer creates (`~/brain` here). It holds foreman-sh's commands, its configuration and one folder per lane, outside every repository. |
 | **Lane** | One of your repositories, together with the brainer that plans for it. |
-| **Brainer** | A long-lived Claude Code session for a lane, opened with `brain <lane>`. It plans and writes briefs; a guard refuses its writes to the repository. |
+| **Brainer** | A long-lived Claude Code session for a lane, opened with `brain <lane>`. A guard refuses its writes to the repository. |
 | **Executor** | A disposable agent session, launched with `hw`. It works in its own worktree and branch and ends each task with a report. |
 | **Brief** | The executor's instructions, as a Markdown file: goal, scope and the command that proves the work is done. |
 
 ## Features
 
-- **A planner that cannot write.** The brainer's writes to your repository are
-  refused; the installer never writes inside your repositories and never reads a
-  credential.
+- **A planner that cannot write.** The installer never writes inside your
+  repositories and never reads a credential.
 - **One worktree and one branch per task**, outside your checkout, with its own
   database where the lane provisions one.
 - **Reports that arrive.** `done-invoker` puts the executor's report in the
@@ -69,7 +64,7 @@ foreman-sh answers each one with a mechanism:
   dispatch before anything is built, and `hw done` runs the brief's verification
   command itself and records its exit code.
 - **Your agent, your model.** Claude Code, OpenCode, pi and Codex
-  ([L3](docs/KNOWN-LIMITATIONS.md)) run a lane's executors; every executor is handed a
+  ([L3](docs/KNOWN-LIMITATIONS.md)) run a lane's executors; each one gets a
   `cheap-explorer` subagent on its vendor's cheapest tier.
 - **Frameworks when you want them.** `--sdd none` makes the brief the whole
   contract; `--sdd speckit` goes through [Spec Kit](https://github.com/github/spec-kit)'s phases.
@@ -79,107 +74,89 @@ foreman-sh answers each one with a mechanism:
   names the one that needs you.
 - **Cleanup that is safe.** `hw reap` removes the worktree, branch and database
   of a task that is merged and clean, and nothing else.
-- **Go only.** `hw`, `brain`, `channel-send` and the invokers run in `hw-core`;
-  0.6.0 removed the bash and the switch to it, and the way back is 0.5.x
-  ([INSTALL.md](docs/INSTALL.md#the-go-core-and-the-way-back),
+- **A Go core.** `hw`, `brain`, `channel-send` and the invokers run in `hw-core`,
+  which the installer builds ([INSTALL.md](docs/INSTALL.md#the-go-core-and-the-way-back),
   [L16](docs/KNOWN-LIMITATIONS.md)).
 
 ## Requirements
 
-- **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts)
+- **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts); Linux works, not verified per release
   ([L1](docs/KNOWN-LIMITATIONS.md)).
 - **[herdr](https://herdr.dev)**, running, with its Claude Code integration:
   `herdr integration install claude`.
-- **[Claude Code](https://claude.com/claude-code)**, with its first run
-  finished: run `claude --dangerously-skip-permissions`, complete the welcome
-  and login, accept the warning, then `/exit`. Skipping permission prompts is
-  the recommended setting, not a requirement: `install.sh --permissions ask`
-  leaves them on ([INSTALL.md](docs/INSTALL.md#permissions-skip-recommended-or-ask)).
-- `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`. On Linux, also
-  Node 22.7 or newer.
-- **Go 1.22 or newer**, for `hw-core`, which `install.sh` builds and the tools require.
-  Without it `install.sh` refuses before writing anything, naming https://go.dev/dl, and
-  `--check` lists Go as missing.
+- **[Claude Code](https://claude.com/claude-code)**, with its first run finished:
+  run `claude --dangerously-skip-permissions`, complete the welcome and login,
+  accept the warning, then `/exit`. `install.sh --permissions ask` leaves the
+  permission prompts on ([INSTALL.md](docs/INSTALL.md#permissions-skip-recommended-or-ask)).
+- `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`; on Linux, Node 22.7
+  or newer.
+- **Go 1.22 or newer**, which `install.sh` uses to build `hw-core`. `install.sh --check`
+  lists it as missing and names https://go.dev/dl.
 
-On macOS, Homebrew installs all of these but Claude Code's first run (see the
-Quickstart). Each tool has a minimum version, kept in one file
-(`lib/hw/deps.conf`); `install.sh --check` and `hw preflight` name the command
-that updates one ([INSTALL.md](docs/INSTALL.md), [L15](docs/KNOWN-LIMITATIONS.md)).
+On macOS, Homebrew installs all of these but Claude Code's first run. Each tool
+has a minimum version, kept in `lib/hw/deps.conf`; `install.sh --check` and
+`hw preflight` name the command that updates one
+([INSTALL.md](docs/INSTALL.md), [L15](docs/KNOWN-LIMITATIONS.md)).
 
-[engram](https://github.com/Gentleman-Programming/engram) is recommended, and
-more tools are optional:
+Recommended and optional:
 
-- **engram** gives the brainer memory across sessions; without it,
-  nothing is saved between them ([L8](docs/KNOWN-LIMITATIONS.md)). Install it with
-  `brew install gentleman-programming/tap/engram && engram setup claude-code`,
+- **[engram](https://github.com/Gentleman-Programming/engram)**, recommended: it
+  gives the brainer memory across sessions, and without it nothing is saved
+  between them ([L8](docs/KNOWN-LIMITATIONS.md)). Install it with
+  `brew install gentleman-programming/tap/engram && engram setup claude-code`
   and answer `y` when it asks about the allowlist.
-- **Judgment Day** is a blind review of a diff by two judges. Install it with
-  `./install.sh --brain ~/brain --with-judgment-day`
-  ([L10](docs/KNOWN-LIMITATIONS.md)).
-- **Bitwarden CLI (`bw`)**, `npm i -g @bitwarden/cli`, for a brief that
-  declares `secrets:` (see *Secrets* below).
-- **[OpenCode](https://opencode.ai)** 1.18.31 or newer, with
-  `herdr integration install opencode`, runs a lane's executors:
-  `./install.sh … --vendor opencode`.
-- **pi**, measured against 1.1.0, set up with `herdr integration install pi`,
-  runs a task's executor: `hw <lane> <task> --agent pi --model <provider/id> --sdd none`.
-  In a `product_repo` lane it also guards the main checkout and sibling worktrees
-  ([L3b](docs/KNOWN-LIMITATIONS.md)).
+- **Judgment Day**, a blind review of a diff by two judges
+  ([L10](docs/KNOWN-LIMITATIONS.md)); **Bitwarden CLI (`bw`)**, for a brief that
+  declares `secrets:`; **[OpenCode](https://opencode.ai)** 1.18.31 or newer and
+  **pi**, to run a lane's executors
+  ([INSTALL.md](docs/INSTALL.md#opencode-executors), [L3b](docs/KNOWN-LIMITATIONS.md)).
 
 ## Quickstart
 
 ### 1. Homebrew, on macOS
 
-Every command below that starts with `brew` needs [Homebrew](https://brew.sh), which
-needs Apple's Command Line Tools. Its installer asks for the Tools if they are
-missing, so one command covers both (skip it if `brew --version` already answers):
+Every `brew` command below needs [Homebrew](https://brew.sh) (skip this if
+`brew --version` already answers). Its installer also installs Apple's Command
+Line Tools:
 
 ```sh
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"   # brew.sh's own installer; it also installs the Command Line Tools
 ```
 
-When it ends, it prints two `eval "$(…/brew shellenv)"` lines to add to your shell profile; do that and open a new terminal.
+It ends by printing two `eval "$(…/brew shellenv)"` lines: add them to your shell
+profile and open a new terminal.
 
-### 2. One command: `foreman-sh init`
+### 2. Install
+
+On macOS, one command builds a brain, a `demo` lane over a toy repository and a
+sample brief, and ends with a dry-run dispatch:
 
 ```sh
+brew install GenaroSalomone/tap/foreman-sh
 foreman-sh init             # checks what you have, builds ~/brain with a demo lane, ends with a dry-run dispatch
 foreman-sh init --dry-run   # the plan only; --yes answers its questions
 ```
 
-`init` names each missing tool with its install command, offers to install what
-Homebrew carries, builds `~/brain` with a `demo` lane on a toy repository and a
-sample brief, and proves them with `hw demo hello … --dry-run`. A second run
-changes nothing and says so ([INSTALL.md](docs/INSTALL.md#quick-start-foreman-sh-init)).
-Steps 3 and 4 are the same path, one at a time.
-
-### 3. Install, step by step
-
-On macOS, with Homebrew:
+`init` names each missing tool with its install command and offers to install
+what Homebrew carries. A second run changes nothing and says so
+([INSTALL.md](docs/INSTALL.md#quick-start-foreman-sh-init)). For your own
+repository instead of the demo, `foreman-sh` takes the installer's flags
+(`foreman-sh --with-recommended` installs Claude Code, engram and fzf):
 
 ```sh
-brew install GenaroSalomone/tap/foreman-sh                    # foreman-sh, with herdr, jq, rg, fd and sd
-foreman-sh --with-recommended                                 # what is still missing: Claude Code, engram, fzf
 foreman-sh --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
 export PATH="$HOME/.local/bin:$PATH"                          # puts hw and brain on your PATH
 brain myapp                                                   # opens the brainer
 ```
-
-`foreman-sh` is `install.sh`, packaged: it takes the same flags. Only the
-first and third lines are required. `--with-recommended` prints each
-`brew install` before running it, and `--check` lists what is left, in order,
-ending with the next command to run.
 
 On Linux, or without Homebrew, the installer runs from a pipe:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --check   # checks everything, writes nothing
 curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
-export PATH="$HOME/.local/bin:$PATH"                            # puts hw and brain on your PATH
-brain myapp                                                     # opens the brainer
 ```
 
-Prefer to read the installer first? Clone the repository and run it from there:
+To read the installer first, clone the repository and run it from there:
 
 ```sh
 git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
@@ -188,8 +165,26 @@ git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
 ```
 
 Add the `PATH` line to your shell profile so it survives a new terminal.
+`--check` lists what is left, in order, and ends with the next command to run;
+this is the head of a healthy one:
 
-### 4. Try it on a toy repository
+```text
+$ ./install.sh --brain ~/brain --check
+prerequisites
+  ok    git
+  ok    jq 1.7.1 (>= 1.7)
+  ok    herdr
+  ok    claude
+  ok    go 1.26 (builds hw-core)
+  ok    herdr's claude integration
+
+first run of Claude Code in this account (yours to do)
+  ok    welcome completed
+  ok    logged in
+  ok    Bypass Permissions warning accepted
+```
+
+### 3. Try it on a toy repository
 
 ```sh
 git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
@@ -247,75 +242,49 @@ new release's "In short"; `hw status` tells you when a newer release exists
 | `hw` | A picker over every lane's briefs, plus a `+ new brief` row (needs [fzf](https://github.com/junegunn/fzf)). |
 | `hw status` | What is running, what reported and what is left over. |
 | `hw ledger [<lane>]` | Every brief as never-dispatched, in-progress or done. |
-| `hw log <lane> <task>` | What a task asked and reported. |
 | `hw ruling <pane> "<correction>"` | Correct an executor that is still working, or resume one that reported `--blocked`. |
 | `hw next <pane> --brief <path>` | Give the next task to an executor launched with `--keep-pane`. |
 | `hw done <lane> <task>` | Run the brief's verification and close the task's tab. |
 | `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove; `--apply` removes them. |
 | `hw train add\|push <lane> …` | Merge reported tasks into `train-<lane>`, then run the suite and move `main` to it. |
-| `hw preflight --json -- <hw argv>` | A read-only verdict on a dispatch you have not run. |
-| `hw briefs archive <lane>` | Move the lane's finished briefs to `briefs/archive/<yyyy-mm>/`. |
-| `brain relaunch (--all\|<lane>…)` | Reopen idle brainers with the cockpit, keeping each one's conversation. |
-| brief `review: judgment-day\|plugins\|none` | The review the task's close names. |
-| brief `secrets: [<item>, …]` | Bitwarden items the task needs, by name. |
-| brief `plugins: [<name>, …]` | Review plugins loaded into that executor only. |
 
-`hw help all` lists every command and flag, `hw help <topic>` shows one part,
-and [REFERENCE.md](docs/REFERENCE.md) has each row in full, with the frameworks, the
-cockpit and every lane setting. `<pane>` is the executor's herdr pane, as
+A brief's front matter also takes `review:`, `secrets:` and `plugins:`. `hw help all` lists every
+command and flag, `hw help <topic>` shows one part, and [REFERENCE.md](docs/REFERENCE.md) has
+each row in full, with the frameworks, the cockpit and every lane setting. `<pane>` is the executor's herdr pane, as
 `hw status` lists it.
 
 ### Secrets (Bitwarden)
 
 A credential an executor needs is a Bitwarden item in the folder `agents`, named
-in the brief's `secrets: [item, …]`. `hw` checks that the vault is unlocked and
-each item exists before it builds anything. The executor runs
-`hw secret run <item>[.<field>] --as VAR -- <cmd>`: the value lands in `<cmd>`'s
-environment and is not printed or written. You unlock the vault with
-`secret-unlock`; on macOS the master password can stay in the login Keychain so
-`hw` unlocks it for you ([INSTALL.md](docs/INSTALL.md#secrets-bitwarden),
+in the brief's `secrets: [item, …]`. `hw` checks the vault and each item before
+it builds anything, and the executor reaches the value only through
+`hw secret run <item> --as VAR -- <cmd>`: it lands in `<cmd>`'s environment and
+is not printed or written ([INSTALL.md](docs/INSTALL.md#secrets-bitwarden),
 [L23](docs/KNOWN-LIMITATIONS.md)).
 
-## The cockpit
+### The cockpit
 
 A brainer opened by `brain` runs with a cockpit mod: a card per executor, and a
-band above the prompt that totals them and names the one that needs you (an
-unanswered `ask-invoker`, say). `/cockpit` opens the full pane. A card says how
-the task is going, top to bottom:
+band above the prompt that names the one that needs you. `/cockpit` opens the
+full pane. A card, top to bottom:
 
-```
-task-05 · Go T4: verbos escritores           ● working 3h12m · turn 41m
+```text
+task-05 · Add retries to the importer        ● working 3h12m · turn 41m
 claude · claude-sonnet-5-5 · high · ctx 41% ▰▰▱▱▱▱
 2 commits · last 37m ago · gate running 12m
 ⚠ no progress 47m · 1 ruling queued 25m
                                                    [ receipt ]
 ```
 
-Each control runs a command that already exists: `receipt`, `done`, `ruling`,
-`reply` and `verify`. Turn the cockpit off with `FOREMAN_COCKPIT=0` or
-`brain <lane> --no-cockpit`; `brain <lane> --resume <id>` reopens a brainer's own
-conversation with it. Every card line and control is in
+Each control runs a command that already exists. Turn the cockpit off with
+`FOREMAN_COCKPIT=0` or `brain <lane> --no-cockpit`; every card line is in
 [REFERENCE.md](docs/REFERENCE.md#the-cockpit).
 
-## Customize a lane
+### Customize a lane
 
-`projects.json` at the brain root is the one place a lane's settings live; a
-lane you add there needs no change to `bin/`. A rule that holds for every task of
-a lane goes in `brief_note`, which `hw` appends to every executor prompt of
-that lane:
-
-```json
-"myapp": {
-  "space": "myapp",
-  "checkout": "~/code/myapp",
-  "base": "main",
-  "brief_note": "Open every pull request with .github/pull_request_template.md and keep its headings as they are. Do not add sections of your own."
-}
-```
-
-`hw <lane> <task> --dry-run` shows the note inside the prompt. Every field is in
-[REFERENCE.md](docs/REFERENCE.md#customizing-a-lane-projectsjson), and
-`hw help lanes` prints it in short form.
+`projects.json` at the brain root is the one place a lane's settings live, and
+`brief_note` there adds a rule to every executor prompt of that lane. Every field is
+in [REFERENCE.md](docs/REFERENCE.md#customizing-a-lane-projectsjson).
 
 ## How it compares
 

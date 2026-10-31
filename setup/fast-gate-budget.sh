@@ -312,6 +312,13 @@ if rc is None:
     with open(status, "w") as f:
         f.write("%.1f %.1f\n" % (elapsed, cap))
     sys.exit(124)
+if not windows:
+    # whatever the subject left in its group (a child the freezer stopped, a watcher nobody will wait for) goes with it:
+    # 72 stopped orphans outlived their suites for days (2026-10-30), and KILL reaches a stopped process
+    try:
+        os.killpg(p.pid, signal.SIGKILL)  # MUTATION-ANCHOR: 1134-M06
+    except (ProcessLookupError, PermissionError):
+        pass
 sys.exit(128 - rc if rc < 0 else rc)
 '
 

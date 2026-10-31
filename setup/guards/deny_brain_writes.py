@@ -103,7 +103,8 @@ BIN_TOOLS = {"done-invoker", "ask-invoker", "channel-send",
 # Other programs of brain a product executor runs, measured, one per line in
 # `setup/suite-data/brain-guard-programs.txt` beside this directory: they name lanes and
 # systems, and this directory names none (setup/tests/195). A line is
-#   <path relative to brain> [via=<interpreter>] [first=<arg>[,<arg>…]]
+#   <path relative to brain> [via=<interpreter>[,…|-]] [first=<arg>[,<arg>…]]
+# (`-` in `via=` also allows running it by its own path).
 # `first=` is the closed list of allowed first arguments.
 PROGRAMS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                              "suite-data", "brain-guard-programs.txt")
@@ -544,6 +545,18 @@ def _head(seg):
                 i += 1
             i += 1  # the duration
             continue
+        # setup/heavy [--tag T] [--short] [--max S] -- <cmd>: the slot is not the
+        # verb, the command after `--` is, and it is judged like any other.
+        if (words[i][0] == "setup/heavy" or words[i][0].endswith("/setup/heavy")) \
+                and any(w == "--" for w, _ in words[i + 1:]):
+            i = next(j for j in range(i + 1, len(words)) if words[j][0] == "--") + 1
+            continue
+        # hw secret run <item> --as VAR -- <cmd>: the same shape. The value goes
+        # into <cmd>'s environment; <cmd> is the verb, judged on its own.
+        if os.path.basename(words[i][0]) == "hw" and [w for w, _ in words[i + 1:i + 3]] == ["secret", "run"] \
+                and any(w == "--" for w, _ in words[i + 3:]):
+            i = next(j for j in range(i + 3, len(words)) if words[j][0] == "--") + 1
+            continue
         break
     return i, (words[i][0] if i < len(words) else "")
 
@@ -650,7 +663,7 @@ def _judge(cfg, seg, cwd, local=None, env=None):
     args = [w for w, _ in seg.words[idx + 1:]]
     prefix = seg.words[:idx]
     names_in_args = any(_names(cfg, a, cwd) for a in args)
-    names_in_prefix = any(_names(cfg, w, cwd) for w, _ in prefix)
+    names_in_prefix = any(_names(cfg, w, cwd) and not _heavy_ok(cfg, w) for w, _ in prefix)
     names_verb = _names(cfg, verb, cwd)
     name = os.path.basename(verb)
     data_names = any(_data_names(cfg, d) for d in seg.data)
@@ -659,13 +672,19 @@ def _judge(cfg, seg, cwd, local=None, env=None):
         rel, via = prog
         want = cfg["programs"].get(rel)
         rest = args[1:] if via else args
-        if want is None or want[0] != via or (want[1] and (
-                len(rest) < 1 or rest[0] not in want[1].split(","))):
-            if _looks_up(prefix):
-                return _refuse("run", "`command -v %s` looks a brain program up to run it "
-                               "through a variable, and the guard cannot know what a "
-                               "variable runs: call `%s` by its name or by its path, "
-                               "not through a variable" % (name, name))
+        if want and via in _vias(want[0]) and not _first_ok(want[1], rest):
+            return _refuse("run", "`%s` takes only these first arguments here; call it "
+                           "as: %s" % (rel, _allowed_form(cfg, rel, want)))
+        # A lookup (`command -v hw`) is not a call, and the bare call is allowed: the
+        # lookup of a `first=` program stays refused, as it was when its bare call was.
+        known = bool(want) and via in _vias(want[0])
+        if _looks_up(prefix) and (not known or (want[1] and (
+                not rest or rest[0] not in want[1].split(",")))):
+            return _refuse("run", "`command -v %s` looks a brain program up to run it "
+                           "through a variable, and the guard cannot know what a "
+                           "variable runs: call `%s` by its name or by its path, "
+                           "not through a variable" % (name, name))
+        if not known:
             return _refuse("run", "`%s` is not one of the brain programs a product "
                            "executor runs (%s)" % (rel, _programs_named(cfg)))
         if rel == "bin/channel-send" and via is None:
@@ -684,6 +703,13 @@ def _judge(cfg, seg, cwd, local=None, env=None):
                 a == "--apply" or MARK in a for a in rest[1:]):
             return _refuse("run", "`hw reap --apply` removes worktrees, which is the "
                            "brainer's; an executor runs the survey, `hw reap <lane>`")
+        # `hw secret run|put|check|status|ensure` are an executor's; `unlock` is a
+        # person's, in a terminal (bw asks the master password there), as
+        # `secret-unlock` already is by not being on the list.
+        if rel == "bin/hw" and via is None and rest[:2] == ["secret", "unlock"]:
+            return _refuse("run", "`hw secret unlock` opens the vault with the master "
+                           "password, which is a person's in a terminal; an executor "
+                           "runs `hw secret run|put|check|status|ensure`")
         if rel == "bin/hw" and via is None and any(
                 w.startswith("HW_DONE_ALLOW_BRAIN_LEAK=") for w, _ in prefix):
             return _refuse("run", "HW_DONE_ALLOW_BRAIN_LEAK is the operator's exit from "
@@ -742,6 +768,32 @@ def _rel(cfg, path):
     return None
 
 
+def _vias(spec):
+    """The ways a listed program may be run: `via=bash,-` is through bash or by
+    its own path (`-`); no `via=` is by path only."""
+    if not spec:
+        return {None}
+    return {None if v == "-" else v for v in spec.split(",")}
+
+
+# A program with `first=` is also allowed with no arguments and with one of these
+# first: they print the usage and change nothing, which is how an agent that does
+# not know the verbs finds them (measured 2026-10-30: a bare lane script was
+# refused 3 times). One rule for every `first=` line.
+HELP_FIRST = ("help", "-h", "--help")
+
+
+def _first_ok(first, rest):
+    return not first or not rest or rest[0] in first.split(",") or rest[0] in HELP_FIRST
+
+
+def _allowed_form(cfg, rel, want):
+    """The call the line allows, spelled as it is typed: `bash <path> a|b|c (or --help)`."""
+    run = next((v for v in want[0].split(",") if v != "-"), "") if want[0] else ""
+    return "%s%s %s (or --help)" % (run + " " if run else "", os.path.join(cfg["root"], rel),
+                                    "|".join(want[1].split(",")))
+
+
 def _program(cfg, verb, name, args, cwd):
     """(path relative to brain, interpreter or None) when this command runs a
     program that lives in brain — by path, by a bare name brain's bin/ holds,
@@ -774,7 +826,10 @@ _CS_VALUE_FLAGS = {"--require", "--id", "--report-state", "--reply-hold"}
 def _channel_send_refusal(args, env):
     """None when this channel-send goes to the executor's own brainer pane
     (HW_INVOKER_PANE), else why not. Its positionals are
-    `<vendor> <target> <endpoint> <message>` after the flags."""
+    `<vendor> <target> <endpoint> <message>` after the flags. `--help` / `-h` first
+    sends nothing: it is the exit-code table CLAUDE.shared.md tells an executor to read."""
+    if args[:1] in (["--help"], ["-h"]):
+        return None
     pos, i = [], 0
     while i < len(args):
         a = args[i]
@@ -810,6 +865,13 @@ def _path_ok(cfg, word, cwd):
                 os.path.join(r, "bin") if not drw._WINPATHS else r + "/bin" for r in cfg["brains"]}:
             return False
     return True
+
+
+def _heavy_ok(cfg, word):
+    """brain's own setup/heavy or bin/hw, the wrapper _head stepped over to reach the verb."""
+    real = drw._real(word) if drw._WINPATHS else os.path.realpath(word)
+    return any(real in (os.path.join(r, "setup", "heavy"), os.path.join(r, "bin", "hw"))
+               for r in cfg["brains"])
 
 
 def _prefix_ok(cfg, prefix, cwd):

@@ -20,6 +20,8 @@ touched_budget_seconds:
     touched <name> <path>                  run it beside the fast gate
     touched-skipped <name> <secs> <path>   over the budget: left to the full run
 
+    (`# gate-when-body: <regex>` selects a subject when a CHANGED SUBJECT's text matches: 1004, for every one that builds a mutant)
+
     reference <name> <path>  a SLOW subject that declares `# gate-reference:` and
                            names a changed path, or `# gate-when: <regex>` and
                            a changed path matches: it runs beside the selection
@@ -262,13 +264,22 @@ def when_hits(root, changed):
         if not os.path.isfile(path) or is_retired(n, gone):
             continue
         spec = (header_value(path, "gate-when") or "").split(None, 1)
-        if not spec:
-            continue
-        pat = re.compile(spec[0])
-        for c in changed:
-            if pat.search(c):
-                hits[n] = c
-                break
+        if spec:
+            pat = re.compile(spec[0])
+            for c in changed:
+                if pat.search(c):
+                    hits[n] = c
+                    break
+        # `# gate-when-body: <regex>`: a changed subject whose TEXT matches. 1004 judges every subject that
+        # builds a mutant, and a new one (1200) went red only in the full suite; a path regex over every
+        # subject would run its 60 s on each edit, the body regex only on the ones that build.
+        body = (header_value(path, "gate-when-body") or "").split(None, 1)
+        if body and n not in hits:
+            pat = re.compile(body[0])
+            for c in changed:
+                if SUBJECT.match(c) and pat.search(read(os.path.join(root, c))):  # MUTATION-ANCHOR: 999-M04
+                    hits[n] = c
+                    break
     return hits
 
 

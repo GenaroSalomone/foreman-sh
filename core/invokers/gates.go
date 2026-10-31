@@ -147,7 +147,7 @@ func DesignGate(artifactsRoot, boundary string) error {
 }
 
 // PluginReviewGate holds a done report to the plugin review skills the closing named: comma-joined, each one
-// `plugin:skill` (a bare name, from an older receipt, is the skill part of any plugin). A skill is released by the executor's own transcript — a Skill tool_use of exactly that name, or an
+// `plugin:piece` (a skill or an agent; a bare name, from an older receipt, is the skill part of any plugin). A skill is released by the executor's own transcript — a Skill tool_use of exactly that name, or an
 // Agent whose subagent_type is — or by `review-skip: <skill> — <why>` in the report. With no transcript (proof nil)
 // the report text must name the skill as a whole token, and the note returned says the check was unverified.
 func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string) (note string, err error) {
@@ -175,7 +175,7 @@ func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string
 	if proof == nil {
 		proofIs = "unverified: transcript not reachable (" + why + "), and the report does not name it as a whole token"
 	}
-	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each with the Skill tool over your committed range under its full name (plugin:skill), or write a line  review-skip: <skill> — <why>  for one you cannot run (not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
+	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each with the Skill tool over your committed range under its full name (plugin:skill) — an agent such as pstack:comment-sicko is launched with the Agent tool, its subagent_type that full name — or write a line  review-skip: <skill> — <why>  for one you cannot run (not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
 }
 
 // reviewSkipped is a `review-skip: <skill>` line naming the skill (full name or its bare skill part).

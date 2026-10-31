@@ -1,4 +1,4 @@
-# Known limitations — 0.5.0
+# Known limitations
 
 This is the register of what this release does not do, or does only
 partly. Each entry says its **scope** (where it applies), its **impact**, its
@@ -14,12 +14,78 @@ A limitation is not a promise to fix it. The maintainer owns every entry, and
 unless an entry names a different next decision, it is re-examined at the next
 release candidate.
 
+## At a glance
+
+Every entry, by section; the sections below give scope, impact, evidence and workaround.
+
+**Platform**
+
+- [L1. macOS and Linux only](#l1-platforms-macos-and-linux-only-windows-l1b)
+- [L1b. Windows is not supported](#l1b-windows-is-not-supported)
+- [L2. herdr is required](#l2-herdr-is-a-hard-requirement)
+- [L2b. Homebrew on macOS, a pipe elsewhere](#l2b-native-install-homebrew-on-macos-a-pipe-elsewhere)
+
+**The Go core**
+
+- [L16. The Go core and the tools still on bash](#l16-hw-brain-channel-send-and-the-invokers-run-in-go-with-no-switch-eight-small-tools-run-go-with-a-per-tool-bash-way-back-through-06x-and-whatever-is-not-ported-stays-on-bash)
+
+**Agents**
+
+- [L3. Codex is a reduced dispatch target](#l3-codex-is-not-set-up-by-the-installer-and-is-a-reduced-dispatch-target)
+- [L3b. pi: its guard reads text](#l3b-pi-is-a-dispatch-target-its-guard-reads-text-and---sandbox-is-what-contains)
+- [L22. `plugins:` reach claude and pi only](#l22-plugins-loads-pinned-plugins-into-claude-and-pi-executors-only-and-the-export-ships-none)
+- [L4. OpenCode background subagents are experimental](#l4-opencode-background-subagents-are-experimental)
+- [L21. The cheap explorer is asked for, not forced](#l21-every-executor-is-handed-a-cheap-explorer-the-prompt-asks-for-it-nothing-forces-it)
+- [L14. `--sdd speckit` is Claude Code only](#l14---sdd-speckit-is-claude-code-only)
+- [L17. A Claude Code session can show other lanes' changes](#l17-a-claude-code-session-started-before-basheditdiff-was-turned-off-keeps-showing-other-lanes-changes)
+- [L20. `brain relaunch` and background tasks](#l20-brain-relaunch-moves-a-panes-background-tasks-out-of-the-session-the-resumed-claude-does-not-list-them)
+
+**Guards**
+
+- [L5. The guards are a tripwire, not a sandbox](#l5-the-write-guards-are-a-tripwire-not-a-sandbox)
+- [L23. Bitwarden session token and master password](#l23-bitwarden-secrets-the-session-token-and-the-master-password-sit-where-the-users-own-processes-can-read-them)
+
+**First run**
+
+- [L6. Claude Code's first run is yours](#l6-claude-codes-first-run-screens-are-yours)
+- [L12. `--permissions ask` makes unattended executors wait](#l12-with---permissions-ask-an-unattended-executor-waits-on-its-prompts)
+- [L7. `--dry-run` outside a brainer pane](#l7-hw----dry-run-from-a-plain-terminal-stops-at-the-return-channel)
+
+**Memory**
+
+- [L8. engram is optional, and what is lost without it](#l8-engram-is-optional-for-running-and-required-for-reports-it-registered)
+
+**Tests**
+
+- [L9. The suite never runs a real agent](#l9-the-suite-runs-live-herdr-but-never-a-real-agent)
+- [L24. A replayed suite job can miss an unread file](#l24-a-suite-job-whose-inputs-did-not-change-is-replayed-from-its-last-green-so-a-change-in-a-file-it-never-read-is-unseen-until-a-cold-run)
+- [L26. Some claims have no Go mutant yet](#l26-some-claims-about-hw-brain-channel-send-and-the-invokers-lost-their-mutation-test-when-the-bash-left-and-have-no-go-mutant-yet)
+
+**Review**
+
+- [L10. Judgment Day is optional, except for `boundary:`](#l10-judgment-day-is-optional-except-for-a-brief-that-declares-boundary)
+
+**Sandbox**
+
+- [L11. `--sandbox` is macOS-only and opt-in](#l11---sandbox-is-macos-only-opt-in-claude-code-and-pi-only-and-leaves-tcp-open)
+
+**Cleanup**
+
+- [L13. Background reap needs the SessionStart hook](#l13-the-background-reap-needs-the-lanes-sessionstart-hook-and-closes-only-what-is-merged)
+
+**Versions**
+
+- [L15. Two version floors are a baseline](#l15-version-floors-two-of-them-are-a-baseline-not-a-measurement)
+- [L18. The incremental verdict and marker-only changes](#l18-the-incremental-verdict-trusts-a-marker-only-runner-change-and-540-may-be-skipped-by-two-gate-paths)
+- [L19. A chained incremental verdict](#l19-a-chained-incremental-verdict-compounds-gate-selects-blind-spot-and-fast-gates-outrank-a-full-run)
+- [L25. `setup/heavy` reports a frozen run, it does not unfreeze it](#l25-setupheavy-reports-a-frozen-or-starved-run-it-does-not-unfreeze-it)
+
 ## Platform
 
 ### L1. Platforms: macOS and Linux only (Windows: L1b)
 - **Scope:** every command.
   - **macOS:** developed and tested here.
-  - **Linux:** the installer accepts it and the whole test suite runs green in a
+  - **Linux:** works, not verified per release: a release stands on the macOS fast gate and the real end-to-end run, and the Linux suite is run when the maintainer has the time. The installer accepts it and the whole test suite has run green in a
     Debian container (bash 5, git, jq 1.7, python3, Node 22, sd, fd, rg).
     Not exercised: a live herdr, a live Claude Code or OpenCode agent, and a
     real desktop session. Subjects that need the maintainer's product-repo
@@ -234,14 +300,18 @@ it leaves the brain directory, is unguarded even with the hook registered.
     `--sandbox`, with the secret out of its reach on the host.
   - **No account switch.** `CLAUDE_CONFIG_DIR` is Claude Code's: for pi the
     manifest says `NOT APPLIED`.
-  - **Specialists only through `.pi/agents`.** pi-subagents reads
-    `~/.pi/agent/agents`, `~/.agents`, `<repo>/.pi/agents` and `<repo>/.agents`,
-    never `.claude/agents`, so a pi executor cannot delegate to a Claude
-    specialist; the brief's preamble says so. Where the lane's checkout tracks a
-    `.pi/agents` directory, `hw` passes it to pi-subagents
-    (`PI_SUBAGENT_EXTRA_AGENT_DIRS`) and the executor can delegate to those; a
-    specialist file that pins its own `model:` needs the call to pass the
-    executor's model.
+  - **Specialists run on pi's model and pi's tools.** pi-subagents reads no
+    `.claude/agents`, so `hw` names the worktree's directory
+    (`HW_PI_CLAUDE_AGENT_DIRS`) and the adapter registers each file with
+    pi-subagents when the session starts, translated in memory (nothing is
+    copied or rewritten): a pi executor delegates to the same specialists a
+    Claude one sees. What does not carry over: the file's `model:` (a Claude
+    alias is not a pi model, so a specialist runs on the executor's), and the
+    tools pi has no counterpart for (`Task`, `WebFetch`, `WebSearch`, MCP
+    tools: dropped, and the receipt's `pi_specialists` row names them), so a
+    specialist whose job needs one cannot do it under pi. Specialists run in
+    the foreground. A checkout that tracks `.pi/agents` keeps its own copies
+    for the names they cover; those pin a model the call must override.
   - **In a product lane, pi is not at parity on skills.** Of the skills a Claude
     executor loads, pi gets `judgment-day`, `agent-browser` when the brief says
     `requires: browser`, and the checkout's `.claude/skills` (minus `speckit-*`)
@@ -466,7 +536,11 @@ it leaves the brain directory, is unguarded even with the hook registered.
     The brainer's guard does follow a relative path, a `cd` earlier in
     the same command, a shell-local variable, a glob, a brace expansion,
     `find -delete`/`-exec`, `fd -x`, and a literal `sh -c` or `eval` body.
-  - An executor is guarded only against writing into the brain. Everything
+  - An executor is guarded only against writing into the brain, and a Claude
+    Code executor also against writing into any `product_repos` root of
+    `guards.json` other than the one that holds its own `HW_WORKDIR` (so it may
+    still write its own repository's checkout, not only its worktree; an
+    OpenCode or Codex executor has no such guard). Everything
     else the account can reach — its home directory, other repositories, the
     network, `git push --force` — is open to it, unless it runs under
     `--sandbox` (L11). Of the brain's own `bin/` tools it may run the ones it

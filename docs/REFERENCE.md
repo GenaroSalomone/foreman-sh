@@ -3,6 +3,8 @@
 Every command, brief field, framework, cockpit control and lane setting, in one
 place. The [README](../README.md) is the tour; this is the lookup.
 
+Jump to: [Commands](#commands) · [Frameworks](#frameworks---sdd) · [Model tiers](#delegating-by-model-tier) · [Cockpit](#the-cockpit) · [Layout](#layout) · [Lane settings](#customizing-a-lane-projectsjson).
+
 ## Commands
 
 | Command | What it does |
@@ -70,7 +72,7 @@ unanswered `ask-invoker`, say). `/cockpit` opens the full pane. A card says how
 the task is going, top to bottom:
 
 ```
-task-05 · Go T4: verbos escritores           ● working 3h12m · turn 41m
+task-05 · Add retries to the importer        ● working 3h12m · turn 41m
 claude · claude-sonnet-5-5 · high · ctx 41% ▰▰▱▱▱▱
 2 commits · last 37m ago · gate running 12m
 ⚠ no progress 47m · 1 ruling queued 25m

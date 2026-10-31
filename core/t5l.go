@@ -127,6 +127,7 @@ func (l *lch) repolessArm() {
 		l.ok("created " + l.wt)
 	}
 	l.info("artifacts belong here, not in brain/ and not in any repo")
+	l.linkLaneClaude(l.wt)
 	if l.here {
 		l.runHere(l.wt)
 		return

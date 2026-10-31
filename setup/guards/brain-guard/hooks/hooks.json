@@ -8,6 +8,11 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/../deny_brain_writes.py\" || exit 2",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/../deny_executor_repo_writes.py\" || exit 2",
+            "timeout": 60
           }
         ]
       }

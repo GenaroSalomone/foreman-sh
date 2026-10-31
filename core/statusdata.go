@@ -48,6 +48,7 @@ type runRec struct {
 	mode          string
 	turns         int
 	turnsAt       float64
+	stalledSince  float64 // bin/stall-watch's marker: the turn ended on a background child and no new turn came; 0 when there is none
 	hasTurnsAt    bool
 	invoker       string
 	noReport      bool
@@ -301,6 +302,23 @@ func taskResumed(rundir string) bool {
 }
 
 // turnsOf is turns_of: how many turns the harness watched end.
+// stalledSinceOf is the epoch in the first field of the run's `stalled` marker (bin/stall-watch), 0 when there is none.
+func stalledSinceOf(rundir string) float64 {
+	body, ok := readText(filepath.Join(rundir, "stalled"))
+	if !ok {
+		return 0
+	}
+	f := strings.Fields(body)
+	if len(f) == 0 {
+		return 0
+	}
+	n, ok := pyInt(f[0])
+	if !ok || n < 0 {
+		return 0
+	}
+	return float64(n)
+}
+
 func turnsOf(rundir string) int {
 	body, ok := readText(filepath.Join(rundir, "turns"))
 	if !ok {
@@ -477,6 +495,7 @@ func (s *statusReader) runsOf(workdir string) []*runRec {
 		r.here = runIsHere(d)
 		r.mode = s.envField(d, "HW_LAUNCH_MODE")
 		r.turns = turnsOf(d)
+		r.stalledSince = stalledSinceOf(d)
 		if m, ok := pyMtime(filepath.Join(d, "turns")); ok {
 			r.turnsAt, r.hasTurnsAt = m, true
 		}

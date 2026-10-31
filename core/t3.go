@@ -47,7 +47,7 @@ func isT3Verb(v string) bool { _, ok := t3Verbs[v]; return ok }
 // ── the file system, with a plan ─────────────────────────────────────────────
 
 type fsOp struct {
-	Op   string `json:"op"` // write | append | remove | rename | mkdir | scope (a directory as it was when Go finished: Data is its listing)
+	Op   string `json:"op"` // write | append | remove | rename | mkdir | symlink | scope (a directory as it was when Go finished: Data is its listing)
 	Path string `json:"path"`
 	To   string `json:"to,omitempty"`
 	Data string `json:"data,omitempty"` // base64
@@ -174,6 +174,15 @@ func (f *fsx) remove(p string) {
 		return
 	}
 	os.Remove(p)
+}
+
+// symlink is `ln -s target link`.
+func (f *fsx) symlink(target, link string) error {
+	if f.readonly {
+		f.rec(fsOp{Op: "symlink", Path: link, To: target})
+		return nil
+	}
+	return os.Symlink(target, link)
 }
 
 // rename is `mv`: the claim that exactly one of several racing processes wins.

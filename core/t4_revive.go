@@ -97,13 +97,9 @@ func (a *app) cmdRevive() int {
 	return 0
 }
 
-// reviveTaskRundirs is _task_rundirs: the run directories of a task, newest first. Unlike the work tree the
-// verb resolves first, it has no fallback to the work directory.
-func (a *app) reviveTaskRundirs(proj, task string) []string {
-	base := a.c.lanePath(proj, "worktree", task)
-	if base == "" {
-		base = a.c.work + "/" + proj + "/" + task
-	}
+// reviveTaskRundirs is _task_rundirs: the run directories of a task under base, newest first. base is the
+// directory reviveCmd resolved (the lane worktree, or the work directory when the worktree recorded no runs).
+func reviveTaskRundirs(base string) []string {
 	if !isDir(base + "/.hw") {
 		return nil
 	}
@@ -150,7 +146,7 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 	if !isDir(wt + "/.hw") {
 		a.reviveDie("no hw runs for " + proj + ":" + task + " (looked in " + wt + "/.hw) — nothing recorded, nothing to repeat")
 	}
-	runs := a.reviveTaskRundirs(proj, task)
+	runs := reviveTaskRundirs(wt)
 	if len(runs) == 0 {
 		a.reviveDie("no run directory under " + wt + "/.hw")
 	}

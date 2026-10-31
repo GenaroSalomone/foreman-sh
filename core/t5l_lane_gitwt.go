@@ -5,7 +5,12 @@ package main
 // the table's `base_ref_prefix` + `base`.
 
 // laneBuildGitWorktree is lanes/git-worktree.sh, sourced at the `*)` arm.
-func (l *lch) laneBuildGitWorktree() {
+func (l *lch) laneBuildGitWorktree() { l.laneGitWorktree(nil, nil) }
+
+// laneGitWorktree is its body. A lane that is a plain git worktree plus one thing (a build of its own under lanes/) passes it here:
+// beforeCut runs once the checkout is known to be a repository and before the worktree is added (a fetch of the base);
+// localConfig is what step 2 carries beyond what git tracks, and runs on a reused worktree too. Nil means nothing.
+func (l *lch) laneGitWorktree(beforeCut func(main, base string), localConfig func(main, wt string)) {
 	main := l.laneCheckout(l.proj)
 	base := l.taskBase()
 	wt := l.laneWtDir(l.proj, l.task)
@@ -22,6 +27,9 @@ func (l *lch) laneBuildGitWorktree() {
 	}
 
 	l.step("1/4  worktree")
+	if beforeCut != nil {
+		beforeCut(main, base)
+	}
 	created := false
 	if laneExists(wt + "/.git") { // # MUTATION-ANCHOR: 847-D1-22
 		l.ok("worktree already exists, reusing: " + wt + " (HEAD " + l.laneHead(wt) + ")")
@@ -38,6 +46,9 @@ func (l *lch) laneBuildGitWorktree() {
 
 	l.step("2/4  local config")
 	l.info("plain git worktree: only what git tracks is here — an ignored .env, .venv or node_modules in " + main + " was NOT carried over")
+	if localConfig != nil {
+		localConfig(main, wt)
+	}
 	if !l.wantDB {
 		l.info("--no-db has no effect here: this lane provisions no database")
 	}

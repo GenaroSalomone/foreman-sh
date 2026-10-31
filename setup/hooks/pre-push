@@ -255,6 +255,14 @@ full_verdict() {
   grep -qF "tree=$2" "$1" 2>/dev/null && ! grep -qxF "gate=fast" "$1" 2>/dev/null  # MUTATION-ANCHOR: 250-M03
 }
 
+# fast_verdict <file> <tree> → 0 when <file> is a FAST-GATE verdict for <tree>: it names the tree and says `gate=fast`, and measured the
+# implementation this push is under (`impl=` from HW_IMPL, go by default: setup/test-hw writes it). It is another file name than a full
+# verdict (`<tree>.fast`), so the two readers cannot be confused. Held by setup/tests/250 (the gate) and 1125 (the implementation).
+fast_verdict() {
+  verdict_impl_is_current "$1" || return 1  # MUTATION-ANCHOR: 1125-M04
+  grep -qxF "tree=$2" "$1" 2>/dev/null && grep -qxF "gate=fast" "$1" 2>/dev/null  # MUTATION-ANCHOR: 250-M02
+}
+
 # ancestor_verdict_covers <local_sha> → 0 (covers it) or 1 (does not)
 #
 # local_sha's OWN tree may have no cached verdict while still being fully
@@ -462,23 +470,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "pre-push: $local_ref has no verdict of its own, but differs only in lane documentation from $covered_by, which has one — accepted against that verdict." >&2
     continue
   fi
-  # A TASK BRANCH NEEDS THE FAST GATE, NOT THE FULL SUITE (2026-09-30). The full
-  # run is owed once, by the brainer, on the merge tree — the only tree that
-  # reaches main; a second full run on the executor's tree bought nothing and
-  # cost ~965-2316s per task. Keyed by the DESTINATION ref: `task/x:main` is a
-  # push to main. The verdict is `<tree>.fast`, written by a green
-  # `HW_TEST_GATE=fast setup/test-hw` on a checkout clean where
-  # SUITE_TRIGGER_PATTERN reaches, and it must say both its tree and its gate.
+  # THE macOS FAST GATE OPENS ANY PUSH, MAIN INCLUDED (2026-10-30). It opened only `refs/heads/task/*` from 2026-09-30, and main waited for a
+  # full run: the Linux one took 78-112 min in Docker and the only users are on macOS, so the release and the push to main stand on the fast
+  # gate of the exact tree. The verdict is `<tree>.fast`, written by a green `HW_TEST_GATE=fast setup/test-hw` on a checkout clean where
+  # SUITE_TRIGGER_PATTERN reaches, and it must say both its tree and its gate (and the implementation this push is under, as every verdict).
+  # A cached FULL verdict (Linux or macOS) is still accepted above; the full suite is never required.
   # MUTATION-ANCHOR: 250-M01
-  case "${remote_ref:-}" in
-    refs/heads/task/*)  # MUTATION-ANCHOR: 250-M02
-      if [ -n "$tree" ] && grep -qxF "tree=$tree" "$cache_dir/$tree.fast" 2>/dev/null \
-         && grep -qxF "gate=fast" "$cache_dir/$tree.fast" 2>/dev/null; then
-        echo "pre-push: $local_ref -> $remote_ref is a task branch; a fast-gate verdict of its exact tree covers it (main still needs a full one)." >&2
-        continue
-      fi
-      ;;
-  esac
+  if [ -n "$tree" ] && fast_verdict "$cache_dir/$tree.fast" "$tree"; then
+    echo "pre-push: $local_ref -> ${remote_ref:-?} has a fast-gate verdict of its exact tree; that covers it (the full suite is never required)." >&2
+    continue
+  fi
   # MUTATION-ANCHOR-END: 250-M01
   missing="$missing
     $local_ref  $local_sha  (tree ${tree:-unresolvable})"
@@ -512,10 +513,10 @@ if [ -n "$missing" ]; then  # MUTATION-ANCHOR: 1125-M03
       printf '%s\n' "$ahead"
       echo
     fi
-    echo "Otherwise run it yourself, then push again — either verdict opens the push:"
-    echo "  setup/linux/run-suite.sh full   (Linux, in Docker — preferred: the release cut accepts the same verdict)"  # MUTATION-ANCHOR: 1125-M02
-    echo "  bash setup/verify-for-push      (macOS)"
-    echo "(a refs/heads/task/* destination needs only the fast gate:  HW_TEST_GATE=fast bash setup/test-hw)"
+    echo "Otherwise run it yourself, then push again — any of these verdicts opens the push (the fast gate is all that is required):"
+    echo "  HW_TEST_GATE=fast bash setup/test-hw   (macOS fast gate: the suite the release and main stand on)"
+    echo "  setup/linux/run-suite.sh full   (Linux, in Docker — best effort, when the machine is idle; the release cut accepts the same verdict)"  # MUTATION-ANCHOR: 1125-M02
+    echo "  bash setup/verify-for-push      (macOS full; never needed)"
     echo "If you are certain: git push --no-verify"
   } >&2
   exit 1

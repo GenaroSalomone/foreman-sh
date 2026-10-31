@@ -505,7 +505,7 @@ var layoutBaseEnvKeys = []string{"HW_PROJECT", "HW_TASK", "HW_WORKDIR", "HW_RUN"
 	"OPENCODE_CONFIG",
 	// pi's guard halves and roster fallback (t6_pi_launch.go: exportHwEnv exports them)
 	"HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR",
-	"PI_SUBAGENT_EXTRA_AGENT_DIRS"}
+	"HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS"}
 
 // renderLayout is `_render_layout`: the template, with every `_`-prefixed key dropped, every ${VAR} replaced
 // from the environment (after parsing, so a value with a quote cannot break the JSON), and the executor

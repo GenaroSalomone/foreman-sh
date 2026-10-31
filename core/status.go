@@ -1015,6 +1015,12 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 					notes = append(notes, ns...)
 				}
 			}
+			if (state == "working" || state == "idle") && newest != nil && newest.stalledSince != 0 {
+				mark, state, tint = "!", "STALLED since "+time.Unix(int64(newest.stalledSince), 0).Format("15:04"), c.warn
+				notes = append(notes, "its last turn ended legally (a background child, a reply to its ask, a human-boundary) and no new turn came in "+itoa(int(math.Floor((statusNow(s.getenv)-newest.stalledSince)/60)))+" min (the brainer was alerted once by bin/stall-watch; HW_STALL_MIN changes the threshold)")
+				notes = append(notes, "look at: `herdr pane read "+aPane()+"` (what it waits on), `setup/heavy --status` (a long heavy run is legitimate); then `hw ruling "+aPane()+" \"<the unblock>\"` or `hw done "+keyArg+"`")
+				limits["stalled"] = true
+			}
 			if state == "working" && newest != nil && t.workdir != "" { // # MUTATION-ANCHOR: 826-G19
 				mins := s.rd.staleMinutes(s.getenv)
 				if q := staleOf(newest, t.workdir, statusNow(s.getenv), mins); q != nil {
@@ -1268,6 +1274,12 @@ func (s *statusRun) reportCaveats(out *bufio.Writer, limits map[string]bool) {
 			dim("state files, the newest file in its work directory and the newest process")
 			dim("started there. herdr exposes no last-output time, so pane output is not a")
 			dim("signal, and one long step (a test run that started earlier) is not seen.")
+		}
+		if limits["stalled"] {
+			dim("`STALLED` is bin/stall-watch's marker: the last turn ended legally (a background")
+			dim("child, a reply to its ask, a human-boundary) and no new turn came in HW_STALL_MIN")
+			dim("minutes. It cannot tell a long legitimate wait from one that never ends, and it")
+			dim("clears at the next turn END, not at the next turn's start.")
 		}
 		if limits["first-turn"] {
 			dim("`DIED-BEFORE-FIRST-TURN` is: started in this herdr session, pane gone, no done")

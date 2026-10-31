@@ -101,7 +101,9 @@ func reviewModeOf(raw string) (string, bool) {
 	return raw, false
 }
 
-// reviewSkillsOfPlugin is _review_skills_of_plugin: the review skills each pinned plugin carries.
+// reviewSkillsOfPlugin is _review_skills_of_plugin: the review pieces each pinned plugin carries, one focus per plugin:
+// thermo the maintainability review, ponytail the senior review, pstack the diff's security and correctness, what a change breaks
+// outside the diff (blast-radius), needless comments and workaround code (comment-sicko, an agent) and maintainability.
 func reviewSkillsOfPlugin(n string) []string {
 	switch n {
 	case "thermo":
@@ -109,47 +111,64 @@ func reviewSkillsOfPlugin(n string) []string {
 	case "ponytail":
 		return []string{"ponytail-review"}
 	case "pstack":
-		return []string{"thermo-nuclear-review", "thermo-nuclear-code-quality-review"}
+		return []string{"thermo-nuclear-review", "blast-radius", "comment-sicko", "thermo-nuclear-code-quality-review"}
 	}
 	return nil
 }
 
-// reviewSkillsOf is _review_skills_declared: the skills of the declared plugins, in the order they are declared,
+// reviewPieceIsAgent is true for a review piece that is launched with the Agent tool, not the Skill tool.
+func reviewPieceIsAgent(piece string) bool { return piece == "comment-sicko" }
+
+// reviewSkillsOf is _review_skills_declared: the review pieces of the declared plugins, in the order they are declared,
 // once each.
 func reviewSkillsOf(plugins []string) []string {
+	var out []string
+	for _, full := range reviewSkillsQualified(plugins) {
+		out = append(out, full[strings.Index(full, ":")+1:])
+	}
+	return out
+}
+
+// reviewSkillsQualified is the review pieces of the declared plugins by full name, `plugin:piece`, each piece once: a
+// piece two plugins carry (thermo and pstack both carry thermo-nuclear-code-quality-review) runs from the first plugin
+// declared. It is what the receipt holds and what done-invoker proves from the transcript, a Skill call or an Agent's
+// subagent_type: a bare name matches a look-alike by substring.
+func reviewSkillsQualified(plugins []string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, n := range plugins {
 		for _, sk := range reviewSkillsOfPlugin(n) {
 			if !seen[sk] {
 				seen[sk] = true
-				out = append(out, sk)
+				out = append(out, n+":"+sk)
 			}
 		}
 	}
 	return out
 }
 
-// reviewSkillsQualified is the review skills of the declared plugins by full name, `plugin:skill`, one per plugin that
-// carries it (thermo and pstack each carry thermo-nuclear-code-quality-review, and declaring both asks for both). It
-// is what the receipt holds and what done-invoker proves from the transcript: a bare name matches a look-alike by substring.
-func reviewSkillsQualified(plugins []string) []string {
+// reviewPiecesToInvoke is the qualified names of the pieces launched with the Skill tool (agents false) or the Agent tool.
+func reviewPiecesToInvoke(plugins []string, agents bool) string {
 	var out []string
-	seen := map[string]bool{}
-	for _, n := range plugins {
-		for _, sk := range reviewSkillsOfPlugin(n) {
-			if full := n + ":" + sk; !seen[full] {
-				seen[full] = true
-				out = append(out, full)
-			}
+	for _, full := range reviewSkillsQualified(plugins) {
+		if reviewPieceIsAgent(full[strings.Index(full, ":")+1:]) == agents {
+			out = append(out, full)
 		}
 	}
-	return out
+	return strings.Join(out, ", ")
 }
 
-// reviewSkillsToInvoke is the qualified names as the closing's prose says them: the Skill tool takes the full name.
-func reviewSkillsToInvoke(plugins []string) string {
-	return strings.Join(reviewSkillsQualified(plugins), ", ")
+// reviewSkillsToInvoke is the skills as the closing's prose says them: the Skill tool takes the full name.
+func reviewSkillsToInvoke(plugins []string) string { return reviewPiecesToInvoke(plugins, false) }
+
+// reviewAgentsClause is the sentence that sends the agents (comment-sicko) through the Agent tool: empty when no declared
+// plugin carries one. The subagent_type a plugin agent records is its full name, `plugin:agent`.
+func reviewAgentsClause(plugins []string) string {
+	ag := reviewPiecesToInvoke(plugins, true)
+	if ag == "" {
+		return ""
+	}
+	return " Launch the review agent " + ag + " with the Agent tool over the same range (its subagent_type is that full name)."
 }
 
 // reviewGateOf is _review_gate over what the brief says: it dies (die is the caller's) on a value that is not
@@ -216,7 +235,7 @@ func judgmentDayWithPlugins(note string, plugins []string) string {
 
 This brief also declares review plugins, so the closing has one more step, BEFORE
 the Judgment Day of step 2: run these review skills over the same committed range
-("$(hw review-range)"..HEAD), each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `. Judgment Day does not replace them.
+("$(hw review-range)"..HEAD), each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + ` Judgment Day does not replace them.
 A skill that is not among your available skills is not installed. The report names
 each skill you ran and what it left open; a skill you did not run gets a line
 "review-skip: <skill> — <why>". done-invoker reads your transcript for each
@@ -236,7 +255,7 @@ func reviewPluginsNote(plugins []string) string {
    messages — not one commit at the end. The review target is what you
    committed; uncommitted work is not reviewed and is not delivered.
 2. Before done-invoker, run these review skills over your committed diff, the
-   ones of the plugins this brief declares, each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `. A skill that is not among your
+   ones of the plugins this brief declares, each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + ` A skill that is not among your
    available skills is not installed: say so in the report and close normally.
    Do NOT run the judgment-day skill: this brief chose its review, and two
    verdicts on one candidate is the cost it removes.

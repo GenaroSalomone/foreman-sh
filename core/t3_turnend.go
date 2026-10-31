@@ -632,6 +632,7 @@ func (t *t3) executorTurnEnd() int {
 	readTurns()
 	turns++
 	t.fs.write(stateDir+"/turns", []byte(strconv.FormatInt(turns, 10)+"\n"), 0o666) // # MUTATION-ANCHOR: 841-T01
+	t.fs.remove(stateDir + "/stalled")                                              // a new turn ends the stall bin/stall-watch marked
 
 	// A QUEUED RULING LANDS HERE: the only clean boundary there is. Delivered exactly once.
 	if ruling, ok := t.queueClaimAll(stateDir, "turn-end"); ok { // # MUTATION-ANCHOR: 841-T02
@@ -645,7 +646,9 @@ func (t *t3) executorTurnEnd() int {
 	// ask-invoker writes its hold into the CURRENT task's dir.
 	if hold := t.pendingReply(taskDir); hold != "" {
 		t.fs.remove(stateDir + "/handback-refused") // # MUTATION-ANCHOR: 841-B03
-		t.publish("ended_holding", turns, "hold_kind", hold[:strings.IndexByte(hold, '\t')])
+		kind := hold[:strings.IndexByte(hold, '\t')]
+		t.publish("ended_holding", turns, "hold_kind", kind)
+		t.stallWatchStart(stateDir, turns, "the brainer's "+kind+" to its ask/challenge")
 		return 0
 	}
 
@@ -654,12 +657,14 @@ func (t *t3) executorTurnEnd() int {
 		t.fs.remove(stateDir + "/human-boundary")   // # MUTATION-ANCHOR: 841-B01
 		t.fs.remove(stateDir + "/handback-refused") // # MUTATION-ANCHOR: 841-B02
 		t.publish("ended_human_boundary", turns, "human_boundary", t.substr(boundary, 80))
+		t.stallWatchStart(stateDir, turns, "a human decision (human-boundary: "+strings.TrimSpace(t.substr(boundary, 80))+")")
 		return 0
 	}
 
 	if children := t3LiveChildren(t.getenv("HW_TURN_END_PAYLOAD")); children != "" {
 		t.fs.remove(stateDir + "/handback-refused") // # MUTATION-ANCHOR: 841-B04
 		t.publish("ended_awaiting_child", turns, "children_running", children)
+		t.stallWatchStart(stateDir, turns, "a background child ("+t3RunningWhat(t.getenv("HW_TURN_END_PAYLOAD"))+")")
 		return 0
 	}
 

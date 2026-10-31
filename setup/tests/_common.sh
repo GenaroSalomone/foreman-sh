@@ -830,6 +830,16 @@ PYREC
   trap 'kill "$HR_PID" 2>/dev/null || true; rm -rf "$HR_DIR" "$TMP"' EXIT
 }
 
+# FAST_VERDICT_STUB — the lines a STUBBED setup/test-hw runs to do what the real runner does after a green `HW_TEST_GATE=fast` run in a git
+# checkout: cache `<tree>.fast` (tree, gate=fast, impl) under <git-common-dir>/hw-push-verified. The release cut's test-hw gate (2026-10-30)
+# passes on that file, so a fixture whose stub does not write it is a runner that cached nothing. CUT_STUB_NO_FAST_VERDICT=1 makes one not write it.
+# Use as the extra body of a stub: `stub "$R/setup/test-hw" test-hw "$FAST_VERDICT_STUB; echo '3 tests passed  (TRACKED only — x)'"`.
+FAST_VERDICT_STUB='if [ "${HW_TEST_GATE:-}" = fast ] && [ "${CUT_STUB_NO_FAST_VERDICT:-}" != 1 ]; then t="$(git rev-parse --verify -q "HEAD^{tree}" 2>/dev/null)" && d="$(git rev-parse --git-common-dir 2>/dev/null)/hw-push-verified" && mkdir -p "$d" && printf "commit=%s\ntree=%s\nsource=head\ngate=fast\nimpl=go\nheadline=3 tests passed\nhost=stub\n" "$(git rev-parse HEAD)" "$t" > "$d/$t.fast"; fi'
+
+# FAST_RELEASE_RED_STUB — beside FAST_VERDICT_STUB, for a stubbed setup/test-hw: with CUT_STUB_RED_RELEASE=1 the RELEASE's fast gate (the one run in the
+# candidate, where setup/release/cut is) is red while the export's (no setup/release/cut there) stays green: both are the same stub.
+FAST_RELEASE_RED_STUB='[ "${CUT_STUB_RED_RELEASE:-}" != 1 ] || [ ! -f setup/release/cut ] || { echo "stub release fast gate is red"; exit 7; }'
+
 # mutate_anchor <id> <file> <replacement>
 #
 # A MUTANT IS ANCHORED ON A MARKER THE SOURCE DECLARES, NEVER ON ITS PROSE.

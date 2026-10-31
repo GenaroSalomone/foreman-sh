@@ -683,6 +683,7 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		"HW_PI_FALLBACK_THINKING":      env("HW_PI_FALLBACK_THINKING"),
 		"HW_PI_ASKED_MODEL":            env("HW_PI_ASKED_MODEL"),
 		"HW_PI_SUBAGENTS_DIR":          env("HW_PI_SUBAGENTS_DIR"),
+		"HW_PI_CLAUDE_AGENT_DIRS":      env("HW_PI_CLAUDE_AGENT_DIRS"),
 		"PI_SUBAGENT_EXTRA_AGENT_DIRS": env("PI_SUBAGENT_EXTRA_AGENT_DIRS"),
 	} {
 		values.set(k, v)

@@ -36,11 +36,16 @@
 #   review:    judgment-day | plugins | none, or ONE list: [judgment-day, thermo, ponytail, pstack]
 #              — the review the close names, in every lane and --sdd mode. judgment-day (the
 #              default when absent) orders Judgment Day over the branch; plugins names only the
-#              review skills of `plugins:` (below) and no Judgment Day; none adds no review note.
+#              review pieces of `plugins:` (below) and no Judgment Day; none adds no review note.
+#              One focus per plugin, each piece once (the first plugin declared wins a piece two carry):
+#              thermo = maintainability; ponytail = senior review (correct, safe, load, tested, fast,
+#              lean); pstack = the diff's security and correctness, blast-radius (what breaks outside
+#              the diff), the comment-sicko agent (needless comments, workarounds) and maintainability.
 #              The list says it all in one field: hw LOADS the plugin of each plugin item (the
 #              `plugins:` path), the close names every item (Judgment Day, plus each plugin's
-#              review skill run first over the same committed range), and done-invoker refuses a
-#              done report that names no run of a skill, or `review-skip: <skill> — <why>`.
+#              review piece run first over the same committed range), and done-invoker refuses a
+#              done report that names no run of a skill or agent (a Skill call, or an Agent launch
+#              of `pstack:comment-sicko`), or `review-skip: <piece> — <why>`.
 #              judgment-day + `plugins:` with review skills (the scalar form) closes the same way.
 #              Any other value or item is refused before anything is built (rdd is retired: it
 #              warns and runs judgment-day). Keep `plugins:` (below) for plugins that are not review.

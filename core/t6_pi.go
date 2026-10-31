@@ -106,6 +106,27 @@ func (d *dsp) piAgentDirs(work string) string {
 	return out + exp
 }
 
+// piClaudeAgentDirs is the PATH-style list of `.claude/agents` directories hw-executor.ts registers with pi-subagents
+// (HW_PI_CLAUDE_AGENT_DIRS): the one a Claude executor of this lane sees, the worktree's. A lane with no product repo
+// has it linked at launch from its brain directory (linkLaneClaude), so before the worktree exists the brain's own
+// directory stands for it. "" when pi-subagents is not loaded (nothing to register with) or the path cannot travel in
+// a PATH-style list.
+func (d *dsp) piClaudeAgentDirs(work string) string {
+	if !d.piSubagentsReady() {
+		return ""
+	}
+	dir := ""
+	if work != "" && isDir(work+"/.claude/agents") {
+		dir = work + "/.claude/agents"
+	} else if d.c.t.get(d.proj, "product_repo") != "1" && d.proj != "" && isDir(d.c.brain+"/"+d.proj+"/.claude/agents") {
+		dir = d.c.brain + "/" + d.proj + "/.claude/agents"
+	}
+	if dir == "" || strings.ContainsAny(dir, " \t\n\v\f\r:") {
+		return ""
+	}
+	return dir
+}
+
 // piDir is _explorer_pi_dir; piAgentDirOK is _explorer_pi_agent_dir: the directory pi-subagents reads as an extra
 // user-scope agent dir, "" when the explorer's role is not there or the path cannot travel in a PATH-style list.
 func (x explorerSrc) piDir() string { return x.root + "/setup/pi/agents" }
@@ -422,6 +443,22 @@ func (d *dsp) piDelegableAgents(work, list string) string {
 	return strings.Join(out, " ")
 }
 
+// piRegisteredAgents: the specialists hw-executor.ts registers with pi-subagents itself — every one of the list that no
+// tracked `.pi/agents` copy provides (a copy is loaded by pi-subagents and wins), when hw passed it the directory.
+func (d *dsp) piRegisteredAgents(work, list string) string {
+	if d.piClaudeAgentDirs(work) == "" {
+		return ""
+	}
+	have := strings.Fields(d.piDelegableAgents(work, list))
+	var out []string
+	for _, n := range strings.Fields(list) {
+		if !has(have, n) {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // piOpsProcedureFile is _pi_ops_procedure_file: the brainer's copy of ops-investigator's definition, "" when absent.
 func (d *dsp) piOpsProcedureFile() string {
 	f := d.c.brain + "/" + d.proj + "/.claude/agents/ops-investigator.md"
@@ -448,12 +485,24 @@ func (d *dsp) piManifestLines(dir string) string {
 	proc := d.piOpsProcedureFile()
 	// A dry run has no worktree yet: the lane's checkout is the stand-in for what the worktree will carry.
 	co := orDefaultStr(d.c.checkout(d.proj), dir)
-	deleg := d.piDelegableAgents(co, d.piSpecialistAgents(co))
+	specs := d.piSpecialistAgents(co)
+	deleg := d.piDelegableAgents(co, specs)
+	reg := d.piRegisteredAgents(co, specs)
 	var spec string
-	if deleg != "" {
-		spec = "DELEGABLE through pi-subagents: " + deleg + " (the worktree's tracked .pi/agents, reached by PI_SUBAGENT_EXTRA_AGENT_DIRS because -na leaves the project untrusted; every call must pass model, their files pin openai-codex); any other .claude/agents specialist is not delegable, and the preamble says so"
-	} else {
-		spec = "the lane's .claude/agents are NOT delegable: pi-subagents does not discover them, and the preamble says so"
+	switch {
+	case deleg == "" && reg == "" && specs == "":
+		spec = "the lane has no .claude/agents specialists to delegate to"
+	case deleg == "" && reg == "":
+		spec = "the lane's .claude/agents are NOT delegable: pi-subagents is not loaded (see the pi subagents line), and the preamble says so"
+	default:
+		var parts []string
+		if reg != "" {
+			parts = append(parts, "REGISTERED with pi-subagents by hw-executor.ts at session start: "+reg+" (read from "+d.piClaudeAgentDirs(co)+" via HW_PI_CLAUDE_AGENT_DIRS; Claude's tool names mapped to pi's in memory, the executor's model instead of the file's model:, nothing copied or rewritten)")
+		}
+		if deleg != "" {
+			parts = append(parts, "DELEGABLE through pi-subagents: "+deleg+" (the worktree's tracked .pi/agents, reached by PI_SUBAGENT_EXTRA_AGENT_DIRS because -na leaves the project untrusted; every call must pass model, their files pin openai-codex)")
+		}
+		spec = strings.Join(parts, "; ")
 	}
 	if proc != "" {
 		shown := proc

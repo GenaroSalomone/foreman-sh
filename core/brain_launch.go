@@ -109,7 +109,7 @@ func (b *brainRun) launch(args []string) int {
 	// A SESSION WITH NO TRANSCRIPT HAS NO CONVERSATION: decided before any key is sent.
 	if b.resume != "" {
 		// # MUTATION-ANCHOR: go-896-M01
-		_, has := b.sessionTranscript(b.resume)
+		_, has := b.sessionTranscript(b.resume, b.laneAccountDir(proj))
 		if !has {
 			b.noConversation = true
 		}
@@ -333,19 +333,20 @@ func (b *brainRun) launch(args []string) int {
 	}
 
 	// THE ACCOUNT, FOR THE BRAINER, from the same table `hw` reads for executors.
-	accountFlag := ""
-	if b.inPane == "" {
-		f, ok := b.accountEnv(proj, b.kind)
-		if !ok {
-			return 1
-		}
-		accountFlag = f
+	// A relaunch (--in-pane) IS THE SAME LAUNCH: the lane's declared account is carried like `brain <lane> --resume`
+	// carries it, because a pane shell can lack the CLAUDE_CONFIG_DIR its claude ran under (MEASURED 2026-10-31: `brain
+	// relaunch --all` left two personal-account brainers bare shells, "No conversation found").
+	accountFlag, acctOK := b.accountEnv(proj, b.kind) // # MUTATION-ANCHOR: go-1231-M01
+	if !acctOK {
+		return 1
 	}
 	acctDir := strings.TrimPrefix(accountFlag, "CLAUDE_CONFIG_DIR=")
-	// THE PANE'S ACCOUNT, NOT THE CALLER'S.
-	if b.inPane != "" && b.inproc {
+	// A LANE WITH THE DEFAULT ACCOUNT KEEPS THE PANE'S, NOT THE CALLER'S.
+	if b.inPane != "" && accountFlag != "" {
+		// the lane's account, resolved above, is the pane's too
+	} else if b.inPane != "" && b.inproc {
 		acctDir = b.getenv("CLAUDE_CONFIG_DIR")
-	} else if b.inPane != "" {
+	} else if b.inPane != "" { // # MUTATION-ANCHOR: go-806-M03
 		d, ok := b.paneConfigDir(b.inPane)
 		if !ok {
 			d = ""

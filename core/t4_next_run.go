@@ -92,22 +92,10 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 	if os.MkdirAll(tdir, 0o777) != nil {
 		a.die("cannot create " + tdir)
 	}
-	entry := ""
-	if s.nextSDD != "" {
-		e := nextFrameworkEntry(s.nextSDD)
-		if !a.nextApplySDD(s.wtdir, s.nextSDD) {
-			a.die("--sdd " + s.nextSDD + " has no speckit-* skill on disk for " + s.wtdir + ", so nothing was sent and the task counter did not move. Install Spec Kit where it is used, or re-task with --sdd none.")
-		}
-		if e != "" {
-			entry = bashSub("FIRST ACTION, before anything else: run " + e + " for this task. The framework mode\nfor it is " + s.nextSDD + " and what follows is its input, not a licence to start editing.\n\n")
-			if s.nextSDD == "speckit" {
-				entry = entry + "\n\n" + bashSub(a.nextSpeckitNote()) + "\n\n"
-			}
-		} else {
-			entry = bashSub("Framework mode for this task: " + s.nextSDD + ". hw forces no entry command.\n\n")
-		}
+	if s.nextSDD != "" && !a.nextApplySDD(s.wtdir, s.nextSDD) {
+		a.die("--sdd " + s.nextSDD + " has no speckit-* skill on disk for " + s.wtdir + ", so nothing was sent and the task counter did not move. Install Spec Kit where it is used, or re-task with --sdd none.")
 	}
-	msg := bashSub(a.nextMessage(s, nextSeq, entry))
+	msg := bashSub(a.nextMessage(s, nextSeq, s.nextSDD))
 
 	// The lease: held under the run's lock across delivery, consumption and the counter.
 	seconds, _ := a.nextRunEnv(s.rundir, "HW_CHAINING_LEASE_SECONDS", true)

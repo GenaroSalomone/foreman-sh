@@ -86,11 +86,6 @@ if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
   [ -n "$_self" ] || [ -t 0 ] || cat >/dev/null 2>&1 || :
   exit "$_rc"
 fi
-# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
-# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
-# and asks msys for real symlinks. Elsewhere OSTYPE never matches.
-case "${OSTYPE:-}" in msys*|cygwin*) . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/bin/msys-compat.sh" ;; esac
-
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_RP=0 WITH_REC=0 PERMISSIONS_OPT=""
 UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0 NO_CORE="${FOREMAN_SH_NO_CORE:-0}"   # FOREMAN_SH_NO_CORE=1 is the suite's seam (tests/_common.sh), not a user option: it skips the build and says so
@@ -253,10 +248,6 @@ case "$REQ_BY" in ""|required|warn|none) ;; *) die "--requested-by must be requi
 abspath() {  # absolute, symlinks resolved for the parts that exist
   local p
   p="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "$1")" || return
-  # Native Windows Python answers D:\a\b (and ends its line in \r); readlink and
-  # every shell here say /d/a/b. Measured 2026-09-28: a second identical install
-  # refused its own links as "another brain owns that name". msys/cygwin only.
-  case "${OSTYPE:-}" in msys*|cygwin*) p="$(cygpath -u "${p%$'\r'}")" ;; esac
   printf '%s\n' "$p"
 }
 
@@ -768,21 +759,6 @@ bash_major="${BASH_VERSINFO[0]}"
 case "$(uname -s)" in
   Darwin) ok "macOS" ;;
   Linux)  ok "Linux (tested in a container; no macOS Keychain — see docs/KNOWN-LIMITATIONS.md)" ;;
-  MINGW*|MSYS*|CYGWIN*)
-    # Native Windows installs, and says what is and is not proven (docs/INSTALL.md, Windows).
-    say "WARN  native Windows (Git Bash): measured by the setup suite on a CI runner with herdr and the agents stubbed; a real machine is unverified (docs/KNOWN-LIMITATIONS.md L1b). WSL2 is the proven way"
-    # The guard's hook is Windows Python run from Git Bash; an MSYS2 or Cygwin
-    # python3 first on PATH makes every hook refuse (it cannot decide there).
-    case "$(python3 -c 'import os, sys; print(os.name, sys.platform)' 2>/dev/null)" in
-      "nt win32"*) ok "python3 is native Windows Python" ;;
-      *) printf '  MISSING native Windows python3 first on PATH — found %s, and the read-only guard refuses every call under it. Install: https://www.python.org/downloads/windows/\n' "$(command -v python3 || echo none)"; missing=1; fix_tool "native Windows python3: https://www.python.org/downloads/windows/" ;;
-    esac
-    # hw and this installer LINK; with Developer Mode off Windows refuses a
-    # symlink, and MSYS's default would have copied instead, silently.
-    _lt="$(mktemp -d "${TMPDIR:-/tmp}/brain-install-link.XXXXXX")"
-    if : > "$_lt/a" && ln -s a "$_lt/l" 2>/dev/null && [ -L "$_lt/l" ]; then ok "symlinks"
-    else printf '  MISSING symlinks — hw and this installer link files. Enable Windows Developer Mode (Settings → System → For developers), then run this again\n'; missing=1; fix_tool "enable Windows Developer Mode (Settings → System → For developers)"; fi
-    rm -rf "$_lt" ;;
   *)      say "WARN  $(uname -s) is not supported — macOS and Linux only" ;;
 esac
 [ "$bash_major" -ge 3 ] || { printf '  MISSING bash >= 3\n'; missing=1; fix_tool "bash >= 3"; }
@@ -1082,11 +1058,7 @@ while [ ! -e "$d" ] && [ "$d" != / ]; do d="$(dirname "$d")"; done
 for l in "${LINKS[@]}"; do
   t="$BIN_OUT/$l"
   if [ -L "$t" ]; then
-    # On native Windows msys answers a link's target in its own spelling: one
-    # under %TEMP% reads back as /tmp/..., not the /c/... this installer wrote.
-    # There the question is whether it is the same file; elsewhere, the text.
     [ "$(readlink "$t")" = "$BRAIN/bin/$l" ] \
-      || { case "${OSTYPE:-}" in msys*|cygwin*) [ "$(readlink "$t")" -ef "$BRAIN/bin/$l" ] ;; *) false ;; esac; } \
       || die "$t already links to $(readlink "$t"), not $BRAIN/bin/$l — another brain owns that name; remove it or choose --bin-dir. Nothing was written"
   elif [ -e "$t" ]; then
     die "$t exists and is not a link this installer made — remove it or choose --bin-dir. Nothing was written"
@@ -1115,8 +1087,8 @@ printf '\nmechanism → %s\n' "$BRAIN"
 mkdir -p "$BRAIN/setup/guards" "$BRAIN/lanes"
 sync_dir() {  # <src dir> <dst dir> — the installer owns dst: mirror it
   local out n
-  # Git for Windows ships no rsync: the same mirror in Python (checksum, mode,
-  # links, deletions), counted the same way. A mirror that failed is fatal:
+  # Where rsync is absent: the same mirror in Python (checksum, mode, links,
+  # deletions), counted the same way. A mirror that failed is fatal:
   # counting its empty output once said "up to date" over a brain with no bin/.
   if type -P rsync >/dev/null 2>&1; then
     out="$(rsync -a --delete --checksum --itemize-changes "$1/" "$2/")" || die "rsync could not mirror $1 into $2"
@@ -1160,10 +1132,10 @@ for d, dirs, files in os.walk(src):
                 shutil.copy2(a, b)
                 n += 1
     dirs[:] = [x for x in dirs if not os.path.islink(os.path.join(d, x))]
-# Top-down, then reversed: a bottom-up walk takes its subdirectories from each
-# entry's own path, which on native Windows is Windows' spelling, not the one
-# dst was given in, and every file under a subdirectory then looked orphaned
-# (deleted, and copied back on the next run: 187 and 198 on windows-latest).
+# Top-down, then reversed: a bottom-up walk takes each subdirectory from its
+# own entry path, which need not be spelled the way dst was given, and a file
+# under a differently-spelled subdirectory could then look orphaned and be
+# deleted only to be copied back on the next run.
 for d, dirs, files in reversed(list(os.walk(dst))):
     rel = os.path.relpath(d, dst)
     for name in dirs + files:
@@ -1208,7 +1180,6 @@ if [ "$CORE_BUILD" = 1 ]; then
   _cb="$(mktemp -d "${TMPDIR:-/tmp}/hw-core-build.XXXXXX")"
   # the directory bin/hw looks in: the same os-arch spelling as its _core_find
   _hos="$(uname -s | tr 'A-Z' 'a-z')"; _har="$(uname -m)"
-  case "$_hos" in mingw*|msys*|cygwin*) _hos=windows ;; esac
   case "$_har" in x86_64) _har=amd64 ;; aarch64) _har=arm64 ;; esac
   if ! "$SRC/setup/build-core" --native --out "$_cb/out" >"$_cb/log" 2>&1; then
     say "hw-core did not build. The builder said:"
@@ -1224,14 +1195,15 @@ if [ "$CORE_BUILD" = 1 ]; then
       _t="$BRAIN/core/dist/$(basename "$_d")"; mkdir -p "$_t"
       for _f in "$_d"*; do put_core "$_f" "$_t/$(basename "$_f")"; done
     done
-    # Go is the only implementation of the five, so no switch file is written. A file the user has stays as it is (only a
-    # `<tool>=bash` line of the eight small tools still means anything, and the loop below says the rest) — except the one
-    # `--no-core` wrote earlier, byte for byte: it says nothing now, and no user chose it by hand.
+    # Go is the only implementation of every tool, so no switch file is written. A file the user has stays as it is and the
+    # loop below says, line by line, that nothing in it chooses anything — except the one `--no-core` wrote earlier, byte for
+    # byte: it says nothing now, and no user chose it by hand.
     if [ -e "$_implf" ] && [ "$(cat "$_implf")" = "$(impl_file_text)" ]; then rm -f "$_implf"; chg "$_implf — the one --no-core wrote is removed: Go is the default again"   # MUTATION-ANCHOR: 993-M01
     elif [ -e "$_implf" ]; then
       ok "$_implf is yours and stays as it is"
-      # 0.6.0 has no bash for hw, brain, channel-send or the invokers: a line that chose it (a default, a bare word, one of those five)
-      # means nothing now, and only a `<tool>=bash` line of the eight small tools still does. Said once here, never edited out.
+      # 0.6.0 removed the bash of hw, brain, channel-send and the invokers; 0.7.0 removed the bash of the eight small tools. Every
+      # line that chose one means nothing now, and the loop says which release removed it and how far back to go. Said once here,
+      # never edited out.
       _n=0
       while IFS= read -r _l || [ -n "$_l" ]; do
         _n=$((_n + 1)); _l="${_l%%#*}"; _l="$(printf '%s' "$_l" | tr -d '[:space:]')"
@@ -1239,8 +1211,7 @@ if [ "$CORE_BUILD" = 1 ]; then
         case "$_v" in go) continue ;; esac
         case "$(printf '%s' "$_k" | tr 'A-Z_' 'a-z-')" in
           stop-hook|hw-secret|hw-sandbox|browser-close|brain-archive|secret-unlock|opencode-auto|codex-channel-session-hook)
-            if [ "$_v" = bash ]; then say "$_implf line $_n ($_k=bash) still runs that tool on its bash, through 0.6.x"
-            else say "WARN  $_implf line $_n ($_k=$_v) means nothing: only the word bash selects an implementation"; fi ;;
+            say "WARN  $_implf line $_n ($_l) means nothing since 0.7.0, which removed the bash of the eight small tools: Go runs; delete the line (the way back for that tool is foreman-sh upgrade --to 0.6.3)" ;;
           *) say "WARN  $_implf line $_n ($_l) means nothing since 0.6.0, which removed the bash of hw, brain, channel-send and the invokers: Go runs; delete the line (the way back is foreman-sh upgrade --to 0.5.0)" ;;   # MUTATION-ANCHOR: 993-M08
         esac
       done < "$_implf"

@@ -132,6 +132,11 @@ func (a *app) cmdStatusFull() int {
 		}
 		a.info("scoped to " + project + " — `hw status` with no project adds the cross-lane checks")
 	}
+	// THE RETRO THE REPORT DID NOT RUN: a reminder, checked here because this is the
+	// screen a brainer opens. It clears itself when engram holds setup/retro/<task>.
+	if project == "" || project == retroLane {
+		a.retroQuiet()
+	}
 	// A NEW VERB NOBODY FINDS IS A VERB NOBODY READS: the command that says what those runs REPORTED
 	p := project
 	if p == "" {

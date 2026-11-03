@@ -248,43 +248,40 @@ func (d *dsp) explorerResolve() {
 	}
 }
 
-// tierNote is _explorer_tier_note: the paragraph the prompt carries, "" when the explorer is not there.
-func (x explorerSrc) tierNote(vendor string) string {
-	m := x.model(vendor)
-	var call, implement string
+// explorerTier is what the prompt's tier note needs of the explorer: its model, how this vendor calls it, and who does the
+// defined edits there. ok is false when the explorer is not on this executor.
+type explorerTier struct{ model, call, implement string }
+
+func (x explorerSrc) tier(vendor string) (t explorerTier, ok bool) {
+	t.model = x.model(vendor)
 	switch vendor {
 	case "claude":
 		if x.claudeJSON() == "" {
-			return ""
+			return t, false
 		}
-		call = `the Agent tool with subagent_type "` + explorerName + `"`
-		implement = `a sonnet subagent (the Agent tool with model "sonnet"), when the edit is already defined`
+		t.call = `the Agent tool with subagent_type "` + explorerName + `"`
+		t.implement = `a sonnet subagent (the Agent tool, model "sonnet")`
 	case "opencode":
 		if x.opencodeOverlay() == "" {
-			return ""
+			return t, false
 		}
-		call = `the task tool with subagent_type "` + explorerName + `"`
-		implement = "a mid-tier subagent (general-terra), when the edit is already defined"
+		t.call = `the task tool with subagent_type "` + explorerName + `"`
+		t.implement = "a mid-tier subagent (general-terra)"
 	case "codex":
 		if x.codexArgs() == "" {
-			return ""
+			return t, false
 		}
-		call = `the spawn_agent tool with agent_type "` + explorerName + `"`
-		implement = "a mid-tier agent (terra), when the edit is already defined"
+		t.call = `the spawn_agent tool with agent_type "` + explorerName + `"`
+		t.implement = "a mid-tier agent (terra)"
 	case "pi":
 		if x.piAgentDirOK() == "" || !x.piSubagentsReady() {
-			return ""
+			return t, false
 		}
-		call = `the subagent tool with agent "` + explorerName + `"`
-		implement = "yourself: pi's roster already runs builds on its build model"
+		t.call = `the subagent tool with agent "` + explorerName + `"`
 	default:
-		return ""
+		return t, false
 	}
-	return "DELEGATE BY MODEL TIER. Reading is the expensive part of this work, so the top tier is kept for deciding.\n" +
-		"  searching, mapping code, finding call sites, pulling docs -> " + explorerName + " (" + m + "): " + call + ". It returns the answer with file:line, not the files.\n" +
-		"  edits and running tests -> " + implement + ".\n" +
-		"  design, audit and the verdict -> you.\n" +
-		"Before you read more than three files to answer one question, hand that question to " + explorerName + "."
+	return t, true
 }
 
 // modelIsTopTier is model_is_top_tier: opus and fable on the last path segment. Models hw cannot rank are not top tier.
@@ -316,7 +313,7 @@ func (d *dsp) checkTopTierCeiling() {
 // explorerFor is the explorer's source for a re-task or a revive, which hold no dispatch state: the brain's root and
 // the lane's pin of haiku, read from the lane table the way lane_get reads model_pins ("" when the lane pins none).
 func (a *app) explorerFor(proj string) explorerSrc {
-	x := explorerSrc{root: a.reviveBrainRoot(), piHome: orDefaultStr(a.getenv("PI_CODING_AGENT_DIR"), a.getenv("HOME")+"/.pi/agent")}
+	x := explorerSrc{root: a.reviveBrainRoot(), piHome: piAgentDirOf(a.getenv)}
 	if proj == "" || !a.c.t.known(proj) {
 		return x
 	}

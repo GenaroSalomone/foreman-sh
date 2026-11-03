@@ -560,7 +560,10 @@ func (d *doneRun) reapWorktree(proj, main, wt, branch, base string) bool {
 	if d.agentsBlock {
 		doneGit(wt, "checkout", "--", "AGENTS.md")
 	}
-	if _, rc := doneTool("", nil, "git", "-C", main, "worktree", "remove", wt); rc != 0 {
+	if !removeWithRunTmps(d.app.getenv, wt, a.warn, func() bool {
+		_, rc := doneTool("", nil, "git", "-C", main, "worktree", "remove", wt)
+		return rc == 0
+	}) {
 		a.warn("could not remove " + wt + " — run it by hand and read what git says")
 		return false
 	}

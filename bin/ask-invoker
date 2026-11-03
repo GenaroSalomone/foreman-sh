@@ -49,7 +49,6 @@
 # ~11 s, one at a time) or runs with ONE line per state; a binary that is not built dies naming setup/build-core --native.
 # HW_IMPL, HW_IMPL_<TOOL> and the switch file name a bash twin that 0.6.0 removed: bin/impl-retired.sh says so once and Go runs.
 set -euo pipefail
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 # locate the real brain/bin through the ~/bin symlink, hop by hop (`readlink -f` reached macOS only in 12.3)
 _src="${BASH_SOURCE[0]}"
 while [ -L "$_src" ]; do
@@ -65,6 +64,11 @@ _inv_go="${HW_INVOKERS:-$INVOKER_BIN_DIR/../core/dist/$_inv_os-$_inv_arch/invoke
 if [ -z "${HW_INVOKERS:-}" ] && [ -x "$_inv_go" ] && [ -n "$(find "$INVOKER_BIN_DIR/../core" -path '*/dist' -prune -o \( -name '*.go' -o -name go.mod \) -newer "$_inv_go" -print -quit 2>/dev/null)" ]; then
   _inv_msg="$("$INVOKER_BIN_DIR/core-rebuild" "$INVOKER_BIN_DIR" "$_inv_go" ask-invoker 2>&1)" || :   # stale: rebuilt, or the old one runs and this says so once per state
   [ -z "$_inv_msg" ] || printf 'ask-invoker: %s\n' "$_inv_msg" >&2
+fi
+# a fresh worktree has no core/dist of its own: the main checkout's build serves it (that build can be older than this tree's core/)
+if [ -z "${HW_INVOKERS:-}" ] && [ ! -x "$_inv_go" ]; then
+  _inv_main="$(cd "$INVOKER_BIN_DIR" 2>/dev/null && _gc="$(env -u GIT_DIR -u GIT_COMMON_DIR git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_gc" ] && cd "$_gc/.." 2>/dev/null && pwd -P)" || _inv_main=""
+  [ -z "$_inv_main" ] || [ ! -x "$_inv_main/core/dist/$_inv_os-$_inv_arch/invokers" ] || _inv_go="$_inv_main/core/dist/$_inv_os-$_inv_arch/invokers"
 fi
 if [ -x "$_inv_go" ]; then exec "$_inv_go" --bin-dir "$INVOKER_BIN_DIR" ask-invoker "$@"; fi
 printf 'ask-invoker: the Go invokers are not built: run setup/build-core --native (it needs Go 1.22 or newer, https://go.dev/dl)\n' >&2

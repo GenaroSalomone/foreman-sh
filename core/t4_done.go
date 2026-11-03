@@ -195,6 +195,14 @@ func doneCurrentTask(rundir string) string {
 
 // ── cmd_done ────────────────────────────────────────────────────────────────
 
+// recordRetro: a `--blocked` close owes no retro. The markers inside markRetroPending cover the rest, but the
+// chaining-lease fallback and the legacyKeep path never write them, so the flag itself is the guard.
+func (d *doneRun) recordRetro(proj, task, rundir string) {
+	if !d.blocked {
+		d.markRetroPending(proj, task, rundir)
+	}
+}
+
 func (d *doneRun) run(proj, task string) int {
 	a := d.app
 	d.t0 = doneNow()
@@ -232,6 +240,7 @@ func (d *doneRun) run(proj, task string) int {
 		a.info("it had reported BLOCKED and was waiting for a ruling; closing it ends the wait")
 	}
 	d.markClosedByHand(rundir)
+	d.recordRetro(proj, task, rundir)
 
 	tab := d.latestRunRecord(proj, task, "tab")
 	if tab == "" {

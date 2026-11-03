@@ -33,13 +33,14 @@ lists every command and flag; `hw help <topic>` shows one part.
 
 ## Frameworks (`--sdd`)
 
-`--sdd` is required wherever a framework is in play. To use another
-methodology your repository already has, name it in the brief.
+`none` is the default and `--sdd` is optional: a dispatch without it runs outside any
+framework, even where Spec Kit is installed. To use another methodology your
+repository already has, name it in the brief.
 
 | Mode | Use it for | Needs on the machine |
 |---|---|---|
-| `none` | Read-only, measurement, audit and operational work; the brief is the whole contract. | Nothing. |
-| `speckit` | A task that should go through Spec Kit's phases. | A `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Without one, `hw` refuses before building anything. Claude Code only. |
+| `none` (default) | Any task; the brief is the whole contract. Who designs and who builds is the brief's `kind:`, not a mode. | Nothing. |
+| `speckit` (opt-in) | A task that should go through Spec Kit's phases. | A `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Without one, `hw` refuses before building anything. Claude Code only. |
 
 There is no other mode. `--sdd gentle` (and `sdd: gentle` in a brief) is gone:
 it warns and runs `--sdd none`.

@@ -29,8 +29,6 @@ func unameS() string {
 		return "Darwin"
 	case "linux":
 		return "Linux"
-	case "windows":
-		return "Windows_NT"
 	}
 	return runtime.GOOS
 }

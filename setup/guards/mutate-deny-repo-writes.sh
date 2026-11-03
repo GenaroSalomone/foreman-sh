@@ -23,10 +23,9 @@ mkdir -p "$BASE"
 trap '[ "$OWN_ART" -eq 0 ] || rm -rf "$ART"' EXIT
 
 # lanes_of_guard <js expression of the module>: what the guard's own table says,
-# printed by node. The module goes through the environment and pathToFileURL,
-# never spliced into `import('…')`: on Git Bash a `/c/…` path there resolves to
-# `C:\c\…` and the import fails (windows.yml 37090376222, ERR_MODULE_NOT_FOUND),
-# while msys hands an environment value to node in its Windows spelling.
+# printed by node. The module path goes through the environment and
+# pathToFileURL, never spliced into `import('…')`: a path interpolated into a JS
+# string literal is one quoting rule away from importing something else.
 lanes_of_guard() {
   GUARD_JS="$ROOT/setup/guards/deny-repo-writes.js" EXPR="$1" node --input-type=module -e '
 import { pathToFileURL } from "node:url";

@@ -24,7 +24,8 @@ type nextState struct {
 	rundir, wtdir, prior      string
 	reopened                  bool
 	reopenedMarker            string
-	auth                      string
+	requestedBy               string
+	authorizes                []string
 	seq, marker               string
 
 	route, target, endpoint string
@@ -110,11 +111,11 @@ loop:
 	if s.text == "" {
 		a.die("the next task is empty — there is nothing to send")
 	}
-	auth, ok := a.nextAuthorization(s.brief)
+	requested, entries, ok := a.nextAuthorization(s.brief)
 	if !ok {
 		a.die("the re-task brief's authorization was refused above. NOTHING was sent.")
 	}
-	s.auth = auth
+	s.requestedBy, s.authorizes = requested, entries
 	// THE REVIEW THE NEW BRIEF CHOSE is checked here too, before anything is sent: a bad value, or `plugins` with
 	// nothing to name, refuses the re-task exactly as the launch does.
 	if s.brief != "" {

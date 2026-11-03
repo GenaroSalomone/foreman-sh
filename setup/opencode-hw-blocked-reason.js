@@ -77,14 +77,6 @@ const execFileP = promisify(execFile);
 // 2^31-1 to 1ms, so the override is floored and capped before it is passed on.
 const RPC_TIMEOUT_REQ = Math.floor(Number(process.env.HW_RPC_TIMEOUT_MS));
 const RPC_TIMEOUT_MS = RPC_TIMEOUT_REQ > 0 ? Math.min(RPC_TIMEOUT_REQ, 2_147_483_647) : 2_000; // # MUTATION-ANCHOR: 713-M01
-// Windows cannot execute a `#!` script (hw, herdr-rpc are bash): Git Bash's own
-// bash runs it, found from the mount root bin/msys-compat.sh exports, not from
-// PATH, where `bash` is WSL's launcher. A cold start there is ~10x slower.
-const execFileAsync = process.platform === "win32"
-  ? (file, args, opts = {}) => execFileP(
-      process.env.HW_MSYS_ROOT ? `${process.env.HW_MSYS_ROOT}/usr/bin/bash.exe` : "bash",
-      [file, ...args], { ...opts, timeout: (opts.timeout ?? 0) * 10 })
-  : execFileP;
 
 // The brain this plugin serves: HW_BRAIN_ROOT when set, else the tree the
 // plugin file itself lives in. The installed plugin is a symlink to
@@ -135,7 +127,7 @@ async function publish(tokens) {
       tokens,
     };
     const rpc = join(brainBin(), "herdr-rpc");
-    await execFileAsync(rpc, ["call", "pane.report_metadata", JSON.stringify(params)], {
+    await execFileP(rpc, ["call", "pane.report_metadata", JSON.stringify(params)], {
       timeout: RPC_TIMEOUT_MS,
     });
   } catch {
@@ -192,7 +184,7 @@ async function hasPendingRuling() {
 async function agentStatus() {
   try {
     const rpc = join(brainBin(), "herdr-rpc");
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execFileP(
       rpc,
       ["call", "agent.get", JSON.stringify({ target: process.env.HERDR_PANE_ID })],
       { timeout: RPC_TIMEOUT_MS },

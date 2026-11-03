@@ -27,7 +27,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 
 **The Go core**
 
-- [L16. The Go core and the tools still on bash](#l16-hw-brain-channel-send-and-the-invokers-run-in-go-with-no-switch-eight-small-tools-run-go-with-a-per-tool-bash-way-back-through-06x-and-whatever-is-not-ported-stays-on-bash)
+- [L16. The Go core and the tools still on bash](#l16-hw-brain-channel-send-and-the-invokers-run-in-go-with-no-switch-and-so-do-the-eight-small-tools-whatever-is-not-ported-stays-on-bash)
 
 **Agents**
 
@@ -36,6 +36,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 - [L22. `plugins:` reach claude and pi only](#l22-plugins-loads-pinned-plugins-into-claude-and-pi-executors-only-and-the-export-ships-none)
 - [L4. OpenCode background subagents are experimental](#l4-opencode-background-subagents-are-experimental)
 - [L21. The cheap explorer is asked for, not forced](#l21-every-executor-is-handed-a-cheap-explorer-the-prompt-asks-for-it-nothing-forces-it)
+- [L27. Lane-local executor rules reach Claude Code and pi only](#l27-lane-local-executor-rules-reach-claude-code-and-pi-only)
 - [L14. `--sdd speckit` is Claude Code only](#l14---sdd-speckit-is-claude-code-only)
 - [L17. A Claude Code session can show other lanes' changes](#l17-a-claude-code-session-started-before-basheditdiff-was-turned-off-keeps-showing-other-lanes-changes)
 - [L20. `brain relaunch` and background tasks](#l20-brain-relaunch-moves-a-panes-background-tasks-out-of-the-session-the-resumed-claude-does-not-list-them)
@@ -76,7 +77,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 **Versions**
 
 - [L15. Two version floors are a baseline](#l15-version-floors-two-of-them-are-a-baseline-not-a-measurement)
-- [L18. The incremental verdict and marker-only changes](#l18-the-incremental-verdict-trusts-a-marker-only-runner-change-and-540-may-be-skipped-by-two-gate-paths)
+- [L18. The marker-only strip and 540's orphan scan](#l18-the-marker-only-strip-pays-a-full-run-for-the-shapes-it-does-not-parse-and-540s-orphan-scan-stops-at-a-subjects-own-body)
 - [L19. A chained incremental verdict](#l19-a-chained-incremental-verdict-compounds-gate-selects-blind-spot-and-fast-gates-outrank-a-full-run)
 - [L25. `setup/heavy` reports a frozen run, it does not unfreeze it](#l25-setupheavy-reports-a-frozen-or-starved-run-it-does-not-unfreeze-it)
 
@@ -100,12 +101,13 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 - **Evidence:** macOS and Linux (container) `measured`.
 - **Workaround:** none on Windows (L1b).
 
-### L1b. Windows is not supported
+### L1b. Windows was removed in 0.7.0
 - **Scope:** Windows, native, under Git Bash or under WSL2.
-- **Impact:** from 0.4.0-rc.5 CI runs on Linux and macOS only, and nothing is
-  tested on Windows. The Git Bash compatibility layer (`bin/msys-compat.sh`,
-  `bin/sitecustomize.py`) still ships and is no longer maintained. WSL2 is a
-  Linux, so L1's Linux path may work there; it is `unverified`.
+- **Impact:** the Windows code was deleted before the 0.7.0 freeze: the
+  `_windows.go` build files, `bin/msys-compat.sh` and its source lines, the
+  native-Windows mutation exemption and the Windows CI workflow. There is no
+  Windows path to maintain. WSL2 is a Linux, so L1's Linux path may work
+  there; it is `unverified`.
 - **Evidence:** none kept current; the last Windows CI job (0.4.0-rc.4) was red.
 - **Workaround:** use a macOS or Linux machine.
 
@@ -157,18 +159,18 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 
 ## The Go core
 
-### L16. `hw`, `brain`, `channel-send` and the invokers run in Go, with no switch; eight small tools run Go with a per-tool bash way back through 0.6.x, and whatever is not ported stays on bash
-- **Scope:** every `hw` verb, `brain`, `channel-send`, `ask-invoker` and `done-invoker`, with no switch to bash (0.6.0 removed it); and eight small tools that default to Go and keep a per-tool bash through 0.6.x (their bash goes in 0.7.0). macOS and Linux only (L1, L1b).
+### L16. `hw`, `brain`, `channel-send` and the invokers run in Go, with no switch; and so do the eight small tools; whatever is not ported stays on bash
+- **Scope:** every `hw` verb, `brain`, `channel-send`, `ask-invoker` and `done-invoker`, with no switch to bash (0.6.0 removed it); and eight small tools — the five wrappers, `hw-sandbox`, the Stop hook and `hw secret` — whose bash was removed in 0.7.0, so they run Go with no switch either. macOS and Linux only (L1, L1b).
 - **Impact:**
   - **There is no switch.** `hw`, `brain`, `channel-send`, `ask-invoker` and `done-invoker` run
     `hw-core`, and 0.6.0 removed the bash that `HW_IMPL` used to choose. `HW_IMPL`,
     `HW_IMPL_<VERB>` (or `HW_IMPL_BRAIN`, `HW_IMPL_CHANNEL_SEND`, `HW_IMPL_ASK_INVOKER`, `HW_IMPL_DONE_INVOKER`) set to `bash` or `shadow`, and the same words in
     `~/.config/hw/impl` (`default=bash`, a bare `bash` line, `<verb>=bash`), are read only to say
-    so: one line per state, "bash was removed in 0.6.0; running Go — delete this line", and Go
+    so: one line per state, "bash was removed; running Go — delete this line", and Go
     runs. It never stops the command: a hook calls `hw` every turn. `hw shadow` is gone (it
-    says so and exits 64). A `<tool>=bash` line for one of the eight small tools below keeps its
-    meaning, and is not warned about. The way back to bash is the previous release,
-    `foreman-sh upgrade --to 0.5.0`. `bin/hw` is a shim that finds `hw-core` and execs it:
+    says so and exits 64). A `HW_IMPL_<TOOL>=bash` or `<tool>=bash` line for one of the eight
+    small tools below is retired the same way since 0.7.0, and Go runs. The way back to bash is
+    `foreman-sh upgrade --to 0.6.3` (for `hw` itself, 0.5.0 was the last release with its bash). `bin/hw` is a shim that finds `hw-core` and execs it:
     it has no bash body, and a lane build hook outside `lanes/` is refused (hw used to source such
     a file into its own bash, and that bash is gone; a builder is Go now). `brain`, `channel-send`,
     `ask-invoker` and `done-invoker` are shims too: each keeps its name and execs its Go binary.
@@ -188,11 +190,10 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   - **The Stop hook** (`bin/hw-stop-hook.sh`, run at every turn end of every wired
     Claude Code and Codex session) runs in Go by default (0.6.0): the registered script stays bash and execs
     `hw-core stop-hook`, so no hook configuration changes on upgrade. It runs the turn end in
-    process instead of starting a second `hw`. The way back through 0.6.x is `HW_IMPL_STOP_HOOK=bash`
-    or a `stop-hook=bash` line of the switch file; only the word `bash` selects it (`HW_IMPL` and the
-    file's default line no longer choose, and `shadow` is not offered: the hook writes markers and
-    herdr tokens, and a second run would count a second turn). A `hw-core` that is not built or older
-    than `core/` leaves the hook's bash to run, silently. The Go does not need `python3` or `jq` on PATH; the bash goes quiet without them.
+    process instead of starting a second `hw`. 0.7.0 removed its bash body: a `HW_IMPL_STOP_HOOK=bash`
+    or `stop-hook=bash` line is said once and never selects anything. A `hw-core` that is not built
+    names `setup/build-core --native` and the hook exits 0 — it must never break a session. The Go
+    does not need `python3` or `jq` on PATH.
   - **`brain`.** `bin/brain` runs in Go (`hw-core brain`). Where the Go answers differently from the bash of 0.5.x on the same input, the
     difference is one of two, both pinned by `core/brain_parity_test.go` (frozen goldens of the 0.5.x bash, which no longer ships): a
     projects.json that does not load prints the words of the bash loader (jq's,
@@ -204,17 +205,17 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
     status and every other byte are the same).
   - **No Go, or a Go older than 1.22:** `install.sh` refuses before writing anything, and `--no-core`
     is refused too (removed in 0.6.0). hw-core is required: there is no longer a Go-less install.
-  - **Eight small tools run in Go by default (0.6.0) and keep their bash as the way back through 0.6.x.** The five
-    wrappers below, `hw-sandbox`, the Stop hook and `hw secret` (both described here): set `HW_IMPL_<TOOL>=bash`, or put a
-    `<tool>=bash` line in `~/.config/hw/impl`, to run one on bash. Only the word `bash` selects it; the global `HW_IMPL` and the
-    file's default line no longer choose for these tools. The bash of all eight goes in 0.7.0.
+  - **Eight small tools run in Go, with no switch (0.7.0).** The five wrappers below, `hw-sandbox`, the Stop hook and
+    `hw secret` are shims that exec their `hw-core` verb. Their bash bodies are gone, and `bin/wrapper-go.sh` with them:
+    `HW_IMPL_<TOOL>=bash` or a `<tool>=bash` line in `~/.config/hw/impl` is read only to say, once per state, that bash
+    was removed and to run Go; it never stops the command. The way back for one of these tools is
+    `foreman-sh upgrade --to 0.6.3`.
   - **Five small wrappers run in Go.** `browser-close`,
     `brain-archive`, `secret-unlock`, `opencode-auto` and `codex-channel-session-hook.sh`
-    exec `hw-core <tool>` unless `HW_IMPL_<TOOL>` (else the `<tool>=` line of
-    `~/.config/hw/impl`) says `bash`; `bin/wrapper-go.sh` is the switch. Any other word is Go: there is one way back,
-    and it is spelled out.
-    A `hw-core` not built, or older than `core/`, says so and the bash answers (every time when
-    the environment asked for Go, once per state otherwise). `hw-reconcile` stays bash:
+    are shims that exec `hw-core <tool>`; the transcripts the bash left behind
+    (`core/testdata/wrappers/`) hold the Go to what it answered (`setup/tests/1027`).
+    A `hw-core` that is not built names `setup/build-core --native` and exits 1; one older than
+    `core/` is rebuilt by `bin/core-rebuild` when a toolchain is on PATH. `hw-reconcile` stays bash:
     nothing on the runtime path calls it. Three differences, all at the edge of the shell:
     a failed `exec` is worded as bash 3.2 words it (other bash versions word it differently), the
     hook's sequence number is the clock in nanoseconds with no `python3` needed (the bash exits 0
@@ -227,12 +228,10 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
     lane `build` hook of any other name is refused before anything is created: `hw` has no bash left to source it into
     (dispatch with `--worktree none` for a plain work directory).
   - **`hw secret` / `secret-unlock`.** `bin/hw-secret` (and `bin/secret-unlock`, which execs
-    it) runs in Go (`hw-core hw-secret`) by default (0.6.0). The way back through 0.6.x is
-    `HW_IMPL_HW_SECRET=bash` or a `hw-secret=bash` line of the switch file (`HW_IMPL_SECRET_UNLOCK=bash` for
-    `secret-unlock`); `HW_IMPL` and the file's default line do not choose. `put` is not in the Go port and
-    stays bash under every mode, so the one writer of the vault is one implementation. The Go answers the same command line with the
+    it) runs in Go (`hw-core hw-secret`) with no switch since 0.7.0. `put` was ported in 0.7.0 too,
+    so the one writer of the vault is one implementation. The Go answers the same command line with the
     same stdout, stderr, exit status and files (`setup/tests/1077` diffs 84 scenarios
-    against the bash's recorded answers; `1009` and `1012` run under both) and
+    against the bash's recorded answers; `1009` and `1012` drive the real tool through its shim) and
     keeps the guard contract (`1010`): `hw secret run <item>[.<field>] --as VAR -- <cmd>`
     is the one road to a value, `BW_*` never reaches the child, and no value is printed,
     written or put in argv. Two differences, both on purpose or unavoidable: the Go reads
@@ -263,8 +262,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
     (101, 798, 81). A fix to a ported verb goes to `core/`.
 - **Evidence:** `measured`: the golden contract compares stdout, stderr, exit status and the
   resulting tree byte for byte; the binary is reproducible (the same sha256 on two builds).
-  `unverified`: Windows: `hw-core.exe` is built
-  by the same builder, but use on a real Windows machine is not measured (L1b).
+  Windows was removed in 0.7.0 and no Windows binary is built (L1b).
 - **Workaround:** none inside 0.6.0: `hw-core` is required (`setup/build-core --native`, Go 1.22 or newer).
   To get the bash back, install the previous release: `foreman-sh upgrade --to 0.5.0 --brain <brain>`.
 
@@ -301,17 +299,38 @@ it leaves the brain directory, is unguarded even with the hook registered.
   - **No account switch.** `CLAUDE_CONFIG_DIR` is Claude Code's: for pi the
     manifest says `NOT APPLIED`.
   - **Specialists run on pi's model and pi's tools.** pi-subagents reads no
-    `.claude/agents`, so `hw` names the worktree's directory
-    (`HW_PI_CLAUDE_AGENT_DIRS`) and the adapter registers each file with
+    `.claude/agents`, so `hw` names the worktree's directory and the account's
+    user-level one (`$CLAUDE_CONFIG_DIR/agents`, default `~/.claude/agents`, where
+    `jd-judge-a`, `jd-judge-b` and `jd-fix-agent` live) in
+    `HW_PI_CLAUDE_AGENT_DIRS`, and the adapter registers each file with
     pi-subagents when the session starts, translated in memory (nothing is
-    copied or rewritten): a pi executor delegates to the same specialists a
-    Claude one sees. What does not carry over: the file's `model:` (a Claude
-    alias is not a pi model, so a specialist runs on the executor's), and the
-    tools pi has no counterpart for (`Task`, `WebFetch`, `WebSearch`, MCP
-    tools: dropped, and the receipt's `pi_specialists` row names them), so a
-    specialist whose job needs one cannot do it under pi. Specialists run in
-    the foreground. A checkout that tracks `.pi/agents` keeps its own copies
+    copied or rewritten): a pi executor delegates to the same specialists and
+    judges a Claude one sees (the lane's file shadows the account's of the same
+    name). What does not carry over: the file's `model:` (a Claude alias is not a
+    pi model, so a specialist runs on the executor's), and the tools pi has no
+    counterpart for, dropped and named in the receipt's `pi_specialists` row (`WebSearch`, `Task` and `mcp__*`):
+    `Task` (a child of a child: measured, `allowNestedSubagents` and
+    `tools: subagent` both leave the child without a `subagent` tool) and `mcp__*`
+    (the judges' `mem_search`: pi-subagents hands a child an extension-registered
+    MCP server only when it runs in the background, and that needs the host pi to
+    carry `@earendil-works/chord`; until it does, a judge reviews from the code
+    alone). `WebFetch` carries over as pi-web-access's `fetch_content` when that
+    package is installed; `WebSearch` does not (a child given `web_search` answered
+    that it had no such tool, cause not found). Specialists
+    run in the foreground. A checkout that tracks `.pi/agents` keeps its own copies
     for the names they cover; those pin a model the call must override.
+  - **The account's global rules reach pi as a context file.** pi loads
+    `<agent dir>/CLAUDE.md` and the ones in the working directory's ancestors, not
+    the account's `~/.claude/CLAUDE.md`. The adapter adds `$CLAUDE_CONFIG_DIR/CLAUDE.md`
+    to the run's context files in `before_agent_start` (pi's own slot for user
+    instructions; read, not copied, nothing under `~/.pi`) and writes a
+    `pi_global_rules` receipt row. A pi-subagents child does not get it.
+  - **Plugin skills are read, not invoked.** pi has no Skill tool: the plugin
+    package (`-e`) puts its skills in the executor's catalogue under their bare
+    names, and the model runs one by reading its `SKILL.md` (or `/skill:<name>`);
+    pstack's own pi extension supplies the `agent` tool for `pstack:comment-sicko`.
+    `done-invoker` proves a pi executor's review skills from its pi session
+    (a `SKILL.md` read, an `agent`/`subagent` call), not from the report text.
   - **In a product lane, pi is not at parity on skills.** Of the skills a Claude
     executor loads, pi gets `judgment-day`, `agent-browser` when the brief says
     `requires: browser`, and the checkout's `.claude/skills` (minus `speckit-*`)
@@ -323,6 +342,18 @@ it leaves the brain directory, is unguarded even with the hook registered.
     worktree that points into the main checkout is not seen. `--sandbox` is what
     contains it: under the profile the OS refuses every write outside the
     worktree, its artifacts and the temporary directories.
+  - **A pi executor with `plugins:` does not share `auth.json`'s lock with your
+    own pi sessions.** Its private agent directory links `auth.json` (one real
+    file: pi writes it in place with `writeFileSync`, `core/auth-storage.js:71`
+    and `:147`, so a token refresh lands in `~/.pi/agent/auth.json`), but pi
+    locks `<agent dir>/auth.json.lock` with `realpath: false`
+    (`auth-storage.js:50`, `:91-92`) and takes `auth.json`'s location only from
+    the agent directory (`config.js` `getAgentDir`, `getAuthPath`): no setting
+    or variable moves it. The lock is the private directory's, so an executor's
+    OAuth refresh (`openai-codex`) and one of yours can run at the same moment.
+    Nothing is invented to cover it; if both refresh at once the later write
+    wins, and the refresh token the loser rotated is invalidated: that session
+    is logged out (`invalid_grant`) and needs `/login` again.
   - **`--sdd speckit` is refused for pi**, before anything is built, with its
     reason (L14). pi runs `--sdd none`; `--sdd gentle` is retired and runs as it.
   - Everything else the V1 list named is closed (processed-proof delivery,
@@ -378,9 +409,34 @@ it leaves the brain directory, is unguarded even with the hook registered.
     `install.sh --with-review-plugins` (or `bash setup/vendor/plugins/install` in a checkout) fills after verifying
     the pinned copies; without it a brief with `plugins:` is refused, naming that command. An install is never
     active by itself and never writes to `~/.claude` or `~/.pi`.
+  - **A pi plugin's children get a private agent directory.** pstack's `agent` tool starts its children with
+    extension discovery ON, so they would find the ambient `rpiv-ask-user-question` package, whose
+    `ask_user_question` collides with the one pstack's extension registers (`pstack/pi/ask.ts`), and the child dies
+    at startup. A pi dispatch whose brief declares a plugin therefore runs with `PI_CODING_AGENT_DIR` pointing at
+    `$HW_ARTIFACTS/pi-agent`: symlinks to the real agent directory (auth, models, trust, npm, bin, sessions — never
+    its `extensions/`, which a subagent must not load) and a `settings.json` copied without `packages` or
+    `extensions`. `~/.pi` is not written and a plain pi session is untouched; the top-level session is unchanged
+    because `-ne` already loaded nothing ambient. **Not covered:** those children are not under hw's write guard —
+    pstack's runner has no required-child-extension API, so `hw-executor.ts` cannot travel to them — and pstack's
+    agents are reachable through pstack's own `agent` tool, not through pi-subagents' `subagent` roster.
   - **The export ships no plugin.** The copies carry third-party text and its licenses; `setup/vendor/` is
     excluded from the export, so there `--with-review-plugins` refuses and `plugins:` refuses every name until
     you put one at `<brain>/plugins/<name>/` with a `.claude-plugin/plugin.json`.
+  - **The review proof reads the executor's own session — claude, or pi.** `done-invoker` proves each review skill the
+    closing named from that session (and its subagents'): on claude a `Skill`/`Agent` tool_use of the exact name;
+    on pi a read of the skill's `SKILL.md` (under the layouts below) or a `subagent`/`Agent` call naming that
+    agent, counted only once the call's own `toolResult` arrived without an error. A mention in prose is not a
+    call, and only what ran at or after the receipt line counts. pi's receipt records the session file's path, read
+    as a literal file under pi's sessions root (`$PI_CODING_AGENT_DIR/sessions` when set, else
+    `~/.pi/agent/sessions/`). Without a reachable session the check falls back to the report's whole-token names
+    and says `unverified: transcript not reachable`; an unknown vendor gets the same fallback.
+  - **pi: only two `SKILL.md` layouts prove a skill.** A read of `<plugins>/<p>/skills/<n>/SKILL.md` proves `p:n`
+    and `n`, and `.claude/skills/<n>/SKILL.md` (project or user) proves `n`; a partial read (`offset`/`limit`)
+    still counts. Any other `<x>/SKILL.md` proves nothing, and a plugin laid out differently is released with
+    `review-skip: <skill> — <why>`.
+  - **`unverified`: pi's Judgment Day may be the builtin `reviewer`.** Measured on the real sessions on disk, a pi
+    executor usually runs its two blind judges as `reviewer`, not `jd-judge-a`/`jd-judge-b`; the closing permits
+    that substitution, so a proof naming `jd-judge-a` says a specialist of that name ran, not that a blind judge did.
   - **Cost.** pstack puts ≈12.5 KB of skill descriptions in the executor's context for as long as it runs.
 - **Evidence:** `measured` for the dispatch lines, the receipt, the launch flags and the refusals (setup tests 843,
   844, 847, 848 and 979, bash against Go on the same goldens, with a mutant on each decision), and for a real
@@ -388,6 +444,21 @@ it leaves the brain directory, is unguarded even with the hook registered.
   `~/.claude` and `~/.pi` unchanged. `unverified`: that a plugin improves any task; that is a question for a
   measurement of its own.
 - **Workaround:** none needed; declare only the plugins the task wants.
+
+### L27. Lane-local executor rules reach Claude Code and pi only
+- **Scope:** `brain/<lane>/.claude/CLAUDE.md`, the executor rules a lane keeps out of its product repo.
+- **Impact:** hw links the file into every worktree or work directory of the lane as `.claude/CLAUDE.md` for a Claude
+  Code executor, and appends it with `--append-system-prompt` for a pi one (fresh launch and `hw revive`). An opencode
+  or codex executor gets neither: the manifest's and the receipt's `lane_rules` line says
+  `NOT APPLIED — <vendor> …`. The lane's `.claude/agents` and `.claude/skills` are linked only in a lane with no
+  product repo; a lane with its own repo keeps its repo's own, gets only
+  `.claude/CLAUDE.md`, and only where the worktree has none (the receipt says `KEPT (repo has its own)`). Only Claude
+  Code reads them; pi reaches the brain's agents through its own extension, and opencode/codex through theirs.
+- **Evidence:** `measured` — pi 1.1.0 in a throwaway HOME/PI_* quoted the appended file's first heading with the flag
+  and answered NONE without it; the link and the info/exclude are held by hw-core's tests (setup tests 1220, 1222) with
+  a mutant on each decision.
+- **Workaround:** a rule every vendor must obey belongs in the brief (or in `CLAUDE.shared.md` for the agents that read
+  it); a lane-local rule is in force for Claude Code and pi only.
 
 ### L4. OpenCode background subagents are experimental
 - **Scope:** OpenCode executors and brainers that spawn subagents in the
@@ -706,15 +777,25 @@ it leaves the brain directory, is unguarded even with the hook registered.
   (1) a change in ANOTHER file that would make a job fail, or let an old mutant survive, is not seen, because that file was never in the
   job's reads; (2) a mutant's verdict is keyed by its anchor file, its test files, its cases and goldens and the toolchain only, so a change
   elsewhere in `core/` or in the world the cases run in leaves its kill cached; (3) a subject that reads outside the checkout (the network,
-  the installed claude) must say `# cache: never` in its header — six do — and one that does not is cached on bytes that do not hold its answer;
+  the installed claude) must say `# cache: never` in its header — seven do, and one of them was found on 2026-11-01 — and one that does
+  not is cached on bytes that do not hold its answer. **Nothing measures that, and a new subject that reads the world without the
+  declaration is still not refused.** A text rule cannot stand in for the measurement: `$HOME`/`~`, a URL that is not loopback, `ssh` and
+  an agent CLI by absolute path flag 90 of the 522 subjects, and the narrowest sane version of it still flags 33 — of which 32 are a stub
+  they build or an assertion on a path string, and 1 was real: `setup/tests/122-the-account-an-executor-inherits.sh` asks this machine's
+  PATH for `claude-personal` (line 129), which it now declares. Every `$HOME`/`~` in the rest is the run's own temp home (`tests/_common.sh`
+  pins it, with `XDG_CONFIG_HOME` and the per-vendor pointers), so it is not the machine's;
   (4) a subject nobody measured is keyed to the whole tree, which is today's behaviour, never a smaller one: until
-  `python3 setup/measure/subject-deps.py` has run, only a byte-identical tree hits.
+  `python3 setup/measure/subject-deps.py` has run, only a byte-identical tree hits. Measured 2026-11-01: 4 subjects took 50 s with
+  `--jobs 3` (one red in its clone, left unmeasured), so the 522 at that rate are about an hour of machine time — over the half-hour a
+  single task is allowed — and the file still ships unmeasured.
 - **Evidence:** `measured` by `setup/tests/1110-un-job-corre-solo-si-cambio-lo-que-lee.sh` on stub subjects and a stub in-process suite (second
   identical run spawns only the `# cache: never` job; an edited read file, an added file in a read directory and an edited partition file miss;
   a red is never stored; `HW_TEST_NO_CACHE=1` runs cold) and by `TestMutantVerdictKeepsAKillByItsInputs`. `unverified`: the whole suite's
   hit rate on a real release, and the measured `subject-deps.txt` (the file ships unmeasured).
 - **Workaround:** `HW_TEST_NO_CACHE=1 bash setup/test-hw` runs every job cold. Run it once per release cut, on Linux (it is not enforced by
-  the cut). `HW_VERDICT_CACHE=<dir>` moves the store, `off` disables it; entries unused for 30 days are pruned.
+  the cut). A subject you know reads the world — the installed agent, the network, `$HOME` — gets `# cache: never` in its header by hand:
+  until something measures it, that declaration is the only thing between a green and the bytes it never read.
+  `HW_VERDICT_CACHE=<dir>` moves the store, `off` disables it; entries unused for 30 days are pruned.
 
 ### L26. Some claims about `hw`, `brain`, `channel-send` and the invokers lost their mutation test when the bash left, and have no Go mutant yet
 - **Scope:** the mutation-anchor registry (`setup/mutation/mutation-anchors.tsv`) and the subjects that killed mutants of the bash bodies of `hw`, `brain`,
@@ -727,9 +808,18 @@ it leaves the brain directory, is unguarded even with the hook registered.
   only bash had (an unset variable under `pipefail`, a pipeline that fails silently), which has no Go twin and needs none. A regression in
   the first two kinds is caught only if some arm exercises the exact case; one in the third has no Go code to regress.
 - **Evidence:** `measured`: the per-task lists of the retired anchors (go-060 S4 and S5) say, row by row, what holds each claim and which have
-  no Go holder. `unverified`: that every one of those claims is still asserted by some arm, which was read per row, not run as a mutant.
+  no Go holder; `setup/mutation/l26-inventory.md` classifies all 90 of those rows (94 items: the 806 EXIT-trap row is three mutants, and
+  798-M04 was listed twice). `measured` by that inventory and by running each new mutant: 20 claims now have a Go mutant killed in process
+  (`go-806-M01..M10` by `TestBrainMutants` over `contract-hw/mutants-brain-go-806`, `go-67-M06` by `TestC844Mutants`, `go-185-M01` by
+  `TestC848Mutants`, `844-A170..A175` and `844-M51` by `TestC844Mutants`, `826-G35/G36` by `TestInProcC825Mutants` and test 826);
+  22 are kind 1 held by a golden or a byte-comparing test a mutant would move with it; 16 are bash-only defect classes
+  or claims about the deleted bash's shape and need none. **36 kind 2 rows are still owed**, each naming in the inventory the fixture or arm
+  it is missing (a dirty-tree done case, a table-only lane, a git stub exiting 127, …): no arm exists that
+  a Go mutant on those branches could be killed by, so anchoring one today would be vacuous. `unverified`: that those 36 branches are
+  exercised by their subjects at all.
 - **Workaround:** none needed to use 0.6.0. A change to a ported verb's branch (in `core/`) should add its Go anchor in the same change; the
-  registry's check (`setup/tests/540`) refuses a registered id no subject uses.
+  registry's check (`setup/tests/540`) refuses a registered id no subject uses. `setup/mutation/l26-inventory.md` is the list to work from;
+  every owed row names what would make its mutant killable.
 
 ## Review
 
@@ -857,22 +947,35 @@ it leaves the brain directory, is unguarded even with the hook registered.
   `unverified` for any given tool; `measured` only on the direct binaries of this machine.
 
 
-### L18. The incremental verdict trusts a marker-only runner change, and 540 may be skipped by two gate paths
-- **Scope:** `setup/verdict-incremental` (a runner file whose diff is only `# MUTATION-ANCHOR: <id>`
-  markers stays incremental) and `setup/gate-select` (`# gate-when:` on the slow subject 540).
-- **Impact:** (1) the marker strip is textual: a mode-only change, a marker glued to code (`a#MARKER`), or one
-  inside a `\` continuation or heredoc is not recognised as marker-only, so it falls back to a full run
-  (safe) or, for a marker the strip wrongly reads as a comment, is trusted; 540 is forced into the plan
-  for every dropped runner path, which catches an unregistered or duplicate marker in a file outside
-  `setup/tests/`; 540's orphan scan skips `setup/tests/`, so an unregistered id added to `tests/_common.sh`
-  or another non-subject file there is accepted until the registry is next checked. (2) `gate-select`
-  returns `all` before its gate-when pass, so a `mutants-*`-only commit (the RUNNER regex) or a pre-commit `all`
-  does not select the slow 540; a tsv-only commit gets it as `reference`, not as a suite.
-- **Evidence:** `measured` by `setup/tests/820-el-veredicto-incremental.sh` (marker-only runner change forces 540;
-  mutants 820-M04, M05, M06) and `setup/tests/999-*.sh`. `unverified`: that any real commit hits the
-  `all`-before-gate-when path without also touching a path 540 names.
-- **Workaround:** run `bash setup/tests/540-las-anclas-de-mutacion-existen.sh` (about 5 s) before pushing a change to
-  markers or to `mutants-*`; the full suite, run once per merged batch outside the cut, runs 540; a cut's incremental run does when its diff reaches it.
+### L18. The marker-only strip pays a full run for the shapes it does not parse, and 540's orphan scan stops at a subject's own body
+- **Scope:** `setup/verdict-incremental` (a runner file whose diff is only `# MUTATION-ANCHOR: <id>` markers stays
+  incremental), `setup/gate-select` (its `all` answer) and the orphan scan of `setup/tests/540-*`.
+- **Impact:** (1) the strip reads the shell that carries a marker instead of matching it: quotes that span lines,
+  `$( )` and `${ }` inside a double-quoted string, heredoc bodies and `\` continuations, plus Python's own
+  tokenizer for a Python runner. Only a `#` it is certain begins a comment is stripped, and a file whose quoting
+  does not close is compared as it is, so the direction of any doubt is a full run, never a trusted one. What is
+  left: it is an approximation of bash, so a shape it mis-reads in the trusting direction is possible in
+  principle, and a marker that sits inside an embedded awk or Python heredoc, or on a continuation line, is now
+  TEXT and costs a full run where it used to be trusted (`setup/test-hw` carries two, `mutation-coverage` and
+  `go-test-core.sh` three each). (2) `gate-select` runs its `# gate-when:` pass before printing `all`, and
+  `setup/test-hw` reads the `reference` lines that come beside it, so a `mutants-*`-only commit and a pre-commit
+  `all` run every slow subject whose `gate-when` matches a changed path (540 for a `core/`, `bin/` or `mutants-*`
+  change, 1014 for a `core/*.go` one) or whose `# gate-reference:` names one (a `_common.sh` change: eleven in
+  all, seven of them by gate-reference, about four minutes). What is left: a FAST subject's `gate-when` is still not printed beside `all` (the whole
+  fast gate runs anyway). (3) 540's orphan scan covers every non-subject file under `setup/tests/` — `_common.sh`,
+  the `contract-hw` helpers — so an unregistered id there is refused when 540 runs; its `gate-when` names none of
+  those helpers, so a commit touching only them meets the refusal in the full run, not at pre-commit. What is left: a marker inside a SUBJECT's own
+  body is a template (`862-Gnn`) and is not judged, and `setup/tests/fixtures/` are copies of other files.
+- **Evidence:** `measured` by `setup/tests/820-el-veredicto-incremental.sh` (a marker inside a heredoc body, inside
+  a multi-line quoted string and on a continuation line each give a full run; mutant 820-M12 is the old textual
+  strip and the heredoc arm kills it) and `setup/tests/999-*.sh` (`all` carries `reference 540-*`; 999-M05 restores
+  the early return, 999-M06 drops the line, 999-M07 makes `setup/test-hw` ignore it — each killed) and
+  `setup/tests/540-*` (M11: an unregistered marker in `setup/tests/_common.sh` is reported; old: the scan skipped
+  the whole directory and reported nothing). `unverified`: that no real commit reaches a shape the lexer mis-reads,
+  and how much a release pays for the markers it now refuses (12 of the 148 marker lines on the runner's 23 files).
+- **Workaround:** none needed. `bash setup/verify-for-push --full` when a marker-only change was trusted and you
+  want the certainty the parse declined to give; `bash setup/tests/540-las-anclas-de-mutacion-existen.sh` (about 5 s)
+  is still the cheap check before pushing a change to markers or to `mutants-*`.
 
 ### L19. A chained incremental verdict compounds gate-select's blind spot, and fast gates outrank a full run
 - **Scope:** `setup/verdict-incremental` + `setup/verify-for-push` (a green incremental run leaves its own record, so

@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -72,14 +71,11 @@ func (b *brainRun) main(args []string) (rc int) {
 			rc = e.code
 		}
 		// the EXIT trap a resume sets once the pane is touched: any status but 0 is 75 from then on
-		if b.trap75 && rc != 0 {
+		if b.trap75 && rc != 0 { // # MUTATION-ANCHOR: go-806-M08 // # MUTATION-ANCHOR: go-806-M10
 			rc = 75
 		}
 	}()
 	b.home = b.getenv("HOME")
-	if b.home == "" && runtime.GOOS == "windows" {
-		b.home = b.getenv("USERPROFILE")
-	}
 	b.brain = brainRoot(b.getenv)
 	b.binDir = b.getenv("HW_CORE_BIN_DIR")
 	if b.binDir == "" {
@@ -270,7 +266,7 @@ func (b *brainRun) relaunch(args []string) int {
 			continue
 		}
 		switch st {
-		case "idle", "done":
+		case "idle", "done": // # MUTATION-ANCHOR: go-806-M02
 		default:
 			s := st
 			if s == "" {
@@ -279,7 +275,7 @@ func (b *brainRun) relaunch(args []string) int {
 			b.outf("skipped %s (%s): %s — a turn may be in flight, and a relaunch would cut it\n", pane, lane, s)
 			continue
 		}
-		_, conv := b.sessionTranscript(sid)
+		_, conv := b.sessionTranscript(sid, b.laneAccountDir(lane))
 		if dry {
 			if conv {
 				b.outf("would relaunch %s (%s) resuming %s\n", pane, lane, sid)
@@ -288,10 +284,10 @@ func (b *brainRun) relaunch(args []string) int {
 			}
 			continue
 		}
-		res := b.run(brainCmd{Name: b.binDir + "/brain", Args: []string{lane, "--resume", sid, "--in-pane", pane}, Merge: true})
+		res := b.run(brainCmd{Name: b.binDir + "/brain", Args: []string{lane, "--resume", sid, "--in-pane", pane}, Merge: true}) // # MUTATION-ANCHOR: go-806-M01
 		out := brTrimNL(res.Out)
 		rc = res.RC
-		if rc == 75 {
+		if rc == 75 { // # MUTATION-ANCHOR: go-806-M05
 			b.outf("FAILED %s (%s): the agent was stopped and did not come back, rc=%d: %s\n", pane, lane, rc, tail2(out))
 			rc = 0
 			fails++
@@ -337,7 +333,7 @@ func (b *brainRun) relaunch(args []string) int {
 	if n == 0 {
 		b.outf("brain relaunch: no open claude brainer matched.\n")
 	}
-	if fails != 0 {
+	if fails != 0 { // # MUTATION-ANCHOR: go-806-M06
 		return 1
 	}
 	return 0

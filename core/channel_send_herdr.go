@@ -273,10 +273,7 @@ func (c *chanSend) takeLock(budgetS int64) {
 			key = append(key, '_')
 		}
 	}
-	tmp := c.getenv("TMPDIR")
-	if tmp == "" {
-		tmp = "/tmp"
-	}
+	tmp := sharedLockDir(c.getenv)
 	lock := tmp + "/hw-deliver-" + string(key) + ".lock"
 	ownerFile := lock + "/owner.pid"
 	deadline := nextEpoch() + budgetS

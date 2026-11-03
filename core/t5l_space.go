@@ -493,6 +493,7 @@ var layoutBaseEnvKeys = []string{"HW_PROJECT", "HW_TASK", "HW_WORKDIR", "HW_RUN"
 	"HW_INVOKER_ENDPOINT", "HW_INVOKER_PANE", "HW_NO_REPORT",
 	"HW_CHAINING_ENABLED", "HW_LAUNCH_MODE", "HW_NEXT_WAIT_MS",
 	"HW_AGENT_PORT", "HW_AGENT_ENDPOINT",
+	"HW_LOCK_DIR",
 	"HW_PORT_WEB", "HW_PORT_API",
 	"HW_REVIEW_BASE_REF", "HW_REVIEW_BASE_BRANCH",
 	"AGENT_BROWSER_NAMESPACE", "HW_BROWSER_PROFILE",
@@ -505,7 +506,9 @@ var layoutBaseEnvKeys = []string{"HW_PROJECT", "HW_TASK", "HW_WORKDIR", "HW_RUN"
 	"OPENCODE_CONFIG",
 	// pi's guard halves and roster fallback (t6_pi_launch.go: exportHwEnv exports them)
 	"HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR",
-	"HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS"}
+	"HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS",
+	// and the private agent directory a session with plugins runs on (t6_pi_shadow.go)
+	"PI_CODING_AGENT_DIR", piRealAgentDirEnv}
 
 // renderLayout is `_render_layout`: the template, with every `_`-prefixed key dropped, every ${VAR} replaced
 // from the environment (after parsing, so a value with a quote cannot break the JSON), and the executor
@@ -542,6 +545,9 @@ func (l *lch) renderLayout(tpl string) (string, int) {
 	}
 	if v := env["OPENCODE_EXECUTOR_CONFIG"]; v != "" { // keyed on the lane's own declaration, not an inherited dir
 		r.baseEnv = append(r.baseEnv, member{"OPENCODE_CONFIG_DIR", jstr(v)})
+	}
+	if v := env["HW_EXECUTOR_TMPDIR"]; v != "" { // the run's own temp dir, never hw's shared one
+		r.baseEnv = append(r.baseEnv, member{"TMPDIR", jstr(v)})
 	}
 	rendered := r.walk(vals[0])
 	if r.fatal != "" {

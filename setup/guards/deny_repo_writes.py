@@ -60,6 +60,27 @@ import re
 import shlex
 import sys
 
+# ── TWO SUPPORTED PLATFORMS, AND A REFUSAL EVERYWHERE ELSE ──────────────────
+#
+# Every decision below was measured on macOS and Linux. A Cygwin or MSYS2
+# Python is NOT the native-Windows model that follows: it answers `os.name`
+# `posix` while `sys.platform` is `cygwin`/`msys`, so a `C:\…` payload is
+# joined to the cwd in POSIX form and ALLOWED. That was measured on
+# windows-ultimos-070 (the branch removed the refusal that used to sit here,
+# ce1fabcf ~88): the guard ran open on a platform nothing had been measured
+# against. Every unsupported platform refuses at import for the same reason —
+# an unmeasured path model is not a guard — and every shim turns this into a
+# deny, not a crash.
+#
+# No environment variable lifts the refusal: `DENY_REPO_WRITES_AS_NATIVE_WINDOWS=1`
+# forces the native-Windows folding on a supported host (subject 208), and on
+# cygwin/msys the refusal still stands with it set.
+if sys.platform not in ("darwin", "linux"):
+    raise ImportError(
+        "this read-only guard runs on macOS and Linux only: its path model was "
+        "measured there, and on %s nothing here was. Point python3 at a "
+        "supported interpreter" % sys.platform)
+
 # ── NATIVE WINDOWS: ONE SPELLING OF A PATH ──────────────────────────────────
 #
 # Every boundary question below compares strings, and on Windows one directory
@@ -79,16 +100,6 @@ import sys
 # decision cannot move. `DENY_REPO_WRITES_AS_NATIVE_WINDOWS=1` folds on any
 # platform, so the folding is testable where Windows is not — it only adds
 # matches there too, and realpath stays POSIX's.
-#
-# A Cygwin or MSYS2 Python (sys.platform cygwin/msys) is NOT this: it answers
-# in its own POSIX spelling over a Windows filesystem, and nothing here was
-# measured against it. It refuses at import, which every shim turns into a deny.
-NON_NATIVE_WINDOWS_REFUSAL = (
-    "this read-only guard does not run under a Cygwin or MSYS2 Python: its "
-    "Windows path model was measured with Windows' own Python. Point python3 "
-    "at a python.org install, or run the brain under WSL2 (INSTALL.md, Windows)")
-if sys.platform.startswith(("cygwin", "msys")):
-    raise ImportError(NON_NATIVE_WINDOWS_REFUSAL)
 
 import posixpath  # noqa: E402
 
@@ -138,17 +149,6 @@ def _join(base, rel):
     return os.path.join(base, rel)
 
 
-def _msys_root():
-    """Where Git Bash's `/` is, for a `/usr/...`-style path: its own mount
-    table when msys-compat.sh exported it, else beside the bash on PATH."""
-    r = os.environ.get("HW_MSYS_ROOT", "")
-    if not r:
-        import shutil
-        b = (shutil.which("bash") or "").replace("\\", "/")
-        r = b[: -len("/usr/bin/bash.exe")] if b.lower().endswith("/usr/bin/bash.exe") else ""
-    return r.replace("\\", "/").rstrip("/")
-
-
 def _native(c):
     """Canonical spelling -> one Windows can open, or None."""
     m = re.match(r"^/([a-z])(/.*)?$", c)
@@ -157,8 +157,7 @@ def _native(c):
     if c == "/tmp" or c.startswith("/tmp/"):
         t = os.environ.get("TEMP") or os.environ.get("TMP")
         return t.replace("\\", "/").rstrip("/") + c[4:] if t else None
-    r = _msys_root() if c.startswith("/") else ""
-    return r + c if r else None
+    return None
 
 
 def _real(p):
@@ -178,8 +177,8 @@ def _real(p):
 
 def _shell_home():
     """What the shell expands `$HOME` and `~/` to, spelled the way bash spells
-    it: without bin/'s layer msys hands a native Python HOME as a backslash drive path,
-    and a path built on that would not match the patterns that follow."""
+    it: a native Python HOME arrives as a backslash drive path, and a path
+    built on that would not match the patterns that follow."""
     if _NATIVE_WINDOWS:
         import ntpath
         h = (os.environ.get("HOME") or ntpath.expanduser("~")).replace("\\", "/")

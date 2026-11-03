@@ -11,7 +11,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 )
 
@@ -95,24 +94,10 @@ func rtHashable(v any) bool {
 	return true
 }
 
-// rtSame is the script's `same(a, b)`: string equality, or the realpath comparison on native Windows.
+// rtSame is the script's `same(a, b)`: string equality.
 func rtSame(a any, b string) bool {
-	if runtime.GOOS != "windows" {
-		s, isStr := a.(string)
-		return isStr && s == b // # MUTATION-ANCHOR: 844-R106
-	}
 	s, isStr := a.(string)
-	if !isStr {
-		if pyTruthy(a) {
-			rtPyCrash()
-		}
-		return false
-	}
-	if s == "" || b == "" {
-		return false
-	}
-	k := func(x string) string { return pyCasefold(strings.TrimRight(pyRealpath(x), "/")) }
-	return k(s) == k(b)
+	return isStr && s == b // # MUTATION-ANCHOR: 844-R106
 }
 
 // rtPaneID is `cands[0] + "\t<how>"`: the pane id must be a string.

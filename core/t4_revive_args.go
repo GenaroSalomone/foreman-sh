@@ -262,9 +262,15 @@ func (a *app) revivePluginDirs(rundir string) []string {
 func (a *app) reviveFrameworkArgs(st *reviveRunState, vendor, cmdArgs, rundir string) {
 	args := st.agentArgs
 	// pi's guard, turn-end hook and engram proxy are its extensions: policy, appended exactly as a fresh launch does.
-	if vendor == "pi" && !reviveHasWord(args, "-e "+a.reviveBrainRoot()+"/setup/pi/hw-executor.ts") { // # MUTATION-ANCHOR: 863-G26
-		ext, skills := a.revivePiArgs(st.proj)
-		args += " " + ext + " " + skills
+	if vendor == "pi" {
+		if !reviveHasWord(args, "-e "+a.reviveBrainRoot()+"/setup/pi/hw-executor.ts") { // # MUTATION-ANCHOR: 863-G26
+			ext, skills := a.revivePiArgs(st.proj)
+			args += " " + ext + " " + skills
+		}
+		// the lane's executor rules: pi reads no .claude/CLAUDE.md, so they travel as an appended prompt, as at launch
+		if add := piLaneRulesArgFor(a.c.brain, st.proj); add != "" && !reviveHasWord(args, strings.TrimSpace(add)) {
+			args += add
+		}
 	}
 	if vendor == "codex" && st.permissions == "ask" {
 		if !reviveHasWord(args, "-a") {

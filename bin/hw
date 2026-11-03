@@ -15,7 +15,6 @@
 # HW_IMPL, HW_IMPL_<VERB> and the switch file name a bash twin that 0.6.0 removed: bin/impl-retired.sh says so once and Go runs.
 # `hw shadow` is gone too. An executor (HW_TASK or HW_RUN set) meets hw-core's executor-gate first, with the argv as typed.
 set -euo pipefail
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
 # colour is for a person looking: off under NO_COLOR, TERM=dumb, and whenever stdout or stderr is not a terminal
 _c_err=""; _c_warn=""; _c_0=""
@@ -48,17 +47,16 @@ _core=""
 if [ -n "${HW_CORE:-}" ]; then
   [ ! -x "$HW_CORE" ] || _core="$HW_CORE"
 else
-  _os="$(uname -s | tr 'A-Z' 'a-z')"; _arch="$(uname -m)"; _ext=""
-  case "$_os" in mingw*|msys*|cygwin*) _os=windows; _ext=.exe ;; esac
+  _os="$(uname -s | tr 'A-Z' 'a-z')"; _arch="$(uname -m)"
   case "$_arch" in x86_64) _arch=amd64 ;; aarch64) _arch=arm64 ;; esac
-  for _c in "$HW_BIN_DIR/hw-core$_ext" "$HW_BIN_DIR/../core/dist/$_os-$_arch/hw-core$_ext"; do
+  for _c in "$HW_BIN_DIR/hw-core" "$HW_BIN_DIR/../core/dist/$_os-$_arch/hw-core"; do
     [ ! -x "$_c" ] || { _core="$_c"; break; }
   done
   # stale: a source in core/ is newer than the binary (the test contract_core_bin makes too)
   if [ -n "$_core" ] && [ -d "$HW_BIN_DIR/../core" ] \
      && [ -n "$(find "$HW_BIN_DIR/../core" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$_core" -print -quit 2>/dev/null)" ]; then
     _rc=0; _msg="$("$HW_BIN_DIR/core-rebuild" "$HW_BIN_DIR" "$_core" hw 2>&1)" || _rc=$?   # 0: fresh now and silent; else one line, once per state
-    [ "$_rc" != 0 ] || _core="$(for _c in "$HW_BIN_DIR/hw-core$_ext" "$HW_BIN_DIR/../core/dist/$_os-$_arch/hw-core$_ext"; do [ ! -x "$_c" ] || { printf '%s' "$_c"; break; }; done)"
+    [ "$_rc" != 0 ] || _core="$(for _c in "$HW_BIN_DIR/hw-core" "$HW_BIN_DIR/../core/dist/$_os-$_arch/hw-core"; do [ ! -x "$_c" ] || { printf '%s' "$_c"; break; }; done)"
     [ -z "$_msg" ] || warn "$_msg"
   fi
 fi
@@ -77,7 +75,7 @@ case "$1" in
   -V|--version) ;;
   status) shift; set -- status-full "$@" ;;
   outbox) if [ "${2:-}" = flush ]; then shift 2; set -- outbox-flush "$@"; fi ;;
-  receipt|log|handle|help|worktrees|ruling|human-boundary|executor-turn-end|chaining-lease-start|chaining-lease-expire|output|stage) ;;
+  receipt|log|handle|help|worktrees|ruling|human-boundary|executor-turn-end|chaining-lease-start|chaining-lease-expire|output|stage|retro-done) ;;
   review-range|review-delta|preflight|reports|sweep|reap|wait|wait-one|wait-monitor|train|suite|unstick|ledger|briefs|cockpit-state|secret) ;;
   done|next|revive|preview) ;;
   *)  # not a verb: `hw <project> <task> …` is a dispatch, and -h/--help anywhere in it asks for the help instead

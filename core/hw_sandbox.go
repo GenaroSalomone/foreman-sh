@@ -1,8 +1,8 @@
 package main
 
-// hw-sandbox as a verb of hw-core: a port of bin/hw-sandbox — same stdout, stderr, exit status and on-disk effects. The bash stays
-// beside it as the rollback: bin/wrapper-go.sh (sourced by bin/hw-sandbox) execs `hw-core hw-sandbox "$@"` unless HW_IMPL_HW_SANDBOX
-// (else the switch file's `hw-sandbox=` line) says `bash`. THE DEFAULT IS GO.
+// hw-sandbox as a verb of hw-core: a port of bin/hw-sandbox — same stdout, stderr, exit status and on-disk effects. 0.7.0 removed
+// the bash body: bin/hw-sandbox is a shim that execs `hw-core hw-sandbox "$@"`, and a HW_IMPL_HW_SANDBOX or `hw-sandbox=bash` word is
+// said once and never chooses an implementation.
 //
 // The shim hands over HW_WRAPPER_ARGV0 (the bash's own $0). The bash finds the invokers it runs, and the file `arm` writes into the
 // launch shim, from where it lives; the Go does the same from that path.
@@ -255,10 +255,14 @@ func sbSedAlnum(p string) string {
 }
 
 func sbPiAgentDir(home string) string {
-	d := os.Getenv("PI_CODING_AGENT_DIR")
+	// the one resolver (piAgentDirOf): inside a shadowed pi executor the run's private directory is not pi's home
+	d := piAgentDirOf(func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return os.Getenv(k)
+	})
 	switch {
-	case d == "":
-		d = home + "/.pi/agent"
 	case d == "~":
 		d = home
 	case strings.HasPrefix(d, "~/"): // MUTATION-ANCHOR: s8-pi-tilde
@@ -360,10 +364,10 @@ func (s *sbT) profile(kind string) (string, int) {
 		return b.String(), s.die("no measured sandbox profile for " + kind + " (claude and pi only)")
 	}
 	if kind == "claude" {
-		pf("  (subpath %s)\n", lit(cfg+"/projects/"+projname))
+		pf("  (subpath %s)\n", lit(cfg+"/projects/"+projname)) // MUTATION-ANCHOR: s8-cfg-proj
 	} else {
-		pf("  (subpath %s)\n", lit(piagent+"/sessions/"+pisess))
-		pf("  (subpath %s) (subpath %s) (subpath %s)\n", lit(piagent+"/settings.json.lock"), lit(piagent+"/auth.json.lock"), lit(piagent+"/models-store.json.lock"))
+		pf("  (subpath %s)\n", lit(piagent+"/sessions/"+pisess))                                                                                                     // MUTATION-ANCHOR: s8-pi-sessions
+		pf("  (subpath %s) (subpath %s) (subpath %s)\n", lit(piagent+"/settings.json.lock"), lit(piagent+"/auth.json.lock"), lit(piagent+"/models-store.json.lock")) // MUTATION-ANCHOR: s8-pi-locks
 	}
 	pf(")\n")
 	if common != "" && common != gitdir { // MUTATION-ANCHOR: s8-gitslice
@@ -373,7 +377,7 @@ func (s *sbT) profile(kind string) (string, int) {
 		pf("  (regex #\"^%s/packed-refs(\\.lock|\\.new)?$\"))\n", sbRe(common))
 	}
 	pf(";; control sockets run code outside the sandbox: herdr, docker, ssh-agent\n")
-	pf("(deny network-outbound (remote unix-socket))\n")
+	pf("(deny network-outbound (remote unix-socket))\n") // MUTATION-ANCHOR: s8-net-deny
 	pf("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n")
 	pf(";; credentials that reach other machines\n")
 	pf("(deny file-read* (subpath %s) (subpath %s) (subpath %s))\n", lit(home+"/.ssh"), lit(home+"/.config/gh"), lit(home+"/.docker"))

@@ -29,6 +29,8 @@ type dsp struct {
 	// identity
 	proj, task string
 
+	laneRulesOutcome string // what the build did with the lane's .claude/CLAUDE.md: "linked", "kept", "" (not built yet)
+
 	// the vendor, model and account (bin/hw "AGENT=…")
 	agent, agentSrc                                              string
 	agentExplicit                                                bool
@@ -50,6 +52,7 @@ type dsp struct {
 	permissions, permissionsSrc, permissionsLine, permissionsErr string
 	agentArgs                                                    string
 	sdd                                                          string
+	sddDefaulted                                                 bool // no --sdd: none by default (sdd-legado-070); the reuse route does not forward it
 	sddEffectiveMode                                             string
 
 	// flags

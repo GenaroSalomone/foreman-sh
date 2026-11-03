@@ -35,7 +35,7 @@ case "$out" in *"pi needs provider/model"*) pass "a bare pi model id is refused 
 out="$(launch pi-ask --sdd none --no-brief --model opencode-go/glm-5.3 --permissions ask)"
 case "$out" in *"--permissions ask cannot be honoured on pi"*) pass "--permissions ask is refused on pi" ;; *) fail "pi ask not refused: $out" ;; esac
 
-for row in "build opencode-go/deepseek-v4-pro" "design opencode-go/deepseek-v4-pro" "audit opencode-go/deepseek-v4-pro" \
+for row in "build opencode-go/deepseek-v4.1-flash" "design opencode-go/deepseek-v4.1-flash" "audit opencode-go/deepseek-v4.1-flash" \
            "review opencode-go/glm-5.3-flash" "explore opencode-go/deepseek-v4.1-flash"; do
   k="${row%% *}"; m="${row#* }"
   out="$(launch "pi-roster-$k" --sdd none --brief "$(brief "$k")")"

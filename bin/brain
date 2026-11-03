@@ -46,7 +46,6 @@
 # with one line. HW_IMPL, HW_IMPL_BRAIN and the switch file name a bash twin that 0.6.0 removed: bin/impl-retired.sh says so
 # once and Go runs.
 set -euo pipefail
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
 # Resolve through the ~/bin symlink, the same way the invokers do: ${BASH_SOURCE}
 # is the LINK, and the shared table lives beside the TARGET.
@@ -74,7 +73,6 @@ if [ -n "${HW_CORE:-}" ]; then
   [ ! -x "$HW_CORE" ] || _brain_core="$HW_CORE"
 else
   _brain_os="$(uname -s | tr 'A-Z' 'a-z')"; _brain_arch="$(uname -m)"
-  case "$_brain_os" in mingw*|msys*|cygwin*) _brain_os=windows ;; esac
   case "$_brain_arch" in x86_64) _brain_arch=amd64 ;; aarch64) _brain_arch=arm64 ;; esac
   for _c in "$BRAIN_BIN/hw-core" "$BRAIN_BIN/../core/dist/$_brain_os-$_brain_arch/hw-core"; do
     [ ! -x "$_c" ] || { _brain_core="$_c"; break; }

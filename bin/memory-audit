@@ -25,10 +25,14 @@ projects.json) under each account config dir, and says, in ONE line:
   - a memory whose description shares most of its key words with one
     decisions.md heading or CLAUDE.md line: two owners for one fact;
   - engram, read through its CLI only (`conflicts stats`, `export`): pending
-    conflicts over HW_ENGRAM_PENDING_MAX (100) or observations without a
-    `topic_key` over HW_ENGRAM_NOKEY_MAX percent (30). It names the
-    `memory-retro` skill, which is the judgment this check cannot make. An
-    engram that does not answer is one line saying so, never a failure.
+    conflicts over HW_ENGRAM_PENDING_MAX (100), or observations of an
+    upsert-shaped type, saved in the last HW_ENGRAM_NOKEY_DAYS days (30),
+    without a `topic_key`, over HW_ENGRAM_NOKEY_MAX percent (30). The flow, not
+    the legacy: `session_summary`, `passive` and `manual` never carry a key by
+    design, and a row old enough to predate the rule is not a writer failing
+    today. It names the `memory-retro` skill, which is the judgment this check
+    cannot make. An engram that does not answer is one line saying so, never a
+    failure.
 
 Clean prints NOTHING and exits 0. A finding exits 3. It writes nothing, ever.
 The owner of each kind of fact: docs/brief-and-memory.md § Memory.
@@ -51,6 +55,9 @@ STOP = set("the and for with that this are its not does when what which how why 
            "only never always must should can will would has have had been being was were more most less "
            "each per via about over under after before also still just from your their them they".split())
 OVERLAP_MIN_SHARED, OVERLAP_MIN_RATIO = 4, 0.5
+# The types `mem_save` upserts on topic_key: the proxy refuses one of these
+# unkeyed, so they are the only rows that measure a writer failing now.
+KEYED_TYPES = {"decision", "architecture", "discovery", "bugfix", "pattern", "config"}
 
 
 def store_key(path):
@@ -170,10 +177,23 @@ def overlap(desc, lines):
     return where
 
 
+def recent(created_at, cutoff):
+    """Was this observation created inside the window? engram writes
+    `YYYY-MM-DD HH:MM:SS` (UTC); RFC3339 with a T is accepted too."""
+    ts = str(created_at or "").strip().replace("T", " ")
+    return bool(ts) and ts[:19] >= cutoff
+
+
+def shaped(o):
+    """Is this observation one `mem_save` is expected to key?"""
+    return str(o.get("type") or "").strip().lower() in KEYED_TYPES  # MUTATION-ANCHOR: 1232-M03
+
+
 def engram_line(binary, label):
     """One part for the audit line, or None when engram is within its thresholds."""
     pending_max = int(os.environ.get("HW_ENGRAM_PENDING_MAX") or 100)
     nokey_max = int(os.environ.get("HW_ENGRAM_NOKEY_MAX") or 30)
+    days = int(os.environ.get("HW_ENGRAM_NOKEY_DAYS") or 30)
     # the CLI creates its store when it finds none: a machine that never ran engram has nothing to audit, and an audit must not leave one
     data = os.environ.get("ENGRAM_DATA_DIR") or os.path.expanduser("~/.engram")
     if not os.path.exists(os.path.join(data, "engram.db")):  # MUTATION-ANCHOR: 660-M16
@@ -194,13 +214,17 @@ def engram_line(binary, label):
         return None  # MUTATION-ANCHOR: 660-M15 — no engram on this machine is not an engram that failed to answer
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         return "engram did not answer (%s): conflicts and topic_key not audited" % (str(e).splitlines() or [type(e).__name__])[0][:60]  # MUTATION-ANCHOR: 660-M14
-    nokey = sum(1 for o in obs if not o.get("topic_key"))
-    pct = 100 * nokey // len(obs) if obs else 0
     bits = []
     if pending > pending_max:  # MUTATION-ANCHOR: 660-M10
         bits.append("%d pending conflicts (over %d)" % (pending, pending_max))
-    if pct > nokey_max:  # MUTATION-ANCHOR: 660-M11
-        bits.append("%d%% of %d observations without topic_key (over %d%%)" % (pct, len(obs), nokey_max))
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    flow = [o for o in obs if shaped(o) and recent(o.get("created_at"), cutoff)]  # MUTATION-ANCHOR: 1232-M02
+    unkeyed = sum(1 for o in flow if not o.get("topic_key"))
+    flow_pct = 100 * unkeyed // len(flow) if flow else 0
+    if flow_pct > nokey_max:  # MUTATION-ANCHOR: 660-M11
+        bits.append("%d%% of %d observations of a keyed type without topic_key in the last %d days (over %d%%)"
+                    % (flow_pct, len(flow), days, nokey_max))
     return "engram: %s — run the memory-retro skill" % ", ".join(bits) if bits else None
 
 

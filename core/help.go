@@ -75,7 +75,7 @@ func (a *app) usageLaunch() {
 	a.text("launch-1")
 	t := a.c.t
 	for _, l := range t.names {
-		a.printf("    hw %s <task> --brief brain/%s/briefs/<task>.md --sdd none\n", l, l)
+		a.printf("    hw %s <task> --brief brain/%s/briefs/<task>.md\n", l, l)
 		v, m := t.get(l, "vendor"), t.get(l, "model")
 		if v == "" {
 			v = "claude"

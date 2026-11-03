@@ -367,6 +367,7 @@ def main(argv):
     code = None
     chosen = {}
     guards = []
+    all_why = None
     for path in changed:
         triggered = trigger is None or trigger.search(path) is not None
         if SUBJECT.match(path):
@@ -379,8 +380,8 @@ def main(argv):
                 print("deferred %s" % name)
             continue
         if RUNNER.search(path):
-            print("all %s is the runner's own machinery" % path)
-            return 0
+            all_why = "%s is the runner's own machinery" % path  # MUTATION-ANCHOR: 999-M05
+            break
         if GUARD.search(path):
             guards.append(path)
         if not triggered:
@@ -400,8 +401,21 @@ def main(argv):
                     hit = True
                     break
         if not hit and path not in guards:
-            print("all %s reaches no fast subject by name" % path)
-            return 0
+            all_why = "%s reaches no fast subject by name" % path
+            break
+    if all_why:
+        # THE GATE-WHEN PASS RUNS BEFORE THE `all` ANSWER (L18). `all` is the whole FAST gate; a slow
+        # subject that declares `# gate-when:` — 540, judging every marker in the tree — names no path any
+        # other subject names, so this is the only arm that can select it. Returning before the pass meant a
+        # `mutants-*`-only commit (a runner path) and a pre-commit `all` never ran 540 at all. slow_hits pins every
+        # slow subject whose `# gate-when:` matches or whose `# gate-reference:` names a changed path, as the
+        # selected arm below does: a `_common.sh` change carries eleven (seven by gate-reference), any `core/*.go`
+        # change 1014 and 540.
+        print("all %s" % all_why)
+        _found, _slow, pinned = slow_hits(root, changed, trigger)
+        for n in sorted(pinned):
+            print("reference %s %s" % (n, _found[n][1]))  # MUTATION-ANCHOR: 999-M06
+        return 0
     # A subject that declares `# gate-when: <regex>` runs when a changed path
     # matches it (a slow one is taken by slow_hits, as a pinned `reference`).
     for n, path in when_hits(root, changed).items():

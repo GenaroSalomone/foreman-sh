@@ -29,6 +29,27 @@ import { userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// ── TWO SUPPORTED PLATFORMS, AND A REFUSAL EVERYWHERE ELSE ──────────────────
+//
+// The same refusal as the Python half's import-time check, on the name node
+// uses. Every path decision below was measured on macOS and Linux; on a
+// platform nothing was measured against, the guard does not guess. `cygwin` is
+// the one that matters: a Cygwin node answers `process.platform === "cygwin"`
+// over a Windows filesystem our POSIX model misreads, and windows-ultimos-070
+// removed the refusal that used to catch it.
+//
+// THE THROW IS THE REFUSAL, not a broken plugin: every lane shim imports this
+// module dynamically inside a try and turns a failure into a throw on every
+// bash call (see `setup/.opencode/plugin/deny-repo-writes.js`). No environment
+// variable lifts it: `DENY_REPO_WRITES_AS_NATIVE_WINDOWS=1` only forces the
+// native-Windows folding on a supported host (subject 208).
+if (!["darwin", "linux"].includes(process.platform)) {
+  throw new Error(
+    `deny-repo-writes: this read-only guard runs on macOS and Linux only: its ` +
+    `path model was measured there, and on ${process.platform} nothing here was. ` +
+    "Every bash command is refused until it runs on a supported platform");
+}
+
 // NATIVE WINDOWS: ONE SPELLING OF A PATH, as in the Python half (read the
 // comment above `_canon` there). On Windows every root, working directory and
 // path token is folded to `/c/data/x` — drive as a leading segment, forward
@@ -76,8 +97,12 @@ function nativeOf(c) {
     const t = process.env.TEMP ?? process.env.TMP;
     return t ? t.replace(/\\/g, "/").replace(/\/+$/, "") + c.slice(4) : null;
   }
-  const r = (process.env.HW_MSYS_ROOT ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
-  return r && c.startsWith("/") ? r + c : null;
+  // NOTHING ELSE HAS A NATIVE SPELLING — the Python `_native` answers None for
+  // every other path, and this must answer the same. It used to resolve
+  // `/usr/...` through `HW_MSYS_ROOT`; that was the MSYS reading of a Windows
+  // filesystem the Python half no longer carries, so it is gone rather than
+  // left as a second, unmeasured path model.
+  return null;
 }
 
 // ── THE LANE TABLE ─────────────────────────────────────────────────────────

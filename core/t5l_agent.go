@@ -219,7 +219,7 @@ func (l *lch) sandboxArmPane(pane, kind, rundir string) bool {
 		return false
 	}
 	out, rc := l.sh(cmdSpec{name: l.binDir() + "/hw-sandbox", args: []string{"arm", rundir, kind, l.proj, l.task},
-		env: []string{"HW_WORKDIR=" + l.lHwWorkdir(), "HW_ARTIFACTS=" + l.env("HW_ARTIFACTS")}, mut: true})
+		env: l.sandboxArmEnv(), mut: true})
 	shimdir := bashSub(out)
 	if rc != 0 { // # MUTATION-ANCHOR: 847-B2-07
 		l.warn("sandbox: could not arm " + rundir + " — the agent is NOT started unconfined")
@@ -231,6 +231,15 @@ func (l *lch) sandboxArmPane(pane, kind, rundir string) bool {
 	}
 	l.receiptInto(rundir, "sandbox", filepath.Dir(shimdir)+"/profile.sb", "hw-sandbox arm ("+kind+"); shim "+shimdir+" exported in "+pane)
 	return true
+}
+
+// sandboxArmEnv is the environment of `hw-sandbox arm`: the profile allows arm's own TMPDIR, so it must be the executor's per-run one.
+func (l *lch) sandboxArmEnv() []string {
+	e := []string{"HW_WORKDIR=" + l.lHwWorkdir(), "HW_ARTIFACTS=" + l.env("HW_ARTIFACTS")}
+	if t := l.env("HW_EXECUTOR_TMPDIR"); t != "" {
+		e = append(e, "TMPDIR="+t)
+	}
+	return e
 }
 
 // agentStartSandboxed is `_agent_start_sandboxed`: arm, start through the ordinary path, then PROVE it.

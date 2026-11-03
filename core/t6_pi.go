@@ -26,13 +26,20 @@ import (
 // piState is what the pi arms keep of the dispatch (bash: PI_EFFORT_SRC).
 type piState struct {
 	piEffortSrc string // PI_EFFORT_SRC: where a defaulted --thinking came from; the manifest's effort line says it
+	// piRunDone/piRun/piReal memoize piRunDirs: the env block and the pane split are one answer, whichever runs first
+	piRunDone     bool
+	piRun, piReal string
 }
 
-// THE pi ROSTER (opencode-go), the operator's approval of 2026-10-11: the model by KIND and the one it falls to on a MODEL
-// error (never on a spent quota: the cap is shared dollars).
+// THE pi ROSTER (opencode-go), the operator's approval of 2026-10-11, moved by the brainer's ruling of 2026-11-01
+// (setup/decisions.md): build and design/audit run deepseek-v4.1-flash, and fall to v4-pro on a MODEL error (never on a
+// spent quota: the cap is shared dollars); review keeps glm-5.3-flash with that same v4-pro fallback; explore is
+// unchanged and mechanical, on the build model, moves with it but keeps the flash fallback. Thinking stays by kind
+// (explore off, everything else low): measured on 2026-11-01, pi clamps deepseek-v4.1-flash's off and minimal up to
+// low and its medium up to high, so only low and high are real levels there.
 const (
-	piModelDesign      = "opencode-go/deepseek-v4-pro"
-	piModelBuild       = "opencode-go/deepseek-v4-pro"
+	piModelDesign      = "opencode-go/deepseek-v4.1-flash"
+	piModelBuild       = "opencode-go/deepseek-v4.1-flash"
 	piModelReview      = "opencode-go/glm-5.3-flash"
 	piModelCheap       = "opencode-go/deepseek-v4.1-flash"
 	piFallbackFlash    = "opencode-go/glm-5.3-flash"
@@ -66,7 +73,10 @@ func (d *dsp) piApplyModelDefault() {
 // model already is the fallback. Decided by the KIND, also for an explicit --model.
 func (d *dsp) piFallbackModel() string {
 	fb := piFallbackFlash
-	if d.vdBriefKind() == "review" {
+	switch d.vdBriefKind() {
+	// the kinds on the flash default (2026-11-01) fall to the pro, a kindless brief being a build; review has always
+	// fallen to it; explore and mechanical keep the flash fallback they had.
+	case "", "build", "design", "audit", "review":
 		fb = piFallbackPro
 	}
 	if fb == d.model {
@@ -106,12 +116,11 @@ func (d *dsp) piAgentDirs(work string) string {
 	return out + exp
 }
 
-// piClaudeAgentDirs is the PATH-style list of `.claude/agents` directories hw-executor.ts registers with pi-subagents
-// (HW_PI_CLAUDE_AGENT_DIRS): the one a Claude executor of this lane sees, the worktree's. A lane with no product repo
-// has it linked at launch from its brain directory (linkLaneClaude), so before the worktree exists the brain's own
-// directory stands for it. "" when pi-subagents is not loaded (nothing to register with) or the path cannot travel in
-// a PATH-style list.
-func (d *dsp) piClaudeAgentDirs(work string) string {
+// piLaneClaudeAgentDir is the `.claude/agents` directory a Claude executor of this lane sees, the worktree's. A lane with
+// no product repo has it linked at launch from its brain directory (linkLaneClaude), so before the worktree exists the
+// brain's own directory stands for it. "" when pi-subagents is not loaded (nothing to register with) or the path cannot
+// travel in a PATH-style list.
+func (d *dsp) piLaneClaudeAgentDir(work string) string {
 	if !d.piSubagentsReady() {
 		return ""
 	}
@@ -125,6 +134,33 @@ func (d *dsp) piClaudeAgentDirs(work string) string {
 		return ""
 	}
 	return dir
+}
+
+// piUserClaudeAgentDir is the account's user-level agents directory ($CLAUDE_CONFIG_DIR/agents, default ~/.claude/agents):
+// where a Claude executor finds jd-judge-a, jd-judge-b and jd-fix-agent. "" when it is absent or cannot travel in a
+// PATH-style list.
+func (d *dsp) piUserClaudeAgentDir() string {
+	dir := orDefaultStr(d.env("CLAUDE_CONFIG_DIR"), d.env("HOME")+"/.claude") + "/agents"
+	if !isDir(dir) || strings.ContainsAny(dir, " \t\n\v\f\r:") {
+		return ""
+	}
+	return dir
+}
+
+// piClaudeAgentDirs is the PATH-style list of `.claude/agents` directories hw-executor.ts registers with pi-subagents
+// (HW_PI_CLAUDE_AGENT_DIRS), in the order a Claude executor reads them: the lane's, then the account's user-level one.
+// "" when pi-subagents is not loaded (nothing to register with).
+func (d *dsp) piClaudeAgentDirs(work string) string {
+	if !d.piSubagentsReady() {
+		return ""
+	}
+	var dirs []string
+	for _, dir := range []string{d.piLaneClaudeAgentDir(work), d.piUserClaudeAgentDir()} {
+		if dir != "" {
+			dirs = append(dirs, dir)
+		}
+	}
+	return strings.Join(dirs, ":")
 }
 
 // piDir is _explorer_pi_dir; piAgentDirOK is _explorer_pi_agent_dir: the directory pi-subagents reads as an extra
@@ -332,6 +368,22 @@ func (d *dsp) piSkillArgs() string {
 	return "-ns" + out
 }
 
+// piLaneRulesArgFor is the `--append-system-prompt <file>` a pi executor of this lane needs: pi reads only
+// AGENTS.override.md|AGENTS.md|CLAUDE.md directly in each ancestor directory, never .claude/CLAUDE.md, and the flag
+// takes a path when it names an existing file. MEASURED on pi 1.1.0 in a throwaway HOME/PI_*: the appended file's first
+// heading was quoted with the flag and absent without it. "" when the lane has no such file, or its path cannot travel
+// as one word on the launch line.
+func piLaneRulesArgFor(brain, proj string) string {
+	f := laneRulesFile(brain, proj)
+	if f == "" || strings.ContainsAny(f, " \t\n") {
+		return ""
+	}
+	return " --append-system-prompt " + f
+}
+
+// piLaneRulesArg is piLaneRulesArgFor for the dispatch's lane.
+func (d *dsp) piLaneRulesArg() string { return piLaneRulesArgFor(d.c.brain, d.proj) }
+
 // piPluginsLineCheck is _plugins_pi_line_check: a launch line is typed into a tty that holds 1024 bytes, and a truncated
 // line is a pi that never starts. Refused with the number, before anything is built.
 func (d *dsp) piPluginsLineCheck() {
@@ -375,7 +427,7 @@ func (d *dsp) piBuildArgs(perm string) {
 		d.die("pi --effort must be one of: off minimal low medium high xhigh max (got: " + d.effort + ")")
 	}
 	ext := d.piExtensionArgs()
-	d.agentArgs += " " + ext + " " + d.piSkillArgs()
+	d.agentArgs += " " + ext + " " + d.piSkillArgs() + d.piLaneRulesArg()
 	d.piPluginsLineCheck()
 }
 
@@ -393,8 +445,31 @@ func (d *dsp) piRefuseSdd(requested, surface string) {
 
 // ── the manifest ─────────────────────────────────────────────────────────────
 
+// piFrameworkPrefixes are the agents hw's own specialist list leaves out: the framework's (sdd-, speckit-, review-) and the
+// Judgment Day judges. hw-executor.ts's NOT_SPECIALIST copies this set WITHOUT `jd-` (it registers the judges); a Go test
+// holds the two apart by exactly that prefix.
+var piFrameworkPrefixes = []string{"sdd-", "speckit-", "review-", "jd-"}
+
+// piIsFramework: name starts with a framework prefix; with keepJD the `jd-` judges are not framework.
+func piIsFramework(name string, keepJD bool) bool {
+	for _, p := range piFrameworkPrefixes {
+		if keepJD && p == "jd-" {
+			continue
+		}
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // piSpecialistNames is the tail of _specialist_agents: `fd` output to the names the specialists go by.
-func piSpecialistNames(out string) string {
+func piSpecialistNames(out string) string { return piAgentNames(out, false) }
+
+// piAgentNames is piSpecialistNames with the Judgment Day judges optional: hw's own specialist list drops `jd-` (the
+// preamble owner reads it), but hw-executor.ts registers them (its NOT_SPECIALIST lacks `jd-`), so what a pi executor can
+// call is listed with keepJD. 1230 holds the two sets apart by exactly this prefix.
+func piAgentNames(out string, keepJD bool) string {
 	var names []string
 	for _, ln := range strings.Split(out, "\n") {
 		if ln == "" {
@@ -404,8 +479,7 @@ func piSpecialistNames(out string) string {
 			ln = ln[i+1:]
 		}
 		ln = strings.TrimSuffix(ln, ".md")
-		switch {
-		case strings.HasPrefix(ln, "sdd-"), strings.HasPrefix(ln, "speckit-"), strings.HasPrefix(ln, "review-"), strings.HasPrefix(ln, "jd-"):
+		if piIsFramework(ln, keepJD) {
 			continue
 		}
 		names = append(names, ln)
@@ -446,7 +520,7 @@ func (d *dsp) piDelegableAgents(work, list string) string {
 // piRegisteredAgents: the specialists hw-executor.ts registers with pi-subagents itself — every one of the list that no
 // tracked `.pi/agents` copy provides (a copy is loaded by pi-subagents and wins), when hw passed it the directory.
 func (d *dsp) piRegisteredAgents(work, list string) string {
-	if d.piClaudeAgentDirs(work) == "" {
+	if d.piLaneClaudeAgentDir(work) == "" {
 		return ""
 	}
 	have := strings.Fields(d.piDelegableAgents(work, list))
@@ -457,6 +531,45 @@ func (d *dsp) piRegisteredAgents(work, list string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+// piAgentsIn is the agents hw-executor.ts can register from one `.claude/agents` directory (every file, the `jd-` judges
+// included), "" when the directory is absent.
+func (d *dsp) piAgentsIn(agentDir string) string {
+	if agentDir == "" || !isDir(agentDir) {
+		return ""
+	}
+	r := extRun(extCall{Name: "fd", Args: []string{"-t", "f", "-t", "l", "-e", "md", ".", agentDir}, Env: childEnv()})
+	return piAgentNames(r.Out, true)
+}
+
+// piRegisteredByDir is what hw-executor.ts registers with pi-subagents, per directory it reads: the lane's agents (list,
+// as piRegisteredAgents) and the account's user-level ones, minus the names a tracked `.pi/agents` copy provides and, for
+// the account, the names the lane's directory already provides (the lane's file shadows the account's).
+func (d *dsp) piRegisteredByDir(work, list string) (lane, account string) {
+	lane = d.piRegisteredAgents(work, list)
+	if !d.piSubagentsReady() {
+		return lane, ""
+	}
+	laneAll := strings.Fields(d.piAgentsIn(d.piLaneClaudeAgentDir(work)))
+	// the lane's own jd- judges are registered too, though the specialist list drops them
+	var judges []string
+	for _, n := range laneAll {
+		if strings.HasPrefix(n, "jd-") && !has(strings.Fields(lane), n) && !has(strings.Fields(d.piDelegableAgents(work, n)), n) {
+			judges = append(judges, n)
+		}
+	}
+	lane = strings.TrimSpace(lane + " " + strings.Join(judges, " "))
+	taken := laneAll
+	taken = append(taken, strings.Fields(list)...)
+	taken = append(taken, strings.Fields(d.piDelegableAgents(work, d.piAgentsIn(d.piUserClaudeAgentDir())))...)
+	var out []string
+	for _, n := range strings.Fields(d.piAgentsIn(d.piUserClaudeAgentDir())) {
+		if !has(taken, n) {
+			out = append(out, n)
+		}
+	}
+	return lane, strings.Join(out, " ")
 }
 
 // piOpsProcedureFile is _pi_ops_procedure_file: the brainer's copy of ops-investigator's definition, "" when absent.
@@ -487,17 +600,28 @@ func (d *dsp) piManifestLines(dir string) string {
 	co := orDefaultStr(d.c.checkout(d.proj), dir)
 	specs := d.piSpecialistAgents(co)
 	deleg := d.piDelegableAgents(co, specs)
-	reg := d.piRegisteredAgents(co, specs)
+	reg, acct := d.piRegisteredByDir(co, specs)
 	var spec string
 	switch {
-	case deleg == "" && reg == "" && specs == "":
+	case deleg == "" && reg == "" && acct == "" && specs == "":
 		spec = "the lane has no .claude/agents specialists to delegate to"
-	case deleg == "" && reg == "":
+	case deleg == "" && reg == "" && acct == "":
 		spec = "the lane's .claude/agents are NOT delegable: pi-subagents is not loaded (see the pi subagents line), and the preamble says so"
 	default:
 		var parts []string
-		if reg != "" {
-			parts = append(parts, "REGISTERED with pi-subagents by hw-executor.ts at session start: "+reg+" (read from "+d.piClaudeAgentDirs(co)+" via HW_PI_CLAUDE_AGENT_DIRS; Claude's tool names mapped to pi's in memory, the executor's model instead of the file's model:, nothing copied or rewritten)")
+		const how = "Claude's tool names mapped to pi's in memory, the executor's model instead of the file's model:, nothing copied or rewritten"
+		switch {
+		case reg != "" && acct == "":
+			parts = append(parts, "REGISTERED with pi-subagents by hw-executor.ts at session start: "+reg+" (read from "+d.piLaneClaudeAgentDir(co)+" via HW_PI_CLAUDE_AGENT_DIRS; "+how+")")
+		case reg != "" || acct != "":
+			var from []string
+			if reg != "" {
+				from = append(from, reg+" (the lane's "+d.piLaneClaudeAgentDir(co)+")")
+			}
+			if acct != "" {
+				from = append(from, acct+" (the account's "+d.piUserClaudeAgentDir()+")")
+			}
+			parts = append(parts, "REGISTERED with pi-subagents by hw-executor.ts at session start, via HW_PI_CLAUDE_AGENT_DIRS: "+strings.Join(from, "; ")+" ("+how+")")
 		}
 		if deleg != "" {
 			parts = append(parts, "DELEGABLE through pi-subagents: "+deleg+" (the worktree's tracked .pi/agents, reached by PI_SUBAGENT_EXTRA_AGENT_DIRS because -na leaves the project untrusted; every call must pass model, their files pin openai-codex)")
@@ -518,5 +642,9 @@ func (d *dsp) piManifestLines(dir string) string {
 		fbLine = fb + "  (HW_PI_FALLBACK_MODEL, thinking " + piFallbackThinking + ": a terminal MODEL error switches to it by itself and writes the switch in the receipt; a spent QUOTA does not — the cap is shared dollars)"
 	}
 	skills := orDefaultStr(strings.Join(names, ", "), "none")
-	return "\n  pi fallback  " + fbLine + "\n  pi skills    " + skills + "  (-ns: discovery off; only what hw decides, not ~/.pi/agent/skills)\n  pi subagents " + sub + "\n  pi specialists " + spec
+	agentDir := "the ambient one (PI_CODING_AGENT_DIR, else ~/.pi/agent), untouched — no plugin is declared, so this session starts no child with discovery on"
+	if len(d.pluginsDeclaredInstalled()) > 0 {
+		agentDir = "PRIVATE (under $HW_ARTIFACTS/pi-agent): the ambient agent directory's files, symlinked, with a settings.json that declares no packages and no extensions — a plugin's children start pi with discovery ON (pstack's `agent`: setup/vendor/plugins/pstack/pi/agents.ts), and the ambient rpiv-ask-user-question package registers the same `ask_user_question` pstack's extension does. ~/.pi is not written"
+	}
+	return "\n  pi fallback  " + fbLine + "\n  pi skills    " + skills + "  (-ns: discovery off; only what hw decides, not ~/.pi/agent/skills)\n  pi agent dir " + agentDir + "\n  pi subagents " + sub + "\n  pi specialists " + spec
 }

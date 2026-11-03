@@ -278,74 +278,12 @@ mutate_anchor 46-M11 "$M11" 'if false; then' || fail "M11 could not be built"
   || fail "M11 VACUOUS: the mutant did not restore the old pass-on-empty behaviour for a declaration-free subject"
 pass "mutant killed: M11 removes the emptiness gate, and an empty output passes again for a subject that declares nothing"
 
-# ── C12-C16 / M12-M13. the native-Windows exemption, and how narrow it is ────
-#
-# A copy of the predicate with a list of its own beside it (it reads the one in
-# its own directory), and the platform as `uname -s` says it, stubbed first on
-# PATH: both platforms are asked on every platform.
-cp "$COV" "$TMP/cov.healthy" && chmod +x "$TMP/cov.healthy" || fail "C12 the predicate could not be copied"
-printf '%s\t%s\t%s\n' \
-  one-arm.sh M01 "a reason of one line" \
-  two-arms.sh M01 "only the first arm is listed" \
-  no-reason.sh M01 "" \
-  wild.sh '*' "a wildcard, which matches no arm" \
-  half-named.sh M01 "its other arm has no name to list" > "$TMP/mutation-exempt-native-windows.tsv"
-printf '%s\n' '#!/usr/bin/env bash' 'saw_mutant "M01 a thing" "$x" "y"' 'pass "mutant killed: an arm with no id"' > "$FIX/half-named.sh"
-for p in one-arm no-reason wild; do
-  printf '%s\n' '#!/usr/bin/env bash' 'saw_mutant "M01 a thing" "$x" "y"' > "$FIX/$p.sh"
-done
+# A copy of the predicate with no list of its own beside it, the two subject
+# shapes every exemption case asks about, and a `uname` that says Darwin.
+cp "$COV" "$TMP/cov.healthy" && chmod +x "$TMP/cov.healthy" || fail "the predicate could not be copied"
+printf '%s\n' '#!/usr/bin/env bash' 'saw_mutant "M01 a thing" "$x" "y"' > "$FIX/one-arm.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'saw_mutant "M01 a thing" "$x" "y"' 'saw_mutant "M02 another" "$x" "y"' > "$FIX/two-arms.sh"
-mkdir -p "$TMP/os-win" "$TMP/os-mac"
-printf '#!/bin/sh\necho MINGW64_NT-10.0-20348\n' > "$TMP/os-win/uname"
-printf '#!/bin/sh\necho Darwin\n' > "$TMP/os-mac/uname"
-chmod +x "$TMP/os-win/uname" "$TMP/os-mac/uname"
-# on <win|mac> <gate> <subject> → "<rc> <stdout+stderr>"
-on() { local o rc=0; o="$(PATH="$TMP/os-$1:$PATH" "$2" "$3" "$FIX/out-silent" 2>&1)" || rc=$?; printf '%s %s' "$rc" "$o"; }
-on_rc() { local r; r="$(on "$@")"; printf '%s' "${r%% *}"; }
-
-r="$(on win "$TMP/cov.healthy" "$FIX/one-arm.sh")"
-case "$r" in "0 exempt - one-arm.sh M01 on native Windows: a reason of one line") ;; *) fail "C12 a listed arm on native Windows was not exempt, or not named with its reason: $r" ;; esac
-pass "C12 on native Windows an arm listed by name with its reason is exempt, and the run prints it"
-
-r="$(on win "$TMP/cov.healthy" "$FIX/two-arms.sh")"
-case "$r" in "1 "*"the arms M02 are not in"*) ;; *) fail "C13 a subject with an unlisted arm was exempt: $r" ;; esac
-pass "C13 on native Windows an arm that is not listed keeps the subject red, and is named"
-
-[ "$(on_rc win "$TMP/cov.healthy" "$FIX/says-spaced.sh")" = 1 ] || fail "C14 an unlisted subject was exempt on native Windows"
-pass "C14 on native Windows a subject the list does not name is red, as before"
-
-r="$(on mac "$TMP/cov.healthy" "$FIX/one-arm.sh")"
-case "$r" in "1 "*"exercised none"*) ;; *) fail "C15 the list exempted an arm off native Windows: $r" ;; esac
-pass "C15 off native Windows the list exempts nothing"
-
-[ "$(on_rc win "$TMP/cov.healthy" "$FIX/no-reason.sh")" = 1 ] || fail "C16 a row with no reason exempted its arm"
-[ "$(on_rc win "$TMP/cov.healthy" "$FIX/wild.sh")" = 1 ] || fail "C16 a '*' row exempted an arm"
-pass "C16 a row with no reason, or a '*' for its arm, exempts nothing: names only, each with its reason"
-
-r="$(on win "$TMP/cov.healthy" "$FIX/half-named.sh")"
-case "$r" in "1 "*"(1 declared with no arm name)"*) ;; *) fail "C17 an arm with no name rode its named sibling's row into an exemption: $r" ;; esac
-pass "C17 on native Windows an arm declared with no name keeps the subject red: the list cannot name it"
-
-M12="$(mut m12)" || fail "M12 could not be built"
-mutate_anchor 46-M12 "$M12" '*)' || fail "M12 could not be built"
-case "$(on mac "$M12" "$FIX/one-arm.sh")" in
-  "0 exempt - one-arm.sh M01"*) pass "mutant killed: M12 dropping the platform test lets the list exempt on macOS and Linux, which C15 refuses" ;;
-  *) fail "M12 SURVIVED: with no platform test the list still exempted nothing off native Windows" ;;
-esac
-
-M13="$(mut m13)" || fail "M13 could not be built"
-mutate_anchor 46-M13 "$M13" ':' || fail "M13 could not be built"
-case "$(on win "$M13" "$FIX/two-arms.sh")" in
-  "0 exempt - two-arms.sh M01"*) pass "mutant killed: M13 not counting unlisted arms exempts a subject one listed arm covers, which C13 refuses" ;;
-  *) fail "M13 SURVIVED: with unlisted arms ignored the two-arm subject was still red" ;;
-esac
-
-M14="$(mut m14)" || fail "M14 could not be built"
-mutate_anchor 46-M14 "$M14" ':' || fail "M14 could not be built"
-case "$(on win "$M14" "$FIX/half-named.sh")" in
-  "0 exempt - half-named.sh M01"*) pass "mutant killed: M14 not counting unnamed declarations exempts a subject with an arm the list cannot name, which C17 refuses" ;;
-  *) fail "M14 SURVIVED: with unnamed declarations ignored the half-named subject was still red" ;;
-esac
+mkdir -p "$TMP/os-mac"; printf '#!/bin/sh\necho Darwin\n' > "$TMP/os-mac/uname"; chmod +x "$TMP/os-mac/uname"
 
 # ── C18/C19 / M15. the exemption keyed on security(1) being absent ───────────
 #
@@ -387,7 +325,12 @@ esac
 # A subject that holds a macOS-only mechanism (961: dirhelper) cannot run its arms elsewhere. uname decides: one case
 # says Linux, the other Darwin. The list exists only for these cases, so no claim above reads it.
 mkdir -p "$TMP/os-linux"; printf '#!/bin/sh\necho Linux\n' > "$TMP/os-linux/uname"; chmod +x "$TMP/os-linux/uname"
-printf '%s\t%s\t%s\n' one-arm.sh M01 "a macOS mechanism" > "$TMP/mutation-exempt-not-macos.tsv"
+printf '%s\n' '#!/usr/bin/env bash' 'saw_mutant "M01 a thing" "$x" "y"' > "$FIX/no-reason.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'saw_mutant "M01 a thing" "$x" "y"' > "$FIX/wild.sh"
+printf '%s\t%s\t%s\n' \
+  one-arm.sh M01 "a macOS mechanism" \
+  no-reason.sh M01 "" \
+  wild.sh '*' "a wildcard, which matches no arm" > "$TMP/mutation-exempt-not-macos.tsv"
 # security(1) present (a stub), so the no-security list above is not what answers on a Linux host
 notmac() { local o rc=0; o="$(PATH="$TMP/bin-sec:$TMP/os-linux:$PATH" "$1" "$2" "$FIX/out-silent" 2>&1)" || rc=$?; printf '%s %s' "$rc" "$o"; }
 r="$(notmac "$TMP/cov.healthy" "$FIX/one-arm.sh")"
@@ -395,6 +338,15 @@ case "$r" in "0 exempt - one-arm.sh M01 on a host that is not macOS: a macOS mec
 r="$(notmac "$TMP/cov.healthy" "$FIX/two-arms.sh")"
 case "$r" in "1 "*"exercised none"*) ;; *) fail "C20b a subject with an unlisted arm was exempt off macOS: $r" ;; esac
 pass "C20 off macOS an arm listed by name with its reason is exempt, the run prints it, and an unlisted arm stays red"
+
+# M13: the accounting that keeps an unlisted arm red. C20b's two-arm subject is
+# the case: one listed arm must not hide the one the list does not name.
+M13="$(mut m13)" || fail "M13 could not be built"
+mutate_anchor 46-M13 "$M13" ':' || fail "M13 could not be built"
+case "$(notmac "$M13" "$FIX/two-arms.sh")" in
+  "0 "*) pass "mutant killed: M13 not counting unlisted arms exempts a subject one listed arm covers, which C20b refuses" ;;
+  *) fail "M13 SURVIVED: with unlisted arms ignored the two-arm subject was still red" ;;
+esac
 r="$(withsec "$TMP/cov.healthy" "$FIX/one-arm.sh")"
 case "$r" in "1 "*"exercised none"*) pass "C21 on macOS the not-macOS list exempts nothing" ;; *) fail "C21 the not-macOS list exempted an arm on macOS: $r" ;; esac
 M16="$(mut m16)" || fail "M16 could not be built"
@@ -408,6 +360,28 @@ mutate_anchor 46-M16 "$M16B" 'if true; then' || fail "M16b could not be built"
 case "$(withsec "$M16B" "$FIX/one-arm.sh")" in
   "0 exempt - one-arm.sh M01 on a host that is not macOS"*) pass "mutant killed: M16b reading the list on macOS too exempts a subject on the Mac, which C21 refuses" ;;
   *) fail "M16b SURVIVED: with the platform test removed the list still exempted nothing" ;;
+esac
+
+# ── C20c / M19. a row still needs a name and a reason ─────────────────────
+#
+# The list is names only, each with its reason: an empty reason, or `*` where an
+# arm id belongs, exempts nothing. This is the shared exempt_arms predicate the
+# no-security list reads too, so the claim is asked once against the not-macOS
+# list; the mutant accepts both shapes and must be caught by each of them.
+r="$(notmac "$TMP/cov.healthy" "$FIX/no-reason.sh")"
+case "$r" in "1 "*"exercised none"*) ;; *) fail "C20c a row with no reason exempted its arm off macOS: $r" ;; esac
+r="$(notmac "$TMP/cov.healthy" "$FIX/wild.sh")"
+case "$r" in "1 "*"exercised none"*) ;; *) fail "C20c a '*' row exempted an arm off macOS: $r" ;; esac
+pass "C20c off macOS a row with no reason, or a '*' for its arm, exempts nothing: names only, each with its reason"
+M19="$(mut m19)" || fail "M19 could not be built"
+mutate_anchor 46-M19 "$M19" "'\$1 !~ /^#/ && \$1 == s && (\$2 == a || \$2 == \"*\") { print (\$3 ~ /[^[:space:]]/ ? \$3 : \"listed\"); exit }' \"\$EXEMPT_LIST\")\"" || fail "M19 could not be built"
+case "$(notmac "$M19" "$FIX/no-reason.sh")" in
+  "0 "*) pass "mutant killed: M19 accepting a row with no reason exempts the arm, which C20c refuses" ;;
+  *) fail "M19 SURVIVED: with the reason check dropped the empty-reason row was still red" ;;
+esac
+case "$(notmac "$M19" "$FIX/wild.sh")" in
+  "0 "*) pass "mutant killed: M19 accepting a '*' row exempts the arm, which C20c refuses" ;;
+  *) fail "M19 SURVIVED: with the wildcard accepted the '*' row was still red" ;;
 esac
 
 # ── C22/C23 / M17. a subject whose arms have no `M<n>` id (1041: the Go anchors of core/) ──────────────────────────
@@ -432,6 +406,13 @@ case "$r" in "1 "*"printed no 'ok - <subject>: skipped on <os> — <reason>' lin
 r="$(withsec "$TMP/cov.healthy" "$FIX/go-anchors.sh")"
 case "$r" in "1 "*"exercised none"*) ;; *) fail "C23c on macOS the <unnamed> row exempted a subject that ran none of its arms: $r" ;; esac
 pass "C22 off macOS a subject whose arms carry no id is exempt only through an <unnamed> row with its reason; C23 without the row, or on macOS, it stays red"
+
+M14="$(mut m14)" || fail "M14 could not be built"
+mutate_anchor 46-M14 "$M14" ':' || fail "M14 could not be built"
+case "$(notmac_out "$M14" "$FIX/go-anchors-unlisted.sh" "$FIX/out-declared-skip")" in
+  "0 "*) pass "mutant killed: M14 not counting unnamed declarations lets an arm the list cannot name ride its named sibling, which C23 refuses" ;;
+  *) fail "M14 SURVIVED: with unnamed declarations ignored the unlisted subject was still red" ;;
+esac
 M18="$(mut m18)" || fail "M18 could not be built"
 mutate_anchor 46-M18 "$M18" 'elif false; then' || fail "M18 could not be built"
 case "$(notmac_out "$M18" "$FIX/go-anchors.sh" "$FIX/out-silent")" in
@@ -446,5 +427,5 @@ case "$(notmac_out "$M17" "$FIX/go-anchors.sh" "$FIX/out-declared-skip")" in
 esac
 rm -f "$TMP/mutation-exempt-not-macos.tsv"
 
-printf 'mapping - C01↔M01 declaration · C01↔M02 evidence · C03↔M05 marker breadth · C05↔M04 comment exclusion · C06↔M03 unreadable input · C07↔M06,M07,M08,M09 catch-all shape · C08 no wolf · C09↔M10 helper form enforced · C11↔M11 empty output · C12,C15↔M12 native Windows only · C13↔M13 every arm listed · C17↔M14 an unnamed arm · C14,C16 names only · C18,C19↔M15 no security(1) · C20,C21↔M16 not macOS · C22,C23↔M17,M14,M18 arms with no id; the run must say it skipped\n'
-printf 'coverage - 24 behavior claims, 19 dedicated mutants killed\n'
+printf 'mapping - C01↔M01 declaration · C01↔M02 evidence · C03↔M05 marker breadth · C05↔M04 comment exclusion · C06↔M03 unreadable input · C07↔M06,M07,M08,M09 catch-all shape · C08 no wolf · C09↔M10 helper form enforced · C11↔M11 empty output · C18,C19↔M15 no security(1) · C20,C21↔M16 not macOS · C20b↔M13 every arm listed · C20c↔M19 empty reason and wildcard · C22,C23↔M17,M14,M18 arms with no id; the run must say it skipped\n'
+printf 'coverage - 19 behavior claims, 20 dedicated mutants killed\n'

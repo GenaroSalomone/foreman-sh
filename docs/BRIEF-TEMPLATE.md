@@ -6,7 +6,7 @@
 #
 #   agent:     claude | opencode | codex
 #   model:     the vendor's own form (opencode needs provider/model)
-#   sdd:       speckit | none (gentle is retired: it warns and runs none)
+#   sdd:       none (the default; omit it) | speckit (opt-in, needs --sdd speckit)
 #   base:      the branch the worktree is built on — declare it on any task
 #              whose result is measured
 #   requested_by: "<who, date: the request, quoted>"  and  asked: investigate | build
@@ -33,10 +33,12 @@
 #   requires-agents: [primary:|subagent:]<name>, …
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
-#   review:    judgment-day | plugins | none, or ONE list: [judgment-day, thermo, ponytail, pstack]
-#              — the review the close names, in every lane and --sdd mode. judgment-day (the
-#              default when absent) orders Judgment Day over the branch; plugins names only the
-#              review pieces of `plugins:` (below) and no Judgment Day; none adds no review note.
+#   review:    [judgment-day]  (the DEFAULT: omit the key) — or judgment-day | plugins | none,
+#              or ONE list: [judgment-day, thermo, ponytail, pstack]
+#              — the review the close names, in every lane and --sdd mode. judgment-day orders
+#              Judgment Day over the branch; plugins names only the review pieces of `plugins:`
+#              (below) and no Judgment Day; none adds no review note, and on `kind: build` hw
+#              REFUSES it unless the brief also carries a `review-skip: <piece> — <why>` line.
 #              One focus per plugin, each piece once (the first plugin declared wins a piece two carry):
 #              thermo = maintainability; ponytail = senior review (correct, safe, load, tested, fast,
 #              lean); pstack = the diff's security and correctness, blast-radius (what breaks outside
@@ -112,8 +114,12 @@ deadlocks the executors, and `hw` refuses a brief that carries the `pgrep` one.
 The full suite already includes every Go partition (`setup/go-test-core.sh`): do not
 run them before it, and never a bare `go test ./...` over `core/` with `HW_INPROC_ALL=1`
 (it starts the monolithic TestC848 and never finishes; `core/main_test.go` exits 2 on it).
+How to run Go tests: `setup/CLAUDE.md`, "Go tests go through the runner".
 A partition is `setup/go-test-core.sh <name>` (`--list` names them), alone only when the
-brief's change can reach just that one.
+brief's change can reach just that one. For t5 goldens and t5 mutants name the partitions out loud —
+`setup/go-test-core.sh c843` for the goldens, `c848-1` … `c848-8` for the mutants — not
+`--affected <file>`: its map does not know a golden case, and a change that moves one reaches no
+partition it lists.
 
 A gate's FIRST run is `HW_TEST_GATE=fast bash setup/test-hw --keep-going`: every red shows in one
 pass instead of one per run (half an hour measured, retros 2026-10-16). When
@@ -133,6 +139,14 @@ just means the report is the only claim there is, which is what it was on
 2026-08-25 when three executors in a row shipped correct code with a
 verification nobody had run.>
 
+## Committing
+<Commit with `setup/commit-tree`: it takes the tree and the parent from the same ref, refuses a diff that
+touches a path you did not name, and never runs a hook. `setup/commit-tree -m "<msg>" <path>...` on your
+branch; `--onto <base>` to commit onto a branch that is not HEAD; `-F <file>` for a long message. Never
+`git add -A`, never `git commit` in a shared tree, never `--no-verify`. The lane rules are `<lane>/CLAUDE.md`
+RELATIVE TO THE REPO ROOT — inside a setup worktree that is `setup/CLAUDE.md`; the brain root's own copy is the
+same file under its lane directory, and it does not exist in the worktree.>
+
 ## QA
 <A browser or deployed-build check: QA is handed one string that only the new build carries (a commit sha, or a marker in the bundle) and FAILS if it is not there. A 200 alone does not prove the new build.>
 
@@ -140,9 +154,8 @@ verification nobody had run.>
 <One detached checkout per PR (`git worktree add --detach <dir> <ref>`); never review inside the executor's own worktree.>
 
 ## Mechanism
-<...and, if this task should run under a framework the directory does not
-already have, say which and why: `hw <project> <task> --sdd speckit`.
-Omit it and the task inherits the directory's mode, which is usually right.>
+<...and, only if this task should run Spec Kit's flow, say why: `--sdd speckit`.
+Omit it and the task runs outside any framework (none, the default).>
 <How this work is actually done. Name it exactly, do not describe it.>
 - Tool / MCP / skill: `<exact name as invoked>`
 - Precheck, run FIRST before any real work: `<the cheapest call that proves it is live>`

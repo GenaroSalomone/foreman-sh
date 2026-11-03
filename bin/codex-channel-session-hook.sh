@@ -1,79 +1,38 @@
 #!/usr/bin/env bash
 # Report Codex's thread id to Herdr as soon as a user prompt is submitted.
-set -uo pipefail  # MUTATION-ANCHOR: 102-M04
-# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
-# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
-# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
-# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
+set -uo pipefail
 
-# ── hw-core: this tool as a Go binary (core/wrappers*.go; the switch is bin/wrapper-go.sh). THE DEFAULT IS GO: the bash below is the rollback (HW_IMPL_<TOOL>=bash) ──
-_wg_prog=codex-channel-session-hook; _wg_src="${BASH_SOURCE[0]}"
-while [ -L "$_wg_src" ]; do _wg_d="$(cd -P "$(dirname "$_wg_src")" && pwd)"; _wg_src="$(readlink "$_wg_src")"; case "$_wg_src" in /*) ;; *) _wg_src="$_wg_d/$_wg_src" ;; esac; done
-_wg_bin="$(cd -P "$(dirname "$_wg_src")" && pwd)"
-[ ! -f "$_wg_bin/wrapper-go.sh" ] || . "$_wg_bin/wrapper-go.sh"
-unset _wg_prog _wg_src _wg_d _wg_bin
-
-# NO `trap 'exit 0' EXIT`, and its absence is the fix.
-#
-# This file used to open with one, and close with
-# `herdr-rpc call pane.report_agent_session … >/dev/null 2>&1 || true`. Between
-# the two, every path exited 0 — including the path where the pane→session-id
-# mapping never landed. That mapping is the whole reason the hook exists: it is
-# what lets anything address this Codex session at all. A hook that reports
-# success whether or not it published is a hook whose signal carries no
-# information, which is the failure this whole toolchain is about.
-#
-# NOT APPLICABLE and FAILED are now two different exits. The guards below are
-# "this invocation is not ours" — a different hook event, no herdr, no pane —
-# and those are genuinely exit 0. A publication that was attempted and cannot be
-# proved is exit 1, and it says which half failed.
-_hook_fail() {
-  printf 'codex-channel-session-hook: %s\n' "$*" >&2
-  # DURABLE, because a hook's stderr is not something anyone reads later. This
-  # is the only place the failure survives the invocation.
-  if [ -n "${HERDR_PANE_ID:-}" ]; then
-    printf '%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" \
-      >> "${TMPDIR:-/tmp}/hw-codex-session-$(printf '%s' "$HERDR_PANE_ID" | tr -c 'A-Za-z0-9_.-' '_').err" \
-      2>/dev/null || true
+# ── the Go implementation: hw-core (core/wrappers_small.go)
+# 0.7.0 removed the bash body: this file keeps the name (the interface, setup/release-standard.md «Versioning») and execs
+# `hw-core codex-channel-session-hook` with the same argv, stdin and environment. A HW_IMPL_CODEX_CHANNEL_SESSION_HOOK or `codex-channel-session-hook=bash` word is retired: bin/impl-retired.sh says so
+# once and Go runs. hw-core is HW_CORE (a seam of the suite, never rebuilt), else beside this file, else core/dist/<os>-<arch>/
+# (setup/build-core builds it); one not built or older than core/'s sources is rebuilt by bin/core-rebuild when a toolchain is on PATH.
+set -euo pipefail
+_t_src="${BASH_SOURCE[0]}"
+while [ -L "$_t_src" ]; do
+  _t_dir="$(cd -P "$(dirname "$_t_src")" && pwd)" || break
+  _t_src="$(readlink "$_t_src")" || break
+  case "$_t_src" in /*) ;; *) _t_src="$_t_dir/$_t_src" ;; esac
+done
+_t_bin="$(cd -P "$(dirname "$_t_src")" 2>/dev/null && pwd)"
+[ ! -r "$_t_bin/impl-retired.sh" ] || { . "$_t_bin/impl-retired.sh"; impl_retired_warn codex-channel-session-hook; }
+_t_core=""
+if [ -n "${HW_CORE:-}" ]; then
+  [ ! -x "$HW_CORE" ] || _t_core="$HW_CORE"
+else
+  _t_os="$(uname -s | tr 'A-Z' 'a-z')"; _t_arch="$(uname -m)"
+  case "$_t_arch" in x86_64) _t_arch=amd64 ;; aarch64|arm64) _t_arch=arm64 ;; esac
+  for _t_c in "$_t_bin/hw-core" "$_t_bin/../core/dist/$_t_os-$_t_arch/hw-core"; do
+    if [ -x "$_t_c" ]; then _t_core="$_t_c"; break; fi
+  done
+  if [ -n "$_t_core" ] && [ -d "$_t_bin/../core" ] \
+     && [ -n "$(find "$_t_bin/../core" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$_t_core" -print -quit 2>/dev/null)" ]; then
+    _t_msg="$("$_t_bin/core-rebuild" "$_t_bin" "$_t_core" codex-channel-session-hook 2>&1)" || :   # stale: rebuilt (bin/core-rebuild), or the old one runs with one line
+    [ -z "$_t_msg" ] || printf 'codex-channel-session-hook: %s\n' "$_t_msg" >&2
   fi
-  exit 1
-}
-
-[ "${1:-}" = session ] || exit 0
-[ "${HERDR_ENV:-}" = 1 ] || exit 0
-[ -n "${HERDR_PANE_ID:-}" ] || exit 0
-[ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
-
-INPUT="$(head -c 262144 2>/dev/null || true)"
-SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
-[ -n "$SESSION_ID" ] || exit 0
-SEQ="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || true)"
-[ -n "$SEQ" ] || exit 0
-
-SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
-  || _hook_fail "cannot resolve my own directory, so herdr-rpc could not be found"
-if ! PARAMS="$(jq -nc \
-  --arg pane "$HERDR_PANE_ID" \
-  --arg session "$SESSION_ID" \
-  --argjson seq "$SEQ" \
-  '{pane_id:$pane,source:"hw:codex-channel",agent:"codex",seq:$seq,agent_session_id:$session}' \
-  2>/dev/null)"; then
-  _hook_fail "could not build the report_agent_session params for pane $HERDR_PANE_ID"
 fi
-[ -n "$PARAMS" ] || _hook_fail "built empty report_agent_session params for pane $HERDR_PANE_ID"
-
-RPC_OUT="$("$SCRIPT_DIR/herdr-rpc" call pane.report_agent_session "$PARAMS" 2>&1)" \
-  || _hook_fail "pane.report_agent_session failed for pane $HERDR_PANE_ID session $SESSION_ID: $(printf '%s' "$RPC_OUT" | head -2 | tr '\n' ' ')"
-
-# AND READ IT BACK, because "the RPC returned 0" is not "the pane carries the
-# mapping". `agent.get` exposes `agent_session.value`, so the fact this hook
-# exists to establish is directly checkable — verified on the live daemon
-# 2026-09-08: `herdr-rpc call agent.get '{"target":"<pane>"}'` answers with
-# `.agent.agent_session = {source, agent, kind, value}`, unwrapped.
-READ_OUT="$("$SCRIPT_DIR/herdr-rpc" call agent.get \
-  "$(jq -nc --arg t "$HERDR_PANE_ID" '{target:$t}')" 2>&1)" \
-  || _hook_fail "published the session for pane $HERDR_PANE_ID but could not read it back: $(printf '%s' "$READ_OUT" | head -2 | tr '\n' ' ')"
-LANDED="$(printf '%s' "$READ_OUT" | jq -r '.agent.agent_session.value // empty' 2>/dev/null || true)"
-[ "$LANDED" = "$SESSION_ID" ] \
-  || _hook_fail "pane $HERDR_PANE_ID reports session '${LANDED:-none}', not the '$SESSION_ID' just published — the mapping did not land"
+if [ -n "$_t_core" ]; then
+  HW_WRAPPER_ARGV0="$0" HW_CORE_BIN_DIR="$_t_bin" exec "$_t_core" codex-channel-session-hook "$@"
+fi
+printf 'codex-channel-session-hook: hw-core is not built: run setup/build-core --native (it needs Go 1.22 or newer, https://go.dev/dl)\n' >&2
+exit 1

@@ -483,7 +483,7 @@ invoker_adopt_env_file() {
       HW_PROJECT|HW_TASK|HW_WORKDIR|HW_RUN|HW_INVOKER_PANE|ENGRAM_PROJECT|\
       HW_ARTIFACTS|HW_EXECUTOR_VENDOR|HW_INVOKER_VENDOR|HW_INVOKER_SESSION|HW_INVOKER_ENDPOINT|\
       HW_CHAINING_ENABLED) ;;
-      HW_CHAINING_LEASE_SECONDS|HW_CHAINING_LEASE_REASON|HW_CHAINING_LEASE_HOLDER) ;;
+      HW_CHAINING_LEASE_SECONDS|HW_CHAINING_LEASE_REASON|HW_CHAINING_LEASE_HOLDER|HW_LOCK_DIR) ;;
       *) continue ;;
     esac
     # Indirect expansion, so no eval touches the file's contents. The assignment
@@ -537,10 +537,6 @@ def usable(path):
         return False
     if not stat.S_ISREG(st.st_mode):
         return False
-    if os.name == "nt":
-        # No uid and no mode bits on Windows (chmod 600 changes nothing): the
-        # file sits in the tree of the user, and NTFS ACLs decide who can write.
-        return True
     if st.st_uid != os.getuid():
         return False
     return not (st.st_mode & 0o022)
@@ -836,7 +832,7 @@ _invoker_proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^
 invoker_run_lock_path() {
   local key
   key="$(printf '%s' "${HW_RUN:-norun}" | tr -c 'A-Za-z0-9_.-' '_')"
-  printf '%s/hw-invoker-%s.lock' "${TMPDIR:-/tmp}" "$key"
+  printf '%s/hw-invoker-%s.lock' "${HW_LOCK_DIR:-${TMPDIR:-/tmp}}" "$key"
 }
 
 # RELEASE BY IDENTITY, NEVER BY PATH. A lock that no longer names us was reaped

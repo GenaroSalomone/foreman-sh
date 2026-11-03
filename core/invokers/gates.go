@@ -147,9 +147,11 @@ func DesignGate(artifactsRoot, boundary string) error {
 }
 
 // PluginReviewGate holds a done report to the plugin review skills the closing named: comma-joined, each one
-// `plugin:piece` (a skill or an agent; a bare name, from an older receipt, is the skill part of any plugin). A skill is released by the executor's own transcript — a Skill tool_use of exactly that name, or an
-// Agent whose subagent_type is — or by `review-skip: <skill> — <why>` in the report. With no transcript (proof nil)
-// the report text must name the skill as a whole token, and the note returned says the check was unverified.
+// `plugin:piece` (a skill or an agent; a bare name, from an older receipt, is the skill part of any plugin). A piece
+// is released by the executor's own transcript — a recorded invocation of exactly that name, whatever the vendor
+// records one as (each reader says how) — or by `review-skip: <skill> — <why>` in the report. With no transcript
+// (proof nil) the report text must name the skill as a whole token, and the note returned says the check was
+// unverified.
 func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string) (note string, err error) {
 	var missing, shown []string
 	for _, sk := range strings.Split(skills, ",") {
@@ -171,11 +173,15 @@ func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string
 		}
 		return "", nil
 	}
-	proofIs := "your transcript (and your subagents') has no Skill call or subagent of that exact name"
+	proofIs := "your transcript (and your subagents') has no recorded invocation of that exact name"
 	if proof == nil {
 		proofIs = "unverified: transcript not reachable (" + why + "), and the report does not name it as a whole token"
 	}
-	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each with the Skill tool over your committed range under its full name (plugin:skill) — an agent such as pstack:comment-sicko is launched with the Agent tool, its subagent_type that full name — or write a line  review-skip: <skill> — <why>  for one you cannot run (not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
+	how := "the way your vendor records an invocation"
+	if proof != nil && proof.Vendor == "pi" {
+		how = "the way pi records one: read the skill's SKILL.md (plugins/<plugin>/skills/<skill>/SKILL.md), or run the agent with the `subagent` tool, agent that full name AND a task AND async:false (a management call such as action:get, an async launch, and workflow:true or a script run nothing foreman can see)"
+	}
+	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each over your committed range under its full name (plugin:skill), "+how+" — or write a line  review-skip: <skill> — <why>  for a piece your vendor cannot run (no such agent registered, not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
 }
 
 // reviewSkipped is a `review-skip: <skill>` line naming the skill (full name or its bare skill part).
@@ -241,7 +247,7 @@ func isSeparatorRow(l string) bool {
 // row and a pass/fail/unresolved verdict on every row. It returns CHECKS_NOTE.
 func ChecksGate(artifactsRoot string) (note string, err error) {
 	file := artifactsRoot + "/checks.md"
-	how := fmt.Sprintf("Write %s as a table, one row per requirement of the brief's Proof and Verification:  requirement | verdict | evidence | correction  (verdict: pass, fail or unresolved). NOTHING was sent or marked.", file)
+	how := fmt.Sprintf("Write %s as a table, one row per requirement of the brief: its Verification section and each numbered goal:  requirement | verdict | evidence | correction  (verdict: pass, fail or unresolved). NOTHING was sent or marked.", file)
 	if !isRegular(file) {
 		return "", die("%s", fmt.Sprintf("this is a build and there is no %s. %s", file, how))
 	}

@@ -20,7 +20,22 @@
 # gocache_default — the shared cache directory when the caller did not set GOCACHE. Subjects run with TMPDIR already
 # moved off /var/folders (tests/_common.sh), test-hw does not: the rule is repeated here, so the two agree.
 gocache_default() {
-  local root="${TMPDIR:-/tmp}" safe
+  local root="${TMPDIR:-/tmp}" safe art
+  # hw's per-run TMPDIR is <cache>/hw-run-tmp/<run> (core/run_tmp.go; older runs: $HW_ARTIFACTS/tmp): per run, so a cache there is
+  # cold. The shared cache stays shared whatever TMPDIR is.
+  case "$(cd -P "$root" 2>/dev/null && pwd)" in
+    */hw-run-tmp|*/hw-run-tmp/*)
+      safe="${HW_TEST_TMPROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-test-$(id -u)}"
+      if mkdir -p "$safe" 2>/dev/null && chmod 700 "$safe" 2>/dev/null && [ -w "$safe" ]; then printf '%s/hw-go-cache.v2' "$safe"; return 0; fi ;;
+  esac
+  art="$(cd -P "${HW_ARTIFACTS:-/nonexistent}" 2>/dev/null && pwd)"
+  if [ -n "$art" ]; then
+    case "$(cd -P "$root" 2>/dev/null && pwd)" in
+      "$art"|"$art"/*)
+        safe="${HW_TEST_TMPROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-test-$(id -u)}"
+        if mkdir -p "$safe" 2>/dev/null && chmod 700 "$safe" 2>/dev/null && [ -w "$safe" ]; then printf '%s/hw-go-cache.v2' "$safe"; return 0; fi ;;
+    esac
+  fi
   if [ "$(uname -s)" = Darwin ]; then
     case "$(cd -P "$root" 2>/dev/null && pwd)" in
       /private/var/folders/*/T|/private/var/folders/*/T/*)

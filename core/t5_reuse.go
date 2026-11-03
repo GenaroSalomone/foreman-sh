@@ -611,7 +611,7 @@ func (d *dsp) reuseRoute() {
 		} else {
 			surface = path.Dir(path.Dir(d.reuseRundir)) // # MUTATION-ANCHOR: 844-R52
 		}
-		d.resolveEffectiveSddMode(d.sdd, surface, d.runDispatchFramework(d.reuseRundir)) // # MUTATION-ANCHOR: 844-R53
+		d.resolveEffectiveSddMode(d.sddRequested(), surface, d.runDispatchFramework(d.reuseRundir)) // # MUTATION-ANCHOR: 844-R53
 		// # MUTATION-ANCHOR: 844-136-M04
 		if d.agentSrc == "chosen" {
 			switch d.agent + ":" + d.sddEffectiveMode {
@@ -672,7 +672,7 @@ func (d *dsp) reuseRoute() {
 	} else {
 		args = append(args, d.task)
 	}
-	if d.sdd != "" { // # MUTATION-ANCHOR: 844-R65
+	if d.sdd != "" && !d.sddDefaulted { // # MUTATION-ANCHOR: 844-R65
 		args = append(args, "--sdd", d.sdd)
 	}
 	if d.allowStaleHooks {

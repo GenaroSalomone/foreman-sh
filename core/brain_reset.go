@@ -191,11 +191,7 @@ func (b *brainRun) armSelfReset(pane, panesJSON string) int {
 	}
 	b.outf("armed: %s / %s (pane %s, %s) resets itself when this turn ends — same pane, new conversation\n", b.space, b.tabLabel, pane, b.kind)
 	b.outf("  it runs detached as pid %d and writes what it did to %s\n", pid, selfLog)
-	if isWindows() {
-		b.outf("  nothing has been reset yet; call it off with: taskkill /PID %d /F  (a Windows pid)\n", pid)
-	} else {
-		b.outf("  nothing has been reset yet; call it off with: kill %d\n", pid)
-	}
+	b.outf("  nothing has been reset yet; call it off with: kill %d\n", pid)
 	return 0
 }
 
@@ -262,7 +258,7 @@ func (b *brainRun) replaceAgent(pane, paneAgent string) int {
 	}
 	b.sleep(1 * time.Second)
 	// FROM HERE THE PANE IS TOUCHED. A resume that dies after this point exits 75, not 1.
-	if b.resume != "" {
+	if b.resume != "" { // # MUTATION-ANCHOR: go-806-M09
 		b.trap75 = true
 	}
 	if !b.herdrOK("pane", "send-keys", pane, "enter") {

@@ -16,7 +16,7 @@ lines for your shell profile: add them and open a new terminal.
 ```
 
 - macOS, or Linux (Debian/Ubuntu-class, bash 5; Linux works, not verified per release, see
-  `KNOWN-LIMITATIONS.md` L1). Windows is not supported (see [Windows](#windows) below).
+  `KNOWN-LIMITATIONS.md` L1). Windows was removed in 0.7.0 (see [Windows](#windows) below).
 - `git`, `jq` 1.7 or newer, `python3`, `sd`, `fd` and `rg` (`hw` calls all three).
   On Linux (Debian: `apt install sd fd-find ripgrep`, then link `fdfind` as `fd`)
   also Node 22.7 or newer (the OpenCode guard plugin is an ES module in a `.js` file).
@@ -355,8 +355,8 @@ with another `--vendor` for the same lane is refused.
 
 ## Frameworks for `--sdd`
 
-`hw` asks `--sdd none|speckit` on every dispatch where a framework is in
-play. `none` needs nothing. `speckit` is a third-party project the installer
+`none` is the default: a dispatch without `--sdd` runs outside any framework,
+and needs nothing. `--sdd speckit` opts in. `speckit` is a third-party project the installer
 does not install, and it is refused before anything is built when it is not
 there:
 
@@ -481,17 +481,15 @@ builds it and refuses without Go, and a command with no `hw-core` stops, naming
   use). A build that fails, or a Go that builds for another architecture than this
   machine's, refuses as well and removes the `hw-core` an earlier install left, which
   would run against this release's `bin/hw`. Install Go and run the installer again.
-- **Which one runs.** For the five, Go. `hw shadow` (a 0.5.x diagnostic that ran both and logged
-  the differences) is gone: it says so and exits 64. For the eight tools below, Go too, unless
-  `HW_IMPL_<TOOL>=bash` or a `<tool>=bash` line of the switch file says otherwise.
-- **Go by default, bash as the way back through 0.6.x.** Eight small tools run in Go since
-  0.6.0: the Stop hook (`bin/hw-stop-hook.sh`, still the registered script, which execs
-  `hw-core stop-hook`; `HW_IMPL_STOP_HOOK`), `hw secret` (`HW_IMPL_HW_SECRET`) and six
-  wrappers: `browser-close`, `brain-archive`, `secret-unlock`, `opencode-auto`,
-  `codex-channel-session-hook.sh` and `hw-sandbox` (`HW_IMPL_BROWSER_CLOSE`, …). Only the word
-  `bash` — in that variable, or on the tool's `<tool>=bash` line — keeps one on its bash;
-  the global `HW_IMPL` and a default line in the switch file no longer choose for them. Their
-  bash goes in 0.7.0. KNOWN-LIMITATIONS L16 has what differs.
+- **Which one runs.** Go, with no switch. `hw shadow` (a 0.5.x diagnostic that ran both and
+  logged the differences) is gone: it says so and exits 64.
+- **The eight small tools run Go, with no switch (0.7.0).** The Stop hook
+  (`bin/hw-stop-hook.sh`, still the registered script, which execs `hw-core stop-hook`),
+  `hw secret` and six wrappers — `browser-close`, `brain-archive`, `secret-unlock`,
+  `opencode-auto`, `codex-channel-session-hook.sh` and `hw-sandbox` — are shims that exec
+  their `hw-core` verb. Their bash bodies are gone: a `HW_IMPL_<TOOL>=bash` or `<tool>=bash`
+  line is read only to say once that bash was removed, and Go runs. The way back for one of
+  them is `foreman-sh upgrade --to 0.6.3`. KNOWN-LIMITATIONS L16 has what differs.
 - **Lane hooks.** The export carries the builders of git-worktree lanes only; a lane
   `build` hook of another name is refused before anything is created (`hw` has no bash left to source it
   into); dispatch with `--worktree none` for a plain work directory.
@@ -530,9 +528,10 @@ See `KNOWN-LIMITATIONS.md` L23.
 
 ## Windows
 
-Not supported. foreman-sh runs on macOS and Linux only; nothing is tested on
-Windows, native or under Git Bash. WSL2 is a Linux, so the Linux path may work
-there, but it is not tested either (`KNOWN-LIMITATIONS.md`, L1b).
+Removed in 0.7.0: the Windows code (the `_windows.go` build files, the Git Bash
+compatibility layer `bin/msys-compat.sh`, and the Windows CI workflow) is gone.
+foreman-sh runs on macOS and Linux only. WSL2 is a Linux, so the Linux path may
+work there, but it is not tested (see `KNOWN-LIMITATIONS.md`, L1b).
 
 ## Judgment Day (optional)
 
@@ -571,9 +570,10 @@ every `--sdd` mode: `review: judgment-day` (the default when the key is absent)
 orders Judgment Day over the branch at the close; `review: plugins` names only
 the review pieces of the brief's `plugins:` (`thermo`, `ponytail`, `pstack`: skills, and
 `pstack`'s `comment-sicko` agent, launched with the Agent tool as `pstack:comment-sicko`; each piece once) and
-no Judgment Day; `review: none` adds no review note. Any other value refuses the
-dispatch, naming those three. The choice is printed in the dispatch manifest and
-recorded in the run's receipt.
+no Judgment Day; `review: none` adds no review note, and on a `kind: build` it is
+refused unless the brief also carries a `review-skip: <piece> — <why>` line. Any
+other value refuses the dispatch, naming those three. The choice is printed in
+the dispatch manifest and recorded in the run's receipt.
 
 ## Limits, stated
 

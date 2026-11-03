@@ -22,6 +22,10 @@ THE RULES, on every `tools/call` of a `mem_*` tool:
     so a tool engram adds tomorrow is covered the day it appears (amendment 2);
   - `mem_update` without `expected_project` gets the label as one: engram
     3.0.0 refuses an observation mutation that does not assert its owner;
+  - `mem_save` of an upsert-shaped type without a `topic_key` is refused, with
+    the fix in the message: a save with no key appends a row that no re-save
+    corrects, and every such row is scanned against all the others. The types
+    that carry no key by design (`session_summary`, `passive`, `manual`) pass;
   - `mem_search` gets `all_projects: true` under the org root, always
     (amendment 3): the lanes' history is split across labels, and a default
     search misses most of it (design §0.3);
@@ -52,6 +56,12 @@ REFUSED = {"mem_merge_projects", "mem_delete"}
 # engram 3.0.0 refuses an observation mutation without `expected_project`
 # (HTTP 400 since engram 3.0.0); the label is that assertion, filled in when absent.
 MUTATIONS = {"mem_update"}
+# The types a re-save must be able to REPLACE: `mem_save` upserts on topic_key, so
+# an unkeyed row of one of these is a new row every time. `session_summary`,
+# `passive` and `manual` are a log, not an upsert target, and pass unkeyed.
+KEYED_TYPES = {"decision", "architecture", "discovery", "bugfix", "pattern", "config"}
+NOKEY_FIX = ("pass topic_key: <lane>/<topic>[/findings]; mem_suggest_topic_key "
+             "proposes one")
 
 
 def _expand(p, brain, work, checkout=None, lane=None):
@@ -141,6 +151,16 @@ def verdict(msg, label, governed):
                     "Omit `%s` — the label is already set for this session." % (label, key, proj, key))
         if proj is not None and not isinstance(proj, str):
             return "engram-label-proxy: `%s` must be a string naming `%s`, or omitted." % (key, label)
+    if tool == "mem_save":
+        typ = args.get("type")
+        key = args.get("topic_key")
+        unkeyed = isinstance(typ, str) and typ.strip().lower() in KEYED_TYPES  # MUTATION-ANCHOR: 1232-M01
+        unkeyed = unkeyed and not (isinstance(key, str) and key.strip())
+        if unkeyed:
+            return ("engram-label-proxy: mem_save of `%s` is refused without a `topic_key`: %s. "
+                    "An unkeyed save appends a row that no re-save corrects. The types that carry "
+                    "no key by design (`session_summary`, `passive`, `manual`) are not refused."
+                    % (typ.strip(), NOKEY_FIX))
     if tool in MUTATIONS and label and not (args.get("expected_project") or "").strip():
         args["expected_project"] = label
     if tool == "mem_search":

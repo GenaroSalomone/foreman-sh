@@ -28,9 +28,6 @@
 # and a nested runner takes no slot by design — so without removing it nothing
 # below would exercise the pool at all.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
-# On Git Bash this subject once stopped with rc=1 and no line saying why: a
-# command failed under set -e. The trap names it there; elsewhere, as before.
-case "${OSTYPE:-}" in msys*|cygwin*) trap 'printf "not ok - 176 stopped at line %s: %s\n" "$LINENO" "$BASH_COMMAND"' ERR ;; esac
 
 export WORK="$TMP/work"        # the pool lives under $WORK — never the machine's
 POOL="$WORK/.locks/suite-pool"
@@ -96,15 +93,6 @@ make_repo() { # <dir> <runner-source> [bare — no stamping subjects]
   cp "$ROOT/setup/mutation/mutation-coverage" "$repo/setup/mutation/"; cp "$ROOT/setup/test-hw-snapshot.py" "$ROOT/setup/fast-gate-budget.sh" "$repo/setup/"
   cp "$ROOT/setup/tests/_common.sh" "$repo/setup/tests/"
   chmod +x "$repo/setup/test-hw" "$repo/setup/mutation/mutation-coverage"
-  # On native Windows the runner reads a holder's start through bin/'s layer;
-  # without it Git Bash's own ps prints nothing for -o lstart=, and a holder this
-  # script recorded through the layer reads as a different, dead process. And
-  # its herdr witness listens through _herdr_endpoint.py: the fallback it has
-  # without it is AF_UNIX, which Windows Python lacks, so no witness starts.
-  case "${OSTYPE:-}" in msys*|cygwin*)
-    mkdir -p "$repo/bin" && cp "$ROOT/bin/msys-compat.sh" "$ROOT/bin/sitecustomize.py" "$repo/bin/"
-    cp "$ROOT/setup/tests/_herdr_endpoint.py" "$repo/setup/tests/" ;;
-  esac
   for g in test-deny-repo-writes.mjs test-deny-repo-writes-filesystem.mjs \
            test-opencode-hw-blocked-reason.mjs test-herdr-opencode-background-state.mjs; do
     printf '%s\n' '// stub: this subject is about the pool, not the guards' > "$repo/setup/guards/$g"

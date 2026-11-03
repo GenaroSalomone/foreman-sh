@@ -33,11 +33,21 @@ case "$1" in
   conflicts)
     printf 'Conflicts Stats (project: stub)\n\n  By judgment_status:\n    pending:     %s\n    judged:      5\n\n  By relation type:\n    pending:             9\n' "${STUB_PENDING:-0}" ;;
   export)
-    python3 - "$2" "${STUB_TOTAL:-100}" "${STUB_NOKEY:-0}" <<'PY'
-import json, sys
-path, total, nokey = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-obs = [{"id": i, "topic_key": "" if i < nokey else "k/%d" % i, "deleted_at": None} for i in range(total)]
-obs.append({"id": -1, "topic_key": "", "deleted_at": "2026-01-01"})  # a deleted one never counts
+    # Since memoria-escalable the audit counts the FLOW: an upsert-shaped type,
+    # inside HW_ENGRAM_NOKEY_DAYS. So STUB_TOTAL fresh `bugfix` rows carry the
+    # denominator, and STUB_LEGACY old rows of the same type exist only to prove
+    # the window keeps them out of it.
+    python3 - "$2" "${STUB_TOTAL:-100}" "${STUB_NOKEY:-0}" "${STUB_LEGACY:-0}" <<'PY'
+import datetime, json, sys
+path, total, nokey, legacy = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+now = datetime.datetime.now(datetime.timezone.utc)
+def ts(days):
+    return (now - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+obs = [{"id": i, "type": "bugfix", "topic_key": "" if i < nokey else "k/%d" % i,
+        "created_at": ts(1), "deleted_at": None} for i in range(total)]
+obs += [{"id": 1000 + i, "type": "bugfix", "topic_key": "", "created_at": ts(200), "deleted_at": None}
+        for i in range(legacy)]
+obs.append({"id": -1, "type": "bugfix", "topic_key": "", "created_at": ts(1), "deleted_at": "2026-01-01"})  # a deleted one never counts
 json.dump({"observations": obs}, open(path, "w"))
 PY
     ;;
@@ -195,7 +205,7 @@ case "$(env STUB_PENDING=500 python3 "$AUDIT" --root "$D/brain" --config-dir "$D
 cp "$AUDIT" "$TMP/mx-660-M10"; mutate_anchor 660-M10 "$TMP/mx-660-M10" 'if False:'
 saw_mutant "660-M10 pending conflicts are never compared" "$(mutsolo 660-M10 "$D" STUB_PENDING=500)" "[rc=0]"
 
-expect_solo "engram: observations without topic_key over the threshold" "$D" "60% of 100 observations without topic_key" STUB_NOKEY=60
+expect_solo "engram: observations without topic_key over the threshold" "$D" "60% of 100 observations of a keyed type without topic_key in the last 30 days" STUB_NOKEY=60
 cp "$AUDIT" "$TMP/mx-660-M11"; mutate_anchor 660-M11 "$TMP/mx-660-M11" 'if False:'
 saw_mutant "660-M11 the topic_key fraction is never compared" "$(mutsolo 660-M11 "$D" STUB_NOKEY=60)" "[rc=0]"
 

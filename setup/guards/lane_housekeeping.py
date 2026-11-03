@@ -144,68 +144,27 @@ def summarize(lane, output, rc, timed_out, timeout, log):
 
 
 def _start_reap(cmd, lf, env):
-    """Start the reap so that the cap can stop ALL of it. Returns (popen, job).
+    """Start the reap in its own session, so the cap can stop ALL of it.
 
-    Where os.killpg exists the reap gets a session of its own, and the group is
-    what _stop_reap kills. Native Windows Python has neither os.killpg nor
-    SIGKILL, and start_new_session makes no group there: the cap died on
-    AttributeError, wrote no FAILED line, and the reap ran on (640 on
-    windows.yml 37066966083). There the reap starts suspended inside a Job
-    Object, so every process it spawns is in the job whatever its parent chain:
-    an msys exec chain leaves a grandchild outside taskkill /T's tree, as
-    setup/fast-gate-budget.sh measured. No WinDLL: no job, taskkill only.
+    `start_new_session` puts the reap in a new process group, and that group —
+    everything it spawns included — is what `_stop_reap` kills. A platform with
+    no `os.killpg` cannot be stopped that way: macOS and Linux are the supported
+    platforms, and nothing here was measured against another one.
     """
-    k32 = None
-    if not hasattr(os, "killpg"):
-        try:
-            import ctypes
-            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        except (ImportError, AttributeError, OSError):
-            k32 = None
-    if k32 is None:
-        return subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT,
-                                start_new_session=True, env=env), None
-    k32.CreateJobObjectW.restype = ctypes.c_void_p
-    k32.AssignProcessToJobObject.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
-    k32.TerminateJobObject.argtypes = (ctypes.c_void_p, ctypes.c_uint)
-    job = k32.CreateJobObjectW(None, None)
-    if not job:
-        return subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env), None
-    p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env,
-                         creationflags=0x4)  # CREATE_SUSPENDED
-    ntdll = ctypes.WinDLL("ntdll")
-    ntdll.NtResumeProcess.argtypes = (ctypes.c_void_p,)
-    if not k32.AssignProcessToJobObject(job, int(p._handle)):
-        job = None
-    ntdll.NtResumeProcess(int(p._handle))
-    return p, ((k32, job) if job else None)
+    return subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT,
+                            start_new_session=True, env=env)
 
 
-def _stop_reap(p, job):
+def _stop_reap(p):
     """The cap: stop the reap and everything it started, never raise."""
-    if hasattr(os, "killpg"):
-        try:
-            os.killpg(p.pid, signal.SIGTERM)
-            p.wait(timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(p.pid, signal.SIGKILL)
-            except OSError:
-                pass
-        return
-    if job:
-        k32, handle = job
-        k32.TerminateJobObject(handle, 1)
     try:
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    try:
-        p.kill()
+        os.killpg(p.pid, signal.SIGTERM)
         p.wait(timeout=10)
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 def run_reap(lane):
@@ -231,8 +190,8 @@ def run_reap(lane):
         timed_out = False
         with open(log, "w", encoding="utf-8") as lf:
             try:
-                p, job = _start_reap([_hw(), "reap", lane, "--apply"], lf,
-                                     dict(os.environ, NO_COLOR="1"))
+                p = _start_reap([_hw(), "reap", lane, "--apply"], lf,
+                                dict(os.environ, NO_COLOR="1"))
             except OSError as e:
                 lf.write(f"could not start: {e}\n")
                 rc = 127
@@ -241,7 +200,7 @@ def run_reap(lane):
                     rc = p.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    _stop_reap(p, job)
+                    _stop_reap(p)
                     rc = -1
         with open(log, encoding="utf-8", errors="replace") as lf:
             out = lf.read()

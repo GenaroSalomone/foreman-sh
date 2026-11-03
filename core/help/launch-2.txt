@@ -3,7 +3,7 @@
   dispatch, each field marked (chosen) or (default).
 
   READ-ONLY WORK — a browser audit, a review, anything that only looks:
-    hw <project> <task> --brief <path> --sdd none --worktree none --no-db
+    hw <project> <task> --brief <path> --worktree none --no-db
         Full tab, no branch, no dependency install, no database. A judgment task
         does not need a checkout.
 

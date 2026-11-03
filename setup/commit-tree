@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# commit-tree — commit exactly the paths you name, on a tree read from the same ref that becomes the parent.
+#
+#   setup/commit-tree [--onto <ref>] -m <msg> <path>...
+#   setup/commit-tree [--onto <ref>] -F <file> <path>...
+#
+# WHY. A shared worktree has one index and several agents. `git add -A` and
+# `git commit` sweep other people's work; `git commit -- <path>` commits that
+# path's whole working tree, not your change. The private-index recipe works but
+# is typed by hand, and its failure mode is silent: `git read-tree HEAD` takes
+# the tree NOW while `-p HEAD` names the parent LATER, so if the branch moved in
+# between, the commit DELETES everything that landed meanwhile. Nothing prompts
+# a pre-commit run (no hooks), so the window is the read-to-commit gap.
+#
+# This helper closes it: the parent is resolved ONCE, the tree is read from that
+# same commit, the commit's diff is CHECKED against the paths you named, and the
+# ref moves only if it still holds the value it held when the tree was read.
+# No hook ever runs, and `--no-verify` is never needed or accepted. Run the
+# suite yourself, before this.
+#
+# MODES ARE COMPUTED, never typed: 100755 when the file is executable, 100644
+# otherwise, 120000 for a symlink. A hook committed as 100644 loses its
+# executable bit and git then SKIPS it in silence — the door works in the
+# checkout that still has the bit and nowhere else.
+#
+# A path that is gone from the disk is REMOVED from the tree (a deletion is a
+# change you name like any other). A path that is gone from disk AND absent from
+# the parent tree is a no-op.
+#
+# THE DISK COPY MUST REST ON THE REF. With `--onto`, the named path's content on
+# that ref is compared with its content on HEAD before anything is read: a file
+# older than the ref would silently revert what landed there, so the run is
+# refused instead. An empty commit (the tree it would write is the parent's own
+# tree) is refused too.
+#
+# A NAMED FILE IS COMMITTED WHOLE. The blob is read from the working tree, so an
+# unstaged hunk another agent left in that same file rides along with your
+# change. Name only files you own, or coordinate the file before committing it.
+#
+# The real index is reset for the named paths at the end, and only when the ref
+# is the branch this worktree has checked out, so your own hunks stop showing as
+# staged and nobody else's entries are touched.
+#
+# Exit: 0 committed (the SHA on stdout); 1 refused, the ref was not moved (loose
+# objects already hashed may remain); 2 usage.
+set -uo pipefail
+
+usage() {
+  sed -n '3,4p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  printf 'usage: setup/commit-tree [--onto <ref>] -m <msg>|-F <file> <path>...\n' >&2
+  printf '  a named file is committed whole: an unstaged hunk another agent left in it rides along. Name only files you own.\n' >&2
+}
+
+# ── the diff check, as a function so it has one implementation ────────────────
+# ct_foreign_paths <parent> <tree> <path>... → prints every path the parent→tree
+# diff touches that is not one of the named paths; returns 0 when there are none,
+# 1 when there is at least one, 2 on a git error.
+# The check is a belt, not the mechanism: the tree is read from the parent and
+# only named paths are written into it, so a correct run never has a foreign
+# path. It exists because that property is the whole safety story, and a future
+# refactor that reads the tree from one ref and parents another would restore
+# the silent-deletion bug without any visible change here. G06 proves it through
+# the seam below, because no CLI invocation can produce a foreign path.
+ct_foreign_paths() {
+  local parent="$1" tree="$2"; shift 2
+  local -a named=("$@")
+  local p rec out rc=0 ok=$'\n'
+  for p in "${named[@]}"; do ok="${ok}${p}"$'\n'; done
+  out="$(mktemp "${TMPDIR:-/tmp}/commit-tree-diff.XXXXXX")" || return 2
+  if ! git diff-tree -r --no-renames --numstat -z "$parent" "$tree" > "$out" 2>/dev/null; then
+    rm -f "$out"; return 2
+  fi
+  while IFS= read -r -d '' rec; do
+    # numstat -z record: "<add>\t<del>\t<path>" (the path is the rest, tabs and all)
+    rec="${rec#*$'\t'}"; rec="${rec#*$'\t'}"
+    [ -n "$rec" ] || continue
+    case "$ok" in *$'\n'"$rec"$'\n'*) ;; *) printf '%s\n' "$rec"; rc=1 ;; esac
+  done < "$out"
+  rm -f "$out"
+  return "$rc"
+}
+
+ct_usage_error() { printf 'commit-tree: %s\n' "$1" >&2; usage; exit 2; }
+ct_refuse() { printf 'commit-tree: refused — %s\n' "$1" >&2; exit 1; }
+
+# ct_syntax_check — the syntax check setup/hooks/pre-commit gives a merge, run over every named path
+# before anything reaches the index: Python (*.py or a `#!…python` header) is parsed with
+# `python3 -I … ast.parse` — parsed, never imported or compiled, and -I keeps the repo root and
+# PYTHONPATH off sys.path — and shell (*.sh, or a `#!…bash`, `#!/bin/sh`, `#!/usr/bin/env sh` header)
+# goes through `bash -n`. commit-tree runs no hook, so a broken script used to commit as silently as a
+# good one; the check refuses it here, naming the file, with the ref untouched. A symlink is skipped:
+# commit-tree commits the link, not the file it points at.
+ct_syntax_check() {
+  local p first
+  for p in "${paths[@]}"; do
+    [ -f "$p" ] && [ ! -L "$p" ] || continue
+    first="$(head -n 1 -- "$p" 2>/dev/null || true)"
+    case "$p:$first" in
+      *.py:*|*:'#!'*python*)
+        python3 -I -c 'import ast,sys; ast.parse(open(sys.argv[1],"rb").read())' "$p" >/dev/null 2>&1 \
+          || ct_refuse "syntax error in $p (python3 -I ast.parse). The ref was not moved."
+        ;;
+      *.sh:*|*:'#!'*bash*|*:'#!/bin/sh'*|*:'#!/usr/bin/env sh'*)
+        bash -n -- "$p" >/dev/null 2>&1 \
+          || ct_refuse "syntax error in $p (bash -n). The ref was not moved."
+        ;;
+    esac
+  done
+}
+
+# COMMIT_TREE_LIB=1 SOURCED opens this file to reach ct_foreign_paths with no side
+# effects. A correct run cannot produce a foreign path — the tree is read from
+# the parent and only named paths are written — so the refusal is driven through
+# this seam by setup/tests/1233, with real trees, rather than by a contrived CLI
+# invocation. Keeping the function and the seam together is deliberate: the
+# function is still called by the main flow, so it is not dead code, and the
+# seam is the only way to exercise its refusal.
+#
+# The seam must not answer a normal invocation: a stray exported COMMIT_TREE_LIB=1
+# in an agent's shell used to make `setup/commit-tree …` exit 0 with no commit and
+# no output (measured 2026-11-01). Only a SOURCED file short-circuits.
+if [ "${COMMIT_TREE_LIB:-}" = 1 ] && [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# ── arguments ────────────────────────────────────────────────────────────────
+onto=""; msg=""; msgfile=""; have_msg=0
+declare -a args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --onto) [ "$#" -ge 2 ] || ct_usage_error "--onto needs a ref"; onto="$2"; shift 2 ;;
+    --onto=*) onto="${1#--onto=}"; shift ;;
+    -m) [ "$#" -ge 2 ] || ct_usage_error "-m needs a message"; msg="$2"; have_msg=1; shift 2 ;;
+    -F) [ "$#" -ge 2 ] || ct_usage_error "-F needs a file"; msgfile="$2"; have_msg=1; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; while [ "$#" -gt 0 ]; do args+=("$1"); shift; done ;;
+    -*) ct_usage_error "unknown option $1" ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+[ "$have_msg" = 1 ] || ct_usage_error "one of -m <msg> or -F <file> is required"
+[ "${#args[@]}" -gt 0 ] || ct_usage_error "name at least one path"
+
+# -F is read from where the caller stands, before the cd below.
+if [ -n "$msgfile" ]; then
+  case "$msgfile" in /*) ;; *) msgfile="$PWD/$msgfile" ;; esac
+  [ -f "$msgfile" ] || ct_refuse "no message file at $msgfile"
+fi
+
+# ── the repository ───────────────────────────────────────────────────────────
+git rev-parse --git-dir >/dev/null 2>&1 || ct_refuse "not in a git repository"
+root="$(git rev-parse --show-toplevel)" || ct_refuse "cannot resolve the repository root"
+prefix="$(git rev-parse --show-prefix)"
+cd -- "$root" || ct_refuse "cannot enter $root"
+
+# ── the ref: one name, resolved once, used as tree, parent and guard ─────────
+if [ -n "$onto" ]; then
+  ref="$onto"
+else
+  ref="$(git symbolic-ref -q HEAD)" || ct_refuse "HEAD is detached; say which branch to move with --onto <ref>"
+fi
+full="$(git rev-parse --symbolic-full-name --verify "$ref" 2>/dev/null)" \
+  || ct_refuse "no such ref: $ref"
+case "$full" in
+  refs/heads/*) ;;
+  *) ct_refuse "$ref is not a branch ($full); commit-tree only moves a branch" ;;
+esac
+old="$(git rev-parse --verify "$full^{commit}")" || ct_refuse "cannot resolve $full to a commit"
+
+# ── the ref must not be checked out in another worktree ─────────────────────
+# Moving a branch another worktree has checked out would leave that worktree's
+# index and HEAD on a commit the branch no longer names, with no visible signal.
+wt_path=""; cur_wt=""
+while IFS= read -r line; do
+  case "$line" in
+    "worktree "*) cur_wt="${line#worktree }" ;;
+    "branch $full") wt_path="$cur_wt" ;;
+  esac
+done <<EOF
+$(git worktree list --porcelain)
+EOF
+if [ -n "$wt_path" ]; then
+  same=""
+  if [ "$wt_path" = "$root" ]; then same=1
+  elif [ "$(cd "$wt_path" 2>/dev/null && pwd -P)" = "$(cd "$root" && pwd -P)" ]; then same=1; fi
+  [ -n "$same" ] || ct_refuse "$full is checked out in another worktree ($wt_path), so moving it here would strand that worktree's index and HEAD. Commit there, or name a branch this worktree holds. The ref was not moved."
+fi
+
+# ── the paths, as repo-relative names ────────────────────────────────────────
+declare -a paths=()
+seen=$'\n'
+for a in "${args[@]}"; do
+  case "$a" in
+    /*) ct_refuse "absolute path not accepted: $a (give a repo-relative path)" ;;
+  esac
+  # `..` FIRST, as a WHOLE component. Stripping `./` before this check turned
+  # `../x` into `.x`, `sub/../mine` into `sub/.mine` and `foo./bar` into `foobar`:
+  # a path the caller never named, committed silently (measured 2026-11-01).
+  case "/$a/" in
+    */../*) ct_refuse "path with a '..' component not accepted: $a (name the file from the repository root)" ;;
+  esac
+  # only a LEADING `./` and whole `/./` components are normalized after that.
+  while :; do
+    case "$a" in ./*) a="${a#./}" ;; *) break ;; esac
+  done
+  while :; do
+    case "$a" in
+      */./*) a="$(printf '%s' "$a" | sed 's#/\./#/#g')" ;;
+      *) break ;;
+    esac
+  done
+  p="${prefix}${a}"
+  p="${p#./}"
+  p="${p%/}"
+  [ -n "$p" ] || ct_refuse "empty path"
+  case "$seen" in *$'\n'"$p"$'\n'*) continue ;; esac
+  seen="${seen}${p}"$'\n'; paths+=("$p")
+done
+
+# ── a broken script or module is refused, not committed silently ────────────
+ct_syntax_check
+
+# ── a case-only collision is one file on macOS ─────────────────────────────
+# `Foo.go` and `foo.go` are the same file on a case-insensitive filesystem, so
+# committing the one while the tree holds the other writes the wrong blob under
+# a name nobody can check out. Refuse instead of guessing.
+case "$(uname -s)" in
+  Darwin)
+    tree_names="$(mktemp "${TMPDIR:-/tmp}/commit-tree-paths.XXXXXX")" || ct_refuse "cannot create a temporary file"
+    tree_dirs="$(mktemp "${TMPDIR:-/tmp}/commit-tree-dirs.XXXXXX")" || { rm -f "$tree_names"; ct_refuse "cannot create a temporary file"; }
+    git ls-tree -r --name-only "$old" > "$tree_names" || { rm -f "$tree_names" "$tree_dirs"; ct_refuse "cannot list $full's tree"; }
+    # every DIRECTORY the tree already holds, one prefix per line
+    awk '{ n = split($0, c, "/"); p = ""; for (i = 1; i < n; i++) { p = (i > 1 ? p "/" : "") c[i]; print p } }' "$tree_names" | sort -u > "$tree_dirs"
+    # two names in one run that differ only in case are one file here: the second
+    # silently rewrites what the first named.
+    lower_seen=$'\n'
+    for p in "${paths[@]}"; do
+      lp="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')"
+      case "$lower_seen" in
+        *$'\n'"$lp"$'\n'*) rm -f "$tree_names" "$tree_dirs"; ct_refuse "$p differs only in case from another path named in this run; on this case-insensitive filesystem they are one file. The ref was not moved." ;;
+      esac
+      lower_seen="${lower_seen}${lp}"$'\n'
+    done
+    # two NEW directories differing only in case (`New/a` and `new/b`) are one
+    # directory here, and no listing of the tree catches them: neither is in it.
+    # Compare every directory prefix of every named arg against every OTHER
+    # named arg's prefixes, case-insensitively.
+    prefixes=()
+    for p in "${paths[@]}"; do
+      pre=""; rest="$p"; item=""
+      while :; do
+        case "$rest" in */*) ;; *) break ;; esac
+        comp="${rest%%/*}"; rest="${rest#*/}"
+        pre="${pre}${comp}"
+        item="${item}${pre}"$'\n'
+        pre="${pre}/"
+      done
+      prefixes+=("$item")
+    done
+    npaths=${#paths[@]}
+    for ((i = 0; i < npaths; i++)); do
+      for ((j = i + 1; j < npaths; j++)); do
+        while IFS= read -r pi; do
+          [ -n "$pi" ] || continue
+          lpi="$(printf '%s' "$pi" | tr '[:upper:]' '[:lower:]')"
+          while IFS= read -r pj; do
+            [ -n "$pj" ] || continue
+            [ "$pi" != "$pj" ] || continue
+            [ "$lpi" = "$(printf '%s' "$pj" | tr '[:upper:]' '[:lower:]')" ] || continue
+            rm -f "$tree_names" "$tree_dirs"
+            ct_refuse "$pi differs only in case from '$pj', a directory named by another path in this run; on this case-insensitive filesystem they are one directory. The ref was not moved."
+          done <<<"${prefixes[j]}"
+        done <<<"${prefixes[i]}"
+      done
+    done
+    for p in "${paths[@]}"; do
+      if ! grep -qxF -- "$p" "$tree_names"; then
+        hit="$(grep -ixF -m 1 -- "$p" "$tree_names")"
+        [ -z "$hit" ] || { rm -f "$tree_names" "$tree_dirs"; ct_refuse "$p differs only in case from '$hit', which is already in $full; on this case-insensitive filesystem they are one file. The ref was not moved."; }
+      fi
+      # a DIRECTORY component is a file on this filesystem too: `Setup/new`
+      # under an existing `setup/` would be a second name for the same directory.
+      rest="$p"; pre=""
+      while :; do
+        case "$rest" in */*) ;; *) break ;; esac
+        comp="${rest%%/*}"; rest="${rest#*/}"
+        pre="${pre}${comp}"
+        if ! grep -qxF -- "$pre" "$tree_dirs"; then
+          dh="$(grep -ixF -m 1 -- "$pre" "$tree_dirs")"
+          [ -z "$dh" ] || { rm -f "$tree_names" "$tree_dirs"; ct_refuse "$p differs only in case from '$dh/', a directory already in $full; on this case-insensitive filesystem they are one directory. The ref was not moved."; }
+        fi
+        pre="${pre}/"
+      done
+    done
+    rm -f "$tree_names" "$tree_dirs"
+    ;;
+esac
+
+# ── the disk copy must rest on the ref that becomes the parent ───────────────
+# The working tree is HEAD plus uncommitted hunks; if HEAD and the target ref
+# hold different versions of a named path, the disk copy is based on the wrong
+# one and the commit would revert what landed on the target (or carry a base it
+# predates). Refuse rather than read a tree nobody can vouch for.
+head_commit="$(git rev-parse --verify -q HEAD)" \
+  || ct_refuse "HEAD does not resolve; commit-tree cannot prove the working tree rests on $full. The ref was not moved."
+if [ "$head_commit" != "$old" ]; then
+  for p in "${paths[@]}"; do
+    d=0
+    GIT_LITERAL_PATHSPECS=1 git diff --quiet "$old" "$head_commit" -- "$p" || d=$?
+    [ "$d" = 0 ] || ct_refuse "the working tree's copy of $p does not rest on $full: $full and HEAD hold different versions of it, so committing it would revert what landed on $full or carry a base that predates it. Check $full out in this worktree, or commit onto the branch you are on. The ref was not moved."
+  done
+fi
+
+# ── the private index, read from the SAME commit that becomes the parent ─────
+tmpidx="$(mktemp "${TMPDIR:-/tmp}/commit-tree-index.XXXXXX")" || ct_refuse "cannot create a temporary index"
+trap 'rm -f "$tmpidx"' EXIT
+GIT_INDEX_FILE="$tmpidx" git read-tree "$old" || ct_refuse "cannot read $full's tree"
+
+for p in "${paths[@]}"; do
+  if [ -L "$p" ]; then
+    target="$(readlink -- "$p")" || ct_refuse "cannot read symlink $p"
+    blob="$(printf '%s' "$target" | git hash-object -w --stdin)" || ct_refuse "cannot hash $p"
+    GIT_INDEX_FILE="$tmpidx" git update-index --add --cacheinfo 120000 "$blob" "$p" \
+      || ct_refuse "cannot add $p to the index"
+  elif [ -d "$p" ]; then
+    ct_refuse "$p is a directory; name its files"
+  elif [ -e "$p" ]; then
+    blob="$(git hash-object -w -- "$p")" || ct_refuse "cannot hash $p"
+    if [ -x "$p" ]; then mode=100755; else mode=100644; fi
+    GIT_INDEX_FILE="$tmpidx" git update-index --add --cacheinfo "$mode" "$blob" "$p" \
+      || ct_refuse "cannot add $p to the index"
+  else
+    GIT_INDEX_FILE="$tmpidx" git update-index --force-remove -- "$p" \
+      || ct_refuse "cannot remove $p from the index"
+  fi
+done
+
+tree="$(GIT_INDEX_FILE="$tmpidx" git write-tree)" || ct_refuse "cannot write the tree"
+
+# ── an unchanged tree is not a commit ──────────────────────────────────────
+if [ "$tree" = "$(git rev-parse --verify "$old^{tree}")" ]; then
+  ct_refuse "nothing to commit for the named paths: the tree $full already holds is unchanged (an unchanged path, a typo, or a deletion that was already gone). The ref was not moved."
+fi
+
+# ── the check that makes the silent deletion impossible ─────────────────────
+foreign="$(ct_foreign_paths "$old" "$tree" "${paths[@]}")"; rc=$?
+if [ "$rc" = 2 ]; then ct_refuse "cannot diff $old against the new tree"; fi
+if [ "$rc" = 1 ] || [ -n "$foreign" ]; then
+  ct_refuse "the commit would touch paths you did not name, so the ref was not moved:
+$(printf '%s\n' "$foreign" | sed 's/^/  /')
+Name each of them, or commit from a tree where they are unchanged."
+fi
+
+# ── the commit, then the guarded move of the ref ────────────────────────────
+if [ -n "$msgfile" ]; then
+  commit="$(git commit-tree "$tree" -p "$old" -F "$msgfile")" || ct_refuse "git commit-tree failed"
+else
+  commit="$(git commit-tree "$tree" -p "$old" -m "$msg")" || ct_refuse "git commit-tree failed"
+fi
+
+# update-ref's expected old value is the guard: it refuses if $full moved since
+# the tree was read, so a second read-and-compare here would be dead code.
+git update-ref -m "commit-tree" "$full" "$commit" "$old" \
+  || ct_refuse "$full moved while the commit was being made ($old); the commit $commit was NOT written to it. The ref was not moved."
+
+# ── the real index, for the named paths only ────────────────────────────────
+# Only when the ref is the branch this worktree has checked out: resetting paths
+# against any other branch would stage them relative to a tree they never came
+# from. GIT_LITERAL_PATHSPECS keeps a name with glob characters literal.
+if [ "$(git symbolic-ref -q HEAD)" = "$full" ]; then
+  GIT_LITERAL_PATHSPECS=1 git reset -q -- "${paths[@]}" 2>/dev/null || true
+fi
+
+printf '%s\n' "$commit"

@@ -154,10 +154,7 @@ func t3LeaseLockPath(rundir string, getenv func(string) string) string {
 			sb.WriteByte('_')
 		}
 	}
-	tmp := getenv("TMPDIR")
-	if tmp == "" {
-		tmp = "/tmp"
-	}
+	tmp := sharedLockDir(getenv)
 	return tmp + "/hw-invoker-" + sb.String() + ".lock"
 }
 

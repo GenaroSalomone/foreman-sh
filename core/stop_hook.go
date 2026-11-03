@@ -1,10 +1,10 @@
 package main
 
 // `hw-core stop-hook stop`: bin/hw-stop-hook.sh in Go. The Stop hook every wired Claude Code and Codex session runs at
-// each turn end, with its stdin the Stop payload. bin/hw-stop-hook.sh execs this unless HW_IMPL_STOP_HOOK (or the
-// `stop-hook=` line of the switch file) says `bash`; the bash it carries is the rollback through 0.6.x.
+// each turn end, with its stdin the Stop payload. bin/hw-stop-hook.sh execs this; since 0.7.0 there is no bash body, and a
+// HW_IMPL_STOP_HOOK=bash (or `stop-hook=bash`) is only said once (bin/impl-retired.sh). The exit status is this one's.
 //
-// What it does, in bash's own order (every branch is a line of the bash it ports, and a fix to one goes to both):
+// What it does, in the order of the bash it ported:
 //
 //	guards 1-3   the action is `stop`, the session is a herdr pane, the payload is not a subagent's (`"agent_id"`)
 //	             -- anything else is inert, exit 0

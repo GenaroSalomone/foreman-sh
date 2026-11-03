@@ -66,12 +66,6 @@ import os
 import sys
 import time
 
-# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh puts bin/ on PYTHONPATH for the
-# entry points it starts; run by hand, this file loads bin/sitecustomize.py
-# itself (a no-op when Python already did). Elsewhere nothing happens.
-if os.name == "nt":
-    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-    import sitecustomize  # noqa: E402,F401
 
 TRANSCRIPTS = "~/.claude/projects/*/%s.jsonl"
 

@@ -144,7 +144,9 @@ func (d *dsp) run(argv []string) {
 		d.die("--agent must be claude, opencode, codex or pi (got: " + d.agent + ")")
 	}
 	switch d.sdd {
-	case "", "speckit", "none":
+	case "": // none is the default (sdd-legado-070, setup/decisions.md 2026-11-01); speckit is opt-in where it is on disk
+		d.sdd, d.sddDefaulted = "none", true
+	case "speckit", "none":
 	case "gentle": // RETIRED SPELLING: gentle-ai left hw (setup/decisions.md, 2026-10-16). Warn, run none.
 		d.warn("--sdd gentle is retired: gentle-ai is no longer part of hw. Running --sdd none.")
 		d.sdd = "none"

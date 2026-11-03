@@ -99,25 +99,30 @@ func (a *app) cmdReviewDelta() int {
 		return 1
 	}
 	jb, jh := a.args[0], a.args[1]
+	// every exit 1 below is "cannot tell": the executor's instruction is the one the closing note no longer carries
+	cannotTell := func() int {
+		fmt.Fprintf(a.err, "hw review-delta: cannot tell — judge the full range again\n")
+		return 1
+	}
 	for _, f := range []string{jb, jh} {
 		if _, ok := gitRun(wd, nil, "rev-parse", "--verify", "--quiet", f+"^{commit}"); !ok {
 			fmt.Fprintf(a.err, "hw review-delta: judged ref %s does not resolve in %s\n", f, wd)
-			return 1
+			return cannotTell()
 		}
 	}
 	nb, rc := a.reviewRange(false)
 	if rc != 0 {
-		return 1
+		return cannotTell()
 	}
 	topOut, ok := gitRun(wd, nil, "rev-parse", "--show-toplevel")
 	top := strings.TrimRight(string(topOut), "\n")
 	if !ok || top == "" {
 		fmt.Fprintf(a.err, "hw review-delta: %s is not inside a git work tree\n", wd)
-		return 1
+		return cannotTell()
 	}
 	listErr := func() int {
 		fmt.Fprintf(a.err, "hw review-delta: git could not list the changed files in %s\n", top)
-		return 1
+		return cannotTell()
 	}
 	n1, ok1 := gitRun(top, nil, "diff", "--no-renames", "--name-only", "-z", jb, jh)
 	n2, ok2 := gitRun(top, nil, "diff", "--no-renames", "--name-only", "-z", nb, "HEAD")
@@ -147,7 +152,7 @@ func (a *app) cmdReviewDelta() int {
 		}
 		if !okA || !okB {
 			fmt.Fprintf(a.err, "hw review-delta: git could not diff %s, so it cannot tell whether it changed\n", f)
-			return 1
+			return cannotTell()
 		}
 		if idA != idB { // # MUTATION-ANCHOR: 871-G40
 			changed.WriteString(f + "\n")
@@ -159,6 +164,7 @@ func (a *app) cmdReviewDelta() int {
 		return 0
 	}
 	fmt.Fprint(a.out, changed.String())
+	fmt.Fprintf(a.err, "hw review-delta: re-judge ONLY these files, as a scoped re-judgment — it does not reset the fix-round budget\n")
 	return 3
 }
 

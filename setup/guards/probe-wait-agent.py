@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the complete wait-agent executable through a real local endpoint: a
-unix socket, or on Windows the named pipe herdr serves there."""
+"""Drive the complete wait-agent executable through a real local unix socket."""
 import json
 import os
 from pathlib import Path

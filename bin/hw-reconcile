@@ -5,11 +5,6 @@
 # state, prints a recovery queue, and exits 3 when that queue is non-empty. It
 # never prompts, types into, closes, restarts, or otherwise changes a pane.
 set -euo pipefail
-# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
-# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
-# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
-# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
 BIN_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

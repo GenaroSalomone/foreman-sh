@@ -28,149 +28,38 @@
 #   gpg -d brain.bundle.gpg > brain.bundle && git clone brain.bundle brain
 #   gpg -d worktree.tar.zst.gpg | zstd -d | tar -xf -   # over the clone
 set -euo pipefail
-# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh makes the native programs this
-# file runs (Python, jq, fd, git) answer in bash's path spelling and with LF,
-# and asks msys for real symlinks. Elsewhere OSTYPE never matches. A copy of this
-# file with no msys-compat.sh beside it (a test fixture) runs on the layer its parent exported.
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
-# ── hw-core: this tool as a Go binary (core/wrappers*.go; the switch is bin/wrapper-go.sh). THE DEFAULT IS GO: the bash below is the rollback (HW_IMPL_<TOOL>=bash) ──
-_wg_prog=brain-archive; _wg_src="${BASH_SOURCE[0]}"
-while [ -L "$_wg_src" ]; do _wg_d="$(cd -P "$(dirname "$_wg_src")" && pwd)"; _wg_src="$(readlink "$_wg_src")"; case "$_wg_src" in /*) ;; *) _wg_src="$_wg_d/$_wg_src" ;; esac; done
-_wg_bin="$(cd -P "$(dirname "$_wg_src")" && pwd)"
-[ ! -f "$_wg_bin/wrapper-go.sh" ] || . "$_wg_bin/wrapper-go.sh"
-unset _wg_prog _wg_src _wg_d _wg_bin
-# Git for Windows ships sha256sum/sha1sum and no shasum; this file calls
-# `shasum -a 256`. On msys only, and only when shasum is absent, the name falls
-# back to the coreutils tool of the same algorithm — same output shape.
-case "${OSTYPE:-}" in msys*|cygwin*)
-  command -v shasum >/dev/null 2>&1 || shasum() { local a=1; case "${1:-}" in -a) a="${2:-1}"; set -- "${@:3}" ;; esac; "sha${a}sum" "$@"; } ;;
-esac
-
-PROG=brain-archive
-die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
-info() { printf '  · %s\n' "$*"; }
-ok()   { printf '  ✓ %s\n' "$*"; }
-
-# The brain root: $BRAIN when set, else the directory above this script's own.
-_src="${BASH_SOURCE[0]}"
-while [ -L "$_src" ]; do
-  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
-  _src="$(readlink "$_src")"
-  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+# ── the Go implementation: hw-core (core/wrappers_brain_archive.go)
+# 0.7.0 removed the bash body: this file keeps the name (the interface, setup/release-standard.md «Versioning») and execs
+# `hw-core brain-archive` with the same argv, stdin and environment. A HW_IMPL_BRAIN_ARCHIVE or `brain-archive=bash` word is retired: bin/impl-retired.sh says so
+# once and Go runs. hw-core is HW_CORE (a seam of the suite, never rebuilt), else beside this file, else core/dist/<os>-<arch>/
+# (setup/build-core builds it); one not built or older than core/'s sources is rebuilt by bin/core-rebuild when a toolchain is on PATH.
+set -euo pipefail
+_t_src="${BASH_SOURCE[0]}"
+while [ -L "$_t_src" ]; do
+  _t_dir="$(cd -P "$(dirname "$_t_src")" && pwd)" || break
+  _t_src="$(readlink "$_t_src")" || break
+  case "$_t_src" in /*) ;; *) _t_src="$_t_dir/$_t_src" ;; esac
 done
-BRAIN="${BRAIN:-$(dirname "$(cd -P "$(dirname "$_src")" && pwd)")}"
-[ -d "$BRAIN/.git" ] || die "no git repository at $BRAIN"
-
-DEST="${1:-}"
-[ -n "$DEST" ] || die "usage: $PROG <destination-directory>
-       The destination must be on a different device than $BRAIN.
-       Plug in an external disk, or mount one, and pass its path.
-       There is no default: a default would end up on this disk."
-[ -d "$DEST" ] || die "destination does not exist: $DEST"
-[ -w "$DEST" ] || die "destination is not writable: $DEST"
-
-# ── THE CHECK THAT MAKES THIS WORTH RUNNING ─────────────────────────────────
-dev_of() { df "$1" 2>/dev/null | awk 'NR==2 {print $1}'; }
-BRAIN_DEV="$(dev_of "$BRAIN")"
-DEST_DEV="$(dev_of "$DEST")"
-[ -n "$BRAIN_DEV" ] && [ -n "$DEST_DEV" ] || die "could not read the device for $BRAIN or $DEST"
-if [ "$BRAIN_DEV" = "$DEST_DEV" ]; then
-  die "$DEST is on $DEST_DEV, the same device as $BRAIN.
-
-  That is what the brain's own backup bare repo already is. A second copy on the
-  disk you are protecting against does not protect against it.
-
-  Use an external disk, or a mounted volume that is not $BRAIN_DEV."
-fi
-ok "destination is on $DEST_DEV; brain is on $BRAIN_DEV"
-
-command -v gpg  >/dev/null || die "gpg not installed — brew install gnupg"
-command -v zstd >/dev/null || die "zstd not installed — brew install zstd"
-
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT="$DEST/brain-$STAMP"
-mkdir -p "$OUT" || die "cannot create $OUT"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/brain-archive.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
-
-HEAD_SHA="$(git -C "$BRAIN" rev-parse HEAD)"
-info "HEAD $HEAD_SHA"
-
-# ── history ─────────────────────────────────────────────────────────────────
-# A bundle, not a tar of .git: it is a single file, it is self-verifying, and it
-# is not racy against the three agents that write to this repo while it runs.
-git -C "$BRAIN" bundle create "$TMP/brain.bundle" --all >/dev/null 2>&1 \
-  || die "git bundle failed"
-git -C "$BRAIN" bundle verify "$TMP/brain.bundle" >/dev/null 2>&1 \
-  || die "git bundle verify failed on the bundle just written — do not trust it"
-ok "bundle written and verified ($(du -h "$TMP/brain.bundle" | cut -f1))"
-
-# THE BUNDLE MUST CONTAIN THE HEAD WE READ. Verified, not assumed: `--all`
-# excludes nothing today, and a future flag change that silently narrowed it
-# would produce an archive that restores to the wrong commit.
-git -C "$BRAIN" bundle list-heads "$TMP/brain.bundle" > "$TMP/heads.txt"
-grep -q "^$HEAD_SHA" "$TMP/heads.txt" \
-  || die "the bundle does not contain HEAD ($HEAD_SHA) — refusing to call this a backup"
-ok "bundle contains HEAD and $(wc -l < "$TMP/heads.txt" | tr -d ' ') ref(s)"
-
-# ── working tree, without .git ───────────────────────────────────────────────
-# Several agents always have uncommitted briefs and decisions in flight here.
-# The bundle cannot see them, and they are the part that is not reproducible.
-tar --exclude='./.git' -cf - -C "$BRAIN" . 2>/dev/null | zstd -q -T0 -19 > "$TMP/worktree.tar.zst" \
-  || die "tar/zstd of the working tree failed"
-zstd -t -q "$TMP/worktree.tar.zst" || die "the compressed working tree does not decompress"
-ok "working tree archived and decompression-tested ($(du -h "$TMP/worktree.tar.zst" | cut -f1))"
-
-# ── encrypt ─────────────────────────────────────────────────────────────────
-# NEVER AN ARGUMENT. A passphrase in argv is in the process list and in shell
-# history; a passphrase in a file on this disk is protected by the disk this
-# archive exists to survive. Interactive when there is a terminal, and read from
-# stdin when there is not — which is what makes the tool scriptable and, more to
-# the point, testable end to end.
-PASS_FILE="$TMP/pass"
-( umask 077; : > "$PASS_FILE" )
-if [ -t 0 ]; then
-  info "gpg will ask for a passphrase once, and use it for both files"
-  GPG_ARGS=()
+_t_bin="$(cd -P "$(dirname "$_t_src")" 2>/dev/null && pwd)"
+[ ! -r "$_t_bin/impl-retired.sh" ] || { . "$_t_bin/impl-retired.sh"; impl_retired_warn brain-archive; }
+_t_core=""
+if [ -n "${HW_CORE:-}" ]; then
+  [ ! -x "$HW_CORE" ] || _t_core="$HW_CORE"
 else
-  info "reading the passphrase from stdin (no terminal)"
-  head -1 > "$PASS_FILE"
-  [ -s "$PASS_FILE" ] || die "stdin gave an empty passphrase"
-  GPG_ARGS=(--batch --yes --pinentry-mode loopback --passphrase-file "$PASS_FILE")
+  _t_os="$(uname -s | tr 'A-Z' 'a-z')"; _t_arch="$(uname -m)"
+  case "$_t_arch" in x86_64) _t_arch=amd64 ;; aarch64|arm64) _t_arch=arm64 ;; esac
+  for _t_c in "$_t_bin/hw-core" "$_t_bin/../core/dist/$_t_os-$_t_arch/hw-core"; do
+    if [ -x "$_t_c" ]; then _t_core="$_t_c"; break; fi
+  done
+  if [ -n "$_t_core" ] && [ -d "$_t_bin/../core" ] \
+     && [ -n "$(find "$_t_bin/../core" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$_t_core" -print -quit 2>/dev/null)" ]; then
+    _t_msg="$("$_t_bin/core-rebuild" "$_t_bin" "$_t_core" brain-archive 2>&1)" || :   # stale: rebuilt (bin/core-rebuild), or the old one runs with one line
+    [ -z "$_t_msg" ] || printf 'brain-archive: %s\n' "$_t_msg" >&2
+  fi
 fi
-gpg --symmetric --cipher-algo AES256 ${GPG_ARGS[@]+"${GPG_ARGS[@]}"} \
-    --output "$OUT/brain.bundle.gpg" "$TMP/brain.bundle" \
-  || die "gpg failed on the bundle"
-gpg --symmetric --cipher-algo AES256 ${GPG_ARGS[@]+"${GPG_ARGS[@]}"} \
-    --output "$OUT/worktree.tar.zst.gpg" "$TMP/worktree.tar.zst" \
-  || die "gpg failed on the working tree archive"
-ok "both files encrypted with AES256; the same passphrase restores both"
-
-# ── prove the written files are readable ────────────────────────────────────
-# Not "gpg exited 0". Decrypt the bundle back out of the DESTINATION and verify
-# it there, so what is checked is the bytes that landed on the other device.
-gpg --quiet --decrypt ${GPG_ARGS[@]+"${GPG_ARGS[@]}"} \
-    --output "$TMP/roundtrip.bundle" "$OUT/brain.bundle.gpg" 2>/dev/null \
-  || die "the written bundle does not decrypt — the archive is not usable"
-git -C "$BRAIN" bundle verify "$TMP/roundtrip.bundle" >/dev/null 2>&1 \
-  || die "the decrypted bundle does not verify — the archive is not usable"
-ok "round-trip: the bundle on $DEST_DEV decrypts and verifies"
-
-{
-  printf 'brain archive\n'
-  printf 'created      %s\n' "$STAMP"
-  printf 'source       %s (%s)\n' "$BRAIN" "$BRAIN_DEV"
-  printf 'destination  %s (%s)\n' "$OUT" "$DEST_DEV"
-  printf 'HEAD         %s\n' "$HEAD_SHA"
-  printf '\nrefs\n'; sed 's/^/  /' "$TMP/heads.txt"
-  printf '\nsha256\n'
-  ( cd "$OUT" && shasum -a 256 brain.bundle.gpg worktree.tar.zst.gpg | sed 's/^/  /' )
-  printf '\nrestore\n'
-  printf '  gpg -d brain.bundle.gpg > brain.bundle && git clone brain.bundle brain\n'
-  printf '  gpg -d worktree.tar.zst.gpg | zstd -d | tar -xf -    # over the clone\n'
-} > "$OUT/MANIFEST.txt"
-
-printf '\n'
-ok "$OUT"
-sed 's/^/  /' "$OUT/MANIFEST.txt"
+if [ -n "$_t_core" ]; then
+  HW_WRAPPER_ARGV0="$0" HW_CORE_BIN_DIR="$_t_bin" exec "$_t_core" brain-archive "$@"
+fi
+printf 'brain-archive: hw-core is not built: run setup/build-core --native (it needs Go 1.22 or newer, https://go.dev/dl)\n' >&2
+exit 1

@@ -184,6 +184,16 @@ func (l *lch) hwEnvArgs(cwd string) []string {
 	if art := l.env("HW_ARTIFACTS"); art != "" {
 		p(" --env HW_ARTIFACTS=%s", art)
 	}
+	// The executor's TMPDIR, not hw's own: the port locks and the invoker locks under $TMPDIR
+	// must stay shared between launches, or two executors can claim the same port.
+	if tmp := l.env("HW_EXECUTOR_TMPDIR"); tmp != "" {
+		p(" --env TMPDIR=%s", tmp)
+	}
+	// The shared lock root travels beside it: the executor's TMPDIR is per run, but
+	// the invoker/delivery locks it takes must still be the brainer's.
+	if lock := l.env("HW_LOCK_DIR"); lock != "" {
+		p(" --env HW_LOCK_DIR=%s", lock)
+	}
 	p(" --env HW_EXECUTOR_VENDOR=%s", l.agent)
 	// Emitted only when the redirect applies, so a pane never carries a config dir its vendor will not read.
 	if l.accountApplies && l.accountConfigDir != "" { // # MUTATION-ANCHOR: 847-A1-05
@@ -305,7 +315,19 @@ func (l *lch) exportHwEnv(cwd string) {
 	}
 	l.setEnv("ENGRAM_PROJECT", l.engramLabel(l.proj))
 	// HW_ARTIFACTS: always safe to write and never in `git status`.
-	l.setEnv("HW_ARTIFACTS", l.artifactsDirFor(l.proj, l.hwWorkdir))
+	art := l.artifactsDirFor(l.proj, l.hwWorkdir)
+	l.setEnv("HW_ARTIFACTS", art)
+	// TMPDIR IS PER RUN: a fixed /tmp/proof in two parallel executors is one file, and the
+	// second writes over the first's evidence. It travels as HW_EXECUTOR_TMPDIR, never as the
+	// hw process's own TMPDIR: the port/invoker locks under $TMPDIR must stay shared.
+	// OUTSIDE every git repo (core/run_tmp.go): inside the worktree, a "plain directory" made under it is in a repo.
+	runTmp := runTmpDir(l.getenv, l.hwRun)
+	l.setEnv("HW_EXECUTOR_TMPDIR", runTmp)
+	l.fs.mkdirAll(runTmp)
+	if !l.fs.readonly {
+		secureRunTmpRoot(runTmp, l.warn)
+	}
+	l.setEnv("HW_LOCK_DIR", sharedLockDir(l.getenv))
 	l.setEnv("HW_RUN", l.hwRun)
 	l.setEnv("HW_INVOKER_VENDOR", l.hwInvokerVendor)
 	l.setEnv("HW_INVOKER_SESSION", l.hwInvokerSession)
@@ -655,6 +677,8 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		"HW_WORKDIR":                      workdir,
 		"HW_RUN":                          l.hwRun,
 		"HW_ARTIFACTS":                    env("HW_ARTIFACTS"),
+		"TMPDIR":                          env("HW_EXECUTOR_TMPDIR"),
+		"HW_LOCK_DIR":                     env("HW_LOCK_DIR"),
 		"ENGRAM_PROJECT":                  l.engramLabel(l.proj),
 		"HW_EXECUTOR_VENDOR":              env("HW_EXECUTOR_VENDOR"),
 		"HW_INVOKER_VENDOR":               env("HW_INVOKER_VENDOR"),

@@ -82,12 +82,14 @@ import fnmatch
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import time
+import tokenize
 
 # gate-select is IMPORTED below; a .pyc beside it would be an untracked file in the checkout.
 sys.dont_write_bytecode = True
@@ -172,13 +174,188 @@ ANCHOR_TAIL = re.compile(r"(?:[ \t]*#[ \t]*MUTATION-ANCHOR(?:-END)?:[ \t]*[A-Za-
 ANCHOR_JOB = "540-las-anclas-de-mutacion-existen.sh"
 
 
-def without_anchor_markers(text):
+# A heredoc redirection: `<<EOF`, `<<-EOF`, `<<"EOF"`, `<<'EOF'`. `<<<` is a herestring, not a body.
+HEREDOC = re.compile(r"<<(?!<)(?P<dash>-?)[ \t]*(?P<q>['\"]?)(?P<delim>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
+
+
+def comment_offsets(text):
+    """One entry per line: where a shell COMMENT starts on it, or None.
+
+    A marker is a declaration only inside a comment, and `# MUTATION-ANCHOR:` is also TEXT: inside a quoted
+    string, inside a heredoc body, or on a line a backslash continues. Stripping it there would trust a change
+    that moved a subject's answer (L18). So this reads the shell that carries it — `$( )` and `${ }` inside a
+    double-quoted string included, where quoting restarts — and where it is not certain it answers None, which
+    the caller compares as it is: a real change stays a real change, at most paying a full run, never the
+    other direction. A file whose quoting does not close is one this lexer does not trust at all."""
     out = []
+    lex = ShellLexer()
+    heredocs = []         # [(delimiter, strips_tabs)] opened on a line already read
+    continuation = False  # the line before ended in an unquoted backslash: this one continues it
     for line in text.split("\n"):
-        stripped = ANCHOR_TAIL.sub("", line)  # MUTATION-ANCHOR: 820-M05
-        if stripped != line and not stripped.strip():
-            continue  # a whole-line marker
-        out.append(stripped)
+        if heredocs:  # a body: not code, and a marker here is text the subject prints or writes
+            delim, tabs = heredocs[0]
+            if (line.lstrip("\t") if tabs else line) == delim:
+                heredocs.pop(0)
+            out.append(None)
+            continue
+        # A continuation line carries on one logical line: a `#` on it starts a comment only when the word
+        # before the backslash ended, which is not worth guessing. Report None and keep reading the quoting.
+        at = lex.feed(line, allow_comment=not continuation)
+        heredocs.extend(lex.heredocs)
+        lex.heredocs = []
+        out.append(at)
+        continuation = (lex.in_code() and at is None
+                        and (len(line) - len(line.rstrip("\\"))) % 2 == 1)
+    if not lex.in_code() or heredocs or lex.unsure:
+        return [None] * len(out)  # quoting that never closed, or a `<<` it cannot read: compared as it is
+    return out
+
+
+class ShellLexer:
+    """Enough of the shell's quoting to say, per line, where a comment starts.
+
+    Frames: `"` strings, `'` strings, `$( )`, `${ }` and backticks. Inside `"$( … )"` quoting restarts, which
+    is what a `. "$(…)"`-style body needs read correctly; elsewhere the frame is just restored."""
+
+    def __init__(self):
+        self.frames = []   # what to return to: ("DQ",), ("SQ",), ("SUB", depth), ("BRACE", depth), ("TICK",)
+        self.kind = "N"    # N | SQ | DQ | SUB | BRACE | TICK
+        self.depth = 0
+        self.heredocs = []
+        self.unsure = False  # a `<<` this lexer cannot read: `<<\EOF`, `<<'A-B'`, `$((1<<2))`
+
+    def in_code(self):
+        return self.kind in ("N", "SUB", "BRACE", "TICK")
+
+    def _push(self, kind, depth=0):
+        self.frames.append((self.kind, self.depth))
+        self.kind, self.depth = kind, depth
+
+    def _pop(self):
+        self.kind, self.depth = self.frames.pop()
+
+    def feed(self, line, allow_comment=True):
+        """Scan one line; -> the comment's offset, or None."""
+        i, n = 0, len(line)
+        while i < n:
+            c = line[i]
+            if self.kind == "SQ":
+                if c == "'":
+                    self._pop()
+                i += 1
+                continue
+            if self.kind == "DQ":
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == '"':
+                    self._pop()
+                    i += 1
+                    continue
+                if c == "$" and line.startswith("$(", i):
+                    self._push("SUB", 1)
+                    i += 2
+                    continue
+                if c == "$" and line.startswith("${", i):
+                    self._push("BRACE", 1)
+                    i += 2
+                    continue
+                if c == "`":
+                    self._push("TICK")
+                i += 1
+                continue
+            # a code frame: N, SUB, BRACE or TICK
+            if c == "\\":
+                i += 2
+                continue
+            if c == "'":
+                self._push("SQ")
+                i += 1
+                continue
+            if c == '"':
+                self._push("DQ")
+                i += 1
+                continue
+            if c == "<" and line.startswith("<<<", i):  # a herestring, not a body
+                i += 3
+                continue
+            if c == "<" and line.startswith("<<", i):
+                m = HEREDOC.match(line, i)
+                if not m:
+                    self.unsure = True
+                if m:
+                    self.heredocs.append((m.group("delim"), m.group("dash") == "-"))
+                    i = m.end()
+                    continue
+            if self.kind in ("SUB", "BRACE"):
+                if c in "({":
+                    self.depth += 1
+                elif c in ")}":
+                    self.depth -= 1
+                    if self.depth == 0:
+                        self._pop()
+                i += 1
+                continue
+            if self.kind == "TICK":
+                if c == "`":
+                    self._pop()
+                i += 1
+                continue
+            if c == "$" and line.startswith("$(", i):
+                self._push("SUB", 1)
+                i += 2
+                continue
+            if c == "$" and line.startswith("${", i):
+                self._push("BRACE", 1)
+                i += 2
+                continue
+            if c == "`":
+                self._push("TICK")
+                i += 1
+                continue
+            if allow_comment and c == "#" and (i == 0 or line[i - 1] in " \t;&|(){}`"):
+                return i
+            i += 1
+        return None
+
+
+def python_comment_offsets(text):
+    """-> (offsets, certain): where a Python COMMENT starts on each line, by Python's own tokenizer.
+
+    A Python runner (`setup/verdict-incremental`, `setup/test-hw-snapshot.py`) is read by its own lexer
+    rather than by the shell's: a marker inside a docstring or a string is text there too, and a marker
+    after real code is a comment. When it does not tokenize, nothing is certain: compare as it is."""
+    lines = text.split("\n")
+    out = [None] * len(lines)
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                out[tok.start[0] - 1] = tok.start[1]
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return [None] * len(lines), False
+    return out, True
+
+
+def without_anchor_markers(text, lang="shell"):
+    if lang == "python":
+        offsets, _certain = python_comment_offsets(text)
+    else:
+        offsets = comment_offsets(text)
+    out = []
+    for line, at in zip(text.split("\n"), offsets):  # MUTATION-ANCHOR: 820-M12
+        if at is None:  # no comment, or none this lexer is certain of: compared as it is
+            out.append(line)
+            continue
+        code, comment = line[:at], line[at:]
+        stripped = ANCHOR_TAIL.sub("", comment)  # MUTATION-ANCHOR: 820-M05
+        if stripped == comment:  # a comment that carries no marker is a change like any other
+            out.append(line)
+        elif not stripped.strip(" \t"):
+            if code.strip(" \t"):
+                out.append(code.rstrip(" \t"))  # markers closing a line of code
+            # else: a whole line that was only markers: dropped
+        else:
+            out.append(code + stripped)  # markers closing a comment that says something else
     return "\n".join(out)
 
 
@@ -189,7 +366,9 @@ def only_anchor_markers_changed(root, base, tree, path):
     new = git(root, "show", "%s:%s" % (tree, path), check=False)
     if old.returncode != 0 or new.returncode != 0:
         return False
-    return without_anchor_markers(old.stdout) == without_anchor_markers(new.stdout)
+    first = new.stdout.split("\n", 1)[0]
+    lang = "python" if path.endswith(".py") or (first.startswith("#!") and "python" in first) else "shell"
+    return without_anchor_markers(old.stdout, lang) == without_anchor_markers(new.stdout, lang)
 
 
 def is_runner_path(path, shared):

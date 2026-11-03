@@ -27,10 +27,10 @@ const root = process.env.DENY_GUARD_ROOT ?? fileURLToPath(new URL("../..", impor
 const lanes = Object.keys(JSON.parse(readFileSync(`${root}/guards.json`, "utf8")).lanes ?? {})
   .filter((lane) => lane !== "brain");
 if (lanes.length === 0) throw new Error("guards.json names no lane — nothing below would run");
-// The shell that executes each command: Git Bash's own on Windows (a native
-// node has no /bin, and PATH's first bash there can be WSL's launcher).
-const BASH = process.platform === "win32" && process.env.HW_MSYS_ROOT
-  ? `${process.env.HW_MSYS_ROOT}/usr/bin/bash.exe` : "/bin/bash";
+// The shell that executes each command: the host's /bin/bash. This suite runs
+// on the platforms the guard supports (macOS and Linux); the MSYS spelling it
+// used on Windows went with the Windows runtime.
+const BASH = "/bin/bash";
 // Forward slashes: the path is interpolated into bash commands, which read a
 // backslash as an escape (Windows' tmpdir() returns a backslash drive path).
 const base = mkdtempSync(join(tmpdir(), "deny-repo-writes-fs-")).replaceAll("\\", "/");

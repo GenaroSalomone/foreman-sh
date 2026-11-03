@@ -42,45 +42,20 @@ func (l *lch) sendBrief(pane string) int {
 
 // buildBriefText is the prompt assembly of _send_brief: BRIEF_TEXT, wrapped in everything the executor is told.
 func (l *lch) buildBriefText() {
-	preamble := l.briefPreamble()
-	l.briefText = psep(preamble, l.briefText)
-	epistemic := l.briefEpistemic()
-
-	if l.sdd == "none" { // # MUTATION-ANCHOR: 847-C-13
-		if l.dispatchFramework != "" && l.dispatchFramework != "<undetermined>" {
-			l.briefText = bashSub("This task runs outside the framework flow, by choice: it was dispatched with\n--sdd none, so the brief is the whole contract. The directory is in " + l.dispatchFramework + " mode and\nits skills are loaded; leave their phase commands, review or verify flows and\npreflights unused here, and a skill that asks for a blocking preflight does not\napply to this task. Do the work directly and close with done-invoker.\n\n---\n\n" + l.briefText)
-		} else {
-			l.briefText = bashSub("This task runs outside the framework flow, by choice: it was dispatched with\n--sdd none, so the brief is the whole contract. The directory framework mode\ncould not be determined and framework skills may still be loaded; leave their\nphase commands, review or verify flows and preflights unused here, and a skill\nthat asks for a blocking preflight does not apply to this task. Do the work\ndirectly and close with done-invoker.\n\n---\n\n" + l.briefText)
-		}
-		l.info("prompt states the flow is deliberately not entered (" + l.dispatchFramework + " mode, --sdd none)")
-	}
-
-	if l.dispatchInPlay {
+	f := l.promptFacts()
+	// --sdd none (the default) adds nothing to the prompt: the paragraph that fenced off a loaded framework surface left
+	// with gentle's blocking preflight, its only measured cause (sdd-legado-070). The unattended paragraph stays.
+	if l.dispatchInPlay { // # MUTATION-ANCHOR: go-185-M01
 		entry := l.frameworkEntry(l.dispatchFramework)
 		if entry != "" { // # MUTATION-ANCHOR: 847-C-15
-			// The phase note goes AFTER the entry line, inside the same block.
-			phaseNote := ""
-			if l.dispatchFramework == "speckit" {
-				phaseNote = bashSub("\n\n" + l.speckitPhaseNote())
-			}
-			l.briefText = bashSub("FIRST ACTION, before anything else: run " + entry + " for this task.\nThe framework mode here is " + l.dispatchFramework + " and this brief is its input, not a licence to\nstart editing. Do not read code, write files or run tests until " + entry + " has run." + phaseNote + "\n\n---\n\n" + l.briefText)
+			f.sdd, f.sddEntry = l.dispatchFramework, entry
 			l.info("prompt prefixed with " + entry + " (framework " + l.dispatchFramework + " is in play)")
 		} else {
 			l.warn("framework is '" + l.dispatchFramework + "' — no single entry command, so the prompt names none")
 		}
 	}
-
-	// Deliberately last among prompt construction: before the original brief in every mode.
-	if authorization := l.briefAuthorization(); authorization != "" {
-		l.briefText = psep(authorization, l.briefText)
-	}
-	if note := l.briefSecretsNote(); note != "" {
-		l.briefText = psep(note, l.briefText)
-	}
-	if note := l.copyBriefAssets(); note != "" {
-		l.briefText = psep(note, l.briefText)
-	}
-	l.briefText = psep(epistemic, l.briefText)
+	f.assetsNote = l.copyBriefAssets()
+	l.briefText = renderPrompt(f)
 }
 
 // _vendor_has_native_transport: claude, codex and pi have none that hw can address.

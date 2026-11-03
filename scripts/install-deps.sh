@@ -57,8 +57,8 @@ deps() {
 # A present jq older than 1.7 counts as missing: its `jq -e` treats empty input as
 # success (install.sh refuses it for the same reason).
 present() {  # <command>
-  # type -P: under Git Bash msys-compat exports functions named jq, fd, git, ps
-  # and pgrep, which `command -v` reports as installed (571, windows.yml 37045495692).
+  # type -P asks PATH for the executable: a shell function named jq, fd, git, ps
+  # or pgrep would make `command -v` report it as installed.
   type -P "$1" >/dev/null 2>&1 || return 1
   if [ "$1" = jq ]; then
     local v

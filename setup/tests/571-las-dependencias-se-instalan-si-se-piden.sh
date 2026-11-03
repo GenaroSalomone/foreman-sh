@@ -39,9 +39,6 @@ done
 printf '#!/bin/sh\n{ [ "$1" = -s ] || [ -z "$1" ]; } && echo Darwin || exec %s "$@"\n' "$(command -v uname)" > "$SYS/uname"; chmod +x "$SYS/uname"
 link() { local p; p="$(type -P "$1")" || fail "this test needs $1 on PATH"; link_tool "$p" "$2" "$1"; }
 link git "$SYS"; link python3 "$SYS"   # what Homebrew does not install here; present, so "ok"
-# On native Windows every entry point sources bin/msys-compat.sh, which calls
-# cygpath unconditionally (dirname, its other external, is linked above).
-case "${OSTYPE:-}" in msys*|cygwin*) link cygpath "$SYS" ;; esac
 
 # brew: logs every call and "installs" a command into $GOT, which is on PATH.
 # BREW_FAIL names a package whose install fails.

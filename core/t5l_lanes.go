@@ -209,11 +209,7 @@ func (l *lch) portFree(p int) bool {
 }
 
 func (l *lch) portLocks() string {
-	t := l.env("TMPDIR")
-	if t == "" {
-		t = "/tmp"
-	}
-	return t + "/hw-ports"
+	return sharedLockDir(l.getenv) + "/hw-ports"
 }
 
 // pickPort is `_pick_port <first>`: the first free port from there upward, claimed with a lock directory so

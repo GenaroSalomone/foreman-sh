@@ -1,9 +1,9 @@
 package main
 
 // The small runtime wrappers of bin/, as verbs of hw-core: browser-close, brain-archive, secret-unlock, opencode-auto and
-// codex-channel-session-hook. Each is a port of the bash it names — same stdout, stderr, exit status and on-disk effects —
-// and each bash file stays beside it as the rollback: bin/wrapper-go.sh, sourced by the five, execs
-// `hw-core <tool> "$@"` unless HW_IMPL_<TOOL> (else the switch file's `<tool>=` line) says `bash`. The default is Go.
+// codex-channel-session-hook. Each is a port of the bash it replaced — same stdout, stderr, exit status and on-disk effects.
+// 0.7.0 removed those bash bodies: bin/<tool> is a shim that execs `hw-core <tool> "$@"`, and a HW_IMPL_<TOOL> or `<tool>=bash`
+// word is said once and never chooses an implementation.
 //
 // The shim hands over `HW_WRAPPER_ARGV0` (the bash's own $0): the bash resolves the directory it lives in, and the files
 // beside it (hw-secret, herdr-rpc, the brain root), from where it was started, so the Go does the same from that path.

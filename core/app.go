@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 )
 
 type app struct {
@@ -22,6 +21,19 @@ type app struct {
 }
 
 func realGetenv(k string) string { return os.Getenv(k) }
+
+// sharedLockDir is where the locks every executor and every brainer must share live:
+// HW_LOCK_DIR (the pane's host TMPDIR, carried into the run), else TMPDIR, else /tmp.
+// The executor's own TMPDIR is per run and must never decide a shared lock's path.
+// (invokers/lock.go lockDir is the same rule for the invokers.)
+func sharedLockDir(getenv func(string) string) string {
+	for _, k := range []string{"HW_LOCK_DIR", "TMPDIR"} {
+		if v := getenv(k); v != "" {
+			return v
+		}
+	}
+	return "/tmp"
+}
 
 // brainRoot is bin/hw's BRAIN: HW_BRAIN_ROOT (the shim passes the root it
 // resolved), else found from where this binary lives.
@@ -101,7 +113,7 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return brainEntry(args[1:], stdout, stderr, getenv, stdin)
 	}
 	switch verb {
-	case "receipt", "log", "handle", "help", "status", "worktrees", "executor-gate", "picker": // picker: `hw` with no arguments on a terminal (picker.go)
+	case "receipt", "log", "handle", "help", "status", "worktrees", "executor-gate", "picker", "retro-done": // picker: `hw` with no arguments on a terminal (picker.go)
 	case "review-range", "review-delta", "preflight", "outbox", "reports", "sweep", "reap", "wait", "wait-one", "wait-monitor", "status-full": // T2; status-full is all of `hw status`
 		for _, tool := range []string{"herdr", "git", "jq"} { // bin/hw's `need herdr; need git; need jq`, before any verb
 			if _, err := exec.LookPath(tool); err != nil {
@@ -143,9 +155,6 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return cmdVersion(t, brainRoot(getenv))
 	}
 	home := getenv("HOME")
-	if home == "" && runtime.GOOS == "windows" {
-		home = getenv("USERPROFILE")
-	}
 	brain := brainRoot(getenv)
 	file := getenv("HW_PROJECTS_JSON")
 	if file == "" {
@@ -186,6 +195,8 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return a.cmdStatusArgs()
 	case "status-full":
 		return a.cmdStatusFull()
+	case "retro-done":
+		return a.cmdRetroDone()
 	case "worktrees":
 		return a.cmdWorktrees()
 	case "review-range":

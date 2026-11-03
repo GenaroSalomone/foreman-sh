@@ -7,6 +7,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -581,9 +582,47 @@ func (d *dsp) warnBriefBodyAgents() {
 }
 
 // piAgentDir, piSubagentsDir and piSubagentsReady are _pi_agent_dir, _pi_subagents_dir and _pi_subagents_ready: the
-// text of a `requires: subagents` refusal names where pi-subagents would have to be.
-func (d *dsp) piAgentDir() string {
-	return orDefaultStr(d.env("PI_CODING_AGENT_DIR"), d.env("HOME")+"/.pi/agent")
+// text of a `requires: subagents` refusal names where pi-subagents would have to be. The shadowed value is skipped: a
+// launch whose brief declares plugins exports a PRIVATE PI_CODING_AGENT_DIR to the pane (t6_pi_shadow.go), and the
+// paths hw itself derives from pi's directory must stay the real ones.
+func (d *dsp) piAgentDir() string { return piAgentDirOf(d.env) }
+
+func (d *dsp) piIsShadowDir(dir string) bool { return piIsShadowDir(d.env, dir) }
+
+// piAgentDirOf is piAgentDir over any environment (a re-task or a revive holds no dispatch, only the process's).
+func piAgentDirOf(env func(string) string) string {
+	cur := env("PI_CODING_AGENT_DIR")
+	if piIsShadowDir(env, cur) {
+		// a dispatch from INSIDE a shadowed executor inherits the parent's private directory; the real one travels beside it
+		// (piRealAgentDirEnv), and is trusted only HERE, where the directory in hand is a shadow and the value is a directory
+		// that can be read. Never build a private directory out of the parent's.
+		if r := env(piRealAgentDirEnv); r != "" && piReadableDir(r) {
+			return r
+		}
+		return env("HOME") + "/.pi/agent"
+	}
+	return orDefaultStr(cur, env("HOME")+"/.pi/agent")
+}
+
+// piIsShadowDir says whether dir is a private agent directory of a run (t6_pi_shadow.go): `<artifacts>/pi-agent`, under
+// `.artifacts` or, in a lane with no repo, directly in the work directory (HW_ARTIFACTS of the environment).
+func piIsShadowDir(env func(string) string, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	if strings.HasSuffix(dir, "/.artifacts/pi-agent") {
+		return true
+	}
+	art := env("HW_ARTIFACTS")
+	return art != "" && dir == art+"/pi-agent"
+}
+
+func piReadableDir(p string) bool {
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	_, err := os.ReadDir(p)
+	return err == nil
 }
 
 func (d *dsp) piSubagentsDir() string { return d.piAgentDir() + "/npm/node_modules/pi-subagents" }

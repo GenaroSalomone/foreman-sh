@@ -9,14 +9,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
-// Windows cannot execute a `#!` script (hw, herdr-rpc are bash): Git Bash's own
-// bash runs it, found from the mount root bin/msys-compat.sh exports, not from
-// PATH, where `bash` is WSL's launcher. A cold start there is ~10x slower.
-const execFileAsync = process.platform === "win32"
-  ? (file, args, opts = {}) => execFileP(
-      process.env.HW_MSYS_ROOT ? `${process.env.HW_MSYS_ROOT}/usr/bin/bash.exe` : "bash",
-      [file, ...args], { ...opts, timeout: (opts.timeout ?? 0) * 10 })
-  : execFileP;
 // The brain this plugin serves: HW_BRAIN_ROOT when set, else the tree the
 // plugin file itself lives in. The installed plugin is a symlink to
 // <brain>/setup/<this file>, so its real path names the brain it was installed
@@ -56,7 +48,7 @@ async function publishTurnEnded(hadInput) {
 
   try {
     const hw = join(brainBin(), "hw");
-    await execFileAsync(hw, ["executor-turn-end"], { // # MUTATION-ANCHOR: 43-M05
+    await execFileP(hw, ["executor-turn-end"], { // # MUTATION-ANCHOR: 43-M05
       timeout: turnEndTimeoutMs(),
       // Whether a message reached the root session since its last idle. One
       // prompt can end in more than one `session.idle` (measured 2026-10-02 on

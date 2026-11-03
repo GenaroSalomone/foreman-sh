@@ -1,9 +1,7 @@
 package main
 
-// The message `hw next` delivers: _next_message (lib/hw/next.sh) around the launch's own blocks, copied from
-// bin/hw byte for byte — _brief_preamble with its notes (_judgment_day_note, _plugins_review_note, _checks_note,
-// _design_judgment_note, _brief_qa_override, _specialist_agents), _brief_epistemic and _speckit_phase_note.
-// They are the dispatch path's (train T5), which owns them; these are `hw next`'s copies until T5 dedupes them.
+// The message `hw next` delivers: _next_message (lib/hw/next.sh). It fills promptFacts from the RUN and renders them with
+// the launch's own renderer (t5l_prompt.go): there is no second copy of the preamble to keep in step.
 
 import (
 	"io/fs"
@@ -52,15 +50,21 @@ func (a *app) nextLaneField(lane, key string) string {
 
 // nextMsgEnv is what _next_message's subshell rebuilds from the RUN, never from the brainer's shell.
 type nextMsgEnv struct {
-	brief, workdir, engram, baseRef, baseBranch, vendor, portWeb, proj, session, rundir string
-	reviewMode                                                                          string   // _brief_review_mode of the NEW brief
-	plugins                                                                             []string // _plugins_declared of the NEW brief
+	brief, workdir, engram, baseRef, baseBranch, vendor, portWeb, proj, task, session, rundir string
+	reviewMode                                                                                string   // _brief_review_mode of the NEW brief
+	plugins                                                                                   []string // _plugins_declared of the NEW brief
 }
 
-// nextMessage is _next_message: the counter, the entry line, the safeguard, the preamble and the task.
-func (a *app) nextMessage(s *nextState, nextSeq, entryLine string) string {
-	r := s.rundir
-	e := nextMsgEnv{brief: s.brief, workdir: s.wtdir, reviewMode: nextReviewMode(s.brief), plugins: nextPluginsDeclared(s.brief), rundir: r}
+// nextMessage is _next_message: the facts of this re-task, rendered by the same renderer as the launch's prompt.
+// sdd is the framework mode the re-task sets ("" on a dry run, which sends no entry line).
+func (a *app) nextMessage(s *nextState, nextSeq, sdd string) string {
+	return renderPrompt(a.nextPromptFacts(s, nextSeq, sdd))
+}
+
+// nextPromptFacts reads what the RUN knew: its env and its receipt.
+func (a *app) nextPromptFacts(s *nextState, nextSeq, sdd string) *promptFacts {
+	e := nextMsgEnv{brief: s.brief, workdir: s.wtdir, reviewMode: nextReviewMode(s.brief), plugins: nextPluginsDeclared(s.brief), rundir: s.rundir}
+	r := e.rundir
 	if v, rc := a.nextRunEnv(r, "ENGRAM_PROJECT", false); rc == 0 {
 		e.engram = bashSub(v) // # MUTATION-ANCHOR: 862-G17
 	} else {
@@ -71,18 +75,77 @@ func (a *app) nextMessage(s *nextState, nextSeq, entryLine string) string {
 	e.vendor = a.nextEnvVal(r, "HW_EXECUTOR_VENDOR")
 	e.portWeb = a.nextEnvVal(r, "HW_PORT_WEB")
 	e.proj = a.nextEnvVal(r, "HW_PROJECT")
+	e.task = a.nextEnvVal(r, "HW_TASK")
 	e.session = nextEngramSession(r + "/receipt.jsonl")
 	if strings.HasPrefix(e.session, "none") {
 		e.session = ""
 	}
-	preamble := bashSub(a.nextBriefPreamble(e))
-	text := s.text
-	if s.auth != "" {
-		text = bashSub(s.auth + "\n\n---\n\n" + text) // # MUTATION-ANCHOR: 862-G18
+	f := a.nextEnvFacts(e)
+	f.retask, f.retaskSeq, f.sdd, f.briefText = true, nextSeq, sdd, s.text
+	// the run's HW_TASK is task 1's name; task N is named by its own brief (a bare text keeps the run's) and saves under its own topic_key
+	if s.brief != "" {
+		if n := strings.TrimSuffix(nextBasename(s.brief), ".md"); n != "" {
+			f.task = n
+		}
 	}
-	msg := "NEXT TASK (task " + nextSeq + " of this session — the previous one is closed and reported).\nYour ask budget and your done-invoker are reset for it: report this one with\ndone-invoker when it is finished, exactly as you did the last.\n\n" +
-		entryLine + "---\n\n" + nextEpistemic + "\n\n---\n\n" + preamble + "\n\n---\n\n" + text
-	return msg
+	f.task += "-t" + nextSeq
+	f.secrets = a.nextSecrets(s.brief)
+	f.requestedBy, f.authorizes = s.requestedBy, s.authorizes
+	if sdd != "" {
+		f.sddEntry = nextFrameworkEntry(sdd)
+	}
+	f.entryLine = sddEntryRetaskText(f)
+	return f
+}
+
+// nextRunningModel is the model the session runs, from the receipt hw wrote for it ("" when the receipt could not read one).
+func nextRunningModel(rundir string) string {
+	m := nextReceiptValue(rundir+"/receipt.jsonl", "model_running")
+	if strings.HasPrefix(m, "none") || strings.HasPrefix(m, "n/a") {
+		return ""
+	}
+	return m
+}
+
+// nextEnvFacts is the preamble's facts of a re-task, from the run's env as nextPromptFacts read it.
+func (a *app) nextEnvFacts(e nextMsgEnv) *promptFacts {
+	f := &promptFacts{lane: e.proj, task: e.task, operator: a.nextOperator(), binDir: a.nextBinDir(), brief: e.brief, label: e.engram, session: e.session,
+		specialists: nextSpecialists(e.workdir), vendor: e.vendor, portWeb: e.portWeb,
+		build: nextIsBuild(e.brief), reviewMode: e.reviewMode, plugins: e.plugins}
+	if f.vendor == "" {
+		f.vendor = a.getenv("AGENT")
+	}
+	l := &lch{dsp: &dsp{app: a, proj: e.proj, envOver: map[string]string{
+		"HW_EXECUTOR_VENDOR": f.vendor, "HW_WORKDIR": e.workdir, "HW_PI_ASKED_MODEL": a.nextEnvVal(e.rundir, "HW_PI_ASKED_MODEL")}}}
+	if f.vendor == "pi" && l.piPromptApplies(f.specialists) {
+		f.piNote = l.piSpecialistNote(f.specialists)
+	}
+	piSkill, _ := l.piSkillDirFor("judgment-day")
+	f.jdJudges, f.jdSkill, f.jdSkillPath = jdFacts(f.vendor, a.nextEnvVal(e.rundir, "CLAUDE_CONFIG_DIR"), a.getenv("HOME"), e.workdir, piSkill)
+	f.fastGate = isFile(e.workdir + "/setup/test-hw")
+	// DELEGATE BY MODEL TIER: only when the session being re-tasked was LAUNCHED with the explorer (its receipt says
+	// so), so the prompt never names an agent that session does not have.
+	if strings.HasPrefix(nextReceiptValue(e.rundir+"/receipt.jsonl", "explorer"), explorerName+" on ") {
+		if t, ok := a.explorerFor(e.proj).tier(f.vendor); ok {
+			f.explorer = &t
+		}
+	}
+	f.model = nextRunningModel(e.rundir)
+	if e.proj != "" {
+		f.laneNote = bashSub(a.nextLaneField(e.proj, "brief_note"))
+	}
+	if f.laneNote != "" {
+		f.laneQA = a.nextQAOverride(e)
+	}
+	f.qaTarget = e.proj != "" && a.nextLaneField(e.proj, "qa_target") != ""
+	f.jd = e.baseRef != "" && e.reviewMode != "plugins" && e.reviewMode != "none" && f.build // # MUTATION-ANCHOR: 1020-G06
+	f.designGate = nextDesignGate(e.brief)
+	if f.designGate {
+		f.boundary = nextFmValue("boundary", e.brief)
+	}
+	f.jdRequired = nextJudgmentDayRequired(e.brief)
+	f.pluginsOnly = e.reviewMode == "plugins" && f.build // # MUTATION-ANCHOR: 1020-G07
+	return f
 }
 
 // nextEngramSession is `jq -r 'select(.key=="engram_session") | .value' receipt.jsonl | tail -1`.
@@ -110,84 +173,6 @@ func nextReceiptValue(path, key string) string {
 	}
 	return bashSub(lastLine(outs))
 }
-
-const nextEpistemic = "BRIEF EPISTEMIC SAFEGUARD — apply this before acting on the brief:\n\nMEASURED: a heading or citation alone is not proof; treat a claim as established\nonly when its named evidence/source supports the exact claim being prescribed. A reader need not independently re-derive already measured work merely because it is prescribed.\n\nUNESTABLISHED: keep open causal or design questions visibly open; do not turn\nthem into facts.\n\nCONSTRAINTS: preserve the stated boundaries, non-regressions and verification\nrequirements.\n\nA prescribed solution is valid only when it rests on MEASURED evidence. If a\nproposed remedy rests on an UNESTABLISHED cause, surface that contradiction and\ndo not ratify the remedy. Legitimate measured prescriptions remain permitted:\npreserve and execute them when their evidence supports them."
-
-// nextBriefPreamble is _brief_preamble, for a re-task (TASK_KIND unset; AGENT and SDD as the shell has them).
-func (a *app) nextBriefPreamble(e nextMsgEnv) string {
-	bin := a.nextBinDir()
-	brief := e.brief
-	if brief == "" {
-		brief = "<no brief file>"
-	}
-	eng := e.engram
-	if eng == "" {
-		eng = "brain"
-	}
-	p := "Close with done-invoker. Finishing the work is not reporting it, and neither is\nanswering in your own pane — your brainer cannot see this pane and will not poll\nit. Until done-invoker runs, this task reads as open to everyone else.\n\nThis pane is unattended: no human reads it, and an interactive question tool has\nno answerer here — where such a tool exists at all, its answer never arrives.\nask-invoker is the only human channel. A missing tool or runtime limitation is a\nfact to report with done-invoker --blocked, never a reason to end the turn silently.\n\ndone-invoker and ask-invoker are shell commands in your PATH, run in a terminal.\nThey are not tools, and no tool of those names exists. Run them the way you run\nany other command:\n\n    done-invoker \"<one paragraph: what you established, and the engram ids>\"\n    done-invoker --blocked \"<what stopped you, and what would unblock it>\"  # keeps this pane\n    ask-invoker  \"<one question, at most 600 characters>\"   # 3 per task; your brainer answers\n    ask-invoker --challenge \"<what the brief forbids> :: <what you observed>\"\n\nIf the brief forbids something you have evidence is wrong, challenge it instead\nof stopping — obey-or-stop are not your only two moves.\nA challenge does not spend an ask; it has its own budget. It needs the evidence,\nnot the opinion. Until your brainer rules, hold.\nA --blocked report does not close you: wait. A ruling that answers it resumes\nTHIS task — act on it, then report again with done-invoker (no --retask).\n\nIf your shell cannot find them, they are at " + bin + "/done-invoker and\n" + bin + "/ask-invoker — run them by absolute path rather than concluding they do not\nexist.\n\nYour brief is also on disk at " + brief + ". If anything above arrived truncated or you\nlost it, read that file rather than asking for it again.\n\nIf it ever answers \"already notified the brainer for this task\" and you were\nre-tasked after that report, the task counter did not move — add --retask and\nreport anyway. A finished task that cannot be reported is the failure; a report\nyour brainer has to arbitrate is not.\n\nSave to engram with project: " + eng + " — your engram server is the label proxy hw\nlaunched: omit `project` or pass exactly that; any other value is refused, and\nevery mem_search already reads all labels (all_projects is forced)."
-	p = bashSub(p)
-	if e.session != "" {
-		p = bashSub(p + "\n\nYour engram session is " + e.session + ", registered by hw under " + eng + " for this work\ndirectory. Pass session_id: " + e.session + " with project: " + eng + " on every mem_save; without\nit, engram may file the save into manual-save-" + eng + ", which it can refuse.\ndone-invoker checks it: a done report must name at least one observation as\n#<id>, and that id must exist under " + eng + ", or the report is refused.")
-	}
-	if sp := nextSpecialists(e.workdir); sp != "" {
-		p = bashSub(p + "\n\nSpecialist subagents available here: " + sp + ". If one of them is the job, delegate\nrather than doing it inline — they carry the access and the conventions for it,\nand reconstructing those in your own session is how a mechanism gets improvised.")
-	} else {
-		p = bashSub(p + "\n\nno specialists in this lane; ops-investigator / qa-tester are not available here")
-	}
-	vendor := e.vendor
-	if vendor == "" {
-		vendor = a.getenv("AGENT")
-	}
-	// DELEGATE BY MODEL TIER: only when the session being re-tasked was LAUNCHED with the explorer (its receipt says
-	// so), so the prompt never names an agent that session does not have.
-	if strings.HasPrefix(nextReceiptValue(e.rundir+"/receipt.jsonl", "explorer"), explorerName+" on ") {
-		if note := a.explorerFor(e.proj).tierNote(vendor); note != "" {
-			p = pjoin(p, note)
-		}
-	}
-	if vendor == "codex" { // # MUTATION-ANCHOR: 862-G19
-		p = bashSub(p + "\n\n" + "RULES CODEX DOES NOT LOAD (shared rules, one line each):\n- Secrets: never print, copy into a new file, paste or commit .env, *.db, *.credentials or secrets/; report key names, never values.\n- A brief names a Keychain handle for a credential; no handle is a gap, report it with done-invoker --blocked.\n- Browser: close it with " + bin + "/browser-close, and never retry a failed launch (a failed launch is a blocked report).\n- Artifacts (audio, exports, captures, generated files) go to $HW_ARTIFACTS, never into git status.")
-	}
-	note := ""
-	if e.proj != "" {
-		note = bashSub(a.nextLaneField(e.proj, "brief_note"))
-	}
-	if note != "" {
-		p = bashSub(p + "\n\n" + note)
-		if qa := a.nextQAOverride(e); qa != "" {
-			p = bashSub(p + "\n\nTHIS BRIEF OVERRIDES THE LANE NOTE ABOVE ON BROWSERS AND QA: it declares " + qa + ". What the brief asks you to verify in a browser or against what is deployed IS your task, not the brainer's; the sentence about staging-only QA describes the lane default and does not apply to it.")
-		}
-	}
-	if e.proj != "" && a.nextLaneField(e.proj, "qa_target") != "" && e.portWeb != "" {
-		p = bashSub(p + "\n\nQA target: http://localhost:" + e.portWeb + " — pass it as `pnpm qa <flow> --target <url>`, to qa-tester in its prompt, and to `harness open <url>`. Never staging, never :3001, unless the brief says so.")
-	}
-	jd := e.baseRef != "" && e.reviewMode != "plugins" && e.reviewMode != "none" && nextIsBuild(e.brief) // # MUTATION-ANCHOR: 1020-G06
-	if jd {
-		bb := e.baseBranch
-		if bb == "" {
-			bb = "<unnamed>"
-		}
-		base := bashSub("The base a Judgment Day target is built against, computed by hw at dispatch:\n\n    HW_REVIEW_BASE_REF=" + e.baseRef + "\n    HW_REVIEW_BASE_BRANCH=" + bb + "   (the branch POINT off it — git merge-base, not its tip)\n\nThat value is frozen at dispatch. If you have rebased onto the base since, it\nnow includes commits that are not yours. A Judgment Day target is the branch\npoint computed at judging time, to HEAD:\n\n    git diff \"$(hw review-range)\"..HEAD\n\nCheck the count before you trust any verdict. The frozen target must hold the\nsame number of files as\n\n    git diff --name-only \"$(hw review-range)\"..HEAD | wc -l\n\n`hw review-range` exits 1 naming the ref when it cannot compute the branch\npoint; then report that with done-invoker instead of judging a guessed range.\n\nIf the two numbers differ, the target is not your work: report that with\ndone-invoker instead of judging it.")
-		p = bashSub(p + "\n\n" + base)
-	}
-	if nextIsBuild(e.brief) {
-		p = bashSub(p + "\n\n" + "A behaviour fix ships the test that fails on the old code. Prove it: revert\nthe fix, watch that test go red, restore it, watch it go green, and say so in\nthe commit. An existing expectation that asserts the old behaviour is the\ndefect written a second time: change it. The one exception is a refactor — it\nchanges no expectation, and a refactor that does has broken something.\n\nWhere the repo carries setup/test-hw, its fast gate (HW_TEST_GATE=fast bash\nsetup/test-hw) runs the fast subjects AND the slow ones that name a path your\nbranch changed against main (capped, the cut ones printed). It is still not the\nfull suite and caches no full verdict, but a red it prints is yours to fix now,\nnot after the merge.")
-		// _checks_gate_applies: the same kinds
-		p = bashSub(p + "\n\n" + "Before working, write $HW_ARTIFACTS/checks.md from the brief's ## Proof and\n## Verification sections: a table, one row per requirement,\n\n    requirement | verdict | evidence | correction\n\nverdict is pass, fail or unresolved; evidence is a command plus its result, or\na file:line. Fill it in as you go. done-invoker refuses a done report when the\nfile is missing, has no rows, or has a row with an empty verdict.")
-	}
-	if nextDesignGate(e.brief) {
-		end := reviewDesignEnd(e.reviewMode)
-		p = bashSub(p + "\n\n" + bashSub("Judge the design before the code. This brief declares a boundary:\n\n    boundary: "+nextFmValue("boundary", e.brief)+"\n\nBefore your first code commit, write your design to one file under\n$HW_ARTIFACTS — the boundary, the mechanism, the input space it decides over,\nand what an input nobody anticipated gets — and run the judgment-day skill in\nDESIGN MODE over it (references/design-mode.md). Then write\n$HW_ARTIFACTS/design-judgment.md with these lines:\n\n    boundary: <the line above, exactly>\n    design: <the design file>\n    design_sha256: <its sha256>\n    JUDGMENT: APPROVED            (or ESCALATED)\n\nAn APPROVED verdict lists, one amendment: line each, the bypass classes both\njudges confirmed and the approach can close; your code closes them, and\n"+end+" is where that is checked. done-invoker\nrefuses a done report without an APPROVED verdict whose design still hashes to\ndesign_sha256. An ESCALATED design is a blocker, not a\nprompt to code anyway: report it with done-invoker --blocked, naming the\nbypass classes the judges found. Two rejected designs mean the approach is\nyour brainer's call."))
-	}
-	if jd {
-		p = bashSub(p + "\n\n" + judgmentDayWithPlugins(nextJudgmentDayNote, e.plugins))
-	} else if e.reviewMode == "plugins" && nextIsBuild(e.brief) { // # MUTATION-ANCHOR: 1020-G07
-		p = bashSub(p + "\n\n" + reviewPluginsNote(e.plugins))
-	}
-	return p
-}
-
-const nextJudgmentDayNote = "Closing this code task: Judgment Day, then done-invoker, in this order:\n\n1. Commit per work unit as you go, on this branch, with Conventional Commit\n   messages — not one commit at the end. The review target is what you\n   committed; uncommitted work is not judged and is not delivered.\n2. Before done-invoker, run the judgment-day skill over\n   \"$(hw review-range)\"..HEAD — the branch point computed NOW, so a rebase\n   onto the base since dispatch does not pull other people's commits into the\n   target. If that range is empty there is nothing to judge: say so in the\n   report instead. Record the judged range (base SHA..head SHA).\n   Judgment Day is optional. If the judgment-day skill is not among your\n   available skills, it is not installed: there is nothing to judge with and\n   nothing ESCALATED. Say \"Judgment Day: not installed (optional)\" in the\n   report and close normally. ESCALATED means judges ran and could not converge.\n   If you rebased after judging, do not re-judge the whole range. Run\n   hw review-delta <judged-base> <judged-head>\n   Exit 0: your own diff is the one judged, only moved — the verdict stands.\n   Exit 3: it prints the files whose own diff changed; re-judge ONLY those, as\n   a scoped re-judgment (it does not reset the fix-round budget). Exit 1: it\n   cannot tell — judge the full range again.\n3. The skill asks before its first fix round. Nobody answers here, and nobody\n   has to: the brief that authorized this implementation is that\n   authorization. Apply the fixes both judges confirmed without asking. Judges\n   that contradict each other, or anything left after round two, is ESCALATED —\n   report it, do not ask and do not wait.\n4. The done-invoker report carries the verdict, APPROVED or ESCALATED (or\n   \"not installed (optional)\", above), and,\n   separately, every severe finding only ONE judge raised (unconfirmed, so not\n   fixed), each with its file:line."
 
 // nextQAOverride is _brief_qa_override.
 func (a *app) nextQAOverride(e nextMsgEnv) string {
@@ -250,11 +235,4 @@ func nextSpecialists(dir string) string {
 	})
 	sort.Strings(names)
 	return strings.Join(names, " ")
-}
-
-// ── Spec Kit ────────────────────────────────────────────────────────────────
-
-// nextSpeckitNote is _speckit_phase_note.
-func (a *app) nextSpeckitNote() string {
-	return "A SPEC KIT PHASE IS NOT THE TASK. Finishing /speckit-specify — or plan, tasks,\nor any other speckit-* phase — is not finishing this task: go straight on to the\nnext phase, through implementation, and close with done-invoker only when the\nflow and the brief are both done. A [NEEDS CLARIFICATION] marker is yours to\nresolve from the brief and the code: decide, write the decision and its reason\ninto the spec, and continue. Do not wait for a human for it. Only a decision\nthat is genuinely " + a.nextOperator() + "'s — money, a third party, an irreversible or outward\naction — goes through ask-invoker, and the task stays open while it waits.\n\nBETWEEN /speckit-tasks AND /speckit-implement, A FRESH /speckit-analyze. Run it\nin a new subagent that sees only spec.md, plan.md, tasks.md and the project\nconstitution — not this conversation, not your reasoning. Its report is\nread-only. A CRITICAL finding is corrected once, in the artifact it names, and\nthen you go on to /speckit-implement without re-running it. Anything below\nCRITICAL does not stop the flow."
 }

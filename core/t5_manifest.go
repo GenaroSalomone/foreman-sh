@@ -206,11 +206,19 @@ func (d *dsp) dispatchManifest(dir string) {
 	if d.dispatchRoute == "reuse" && d.c.t.get(d.proj, "product_repo") != "1" {
 		surface = dir
 	}
-	if d.sdd != "" {
+	// A re-task that typed no --sdd keeps the pane's mode, as before none became the default (sdd-legado-070).
+	reqSdd := d.sdd
+	if d.dispatchRoute == "reuse" {
+		reqSdd = d.sddRequested()
+	}
+	if reqSdd != "" {
 		live = d.sdd
 		switch d.sdd {
 		case "none":
 			sddSrc = "chosen (--sdd none) — the directory keeps its own mode, hw forces no entry"
+			if d.sddDefaulted {
+				sddSrc = "default — no framework flow; --sdd speckit opts in where its skills are on disk"
+			}
 		default:
 			sddSrc = "chosen (--sdd " + d.sdd + "), checked on disk below"
 		}
@@ -248,9 +256,9 @@ func (d *dsp) dispatchManifest(dir string) {
 
 	// is the framework in play for this task?
 	inPlay := !(live == "" || strings.HasSuffix(live, "(global)")) // # MUTATION-ANCHOR: 844-M23
-	if d.sdd == "none" {
+	if reqSdd == "none" {
 		inPlay = false
-	} else if d.sdd != "" {
+	} else if reqSdd != "" {
 		inPlay = true
 	}
 	d.dispatchFramework = strings.SplitN(live, " ", 2)[0]
@@ -361,7 +369,7 @@ func (d *dsp) dispatchManifest(dir string) {
 			agentLine += "\n  primary     <none passed — opencode default_agent applies>"
 		}
 	}
-	if d.keepPane {
+	if d.keepPane { // # MUTATION-ANCHOR: go-67-M06
 		kf := d.keepPaneFor
 		if kf == "" {
 			kf = "4h"
@@ -513,7 +521,7 @@ func (d *dsp) dispatchManifest(dir string) {
 		case "opencode":
 			gl = "OPENCODE_CONFIG=" + d.brainGuardOpencodeConfig() + "  " + why
 		case "pi":
-			gl = "HW_PI_BRAIN_GUARD=1 (setup/pi/hw-executor.ts asks " + d.brainGuardDir() + "/deny_brain_writes.py in tool_call)  " + why
+			gl = "HW_PI_BRAIN_GUARD=1 (setup/pi/hw-executor.ts asks " + d.brainGuardDir() + "/deny_brain_writes.py in tool_call)  " + why // # MUTATION-ANCHOR: 844-M51
 		default:
 			gl = "NOT APPLIED — " + d.agent + " loads none, so nothing stops this executor writing in brain"
 		}
@@ -571,6 +579,7 @@ func (d *dsp) dispatchManifest(dir string) {
 	sb.WriteString("  base        " + baseLine + "\n")
 	sb.WriteString("  brief       " + briefShown + "\n")
 	sb.WriteString("  contract    " + contract + "  (which dispatch fields the brief declared, and hw verified)\n")
+	sb.WriteString("  lane_rules  " + d.laneRulesLine() + "\n")
 	sb.WriteString("  requested   " + trimNL(d.requestedLine()) + "\n")
 	sb.WriteString("  authorizes  " + trimNL(d.authorizesLine()))
 	if d.brSecrets != "" {
@@ -625,11 +634,6 @@ func (d *dsp) dispatchManifest(dir string) {
 		d.warn("this task consumes a whole workspace instead of a tab in the project's " + d.c.t.get(d.proj, "space") + " space")
 		d.warn("prefer --tab unless this task specifically requires a separate workspace")
 	}
-	if d.sdd == "" && inPlay {
-		d.warn("framework mode would be INHERITED from the directory, not chosen for this task")
-		d.warn("the brief must name the flow and why — the executor cannot guess it")
-		d.die("say which: --sdd speckit | none (none = outside the flow, for read-only or operational work; hw then forces no entry command)")
-	}
 	if d.sdd == "speckit" && !d.speckitOnDisk(surface) {
 		d.die("--sdd speckit REFUSED BEFORE BUILDING ANYTHING: no speckit-* skill is on disk under " + surface + "/.claude/skills or " + d.c.home + "/.claude/skills. Nothing was built. Install Spec Kit where it is used, or dispatch with --sdd none.")
 	}
@@ -663,12 +667,8 @@ func (d *dsp) dispatchManifest(dir string) {
 			}
 		}
 	}
-	if d.model == "" && d.agent == "claude" && d.reusePane == "" {
-		m := d.sddEffectiveMode
-		if m == "" {
-			m = "?"
-		}
-		d.warn("no --model under --sdd " + m + ": this inherits claude's account default,")
+	if d.model == "" && d.agent == "claude" && d.reusePane == "" && d.sddEffectiveMode == "speckit" {
+		d.warn("no --model under --sdd speckit: this inherits claude's account default,")
 		d.warn("not sonnet — an orchestrator may not be sonnet. --model opus --effort medium names it.")
 	}
 	if !d.keepPane && d.wantReport && !d.here { // # MUTATION-ANCHOR: 844-67-M01

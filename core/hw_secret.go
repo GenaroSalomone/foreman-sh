@@ -1,18 +1,22 @@
 package main
 
 // hw-secret in Go: `hw-core hw-secret <verb> …` is bin/hw-secret, the one path from Bitwarden to an executor, and it
-// never prints a value. The bash is the rollback and stays beside it; setup/tests/1022 runs both on the same inputs and
-// diffs them, setup/tests/1023 kills a mutant of each anchor named `<n>-G<nn>` (the bash's `<n>-M<nn>`).
+// never prints a value. 0.7.0 removed the bash body: this is the only implementation. setup/tests/1009 and 1012 drive
+// the real bin/hw-secret through its shim, and 1077 compares it with the transcripts the bash recorded.
 //
-// SAME WORDS, STREAMS, EXIT STATUS AND FILES as the bash — one place differs on purpose, and one is not reproducible:
+// SAME WORDS, STREAMS, EXIT STATUS AND FILES the bash answered — one place differs on purpose, and one is not
+// reproducible:
 //   - the bash needs jq (`jq is required`); this reads bw's JSON itself, so a machine with no jq works;
 //   - `exec: <cmd>: not found` carries the bash's `<script path>: line N:` prefix there and does not here.
 //
 // The value of an item is held in one Go string, put in the CHILD's environment and exec'd over this process: it is
-// never written to stdout, stderr or disk, and bw's stderr is dropped, as in the bash.
+// never written to stdout, stderr or disk, and bw's stderr is dropped. `put` builds the item JSON here and sends it to
+// bw's stdin base64-encoded; argv carries ids and names, never a value.
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -717,6 +721,221 @@ func (w *hsWorld) cmdRun(args []string) int {
 	return rc
 }
 
+// ── hw secret put, the way in ───────────────────────────────────────────────
+
+const hsPutUsage = "usage: <command that prints the value> | hw secret put <item>[.<field>] [--replace]   (the value comes from a pipe on stdin, never from argv)"
+
+// hsStdinTerminal is `[ -t 0 ]`; a reader that is not a file (an in-process test) is not a terminal.
+func (w *hsWorld) hsStdinTerminal() bool {
+	f, ok := w.in.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// hsStdinPipe is `[ -p /dev/stdin ]`: a FIFO or a socket, never a regular file and never /dev/null's char device.
+func (w *hsWorld) hsStdinPipe() bool {
+	f, ok := w.in.(*os.File)
+	if !ok {
+		return true
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeNamedPipe != 0 || fi.Mode()&os.ModeSocket != 0
+}
+
+// bwStdin is `printf '%s' "$enc" | bw …`, with stderr dropped, as the bash's writes are.
+func (w *hsWorld) bwStdin(bw, input string, env []string, args ...string) int {
+	c := exec.Command(bw, args...)
+	c.Env = env
+	c.Stdin = strings.NewReader(input)
+	if err := c.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		}
+		return -1
+	}
+	return 0
+}
+
+func hsItemJSON(s string) map[string]any {
+	var o map[string]any
+	if json.Unmarshal([]byte(s), &o) != nil {
+		return nil
+	}
+	return o
+}
+
+func hsLoginOf(o map[string]any) (map[string]any, bool) {
+	l, ok := o["login"]
+	if !ok || l == nil {
+		return nil, false
+	}
+	m, ok := l.(map[string]any)
+	return m, ok
+}
+
+func hsHasField(o map[string]any, field string) bool {
+	fs, _ := o["fields"].([]any)
+	for _, f := range fs {
+		if m, ok := f.(map[string]any); ok {
+			if n, _ := m["name"].(string); n == field {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (w *hsWorld) cmdPut(args []string) int {
+	spec, replace := "", false
+	for _, a := range args {
+		switch {
+		case a == "--replace":
+			replace = true
+		case strings.HasPrefix(a, "-"):
+			w.die("unknown option (put takes only --replace; a value is never an argument: pipe it on stdin)")
+		case spec != "":
+			w.die("a second argument: a value never travels in argv, pipe it on stdin (put takes the item and --replace)")
+		default:
+			spec = a
+		}
+	}
+	if spec == "" {
+		w.die(hsPutUsage)
+	}
+	if !hsValidSpec(spec) {
+		w.die("not an item name: " + spec)
+	}
+	// stdin must be a pipe: nobody pastes a secret into a pane, and a file or /dev/null is not a producer
+	if w.hsStdinTerminal() {
+		w.die("stdin is a terminal: the value comes from a pipe (<command> | hw secret put " + spec + "), never typed or pasted into a pane")
+	}
+	if !w.hsStdinPipe() { // # MUTATION-ANCHOR: 1009-G11
+		w.die("stdin is not a pipe: the value comes from <command> | hw secret put " + spec)
+	}
+	b, _ := io.ReadAll(w.in)
+	value := strings.TrimSuffix(string(b), "\n") // # MUTATION-ANCHOR: 1009-G12
+	if value == "" { // # MUTATION-ANCHOR: 1009-G13
+		w.die("stdin was empty: nothing was stored (did the command before the pipe fail?)")
+	}
+	bw := w.needBw()
+	if !w.sessionLoad(bw) {
+		w.die("the vault is LOCKED or its session expired: the brainer unlocks it (secret-unlock); report this blocked")
+	}
+	folder := w.folderID(bw)
+	if folder == "" {
+		w.die("there is no Bitwarden folder " + hsAgentsFolder + ": a person creates it once in the vault")
+	}
+	id, name, field := "", spec, "password"
+	res, rc := w.resolve(bw, spec)
+	switch rc {
+	case 0:
+		id, name, field = res.id, res.name, res.field
+	case 3:
+		w.die("AMBIGUOUS: two items in the folder " + hsAgentsFolder + " carry the name " + spec)
+	default:
+		// no such item: a dotted spec names <item>.<field>, a plain one the password
+		if i := strings.LastIndex(spec, "."); i >= 0 {
+			name, field = spec[:i], spec[i+1:]
+			if name == "" || field == "" {
+				w.die("not an item name: " + spec)
+			}
+		}
+		id, rc = w.itemID(bw, name)
+		if rc == 3 {
+			w.die("AMBIGUOUS: two items in the folder " + hsAgentsFolder + " carry the name " + name)
+		}
+	}
+	switch field {
+	case "username", "notes", "uri", "totp":
+		w.die(field + " is a built-in field, not a secret: put stores the password or a custom hidden field")
+	}
+	verb, have := "stored", false
+	obj := map[string]any(nil)
+	if id != "" {
+		if out, c := w.bw(bw, w.env, "get", "item", id); c == 0 {
+			obj = hsItemJSON(out)
+		}
+		// the edit sends the whole item back: without it, a write would wipe the rest
+		if obj == nil { // # MUTATION-ANCHOR: 1009-G15
+			w.die("bw could not read " + name + ", so nothing was changed (is the vault still unlocked? hw secret status)")
+		}
+		if field == "password" {
+			login, ok := hsLoginOf(obj)
+			if !ok {
+				w.die(name + " is not a login item: put cannot give it a password")
+			}
+			if p, _ := login["password"].(string); p != "" {
+				have = true
+			}
+		} else {
+			have = hsHasField(obj, field)
+		}
+		if have {
+			if !replace { // # MUTATION-ANCHOR: 1009-G14
+				w.die(spec + " already exists: nothing was changed (--replace overwrites it)")
+			}
+			verb = "replaced"
+		}
+	}
+	var out map[string]any
+	if id == "" {
+		out = map[string]any{
+			"organizationId": nil, "collectionIds": nil, "folderId": folder, "type": 1,
+			"name": name, "notes": nil, "favorite": false, "reprompt": 0,
+			"login":  map[string]any{"uris": []any{}, "username": nil, "password": nil, "totp": nil},
+			"fields": []any{},
+		}
+	} else {
+		out = obj
+		if out == nil {
+			out = map[string]any{}
+		}
+	}
+	if field == "password" {
+		login, _ := hsLoginOf(out)
+		if login == nil {
+			login = map[string]any{}
+			out["login"] = login
+		}
+		login["password"] = value
+	} else {
+		var fields []any
+		if fs, ok := out["fields"].([]any); ok {
+			for _, f := range fs {
+				if m, ok := f.(map[string]any); ok {
+					if n, _ := m["name"].(string); n == field {
+						continue
+					}
+				}
+				fields = append(fields, f)
+			}
+		}
+		out["fields"] = append(fields, map[string]any{"name": field, "value": value, "type": 1})
+	}
+	js, err := json.Marshal(out)
+	if err != nil {
+		w.die("bw refused the write, so nothing was changed (is the vault still unlocked? hw secret status)")
+	}
+	enc := base64.StdEncoding.EncodeToString(js)
+	rc = -1
+	if id != "" {
+		rc = w.bwStdin(bw, enc, w.env, "edit", "item", id)
+	} else {
+		rc = w.bwStdin(bw, enc, w.env, "create", "item")
+	}
+	if rc != 0 { // # MUTATION-ANCHOR: 1009-G16
+		w.die("bw refused the write, so nothing was changed (is the vault still unlocked? hw secret status)")
+	}
+	fmt.Fprintf(w.out, "%s %s\n", verb, spec)
+	return 0
+}
+
 // ── the program ─────────────────────────────────────────────────────────────
 
 func runHwSecret(args []string, w *hsWorld) (rc int) {
@@ -735,6 +954,8 @@ func runHwSecret(args []string, w *hsWorld) (rc int) {
 		args = args[1:]
 	}
 	switch verb {
+	case "put":
+		return w.cmdPut(args)
 	case "run":
 		return w.cmdRun(args)
 	case "check":

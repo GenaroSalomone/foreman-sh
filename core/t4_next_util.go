@@ -292,7 +292,7 @@ func (a *app) nextLockPath(rundir string) string {
 			sb.WriteByte('_')
 		}
 	}
-	return a.nextEnvOr("TMPDIR", "/tmp") + "/hw-invoker-" + sb.String() + ".lock"
+	return sharedLockDir(a.getenv) + "/hw-invoker-" + sb.String() + ".lock"
 }
 
 // nextLockTake is _chaining_lock_take: mkdir the lock, a stale one (5 min) broken, 120 s at most.

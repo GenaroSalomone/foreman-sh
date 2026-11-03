@@ -732,31 +732,49 @@ function engramProxyServer(): Record<string, unknown> | null {
 const CLAUDE_TOOLS: Record<string, string> = {
   read: "read", grep: "grep", glob: "find", bash: "bash", edit: "edit", multiedit: "edit", write: "write", ls: "ls",
 };
-// What hw's own specialist list leaves out (`_specialist_agents`): the framework and review agents.
-const NOT_SPECIALIST = /^(?:sdd-|speckit-|review-|jd-)/;
+// The framework agents. hw's own specialist list (`piFrameworkPrefixes` in core/t6_pi.go) leaves out these AND `jd-`; this
+// registration does not leave out `jd-`: jd-judge-a/b and jd-fix-agent are the Judgment Day judges, which a Claude
+// executor finds in the account's agents dir. core/t6_pi_test.go holds the two sets apart by exactly `jd-`.
+const NOT_SPECIALIST = /^(?:sdd-|speckit-|review-)/;
 
-export function mapClaudeTools(list: string[]): { tools: string[]; dropped: string[] } {
+// WebFetch is pi-web-access's `fetch_content` (the package the machine's pi has installed). A foreground child loads no
+// ambient extension, so the definition names the package in `extensions` (measured: a child with WebFetch fetched
+// example.com; the same file through the old adapter answered NO WEB TOOL). WebSearch stays dropped: a child given
+// `web_search` through the same `extensions` answered NO WEB TOOL (cause not found). Still dropped, each measured:
+// Task/Agent (a child of a child: `allowNestedSubagents` and `tools: subagent` both left the child with no subagent tool)
+// and mcp__* (pi-subagents hands a child an extension-registered MCP server, hw_engram, only when it runs in the
+// background, which needs @earendil-works/chord in the host pi: "Background children require the host npm package").
+const CLAUDE_WEB_TOOLS: Record<string, string> = { webfetch: "fetch_content" };
+
+export function mapClaudeTools(list: string[]): { tools: string[]; web: boolean; dropped: string[] } {
   const tools: string[] = [], dropped: string[] = [];
+  let web = false;
   for (const t of list) {
-    const to = CLAUDE_TOOLS[t.toLowerCase()];
+    const key = t.toLowerCase();
+    const to = CLAUDE_TOOLS[key] ?? CLAUDE_WEB_TOOLS[key];
     if (!to) dropped.push(t);
-    else if (!tools.includes(to)) tools.push(to);
+    else if (!tools.includes(to)) { tools.push(to); if (key in CLAUDE_WEB_TOOLS) web = true; }
   }
-  return { tools, dropped };
+  return { tools, web, dropped };
 }
 
 // A Claude agent file → pi-subagents' runtime definition. `parse` is pi-subagents' own frontmatter reader, so the
 // file is read the way a pi agent file is. `model` is left out on purpose: a Claude alias (sonnet, opus) is not a pi
 // model, and a definition without one follows the executor's. No `tools:` line means every tool, as in Claude.
-export function claudeAgentDefinition(content: string, parse: any) {
+export function claudeAgentDefinition(content: string, parse: any, webAccessDir?: string) {
   const { frontmatter: fm, body } = parse.parseFrontmatter(content);
   if (!fm?.name || !fm?.description) return null;
   const declared = parse.parseFrontmatterList(fm.tools);
-  const mapped = declared ? mapClaudeTools(declared) : { tools: undefined, dropped: [] as string[] };
+  const mapped = declared ? mapClaudeTools(declared) : { tools: undefined, web: false, dropped: [] as string[] };
+  const web = mapped.web && !!webAccessDir; // no pi-web-access on this machine: the web tools have nothing to come from
+  const tools = web ? mapped.tools : mapped.tools?.filter((t) => t !== "fetch_content");
   return {
     name: String(fm.name),
-    definition: { description: String(fm.description), systemPrompt: body, defaultAsync: false, ...(mapped.tools ? { tools: mapped.tools } : {}) },
-    dropped: mapped.dropped,
+    definition: {
+      description: String(fm.description), systemPrompt: body, defaultAsync: false,
+      ...(tools ? { tools } : {}), ...(web ? { extensions: [webAccessDir] } : {}),
+    },
+    dropped: web || !mapped.web ? mapped.dropped : [...mapped.dropped, "WebFetch (pi-web-access is not installed)"],
   };
 }
 
@@ -767,10 +785,13 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
   const dirs = (process.env.HW_PI_CLAUDE_AGENT_DIRS || "").split(":").filter(Boolean);
   if (!dirs.length || typeof pi.events?.emit !== "function") return out;
   const parse = await import(pathToFileURL(join(sub, "src", "agents", "frontmatter.js")).href);
+  const webDir = join(dirname(sub), "pi-web-access");
+  const webAccessDir = existsSync(join(webDir, "package.json")) ? webDir : undefined;
   const own = new Set<string>();
   for (const d of (process.env.PI_SUBAGENT_EXTRA_AGENT_DIRS || "").split(":").filter(Boolean)) {
     try { for (const f of readdirSync(d)) if (f.endsWith(".md")) own.add(f.slice(0, -3)); } catch { /* absent */ }
   }
+  const seen = new Set<string>(); // the first directory wins, as the lane's agent shadows the account's in Claude
   for (const d of dirs) {
     let files: string[] = [];
     try { files = readdirSync(d).filter((f) => f.endsWith(".md")).sort(); } catch { continue; }
@@ -778,8 +799,10 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
       const base = f.slice(0, -3);
       if (NOT_SPECIALIST.test(base)) continue;
       try {
-        const def = claudeAgentDefinition(readFileSync(join(d, f), "utf8"), parse);
+        const def = claudeAgentDefinition(readFileSync(join(d, f), "utf8"), parse, webAccessDir);
         if (!def) { out.skipped.push(`${base} (no name/description)`); continue; }
+        if (seen.has(def.name)) continue;
+        seen.add(def.name);
         if (own.has(base)) { out.skipped.push(`${def.name} (a .pi/agents copy provides it)`); continue; }
         const req: any = { version: 1, name: def.name, definition: def.definition };
         pi.events.emit("pi-subagents:runtime-agent-register:v1", req);
@@ -795,6 +818,12 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
 }
 
 const ROOT_SESSION = Symbol.for("hw.pi.root-session");
+
+// The account's global rules file: $CLAUDE_CONFIG_DIR/CLAUDE.md, default ~/.claude/CLAUDE.md. "" when absent or empty.
+export function globalRulesFile(): string {
+  const file = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "CLAUDE.md");
+  try { const st = statSync(file); return st.isFile() && st.size > 0 ? file : ""; } catch { return ""; }
+}
 
 export default function (pi: any) {
   pi.on("tool_call", async (event: any, ctx: any) => {
@@ -890,9 +919,25 @@ export default function (pi: any) {
     } catch { /* evidence, not a dependency of the work */ }
   };
 
+  // THE ACCOUNT'S GLOBAL RULES. pi loads <agent dir>/AGENTS.md|CLAUDE.md and the ones in the working directory's
+  // ancestors, never the account's ~/.claude/CLAUDE.md that a Claude executor starts with. pi's own slot for "user
+  // instructions" is systemPromptOptions.contextFiles, which an extension may add to in before_agent_start: the file is
+  // read, not copied, and nothing is written under ~/.pi. The executor only (a child is not this session).
+  pi.on("before_agent_start", (event: any, ctx: any) => {
+    if (!ensureRoot(ctx)) return;
+    const file = globalRulesFile();
+    const files = event?.systemPromptOptions?.contextFiles;
+    if (!file || !Array.isArray(files) || files.some((f: any) => f?.path === file)) return;
+    try {
+      files.unshift({ path: file, content: readFileSync(file, "utf8") });
+    } catch { /* unreadable: the receipt row says what was found at session start */ }
+  });
+
   pi.on("session_start", async (event: any, ctx: any) => {
     if (!ensureRoot(ctx)) return;
     publishRuntime(ctx);
+    const rules = globalRulesFile();
+    receiptRow("pi_global_rules", rules ? `${rules} (added to the system prompt as a context file by hw-executor.ts)` : "none: no CLAUDE.md in the account's config dir", "hw-executor.ts before_agent_start");
     // The guard travels with the subagents (see the header). Only where pi-subagents is loaded.
     try {
       const sub = process.env.HW_PI_SUBAGENTS_DIR

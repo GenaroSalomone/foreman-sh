@@ -278,9 +278,30 @@ fi
 TMP="$(mktemp -d "$_tmp_root/hw-test.XXXXXX")"
 unset _tmp_root
 trap 'rm -rf "$TMP"' EXIT
+# _gocache_fallback — gocache_default (setup/gocache.sh) for a harness that copies only _common.sh (145): the SAME rule, kept
+# identical by 1004 (it compares the two). Under set -u with TMPDIR unset it must not die (entorno-fix2-070).
+_gocache_fallback() {
+  local root="${TMPDIR:-/tmp}" art safe
+  # hw's per-run TMPDIR is <cache>/hw-run-tmp/<run> (core/run_tmp.go): outside every repo, per run, so a cache there would be cold.
+  case "$(cd -P "$root" 2>/dev/null && pwd)" in
+    */hw-run-tmp|*/hw-run-tmp/*)
+      safe="${HW_TEST_TMPROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-test-$(id -u)}"
+      if mkdir -p "$safe" 2>/dev/null && chmod 700 "$safe" 2>/dev/null && [ -w "$safe" ]; then printf '%s/hw-go-cache.v2' "$safe"; return 0; fi ;;
+  esac
+  art="$(cd -P "${HW_ARTIFACTS:-/nonexistent}" 2>/dev/null && pwd)"
+  if [ -n "$art" ]; then
+    case "$(cd -P "$root" 2>/dev/null && pwd)" in
+      "$art"|"$art"/*)
+        safe="${HW_TEST_TMPROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-test-$(id -u)}"
+        if mkdir -p "$safe" 2>/dev/null && chmod 700 "$safe" 2>/dev/null && [ -w "$safe" ]; then printf '%s/hw-go-cache.v2' "$safe"; return 0; fi ;;
+    esac
+  fi
+  printf '%s/hw-go-cache.v2' "$root"
+}
 # THE GO BUILD CACHE: one shared directory for the real builds, a throwaway clone for the mutants (setup/gocache.sh).
 if [ -f "$ROOT/setup/gocache.sh" ]; then . "$ROOT/setup/gocache.sh"; HW_GOCACHE_DEFAULT="$(gocache_default)"   # a harness that copies only _common.sh (145) has none
-else HW_GOCACHE_DEFAULT="${TMPDIR:-/tmp}/hw-go-cache.v2"; fi
+else HW_GOCACHE_DEFAULT="$(_gocache_fallback)"   # no gocache.sh beside it
+fi
 # HW_CORE IS A SEAM, like HW_LIB_DIR above: a subject that runs hw from a COPY of bin/ has no
 # core/dist beside it, and hw-core is REQUIRED (go-060 S2): hw, brain, channel-send and the invokers die without one. So when the
 # suite runs, it hands the shim the hw-core it has (the built one, or one built here)
@@ -421,6 +442,9 @@ export HW_AGENT_TOOLS=off
 # removed, because each is a second road to the same live state: an exported
 # CLAUDE_CONFIG_DIR or CODEX_HOME points at the real ~/.claude-personal or
 # ~/.codex regardless of what HOME says.
+# The suite's safe root is named BEFORE HOME is faked: contract_world_root (contract-hw/world.sh) reads
+# ${HW_TEST_TMPROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-test-<uid>}, and with the fake HOME the worlds landed under the fake HOME's cache dir.
+export HW_TEST_TMPROOT="${HW_TEST_TMPROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-test-$(id -u)}"
 export HOME="$TMP/home"
 mkdir -p "$HOME"
 export XDG_CONFIG_HOME="$HOME/.config"
@@ -536,17 +560,9 @@ pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
 # link_tool <program path> <dir> [<name>] — one program on a PATH of single links.
-# Windows looks a program's DLLs up beside the LINK, so a lone link to bash.exe
-# dies on `error while loading shared libraries`; under msys/cygwin the DLLs of
-# the program's own directory are linked in beside it.
 link_tool() {
-  local p="$1" d="$2" n="${3:-${1##*/}}" dll
+  local p="$1" d="$2" n="${3:-${1##*/}}"
   ln -sf "$p" "$d/$n" || return 1
-  case "${OSTYPE:-}" in msys*|cygwin*)
-    for dll in "${p%/*}"/*.dll; do
-      if [ -e "$dll" ] && [ ! -e "$d/${dll##*/}" ]; then ln -s "$dll" "$d/${dll##*/}" 2>/dev/null || true; fi
-    done ;;
-  esac
 }
 
 # saw_mutant <arm> <output> <needle> [<needle>...]
@@ -690,46 +706,17 @@ STUB
 chmod +x "$TMP/bin/claude-personal"
 export PATH="$TMP/bin:$PATH"
 
-# A subject's fake herdr listens through _herdr_endpoint.py (a unix socket, or
-# the named pipe herdr serves on Windows); its scripts import it from here.
+# A subject's fake herdr listens through _herdr_endpoint.py (a unix socket);
+# its scripts import it from here.
 export HW_TEST_PYLIB="$ROOT/setup/tests"
-# The account's own home — what the guards read as `~` (the password database;
-# on native Windows the profile directory) — for a subject that expands a
-# policy path the way the guard does. Never $HOME, which is the fixture's.
-case "${OSTYPE:-}" in
-  msys*|cygwin*) HW_TEST_ACCOUNT_HOME="$(cygpath -u "$USERPROFILE")" ;;
-  *) HW_TEST_ACCOUNT_HOME="$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" ;;
-esac
+# The account's own home — what the guards read as `~` (the password database)
+# — for a subject that expands a policy path the way the guard does. Never
+# $HOME, which is the fixture's.
+HW_TEST_ACCOUNT_HOME="$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')"
 export HW_TEST_ACCOUNT_HOME
 
-# NATIVE WINDOWS (Git Bash), what the subjects' OWN python, jq, git and hashing
-# need — bin/'s entry points source the same msys-compat.sh for themselves. A
-# fixture repository is made under a HOME of its own, so it reads only the
-# system git config, whose core.autocrlf must be false (INSTALL.md; the CI
-# sets it). It is not pinned here: a GIT_CONFIG_* variable is what 115
-# forbids. Git for Windows has sha256sum but no shasum, which the subjects call bare (default SHA-1) and as `-a 256`.
-# Elsewhere OSTYPE never matches and nothing changes.
-# HW_TEST_SLOW scales the wall-clock bounds tuned on macOS and Linux: under Git
-# Bash every process start costs ~10x (measured: a witness round ~5s where the
-# bound allowed 3s). It lengthens budgets; it never removes an assertion.
+# HW_TEST_SLOW scales the wall-clock bounds tuned on macOS and Linux.
 export HW_TEST_SLOW=1
-case "${OSTYPE:-}" in msys*|cygwin*)
-  export HW_TEST_SLOW=10
-  # A fixture tree that carries only _common.sh has no bin/: the environment half.
-  if [ -f "$ROOT/bin/msys-compat.sh" ]; then . "$ROOT/bin/msys-compat.sh"
-  else export PYTHONUTF8=1 MSYS="winsymlinks:nativestrict${MSYS:+ $MSYS}"; fi
-  ;;
-esac
-# WIN_ENV: what `env -i` must still pass on Git Bash. It is not hygiene there:
-# without TEMP a msys runtime started past a native process (a detached reset)
-# mounts /tmp somewhere else, and without MSYSTEM bin/'s layer stays off.
-# Pass it as "${WIN_ENV[@]+"${WIN_ENV[@]}"}"; elsewhere it is empty.
-WIN_ENV=()
-case "${OSTYPE:-}" in msys*|cygwin*)
-  for _v in TEMP SYSTEMROOT WINDIR USERPROFILE MSYSTEM; do [ -z "${!_v:-}" ] || WIN_ENV+=("$_v=${!_v}"); done
-  [ -z "${TEMP:-}" ] || WIN_ENV+=("TMP=$TEMP")
-  unset _v ;;
-esac
 if ! command -v shasum >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1; then
   cat > "$TMP/bin/shasum" <<'STUB'
 #!/usr/bin/env bash
@@ -876,37 +863,10 @@ if ends:
     j = ends[0]
 indent = re.match(r"\s*", lines[i]).group(0)
 lines[i:j + 1] = [indent + r if r else r for r in repl.split("\n")]
-# A MUTANT OF THE BASH SOURCE RUNS ON BASH. brain, channel-send, ask-invoker, done-invoker and hw have no bash source any more
-# (go-060 S4, S5): a mutant of one is a mutant of a Go source, and a copy of their shim is never pinned. The eight small tools
-# (stop hook, hw-secret, ...) run Go by default (go-060 S6) and are brought back by their OWN word, HW_IMPL_<TOOL>=bash: a copy
-# of one of those is pinned to that, so the mutant under test is the bash that runs. Only the mutated copy is pinned; the
-# subject's own checks keep running as the suite runs.
-def pin_impl(base):
-    up = {"hw-stop-hook.sh": "STOP_HOOK"}.get(base) or base.replace(".sh", "").replace("-", "_").upper()
-    return "export HW_IMPL_%s=bash  # mutate_anchor: this copy is a mutant of the bash source" % up
-SMALL_TOOLS = {"hw-stop-hook.sh", "hw-secret", "hw-sandbox", "browser-close", "brain-archive", "secret-unlock", "opencode-auto", "codex-channel-session-hook.sh", "wrapper-go.sh"}
-def pin_shell(target):
-    base = os.path.basename(target)
-    if base not in SMALL_TOOLS:
-        return
-    if base == "wrapper-go.sh":
-        return  # the shim is sourced, not run: it has no shebang to pin under
-    pin = pin_impl(base)
-    if os.path.islink(target) or not os.path.isfile(target):
-        return
-    t = pathlib.Path(target)
-    tl = t.read_text().split("\n")
-    if pin in tl:
-        return
-    if tl and tl[0].startswith("#!"):
-        if not re.search(r"\b(ba)?sh\b", tl[0]):
-            return
-        tl.insert(1, pin)
-    else:
-        return
-    t.write_text("\n".join(tl))
+# A MUTANT OF A SOURCE WITH NO BASH LEFT IS A MUTANT OF THE SOURCE ITSELF. 0.7.0 removed the bash of the eight small tools as
+# 0.6.0 removed hw's and its invokers': a copy of a shim is never pinned to a bash that does not exist, and every remaining
+# anchor is on a Go line, mutated by its own in-process harness.
 p.write_text("\n".join(lines))
-pin_shell(path)
 PYANCHOR
 }
 

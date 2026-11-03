@@ -39,8 +39,7 @@ newest="$(find "$SRC" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' 
 failed="$PROG:rebuild-failed:$(mtime "$STALE"):$newest"
 ! grep -qxF -- "$failed" "$stamp" 2>/dev/null || exit 2
 
-os="$(uname -s | tr 'A-Z' 'a-z')"; arch="$(uname -m)"; ext=""
-case "$os" in mingw*|msys*|cygwin*) os=windows; ext=.exe ;; esac
+os="$(uname -s | tr 'A-Z' 'a-z')"; arch="$(uname -m)"
 case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
 
 lock="${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/hw/core-rebuild.lock"
@@ -65,7 +64,7 @@ is_stale || exit 0   # the lock was another caller's, and its build covered this
 remember() { { mkdir -p "${stamp%/*}" && printf '%s\n' "$failed" >>"$stamp"; } 2>/dev/null || true; }
 if ! "$BC" --native --out "$tmp/out" >"$tmp/log" 2>&1; then remember; fail 2 "setup/build-core --native failed ($(tail -n 1 "$tmp/log"))"; fi
 built="$tmp/out/$os-$arch"
-[ -f "$built/hw-core$ext" ] || { remember; fail 2 "the builder made no $os-$arch/hw-core$ext"; }
+[ -f "$built/hw-core" ] || { remember; fail 2 "the builder made no $os-$arch/hw-core"; }
 
 place() {  # <built file> <where the stale one lives>
   [ -f "$1" ] || return 0
@@ -73,8 +72,8 @@ place() {  # <built file> <where the stale one lives>
 }
 dist="$ROOT/core/dist/$os-$arch"
 mkdir -p "$dist" 2>/dev/null
-place "$built/hw-core$ext" "$dist/hw-core$ext"
-place "$built/invokers$ext" "$dist/invokers$ext"
-[ ! -f "$BIN/hw-core$ext" ] || place "$built/hw-core$ext" "$BIN/hw-core$ext"
+place "$built/hw-core" "$dist/hw-core"
+place "$built/invokers" "$dist/invokers"
+[ ! -f "$BIN/hw-core" ] || place "$built/hw-core" "$BIN/hw-core"
 ! is_stale || fail 2 "$STALE is still older after the rebuild (it lives outside core/dist and bin/)"
 exit 0

@@ -9,7 +9,7 @@ ported. Since 0.6.0 Go is the only implementation of `bin/hw`, `bin/brain`, `bin
 `shadow` in them is said once per state (`bin/impl-retired.sh`) and Go runs; `hw shadow` is gone (exit 64). `bin/hw` has no bash body left (go-060 S4):
 it is a shim that execs hw-core, and hw-core's two former re-entries into it, `hw ruling` of a task that reported `--blocked` and a lane
 build hook outside `lanes/`, were ported (`resumeBlocked`, and a refusal). The internal seam `HW_BASH_BODY=1` is gone (go-060 S5 deleted the last bash bodies, those of `bin/brain`,
-`bin/channel-send`, `bin/ask-invoker` and `bin/done-invoker`): setting it does nothing. The eight small tools keep their own `HW_IMPL_<TOOL>` switch until 0.7.0.
+`bin/channel-send`, `bin/ask-invoker` and `bin/done-invoker`): setting it does nothing. Since 0.7.0 the eight small tools are shims too: a `HW_IMPL_<TOOL>=bash` is said once and Go runs.
 
 `hw-core status-full` prints all of `hw status` (the table, `worktrees --quiet`, and the quiet checks after them: outbox, release,
 gate, tabs, hygiene, rules, decisions); `bin/hw` execs it with the argv as typed.
@@ -73,7 +73,7 @@ route forecast and the invoker (`t5_reuse*.go`, `t5_sdd*.go`). Tests: 843 (contr
 (`contract-hw/regen-t5.sh`, bash only).
 
 hw-core is required (go-060 S2): `bin/hw` with none built dies naming `setup/build-core --native`. `setup/build-core` builds it
-(five targets, reproducible, with sha256 sums) into `core/dist/<os>-<arch>/`, where the shim finds it.
+(four targets, reproducible, with sha256 sums; Windows was removed in 0.7.0) into `core/dist/<os>-<arch>/`, where the shim finds it.
 
 ## Why `core/` and not the brain root
 
@@ -148,9 +148,8 @@ text, imitated for the two common shapes) and the order of the session ids in th
 
 `hw-core hw-secret <verb>` is `bin/hw-secret` in Go (`hw_secret*.go`): `run`, `check`, `status`, `ensure` and `unlock`
 (`secret-unlock`, with `--hours`, `--lock`, `--auto` and `--setup`), with the same words, streams, exit statuses and files
-(the session file 0600 in a 0700 directory, the status file). `bin/hw-secret` keeps its bash as the rollback and execs
-hw-core when `HW_IMPL_HW_SECRET` (else `HW_IMPL`) is `go` or the switch file has a `hw-secret=go` line; the file's default
-line does not reach it, and `shadow` and unset run the bash. The value is read into one string, put in the child's
+(the session file 0600 in a 0700 directory, the status file), and `put`. 0.7.0 removed the bash body: `bin/hw-secret` is a
+shim that execs hw-core, and a `HW_IMPL_HW_SECRET` or `hw-secret=bash` word is said once and never chooses anything. The value is read into one string, put in the child's
 environment and exec'd over this process; `BW_*` never reaches the child. The five `jq` programs of the bash are read in
 Go (`hw_secret_json.go`), so a machine with no `jq` works. `setup/tests/1077` runs 84 scenarios of both on stubs
 (`bw`, `security`) and diffs them against the bash's recorded transcripts; `setup/tests/1078` kills a mutant of each of the

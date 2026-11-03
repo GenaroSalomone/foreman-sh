@@ -39,6 +39,9 @@ OTHER COMMANDS
         human has looked at it" — the gap that otherwise costs a whole idle
         executor per preview.
 
+    hw retro-done <task>                clear a setup run's retro reminder in `hw status`
+                                        (it also clears itself once engram holds
+                                        topic_key setup/retro/<task>)
     hw preview                          what is being held, by whom, until when
     hw preview release <project> <task> end a lease early
                                     close the tab, free the DB and ports.

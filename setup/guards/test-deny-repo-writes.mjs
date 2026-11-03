@@ -725,6 +725,68 @@ try {
     }
   }
 
+  // ── AN UNSUPPORTED PLATFORM REFUSES; IT DOES NOT DECIDE ───────────────────
+  //
+  // windows-ultimos-070 removed the refusal that used to sit at this module's
+  // import, and a Cygwin/MSYS Python — `os.name` posix, `sys.platform`
+  // cygwin/msys — read a `C:\…` write payload as a relative path under its cwd
+  // and ALLOWED it. MEASURED old/new on 2026-11-01: with the refusal removed
+  // this block's python arm reads `allow`; with it restored, `deny`. The
+  // forcing variable is no exception: it only folds spellings on a supported host.
+  {
+    const setupHook = `${root}/setup/.claude/hooks/deny-repo-writes.py`;
+    const setupPlugin = `${root}/setup/.opencode/plugin/deny-repo-writes.js`;
+    const cygwinCommand = "echo x > 'C:\\work\\product\\HOLE.txt'";
+    const payload = payloadOf(cygwinCommand, outside);
+    const pyWrapper = `${base}/as-cygwin.py`;
+    writeFileSync(pyWrapper, [
+      "import os, runpy, sys",
+      "hook = os.environ[\"CYGWIN_HOOK\"]",
+      "sys.argv = [hook]",
+      "sys.platform = \"cygwin\"",
+      "runpy.run_path(hook, run_name=\"__main__\")",
+      "",
+    ].join("\n"));
+    const cygwinPy = (extraEnv = {}) => claudeResult(realEntry({
+      hook: pyWrapper, stdin: payload, cwd: base,
+      env: { ...process.env, CYGWIN_HOOK: setupHook, ...extraEnv },
+    }));
+    const pyRefused = cygwinPy();
+    if (!pyRefused.crashed && !pyRefused.allowed && /macOS and Linux only/.test(pyRefused.reason)) {
+      ok("unsupported platform (python, sys.platform=cygwin): a C:\\ write is DENIED at import, naming macOS and Linux");
+    } else {
+      notOk("unsupported platform (python, sys.platform=cygwin)", `wanted a deny naming macOS/Linux, got ${verdictOf(pyRefused)}`);
+    }
+    const forced = cygwinPy({ DENY_REPO_WRITES_AS_NATIVE_WINDOWS: "1" });
+    if (!forced.crashed && !forced.allowed && /macOS and Linux only/.test(forced.reason)) {
+      ok("unsupported platform (python, sys.platform=cygwin) WITH DENY_REPO_WRITES_AS_NATIVE_WINDOWS=1: the import still refuses");
+    } else {
+      notOk("cygwin with the forcing variable set", `the variable must not lift the refusal, got ${verdictOf(forced)}`);
+    }
+
+    const jsWrapper = `${base}/as-cygwin.mjs`;
+    writeFileSync(jsWrapper, [
+      'import { pathToFileURL } from "node:url";',
+      'Object.defineProperty(process, "platform", { value: "cygwin" });',
+      'const mod = await import(pathToFileURL(process.argv[2]).href);',
+      'const hooks = await mod.DenyRepoWrites({ directory: process.argv[3] });',
+      'try {',
+      '  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: process.argv[4], workdir: process.argv[3] } });',
+      '  process.stdout.write("allow");',
+      '} catch (error) { process.stdout.write("deny:" + String(error.message ?? error)); }',
+      '',
+    ].join("\n"));
+    const jsRun = spawnSync("node", [jsWrapper, setupPlugin, base, cygwinCommand],
+      { encoding: "utf8", env: { ...process.env, DENY_REPO_WRITES_AS_NATIVE_WINDOWS: "1" } });
+    const jsAnswer = (jsRun.stdout ?? "").trim();
+    if (jsAnswer.startsWith("deny:") && /macOS and Linux only/.test(jsAnswer)) {
+      ok("unsupported platform (javascript, process.platform=cygwin): the same C:\\ write is DENIED, naming macOS and Linux");
+    } else {
+      notOk("unsupported platform (javascript, process.platform=cygwin)",
+        `wanted a deny naming macOS/Linux, got ${jsAnswer || `exit ${jsRun.status}: ${jsRun.stderr}`}`);
+    }
+  }
+
   for (const [runtime, t] of Object.entries(driverTally)) {
     console.log(`# driver ${runtime}: ${t.pass + t.fail} assertions, ${t.pass} passed, ${t.fail} failed`);
     if (t.pass + t.fail === 0) notOk(`driver ${runtime} ran no assertions`);

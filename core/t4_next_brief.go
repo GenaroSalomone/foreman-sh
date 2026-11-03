@@ -89,19 +89,19 @@ func nextAuthTrim(v string) string { return strings.Trim(v, " \t\n\v\f\r") }
 
 var nextReHandle = regexp.MustCompile(`^[A-Za-z0-9._-]*$`)
 
-// nextAuthorization is _next_authorization: the block a brief's `authorizes:` puts in the prompt, after the
-// same validation the launch runs; false when it refused (the refusal is on stderr already).
-func (a *app) nextAuthorization(brief string) (string, bool) {
+// nextAuthorization is _next_authorization: what a brief's `authorizes:` puts in the prompt (who asked, and the
+// "<destination> :: <operation> :: <handle>" records), after the same validation the launch runs; false when it
+// refused (the refusal is on stderr already). The block's text is the renderer's.
+func (a *app) nextAuthorization(brief string) (requested string, entries []string, ok bool) {
 	if brief == "" || !isFile(brief) {
-		return "", true
+		return "", nil, true
 	}
 	decls := nextBriefDeclares(brief)
-	requested := nextDecl(decls, "requested_by")
-	var entries []string
+	requested = nextDecl(decls, "requested_by")
 	n := 0
-	refuse := func(msg string) (string, bool) {
+	refuse := func(msg string) (string, []string, bool) {
 		a.nextDieSub(msg)
-		return "", false
+		return "", nil, false
 	}
 	for _, l := range decls {
 		key, val, _ := strings.Cut(l, "\t")
@@ -131,7 +131,7 @@ func (a *app) nextAuthorization(brief string) (string, bool) {
 		entries = append(entries, dest+" :: "+op+" :: "+handle)
 	}
 	if n == 0 {
-		return "", true
+		return "", nil, true
 	}
 	if requested == "" { // # MUTATION-ANCHOR: 862-G16
 		return refuse("the brief carries authorizes: but cites no request (requested_by:). An authorization nobody asked for is not delivered. NOTHING was built. Add `requested_by: <who, when, and the request in their words>` (or pass --requested-by).")
@@ -166,18 +166,26 @@ func (a *app) nextAuthorization(brief string) (string, bool) {
 	} else if check == "1" {
 		a.warn("the authorization's handles were NOT checked: no keychain backend here")
 	}
-	var b strings.Builder
-	b.WriteString("AUTHORIZATION — delivered by hw from the brief frontmatter (authorizes:), quoted:\n\n")
-	b.WriteString("> requested_by: " + requested + "\n")
-	for _, e := range entries {
-		f := strings.Split(e, " :: ")
-		for len(f) < 3 {
-			f = append(f, "")
+	return requested, entries, true
+}
+
+// nextSecrets is _check_secrets' reading of the brief: the Bitwarden items `secrets:` names, "a, b" — what the launch
+// renders in its grants block, so a re-task brief carrying them gets the same one. The vault is not asked here, and an
+// item the launch would refuse is warned about and left out.
+func (a *app) nextSecrets(brief string) string {
+	var items []string
+	for _, l := range nextBriefDeclares(brief) {
+		key, val, _ := strings.Cut(l, "\t")
+		if key != "secrets" {
+			continue
 		}
-		b.WriteString("> authorized: destination: " + f[0] + " | operation: " + f[1] + " | credential handle: " + f[2] + "\n")
+		got, bad := parseSecretsValue(val)
+		for _, b := range bad {
+			a.warn("the re-task brief's secrets: names \"" + b + "\", which is not a Bitwarden item name; it is left out of the grants block")
+		}
+		items = append(items, got...)
 	}
-	b.WriteString("\nOnly these destinations and operations are authorized, and nothing beyond them:\nanother destination, another operation, or a credential or session not named\nhere stays unauthorized. Within them, act without asking; for anything else\nask-invoker, or report blocked. A handle is a resolver, never a value.")
-	return bashSub(b.String()), true
+	return strings.Join(items, ", ")
 }
 
 // nextDieSub is a `die` inside `$( … )`: its line on stderr, and only the subshell ends.
@@ -273,6 +281,12 @@ func nextReviewMode(brief string) string {
 		return ""
 	}
 	return m
+}
+
+// nextJudgmentDayRequired is the launch's `reviewDeclared() && reviewMode() == "judgment-day"` for a re-task: a
+// brief that DECLARES judgment-day, rdd or a list naming it is held to the REQUIRED close, never the optional one.
+func nextJudgmentDayRequired(brief string) bool {
+	return nextFmValue("review", brief) != "" && nextReviewMode(brief) == "judgment-day"
 }
 
 // nextPluginsDeclared is _plugins_declared over the NEW brief (hw next reads it fresh, never a memo of another).

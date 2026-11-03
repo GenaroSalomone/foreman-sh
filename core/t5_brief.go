@@ -712,9 +712,10 @@ func (d *dsp) ensureSddEffectiveForContract() {
 			surface = filepath.Dir(filepath.Dir(d.reuseRundir))
 		}
 		inherited = d.runDispatchFramework(d.reuseRundir)
-	} else {
-		surface = d.codexValidationSurface()
+		d.brResolveEffectiveSdd(d.sddRequested(), surface, inherited)
+		return
 	}
+	surface = d.codexValidationSurface()
 	d.brResolveEffectiveSdd(d.sdd, surface, inherited)
 }
 
@@ -819,10 +820,173 @@ func (d *dsp) checkBriefHeavyRule() {
 	d.die("the brief carries the pgrep machine rule (line " + strconv.Itoa(n) + ": pgrep -f naming setup/test-hw, run-suite.sh or release/cut). That count matches the waiters' own `zsh -c until …` loops, so executors waiting on it wait on each other forever (measured 2026-10-18: four executors, about 2h17). Heavy commands run as `setup/heavy -- <cmd>`: two slots, FIFO, the holders shown, a dead holder reclaimed. NOTHING was built. Replace the rule with that line.")
 }
 
+// brGoTestLineRe finds a `go test` command in a Verification line, as briefVerifyCmds prints it.
+// brGoTestRunRe takes its -run value; brInprocRunRe is the names of the in-process tests; brCorePathRe is a path that
+// reaches core/ (its own module), the only package whose bare `go test` starts the in-process suite.
+var brGoTestLineRe = regexp.MustCompile(`(^|\s)go\s+test(\s|$)`)
+var brGoTestRunRe = regexp.MustCompile(`(?:^|\s)-run(?:=|\s+)['"]?([^\s'"]+)`)
+var brInprocRunRe = regexp.MustCompile(`Test(C[0-9]|InProc|BrainMutants)`)
+var brCorePathRe = regexp.MustCompile(`(^|[^A-Za-z0-9_])core([/?.*\s'"]|$)`)
+
+// goTestInprocLine is the first Verification command that runs `go test` selecting an in-process test outside
+// setup/go-test-core.sh, or "". A `-run` naming TestC<n>, TestInProc* or TestBrainMutants selects one by name; a `go test`
+// with no -run selects everything, so it counts only when it reaches core/ (a product repo's `go test ./...` does not).
+func (d *dsp) goTestInprocLine() string {
+	if d.brief == "" || !brReadable(d.brief) {
+		return ""
+	}
+	for _, line := range strings.Split(d.briefVerifyCmds(d.brief), "\n") {
+		if line == "" || !brGoTestLineRe.MatchString(line) {
+			continue
+		}
+		if m := brGoTestRunRe.FindStringSubmatch(line); m != nil {
+			if brInprocRunRe.MatchString(m[1]) {
+				return line
+			}
+			continue
+		}
+		if brCorePathRe.MatchString(line) {
+			return line
+		}
+	}
+	return ""
+}
+
+// checkBriefGoTestRule refuses a Verification that would start the in-process suite outside its partitions. MEASURED
+// 2026-11-01: unsharded TestC848 is 8 partitions of ~240 s (~32 min) and an executor read that as a hang; TestC848,
+// TestC840 and TestC870 do not skip without HW_INPROC_ALL. The words are held by
+// setup/tests/fixtures/go-test-inproc-refusal.golden and core/t5_brief_test.go.
+func (d *dsp) checkBriefGoTestRule() {
+	line := d.goTestInprocLine()
+	if line == "" {
+		return
+	}
+	d.die("the brief's Verification runs `go test` selecting an in-process test outside setup/go-test-core.sh (" + line + "). Unsharded, TestC848 alone is 8 partitions of ~240 s (~32 min, measured 2026-11-01) and looks like a hang. NOTHING was built. Put `setup/go-test-core.sh <partition>` in its place (`--list` names them; `--affected <file>` prints the partitions a change reaches).")
+}
+
+// brAffectedRe takes the argument of `--affected`, `=`-joined or spaced, quoted or not.
+var brAffectedRe = regexp.MustCompile(`--affected(?:=|\s+)(['"]?)([^\s'"]+)`)
+
+// brAffectedSourceRe is an argument that is a source file rather than a file of changed paths. go-test-core.sh
+// refuses the same shapes; this is the dispatch half, because a brief that hands --affected a source file gets
+// an empty answer with rc 0 and reads it as "my change reaches no partition" (measured 2026-11-01).
+var brAffectedSourceRe = regexp.MustCompile(`\.(go|sh)$`)
+
+// goTestAffectedSourceLine is the first Verification line that gives `--affected` a source file, or "".
+func (d *dsp) goTestAffectedSourceLine() string {
+	if d.brief == "" || !brReadable(d.brief) {
+		return ""
+	}
+	for _, line := range strings.Split(d.briefVerifyCmds(d.brief), "\n") {
+		if !strings.Contains(line, "--affected") {
+			continue
+		}
+		m := brAffectedRe.FindStringSubmatch(line)
+		if m != nil && brAffectedSourceRe.MatchString(m[2]) {
+			return line
+		}
+	}
+	return ""
+}
+
+// checkBriefAffectedSourceRule refuses a Verification that hands setup/go-test-core.sh --affected a source
+// file. The words are held by setup/tests/fixtures/go-test-affected-source.golden and core/t5_brief_test.go.
+func (d *dsp) checkBriefAffectedSourceRule() {
+	line := d.goTestAffectedSourceLine()
+	if line == "" {
+		return
+	}
+	d.die("the brief's Verification hands `--affected` a source file (" + line + "). It takes a FILE OF CHANGED PATHS, one per line — given a source file it reads its lines as paths, matches nothing, prints nothing and exits 0, which reads as \"my change reaches no partition\" (measured 2026-11-01). NOTHING was built. Write the paths first (`git diff --name-only main > /tmp/changed`) and pass that file.")
+}
+
+// checkBriefBrainLanePath WARNS — it never refuses — when a SETUP-lane brief names `brain/setup/CLAUDE.md`, the
+// brain root's spelling of the setup lane file. Inside a setup worktree that path does not exist; there the file is
+// `setup/CLAUDE.md`, repo-relative. 126 briefs carried the unopenable one (measured 2026-11-01);
+// the old ones stay as history, a new one is told once, before dispatch. Other lanes are not warned: the path is
+// not theirs to correct. An absolute path is a real path (the brain root itself), so it is not the unopenable
+// relative spelling and does not warn either.
+func (d *dsp) checkBriefBrainLanePath() {
+	if d.proj != "setup" || d.brief == "" || !brReadable(d.brief) {
+		return
+	}
+	b, err := os.ReadFile(d.brief)
+	if err != nil || !brRelativeBrainLanePathRe.Match(b) {
+		return
+	}
+	d.warn("the brief names brain/setup/CLAUDE.md, which does not exist inside a setup worktree: there the lane file is setup/CLAUDE.md, repo-relative. Point the executor at setup/CLAUDE.md.")
+}
+
+// brRelativeBrainLanePathRe matches the unopenable RELATIVE spelling; an occurrence preceded by `/` is part of an
+// absolute path and exists.
+var brRelativeBrainLanePathRe = regexp.MustCompile(`(?:^|[^/A-Za-z0-9_.~-])brain/setup/CLAUDE\.md`)
+
+// brPlaceholderRe matches template scaffolding (`<piece>`, `<why>`, copied from the help text). It is what
+// brReviewSkipHasReason strips before deciding whether a `review-skip:` line says anything about THIS brief.
+var brPlaceholderRe = regexp.MustCompile(`<[^>]*>`)
+
+// brReviewSkipHasReason reports whether the brief carries a `review-skip: <skill> — <why>` line with a reason
+// after the skill it names. A bare name (`review-skip: judgment-day`) says which review is skipped, not why, and
+// template text (`review-skip: <piece> — <why>`) says nothing about THIS brief: neither is the exception.
+func brReviewSkipHasReason(b []byte) bool {
+	for _, line := range strings.Split(string(b), "\n") {
+		t := strings.TrimLeft(strings.TrimSpace(line), "-*+ \t")
+		if !strings.HasPrefix(t, "review-skip:") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(t, "review-skip:"))
+		if v == "" {
+			continue
+		}
+		// The NAME is the first token and does not count as a reason: free text must follow it.
+		f := strings.Fields(v)
+		if len(f) < 2 {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(v, f[0]))
+		rest = strings.TrimSpace(brPlaceholderRe.ReplaceAllString(rest, " "))
+		rest = strings.TrimLeft(rest, " \t—–-:;,.()[]")
+		if rest != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// checkBriefReviewNoneRule refuses `kind: build` + `review: none` unless the brief carries a `review-skip:`
+// line with a reason. A build that closes with no review at all is the exception now, and it has to say why
+// (ruling of 2026-11-01, retro of the 0.7.0 batch): the default is `review: judgment-day`, and silence is not
+// a reason. Only the DECLARED pair counts: an absent `review:` already means judgment-day.
+func (d *dsp) checkBriefReviewNoneRule() {
+	decls := d.loadBriefDecls()
+	if decls == "" || d.brief == "" || !brReadable(d.brief) {
+		return
+	}
+	kind := ""
+	for _, line := range strings.Split(decls, "\n") {
+		if k, v := brReadKV(line); k == "kind" {
+			kind = v
+		}
+	}
+	if kind != "build" {
+		return
+	}
+	if mode, ok := d.briefReviewMode(); !ok || mode != "none" {
+		return
+	}
+	b, err := os.ReadFile(d.brief)
+	if err == nil && brReviewSkipHasReason(b) {
+		return
+	}
+	d.die("the brief is kind: build with review: none and carries no `review-skip:` line with a reason. A build closes with a review — judgment-day unless the brief names plugins — and skipping it is an exception that says why (measured 2026-11-01: review: none as a silent default). NOTHING was built. Put `review: [judgment-day]`, or a line `review-skip: <skill> — <why it does not run>`.")
+}
+
 // checkBriefContract is _check_brief_contract.
 func (d *dsp) checkBriefContract() {
 	bad, requiredAgentBad := false, false
 	d.checkBriefHeavyRule()
+	d.checkBriefGoTestRule()
+	d.checkBriefAffectedSourceRule()
+	d.checkBriefBrainLanePath()
 	decls := d.loadBriefDecls()
 	inferred := brTaskKindFromName(d.task)
 	if decls == "" {
@@ -950,6 +1114,7 @@ func (d *dsp) checkBriefContract() {
 		}
 		d.die("the brief and the flags disagree (see above). NOTHING was built — no worktree, no database, no pane. Either fix the flags, or change the brief if the brief is what is wrong. This check exists because on 2026-08-24 a brief asking for OpenCode in a project tab was dispatched as Claude in a legacy space, and nothing compared the two.")
 	}
+	d.checkBriefReviewNoneRule()
 	d.warnBriefBodyAgents() // # MUTATION-ANCHOR: 844-A159
 	if d.briefDeclared == "" {
 		d.briefDeclared = "none"
@@ -1094,8 +1259,8 @@ func (d *dsp) checkAuthorizes() {
 		entries = append(entries, dest+" :: "+op+" :: "+handle)
 		d.brAuthorizes = strings.Join(entries, "\n")
 	}
-	if n == 0 {
-		d.warnAuthorizesMissing()
+	if n == 0 { // # MUTATION-ANCHOR: 844-A172
+		d.warnAuthorizesMissing() // # MUTATION-ANCHOR: 844-A170 // # MUTATION-ANCHOR: 844-A171
 		return
 	}
 	if d.requestedBy == "" { // # MUTATION-ANCHOR: 844-A75
@@ -1161,7 +1326,7 @@ func (d *dsp) remoteMarker() string {
 		}
 	}
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
-	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" { // # MUTATION-ANCHOR: 844-A175
 		for i := 1; i < len(lines); i++ {
 			if strings.TrimSpace(lines[i]) == "---" {
 				lines = lines[i+1:]
@@ -1186,12 +1351,30 @@ func (d *dsp) remoteMarker() string {
 					break
 				}
 			}
-			if ok && (i+len(wr) == len(text) || !brIsWord(text[i+len(wr)])) {
+			if ok && (i+len(wr) == len(text) || !brIsWord(text[i+len(wr)])) { // # MUTATION-ANCHOR: 844-A174
 				return string(text[i : i+len(wr)])
 			}
 		}
 	}
 	return ""
+}
+
+// parseSecretsValue reads the value of a brief's `secrets:` key, "[a, \"b\"]": the item names, and apart the ones that start
+// with "-" (an option, not a Bitwarden item). The launch refuses on the first of those; a re-task warns and drops them.
+func parseSecretsValue(val string) (items, bad []string) {
+	for _, item := range strings.Split(strings.TrimSuffix(strings.TrimPrefix(val, "["), "]"), ",") {
+		item = brAuthTrim(item)
+		item = strings.TrimSuffix(strings.TrimPrefix(item, `"`), `"`)
+		item = strings.TrimSuffix(strings.TrimPrefix(item, `'`), `'`)
+		switch {
+		case item == "":
+		case strings.HasPrefix(item, "-"):
+			bad = append(bad, item)
+		default:
+			items = append(items, item)
+		}
+	}
+	return items, bad
 }
 
 // checkSecrets is _check_secrets: the Bitwarden items a brief names, checked BEFORE anything is built.
@@ -1203,19 +1386,11 @@ func (d *dsp) checkSecrets() {
 		if key != "secrets" {
 			continue
 		}
-		raw := strings.TrimSuffix(strings.TrimPrefix(val, "["), "]")
-		for _, item := range strings.Split(raw, ",") {
-			item = brAuthTrim(item)
-			item = strings.TrimSuffix(strings.TrimPrefix(item, `"`), `"`)
-			item = strings.TrimSuffix(strings.TrimPrefix(item, `'`), `'`)
-			if item == "" {
-				continue
-			}
-			if strings.HasPrefix(item, "-") {
-				d.die("the brief's secrets: names \"" + item + "\", which is not a Bitwarden item name. NOTHING was built.")
-			}
-			items = append(items, item)
+		got, bad := parseSecretsValue(val)
+		if len(bad) > 0 {
+			d.die("the brief's secrets: names \"" + bad[0] + "\", which is not a Bitwarden item name. NOTHING was built.")
 		}
+		items = append(items, got...)
 	}
 	if len(items) == 0 {
 		return
@@ -1279,7 +1454,7 @@ func (d *dsp) warnAuthorizesMissing() {
 // authorizesLine is _authorizes_line: the manifest's `authorizes` field.
 func (d *dsp) authorizesLine() string {
 	if d.brAuthorizes == "" {
-		if d.brAuthMarker != "" {
+		if d.brAuthMarker != "" { // # MUTATION-ANCHOR: 844-A173
 			return "none — but the brief names " + d.brAuthMarker
 		}
 		return "none"

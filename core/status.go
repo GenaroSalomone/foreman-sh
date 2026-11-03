@@ -936,7 +936,7 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 				limits["turn"] = true
 			}
 			switch {
-			case newest != nil && newest.reopened:
+			case newest != nil && newest.reopened: // # MUTATION-ANCHOR: 826-G35
 				mark, state, tint = "●", "reopened", c.ok
 				notes = append(notes, "reopened by hw revive after reporting done — a new done-invoker is expected, without --retask")
 			case newest != nil && newest.resumed:
@@ -1038,7 +1038,7 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 		} else if wsTruthy { // # MUTATION-ANCHOR: 826-G23
 			mark, state, tint = "!", "no agent", c.warn
 			notes = append(notes, "space "+ws+" is open but nothing in it is an agent — never started, or released")
-		} else if newest != nil && newest.reopened {
+		} else if newest != nil && newest.reopened { // # MUTATION-ANCHOR: 826-G36
 			mark, state, tint = "!", "reopened, gone", c.warn
 			notes = append(notes, "hw revive reopened this run and its pane is gone with no new report — `hw done` it, or `hw revive` it again")
 		} else if blockedTok {

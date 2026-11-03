@@ -18,7 +18,7 @@ run_args() {
   local agent="$1" sdd="$2" override="$3" output="$4" model="${5:-}"
   local args=(setup oc-primary-probe --agent "$agent")
   [ -z "$model" ] || args+=(--model "$model")
-  [ "$sdd" != none ] || args+=(--sdd none)
+  case "$sdd" in none) args+=(--sdd none) ;; unset) ;; *) args+=(--sdd "$sdd") ;; esac
   (
     if [ "$override" = __UNSET__ ]; then unset HW_OPENCODE_AGENT; else export HW_OPENCODE_AGENT="$override"; fi
     export HOME="$HOME_FIX"
@@ -41,11 +41,15 @@ has_agent "$TMP/none.out" direct-worker && contains "$TMP/none.out" 'primary    
   || fail "C01b non-Sol OpenCode lost the explicit direct-worker primary: $(<"$TMP/none.out")"
 pass "C01b non-Sol OpenCode preserves direct-worker's inline role"
 
-# no --sdd none: the framework is not "none", so the Sol selection must not apply
-run_args opencode unset __UNSET__ "$TMP/sol-speckit.out" openai/gpt-5.6-sol
-has_agent "$TMP/sol-speckit.out" direct-worker \
-  || fail "C01c Sol selection leaked into a framework phase path: $(<"$TMP/sol-speckit.out")"
-pass "C01c framework modes remain on direct-worker; SDD phase routing is untouched"
+# a framework mode (--sdd speckit): OpenCode no longer reaches a framework phase path at all, hw refuses before
+# building, so the Sol selection cannot leak into one; and a bare dispatch (no --sdd) is the default, none, and is Sol's path
+run_args opencode speckit __UNSET__ "$TMP/sol-speckit.out" openai/gpt-5.6-sol
+contains "$TMP/sol-speckit.out" 'REFUSED BEFORE BUILDING ANYTHING' && ! has_any_agent "$TMP/sol-speckit.out" \
+  || fail "C01c an OpenCode framework dispatch was not refused before building, or still named an --agent: $(<"$TMP/sol-speckit.out")"
+run_args opencode unset __UNSET__ "$TMP/sol-default.out" openai/gpt-5.6-sol
+has_agent "$TMP/sol-default.out" sol-orchestrator \
+  || fail "C01c a dispatch with no --sdd is the default (none) and must take Sol's primary: $(<"$TMP/sol-default.out")"
+pass "C01c an OpenCode framework dispatch is refused before building; no --sdd is the default, none, with Sol's primary"
 
 run_args opencode none '' "$TMP/empty.out"
 if has_any_agent "$TMP/empty.out"; then

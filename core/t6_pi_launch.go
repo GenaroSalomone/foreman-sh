@@ -90,7 +90,14 @@ func (l *lch) piProjectSkillsPrepare() bool {
 // LOAD-BEARING AS THE EXPORT: base_env copies this process, so a brainer that carries one must not hand it to another vendor.
 func (l *lch) piExportEnv(cwd string) {
 	if l.agent != "pi" {
-		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS")
+		// a dispatch from inside a shadowed pi executor inherits the parent's private directory: another vendor's child gets
+		// the real one (resolved BEFORE the variable that carries it goes), never a directory its parent's `hw done` deletes
+		inheritedShadow := l.piIsShadowDir(l.env("PI_CODING_AGENT_DIR"))
+		real := l.piAgentDir()
+		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS", piRealAgentDirEnv)
+		if inheritedShadow {
+			l.setEnv("PI_CODING_AGENT_DIR", real)
+		}
 		return
 	}
 	if l.brainGuardOn() {
@@ -120,6 +127,18 @@ func (l *lch) piExportEnv(cwd string) {
 	} else {
 		l.unsetEnv("HW_PI_CLAUDE_AGENT_DIRS")
 	}
+	// LAST, because everything above resolves pi's REAL directory: a plugin's children discover the ambient extension
+	// that collides with the plugin's own tool unless this run's discovery sees a settings file without packages.
+	run, real := l.piRunDirs(cwd)
+	switch {
+	case run == "":
+	case run == real:
+		l.setEnv("PI_CODING_AGENT_DIR", real)
+		l.unsetEnv(piRealAgentDirEnv)
+	default:
+		l.setEnv("PI_CODING_AGENT_DIR", run)
+		l.setEnv(piRealAgentDirEnv, real)
+	}
 }
 
 // piHwEnvFlags is the `pi` block of _hw_env: the same, in the `--env K=V` form of a pane split (`--here`).
@@ -140,6 +159,15 @@ func (l *lch) piHwEnvFlags(cwd string) string {
 	s += " --env HW_PI_SUBAGENTS_DIR=" + l.piSubagentsDir()
 	if dirs := l.piAgentDirs(cwd); dirs != "" {
 		s += " --env PI_SUBAGENT_EXTRA_AGENT_DIRS=" + dirs
+	}
+	// the private agent directory of a session with plugins (t6_pi_shadow.go), already resolved against the real one
+	run, real := l.piRunDirs(cwd)
+	switch {
+	case run == "":
+	case run == real:
+		s += " --env PI_CODING_AGENT_DIR=" + real
+	default:
+		s += " --env PI_CODING_AGENT_DIR=" + run + " --env " + piRealAgentDirEnv + "=" + real
 	}
 	if dirs := l.piClaudeAgentDirs(cwd); dirs != "" {
 		s += " --env HW_PI_CLAUDE_AGENT_DIRS=" + dirs
@@ -342,15 +370,10 @@ func (l *lch) piSpecialistNote(list string) string {
 	model := orDefaultStr(l.env("HW_PI_ASKED_MODEL"), l.model)
 	var b strings.Builder
 	if deleg != "" || reg != "" {
-		b.WriteString("This executor is pi. The specialist subagents of this lane (" + list + ") are Claude Code agents, and pi-subagents does\n" +
-			"not read `.claude/agents`: hw-executor.ts registers them with it when your session starts, so you CAN delegate. Call the\n" +
-			"`subagent` tool with agent \"<name>\" (the `name:` in the file's frontmatter; the tool's list action shows the names). A\n" +
-			"specialist runs on YOUR model, not the `model:` its file names (a Claude alias such as sonnet is not a pi model), with pi's\n" +
-			"counterparts of the tools its file lists (read, grep, find, bash, edit, write); Task, WebFetch, WebSearch and MCP tools\n" +
-			"have none and are dropped, so what it needed them for it cannot do. Your guards travel with each child (a child's write\n" +
-			"into a protected tree or read of a secret path is refused like yours). Remote access is still NOT granted by delegating:\n" +
-			"a specialist that reaches remote hosts over ssh runs only what your brief authorizes (destination and operation, quoted\n" +
-			"from the operator with its requested_by line); otherwise stay local and report it blocked.")
+		b.WriteString("This executor is pi. The specialists of this lane (" + list + ") are registered with pi-subagents, so you CAN\n" +
+			"delegate: call the `subagent` tool with agent \"<name>\" (its frontmatter `name:`). A specialist runs on YOUR model, not its file's `model:`, with\n" +
+			"pi's tools (read, grep, find, bash, edit, write); what its file needs Task, WebFetch, WebSearch or MCP for, it cannot do.\n" +
+			"Your guards travel with each child.")
 		if deleg != "" {
 			b.WriteString("\n" + deleg + " also has a pi copy in `.pi/agents`, which pi-subagents loads by itself: its file pins an openai-codex model this\n" +
 				"machine's login cannot refresh (measured: a 401 and a failed mission), so a call for it ALWAYS passes `model: \"" + orDefaultStr(model, "the opencode-go model you run on") + "\"`.")

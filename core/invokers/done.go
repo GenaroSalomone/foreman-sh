@@ -8,7 +8,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
+
+// RunTmpDir is the name of a per-run scratch directory directly under $HW_ARTIFACTS that the done count skips. hw no longer
+// puts the executor's TMPDIR there (it is outside the repo now, core/run_tmp.go); runs dispatched before that still have one.
+const RunTmpDir = "tmp"
 
 const (
 	doneMaxChars = 900
@@ -19,6 +24,9 @@ const (
 	exitDeliveryUncertain  = 5
 	exitHeldForRuling      = 6
 )
+
+// doneUsage is what `done-invoker --help` prints; the unknown-option refusal quotes the same line.
+const doneUsage = "Usage: done-invoker [--blocked] [--retask] \"<one paragraph>\" (at most 900 characters, counted as characters; artifacts are counted from $HW_ARTIFACTS, do not pass them)"
 
 // Done is bin/done-invoker.
 func Done(c *Ctx, args []string) int {
@@ -56,6 +64,10 @@ lane_get "$2" engram 2>/dev/null`
 }
 
 func (c *Ctx) done(args []string) error {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+		c.printf(c.Stdout, "%s\n", doneUsage)
+		return nil
+	}
 	if c.get("HW_SANDBOX") == "1" { // 322-M02
 		sb := c.BinDir + "/hw-sandbox"
 		if st, err := os.Stat(sb); err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
@@ -89,7 +101,7 @@ loop:
 			args = args[1:]
 		case args[0] == "-":
 		case strings.HasPrefix(args[0], "-"):
-			return die("unknown option: %s — this invoker takes NO flags but [--blocked] and [--retask], and the status is that flag, not a value. Silently folding it into the summary is how a blocked task gets filed as done. Usage: done-invoker [--blocked] [--retask] \"<one paragraph>\" (artifacts are counted from $HW_ARTIFACTS, do not pass them)", args[0])
+			return die("unknown option: %s — this invoker takes NO flags but [--blocked] and [--retask], and the status is that flag, not a value. Silently folding it into the summary is how a blocked task gets filed as done. %s", args[0], doneUsage)
 		}
 	}
 
@@ -152,7 +164,7 @@ loop:
 	workdir := c.or("HW_WORKDIR", "<unknown>")
 	artifacts := c.or("HW_ARTIFACTS", workdir)
 
-	if n := len(summary); n > doneMaxChars {
+	if n := utf8.RuneCountInString(summary); n > doneMaxChars {
 		return die("summary is %d chars, limit is %d. This is a pointer, not the report — mem_save the report and name its id here.", n, doneMaxChars)
 	}
 	if strings.Contains(summary, "```") {
@@ -269,6 +281,9 @@ loop:
 		return &Die{Code: 1}
 	}
 	if isRegular(stateDir+"/done") && !isRegular(stateDir+"/reopened") {
+		if isRegular(stateDir + "/blocked-waiting") {
+			return die("your last report was `--blocked` and no ruling has resumed this task: this pane is waiting. Wait here for `hw ruling` from your brainer (it resumes this same task, and you report again with done-invoker). Never `--retask`: that would file the blocked task as a new one.")
+		}
 		return die("already notified the brainer for this task. If your brainer re-tasked you AFTER that report and this is the new task's completion, the task counter never moved — only `hw next` advances it, and your brainer used something else. Claim it yourself and report: done-invoker --retask \"<same paragraph>\". Otherwise this is a second completion for one task: that is a message for %s, not a report.", c.operator())
 	}
 
@@ -304,7 +319,7 @@ loop:
 		return die("REFUSING BEFORE REPORTING — nothing was sent, nothing was marked, this pane still holds the only copy of your report. A delivered report must either close its owned task tab/workspace or establish its bounded chaining lease, and there is no executable `hw` beside this invoker (%s). Fix the install so brain/bin is complete, then re-run this exact command.", hwBin)
 	}
 
-	files := countFiles(artifacts)
+	files := countFiles(artifacts, c.get("HW_ARTIFACTS") != "")
 	filesNote := ""
 	if files == 0 {
 		filesNote = " (none, which is correct when the output is a report)"
@@ -510,12 +525,16 @@ loop:
 	return nil
 }
 
-// countFiles is `find <root> -type f -not -path '*/.hw/*' | wc -l`.
-func countFiles(root string) int {
+// countFiles is `find <root> -type f -not -path '*/.hw/*' | wc -l`, less <root>/tmp
+// when skipTmp: the executor's per-run TMPDIR is scratch, not an artifact.
+func countFiles(root string, skipTmp bool) int {
 	n := 0
 	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
+		}
+		if skipTmp && d.IsDir() && p == filepath.Join(root, RunTmpDir) {
+			return filepath.SkipDir
 		}
 		if d.Type().IsRegular() && !strings.Contains(p, "/.hw/") {
 			n++

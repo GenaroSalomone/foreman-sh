@@ -36,31 +36,10 @@ need_invokers   # this subject runs done-invoker/ask-invoker, which are Go since
 rm -f "$TMP/bin/herdr" "$TMP/bin/herdr-rpc"
 hash -r
 
-# On native Windows a missing tool is a failure, not a skip: there the gate
-# exempts 650's arm by name (setup/mutation/mutation-exempt-native-windows.tsv) for the
-# stop below, and a skip here would ride that into a pass.
 for _p in herdr jq python3; do
   command -v "$_p" >/dev/null 2>&1 && continue
-  case "${OSTYPE:-}" in
-    msys*|cygwin*) fail "650: $_p is not installed; on native Windows that is not a skip" ;;
-  esac
   printf 'skip - 650: %s is not installed; the live herdr path cannot run here\n' "$_p"; exit 0
 done
-
-# ── native Windows stops here, by name ─────────────────────────────────────
-# hw's own dispatch does not run against a live herdr there: in the executor
-# pane hw built, the agent was never typed (_agent_start failed) and the pane
-# opened in the runner's home, not the workdir (windows.yml 37088978624);
-# KNOWN-LIMITATIONS L1b lists it as unverified. The brainer side that used to
-# run before this stop needed three Windows-only workarounds and then timed out
-# starting its fake in the full run (37090376222) while it started in the
-# survey: it proved nothing about hw, so it no longer runs there. What the
-# layers were: this file at 339ce50.
-case "${OSTYPE:-}" in
-  msys*|cygwin*)
-    printf 'skip - 650: hw against a live herdr does not run on native Windows: in the pane hw builds the agent is never started and the pane opens outside the workdir (KNOWN-LIMITATIONS L1b)\n'
-    exit 0 ;;
-esac
 
 # A unix socket path is capped at 104 bytes on macOS; $TMP under TMPDIR is
 # already most of that. herdr puts its sessions under XDG_CONFIG_HOME.

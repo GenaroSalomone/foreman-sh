@@ -3,8 +3,7 @@
 herdr-rpc — a socket client for herdr's API-only RPCs.
 
 Standard library only. Speaks newline-delimited JSON over the unix socket at
-$HERDR_SOCKET_PATH (override with --socket) — on Windows, over the named pipe
-herdr serves under that name instead. Twenty-odd lines of python is a
+$HERDR_SOCKET_PATH (override with --socket). Twenty-odd lines of python is a
 complete client for this protocol; this file is that client plus four CLI
 verbs that other brain/bin scripts call so they never have to touch a socket
 themselves.
@@ -75,12 +74,6 @@ import sys
 import threading
 import time
 
-# NATIVE WINDOWS (Git Bash): bin/msys-compat.sh puts bin/ on PYTHONPATH for the
-# entry points it starts; run by hand, this file loads bin/sitecustomize.py
-# itself (a no-op when Python already did). Elsewhere nothing happens.
-if os.name == "nt":
-    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-    import sitecustomize  # noqa: E402,F401
 
 PROG = "herdr-rpc"
 
@@ -128,22 +121,6 @@ class RpcError(Exception):
         self.message = message
 
 
-def _pipe_name(socket_path):
-    """Windows: herdr's endpoint is the named pipe whose name IS the path it
-    reports. Measured 2026-09-29 on windows-latest with herdr 0.9.1: a pane's
-    HERDR_SOCKET_PATH is `C:\\Users\\<u>\\AppData\\Roaming\\herdr\\herdr.sock`, and the
-    server listens on `\\\\.\\pipe\\` + exactly that string (backslashes)."""
-    p = socket_path
-    if p.replace("/", "\\").lower().startswith("\\\\.\\pipe\\"):
-        return p.replace("/", "\\")
-    try:
-        from sitecustomize import to_native  # bin/sitecustomize.py, under Git Bash
-    except ImportError:
-        def to_native(x):
-            return x
-    return "\\\\.\\pipe\\" + to_native(p).replace("/", "\\")
-
-
 class _UnixTransport:
     def __init__(self, socket_path, timeout):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -176,98 +153,8 @@ class _UnixTransport:
             pass
 
 
-class _PipeTransport:
-    """The same newline-delimited JSON over a Windows named pipe. A pipe handle
-    has no settimeout, so every read is overlapped and waited on with the
-    caller's remaining time — the deadline contract is the socket's."""
-
-    ERROR_BROKEN_PIPE = 109
-    ERROR_PIPE_BUSY = 231
-    ERROR_MORE_DATA = 234
-
-    def __init__(self, socket_path, timeout):
-        import _winapi
-        self._w = _winapi
-        self._buf = b""
-        self._eof = False
-        name = _pipe_name(socket_path)
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                self._h = _winapi.CreateFile(
-                    name, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE, 0, _winapi.NULL,
-                    _winapi.OPEN_EXISTING, _winapi.FILE_FLAG_OVERLAPPED, _winapi.NULL)
-                return
-            except OSError as e:
-                left = int((deadline - time.monotonic()) * 1000)
-                if getattr(e, "winerror", None) == self.ERROR_PIPE_BUSY and left > 0:
-                    try:
-                        _winapi.WaitNamedPipe(name, left)
-                    except OSError:
-                        pass
-                    continue
-                raise ConnError(f"cannot connect to {socket_path} (pipe {name}): {e}") from e
-
-    def send(self, data):
-        try:
-            ov, _ = self._w.WriteFile(self._h, data, overlapped=True)
-            ov.GetOverlappedResult(True)
-        except OSError as e:
-            raise ConnError(f"pipe write failed: {e}") from e
-
-    def _fill(self, remaining):
-        w = self._w
-        try:
-            ov, err = w.ReadFile(self._h, 65536, overlapped=True)
-        except OSError as e:
-            if getattr(e, "winerror", None) == self.ERROR_BROKEN_PIPE:
-                self._eof = True
-                return
-            raise ConnError(f"pipe read failed: {e}") from e
-        if err == w.ERROR_IO_PENDING:
-            res = w.WaitForMultipleObjects([ov.event], False, max(1, int(remaining * 1000)))
-            if res == w.WAIT_TIMEOUT:
-                ov.cancel()
-                try:
-                    ov.GetOverlappedResult(True)
-                except OSError:
-                    pass
-                raise RpcTimeout()
-        try:
-            _, err = ov.GetOverlappedResult(True)
-        except OSError as e:
-            if getattr(e, "winerror", None) == self.ERROR_BROKEN_PIPE:
-                self._eof = True
-                return
-            raise ConnError(f"pipe read failed: {e}") from e
-        chunk = bytes(ov.getbuffer())
-        if not chunk and err != self.ERROR_MORE_DATA:
-            self._eof = True
-        self._buf += chunk
-
-    def read_line(self, remaining):
-        deadline = time.monotonic() + remaining
-        while b"\n" not in self._buf and not self._eof:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise RpcTimeout()
-            self._fill(left)
-        if b"\n" in self._buf:
-            line, _, self._buf = self._buf.partition(b"\n")
-            return line.decode("utf-8") + "\n"
-        line, self._buf = self._buf, b""
-        return line.decode("utf-8")
-
-    def close(self):
-        try:
-            self._w.CloseHandle(self._h)
-        except (OSError, AttributeError):
-            pass
-
-
 class HerdrConn:
-    """One connection, newline-delimited JSON in both directions: a unix socket,
-    or on Windows the named pipe herdr serves there (_PipeTransport).
+    """One connection, newline-delimited JSON in both directions over a unix socket.
 
     request() matches responses by id so a connection could in principle be
     shared by concurrent callers, but every subcommand below opens its own
@@ -277,8 +164,7 @@ class HerdrConn:
     """
 
     def __init__(self, socket_path, timeout):
-        transport = _PipeTransport if os.name == "nt" else _UnixTransport
-        self._t = transport(socket_path, timeout)
+        self._t = _UnixTransport(socket_path, timeout)
         self._next_id = 1
 
     def _read_line(self, deadline):

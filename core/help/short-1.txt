@@ -1,17 +1,17 @@
 hw — launch one executor per task, in its own tab, with its own worktree.
 
 SYNOPSIS
-    hw <project> <task> --brief <path> --sdd none [flags]
+    hw <project> <task> --brief <path> [flags]
     hw <command> [args]                hw help <topic>
 
 COMMANDS
     brain <project>                    open the project's long-lived brainer
         brain demo
-    hw <project> <task> --brief <path> --sdd none
+    hw <project> <task> --brief <path>
         launch an executor on a brief; --dry-run prints the dispatch and
         builds nothing
-        hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none
-    hw <project> <task> --brief <path> --sdd none --worktree none --no-db
+        hw demo hello --brief ~/brain/demo/briefs/hello.md
+    hw <project> <task> --brief <path> --worktree none --no-db
         read-only work (an audit, a review): a tab, no branch, no database
     hw status [<project>]              what is running, and what never closed
         hw status demo
@@ -19,6 +19,8 @@ COMMANDS
         hw receipt demo hello
     hw done <project> <task>           close the task's tab once its report is
         hw done demo hello             accepted; removes no worktree, no branch
+    hw retro-done <task>               clear a setup run's retro reminder
+        hw retro-done hello
 
 HELP TOPICS                            hw help <topic>
     dispatch     the launch form per lane, placement and isolation

@@ -30,6 +30,16 @@ func readTrim(path string) string {
 	return strings.TrimRight(string(b), "\n")
 }
 
+// lockDir is the shared lock root: HW_LOCK_DIR (carried into every executor pane),
+// else TMPDIR, else /tmp. Never the executor's per-run TMPDIR on its own (same rule as
+// sharedLockDir in core/app.go; the invokers are a separate package).
+func (c *Ctx) lockDir() string {
+	if v := c.get("HW_LOCK_DIR"); v != "" {
+		return v
+	}
+	return c.tmpdir()
+}
+
 func (c *Ctx) runLockPath() string {
 	key := []byte(c.or("HW_RUN", "norun"))
 	for i, b := range key {
@@ -37,7 +47,7 @@ func (c *Ctx) runLockPath() string {
 			key[i] = '_'
 		}
 	}
-	return c.tmpdir() + "/hw-invoker-" + string(key) + ".lock"
+	return c.lockDir() + "/hw-invoker-" + string(key) + ".lock"
 }
 
 // olderThanMinute is `find <dir> -maxdepth 0 -mmin +1`: ok is false when find

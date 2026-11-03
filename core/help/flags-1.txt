@@ -1,16 +1,16 @@
 FLAGS
     --brief <path>     the file the executor is given. Without it, it gets a tab
                        and nothing to do.
-    --sdd <mode>       speckit | none. REQUIRED where a framework is in play.
-                       `none` = deliberately outside the flow.
+    --sdd <mode>       none (the default) | speckit, opt-in where its speckit-*
+                       skills are on disk and its flow is wanted.
     --agent <vendor>   claude | opencode | codex | pi. Defaults per lane; see above.
     --model <m>        claude: an alias (opus, sonnet, haiku, fable) or claude-*.
                        opencode: provider/model, e.g. openai/<model>.
                        codex: a bare id, e.g. <model> (no provider/ prefix).
                        A sonnet or haiku ORCHESTRATOR is refused before anything
-                       is built whenever an SDD mode is in force: the phase
-                       agents pin their own models, so --model sets only the
-                       judgment above them. Use --model opus, or --sdd none.
+                       is built under --sdd speckit: the phase agents pin
+                       their own models, so --model sets only the judgment
+                       above them. Use --model opus, or drop --sdd speckit.
     --model-why <s>    name the OPEN DECISION this task has to work out. The
                        manifest suggests sonnet by default and opus only where
                        one is declared, and prints the model beside the

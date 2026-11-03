@@ -43,6 +43,7 @@ func (l *lch) laneGitWorktree(beforeCut func(main, base string), localConfig fun
 	}
 	l.receiptWorktree(wt)
 	l.refuseIfStaleHooks(wt, main, base)
+	l.laneRules(main, wt, laneScopeFull)
 
 	l.step("2/4  local config")
 	l.info("plain git worktree: only what git tracks is here — an ignored .env, .venv or node_modules in " + main + " was NOT carried over")

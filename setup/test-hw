@@ -80,13 +80,6 @@ unset _a 2>/dev/null || true
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$HERE/.." && pwd -P)"
-# NATIVE WINDOWS (Git Bash): the runner's own python, ps and pgrep go through
-# bin/msys-compat.sh, as every entry point's do. A fixture tree that carries
-# only this runner has no bin/. Elsewhere OSTYPE never matches.
-case "${OSTYPE:-}" in msys*|cygwin*)
-  if [ -f "$SOURCE_ROOT/bin/msys-compat.sh" ]; then . "$SOURCE_ROOT/bin/msys-compat.sh"
-  else export PYTHONUTF8=1; fi ;;
-esac
 # Capture ALL checkout bytes (including ignored/untracked subjects), plus the
 # initial tracking classification, before executing anything. The private
 # child is identified by its exact root, so nested fixture runners must capture
@@ -344,6 +337,13 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
   fi
   if [ -n "$_gs_why" ]; then
     printf 'runner: the WHOLE fast gate — %s\n' "$_gs_why" >&2
+    # A SLOW SUBJECT THE `all` ANSWER WOULD STILL MISS (L18): `all` is the whole FAST gate, so a slow subject
+    # that declares `# gate-when:` (540, judging every marker in the tree) runs with it, as a `reference`.
+    # setup/gate-select emits those lines beside its `all`, and they are read here or nowhere.
+    while read -r _gs_kind _gs_name _gs_rest; do
+      [ "$_gs_kind" = reference ] && [ -f "$TESTS/$_gs_name" ] && ! _is_retired "$_gs_name" && FILES+=("$TESTS/$_gs_name") \
+        && printf 'runner: the slow %s runs with it (a `# gate-when:` the whole fast gate does not reach)\n' "$_gs_name" >&2
+    done <<< "${_gs_out:-}"  # MUTATION-ANCHOR: 999-M07
   else
     GATE_SELECTED=1
     GATE_CHANGED="$HW_TEST_CHANGED"
@@ -1480,7 +1480,16 @@ if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
   fi
   _gt_pick="$(printf '%s\n' "$_gt_all" | cut -f1)"
   if [ "$HW_TEST_GATE" = fast ] && [ -n "${GATE_PATHS_FILE:-}" ] && [ -r "$GATE_PATHS_FILE" ]; then
-    _gt_aff="$(bash "$HERE/go-test-core.sh" --affected "$GATE_PATHS_FILE" 2>/dev/null)" || _gt_aff="$_gt_pick"
+    # A refusal is named, not swallowed: its stderr says WHICH path it could not read (a source file, a line that is
+    # not a path), and falling back to every partition in silence hid that (measured 2026-11-01).
+    _gt_aff_err="$(mktemp "${TMPDIR:-/tmp}/hw-gt-affected.XXXXXX")" || _gt_aff_err=/dev/null
+    if _gt_aff="$(bash "$HERE/go-test-core.sh" --affected "$GATE_PATHS_FILE" 2>"$_gt_aff_err")"; then :; else
+      _gt_aff="$_gt_pick"
+      if [ -s "$_gt_aff_err" ]; then
+        printf 'runner: --affected refused, queuing every partition: %s\n' "$(head -n 1 "$_gt_aff_err")" >&2
+      fi
+    fi
+    [ "$_gt_aff_err" = /dev/null ] || rm -f "$_gt_aff_err"
     _gt_cut=0
     for _gt_n in $_gt_pick; do printf '%s\n' "$_gt_aff" | grep -qx -- "$_gt_n" || _gt_cut=$((_gt_cut + 1)); done
     printf 'runner: the in-process suite queues %s of %s partitions — the changed paths reach: %s\n' \
@@ -1772,7 +1781,7 @@ if [ "$HW_TEST_GATE" = full ] && [ "$POOL_ON" = 1 ]; then
 import os, sys, json
 sys.path.insert(0, os.path.join(sys.argv[3], "tests"))
 try:
-    from _herdr_endpoint import listen   # a unix socket, or the named pipe on Windows
+    from _herdr_endpoint import listen   # a unix socket
 except ImportError:                      # a fixture tree that carries only this runner
     import socket
     def listen(p, n):
@@ -2677,10 +2686,6 @@ _tm_run
 
 # THE WITNESS IS READ LAST, once every job is done: see above.
 if [ -n "$WITNESS_PID" ]; then
-  # A native Windows python is not reliably ended by msys kill: by its winpid too.
-  case "${OSTYPE:-}" in msys*|cygwin*)
-    [ -r "/proc/$WITNESS_PID/winpid" ] && taskkill //F //T //PID "$(cat "/proc/$WITNESS_PID/winpid")" >/dev/null 2>&1 || true ;;
-  esac
   kill "$WITNESS_PID" 2>/dev/null || true
   wait "$WITNESS_PID" 2>/dev/null || true
   WITNESS_PID=""

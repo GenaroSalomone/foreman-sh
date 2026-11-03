@@ -8,8 +8,6 @@ import (
 	"syscall"
 )
 
-func isWindows() bool { return false }
-
 // realExecve is `exec claude …`: the process becomes claude.
 func realExecve(path string, argv, env []string) error { return syscall.Exec(path, argv, env) }
 

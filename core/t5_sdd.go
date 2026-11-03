@@ -62,7 +62,7 @@ func (d *dsp) sddLiveMode(dir string) string {
 	if d.speckitSkillsIn(dir) {
 		return "speckit"
 	}
-	if d.speckitSkillsIn(d.env("HOME")) { // # MUTATION-ANCHOR: 844-R142
+	if d.speckitSkillsIn(d.env("HOME")) { // # MUTATION-ANCHOR: 844-R142 // # MUTATION-ANCHOR: 844-R142b
 		return "speckit (global)" // # MUTATION-ANCHOR: 844-R141
 	}
 	return ""
@@ -166,6 +166,16 @@ func (d *dsp) resolveEffectiveSddMode(requested, surface, inherited string) {
 		}
 	}
 	d.sddEffectiveMode = mode
+}
+
+// sddRequested is the mode the operator TYPED: "" when --sdd was omitted. A fresh launch runs that as none (the
+// default, d.sdd); a re-task of a live pane reads it as "unchanged" and keeps resolving the pane's own mode from its
+// launch record and its surface, as before none became the default (sdd-legado-070).
+func (d *dsp) sddRequested() string {
+	if d.sddDefaulted {
+		return ""
+	}
+	return d.sdd
 }
 
 // validateSddVendorPair is `_validate_sdd_vendor_pair <vendor> <requested> <surface>`.

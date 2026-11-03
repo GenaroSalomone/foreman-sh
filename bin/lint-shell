@@ -15,8 +15,6 @@
 # The fix is always `|| true` (or an if/else). This flags the shapes; a human
 # decides. Exit 1 if anything is flagged.
 set -uo pipefail
-# NATIVE WINDOWS (Git Bash): see bin/msys-compat.sh. Elsewhere OSTYPE never matches.
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 
 # Zero arguments used to print "clean: no silent-exit shapes in 0 file(s)" and
 # exit 0 — a green light for having checked nothing, which is the same silent

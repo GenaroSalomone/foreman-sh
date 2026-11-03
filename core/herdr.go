@@ -6,9 +6,9 @@ package main
 //   - the CLI (`herdr workspace list`, `pane list`, `agent list`, `agent read`):
 //     the reads bash makes today, run the way bash runs them, so a dead server
 //     says the same words. They are processes, so they are issued in parallel.
-//   - the socket (newline-delimited JSON, a unix socket, or on Windows the
-//     named pipe of the same name): `events.subscribe` on pane.exited, which
-//     only the socket exposes. This replaces `bin/herdr-rpc subscribe --drain`
+//   - the socket (newline-delimited JSON over a unix socket):
+//     `events.subscribe` on pane.exited, which only the socket exposes. This
+//     replaces `bin/herdr-rpc subscribe --drain`
 //     for hw, a Python process whose start-up was part of every `hw status`;
 //     herdr-rpc stays for the Python consumers.
 //

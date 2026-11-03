@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -243,6 +244,16 @@ func (a *app) reviveSandboxArm(st *reviveRunState, pane, kind, rundir string) bo
 	}
 	cmd := exec.Command(a.reviveBinDir()+"/hw-sandbox", "arm", rundir, kind, st.proj, st.task)
 	cmd.Env = append(os.Environ(), "HW_WORKDIR="+st.cwd, "HW_ARTIFACTS="+a.getenv("HW_ARTIFACTS"))
+	// the profile allows the TMPDIR of arm's OWN environment: the revived pane gets the run's recorded TMPDIR (outside the
+	// worktree since rest-limpio-070), as launch does (sandboxArmEnv)
+	if t := recordedRunTmpdir(rundir, filepath.Base(rundir)); t != "" {
+		// the cache may have been cleared since dispatch: the profile and the pane both need it to exist
+		if err := os.MkdirAll(t, 0o700); err != nil {
+			a.warn("sandbox: could not create the run's TMPDIR " + t + ": " + err.Error())
+		}
+		secureRunTmpRoot(t, a.warn)
+		cmd.Env = append(cmd.Env, "TMPDIR="+t)
+	}
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {

@@ -24,12 +24,13 @@ import (
 var reUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
 
 // sessionTranscript is brain_session_transcript: the transcript found for a session id, "" and false when there is
-// none. An id that is not a UUID is not judged here ("not-a-uuid", true).
-func (b *brainRun) sessionTranscript(sid string) (string, bool) {
+// none. An id that is not a UUID is not judged here ("not-a-uuid", true). The lane's own account dir is looked in
+// FIRST (laneDir, "" for none), so a session id both accounts hold resolves to the one the relaunch will run under.
+func (b *brainRun) sessionTranscript(sid, laneDir string) (string, bool) {
 	if !reUUID.MatchString(sid) {
 		return "not-a-uuid", true
 	}
-	dirs := []string{b.getenv("CLAUDE_CONFIG_DIR"), b.home + "/.claude"}
+	dirs := []string{laneDir, b.getenv("CLAUDE_CONFIG_DIR"), b.home + "/.claude"}
 	more, _ := filepath.Glob(brEscapeGlob(b.home) + "/.claude-*")
 	sort.Strings(more)
 	dirs = append(dirs, more...)
@@ -55,7 +56,7 @@ func (b *brainRun) laneOfCwd(cwd string) string {
 	if cwd == "" {
 		return ""
 	}
-	real := pyRealpath(cwd)
+	real := pyRealpath(cwd) // # MUTATION-ANCHOR: go-806-M07
 	rootSt, err := os.Stat(b.brain)
 	if err != nil {
 		return ""
@@ -68,7 +69,7 @@ func (b *brainRun) laneOfCwd(cwd string) string {
 	if err != nil {
 		return ""
 	}
-	lanes := strings.Fields(strings.Join(b.tab.names, " "))
+	lanes := strings.Fields(strings.Join(b.tab.names, " ")) // # MUTATION-ANCHOR: go-806-M04
 	sort.Strings(lanes)
 	for _, e := range lanes {
 		st, err := os.Stat(b.brain + "/" + e)
@@ -344,17 +345,26 @@ func freePort() string {
 
 // ── the account, the permissions ────────────────────────────────────────────────────────────────────────────────
 
+// accountDirOf is the CLAUDE_CONFIG_DIR an account names ("" for the default).
+func (b *brainRun) accountDirOf(acct string) string {
+	if acct == "personal" {
+		return b.home + "/.claude-personal"
+	}
+	return ""
+}
+
+// laneAccountDir is the CLAUDE_CONFIG_DIR the lane's declared account names ("" for the default account).
+func (b *brainRun) laneAccountDir(proj string) string {
+	return b.accountDirOf(b.tab.get(proj, "account"))
+}
+
 // accountEnv is brain_account_env: the --env argument (or nothing), the state on stderr; ok=false when it refuses.
 func (b *brainRun) accountEnv(proj, kind string) (string, bool) {
 	acct := b.tab.get(proj, "account")
 	if acct == "" {
 		acct = "default"
 	}
-	dir := ""
-	switch acct {
-	case "personal":
-		dir = b.home + "/.claude-personal"
-	}
+	dir := b.accountDirOf(acct)
 	if dir == "" {
 		return "", true
 	}

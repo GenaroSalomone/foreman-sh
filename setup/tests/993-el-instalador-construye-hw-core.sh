@@ -65,10 +65,10 @@ g="$(HW_IMPL_FILE="$IMPL" HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-99
 case "$g" in *"GO-RAN handle zzz-993"*) ;; *) fail "993: with no switch file a ported verb did not run in hw-core: $g" ;; esac
 b="$(HW_IMPL=bash HW_IMPL_FILE="$IMPL" HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-993 2>&1 || true)"
 case "$b" in *"GO-RAN handle zzz-993"*) ;; *) fail "993: HW_IMPL=bash (retired) did not leave hw-core running: $b" ;; esac
-case "$b" in *"removed in 0.6.0"*) ;; *) fail "993: HW_IMPL=bash (retired) was not said to be removed: $b" ;; esac
+case "$b" in *"bash was removed; running Go"*) ;; *) fail "993: HW_IMPL=bash (retired) was not said to be removed: $b" ;; esac
 b="$(HW_IMPL_HANDLE=bash HW_IMPL_FILE="$IMPL" HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-993 2>&1 || true)"
 case "$b" in *"GO-RAN handle zzz-993"*) ;; *) fail "993: HW_IMPL_HANDLE=bash (retired) did not leave hw-core running: $b" ;; esac
-case "$b" in *"removed in 0.6.0"*) ;; *) fail "993: HW_IMPL_HANDLE=bash (retired) was not said to be removed: $b" ;; esac
+case "$b" in *"bash was removed; running Go"*) ;; *) fail "993: HW_IMPL_HANDLE=bash (retired) was not said to be removed: $b" ;; esac
 pass "993: with no switch file a ported verb runs in Go; HW_IMPL=bash and HW_IMPL_<VERB>=bash say once that bash was removed and Go still runs"
 
 # ── 3. a second run changes nothing; a switch file of the user's stays ───────────────────────────────────────────────
@@ -97,7 +97,7 @@ default=bash'
 printf '%s\n' "$OLDTEXT" > "$IMPL"
 g="$(HW_CORE="$TMP/stubcore" "$HOME/b/bin/hw" handle zzz-993 2>&1 || true)"
 case "$g" in *"GO-RAN handle zzz-993"*) ;; *) fail "993: the default=bash file of an old --no-core install stopped hw-core from running (it is retired: Go runs): $g" ;; esac
-case "$g" in *"removed in 0.6.0"*) ;; *) fail "993: the default=bash file of an old --no-core install was not said to be retired: $g" ;; esac
+case "$g" in *"bash was removed; running Go"*) ;; *) fail "993: the default=bash file of an old --no-core install was not said to be retired: $g" ;; esac
 out="$(inst "$ROOT" "$HOME/b")" || fail "993: the install with Go over an old --no-core file failed: $out"
 [ -x "$BIN" ] && [ ! -e "$IMPL" ] || fail "993: an install that builds a core left the default=bash file an old --no-core install wrote (core: $([ -x "$BIN" ] && echo built || echo none), file: $([ -e "$IMPL" ] && echo there || echo gone))"
 case "$out" in *"the one --no-core wrote is removed"*) ;; *) fail "993: the removal of the old --no-core file was not said: $out" ;; esac
@@ -107,16 +107,16 @@ out="$(inst "$ROOT" "$HOME/b")" || fail "993: the install over a hand-written de
 pass "993: an install that builds a core removes the default=bash file an old --no-core install wrote, byte for byte, and no other"
 
 # a file of the user's that still has lines of the retired switch is SAID at install time, line by line, and left as it is: a default or one of the
-# five tools means nothing in 0.6.0, a `<tool>=bash` of the eight still does, and a `go` line is quiet
+# five tools means nothing since 0.6.0, a line of the eight since 0.7.0, and a `go` line is quiet
 printf 'default=bash\nhw-secret=bash\nstop-hook=zig\nbrain=bash\nhw=go\n' > "$IMPL"; IMPLWAS="$(cat "$IMPL")"
 out="$(inst "$ROOT" "$HOME/b")" || fail "993: the install over a switch file with retired lines failed: $out"
 case "$out" in *"line 1 (default=bash) means nothing since 0.6.0"*) ;; *) fail "993: a default=bash line was not said to mean nothing: $out" ;; esac
 case "$out" in *"line 4 (brain=bash) means nothing since 0.6.0"*) ;; *) fail "993: a brain=bash line was not said to mean nothing: $out" ;; esac
-case "$out" in *"line 2 (hw-secret=bash) still runs that tool on its bash"*) ;; *) fail "993: a hw-secret=bash line was not said to still mean something: $out" ;; esac
-case "$out" in *"line 3 (stop-hook=zig) means nothing: only the word bash"*) ;; *) fail "993: a stop-hook=zig line was not said to mean nothing: $out" ;; esac
+case "$out" in *"line 2 (hw-secret=bash) means nothing since 0.7.0"*) ;; *) fail "993: a hw-secret=bash line was not said to mean nothing since 0.7.0: $out" ;; esac
+case "$out" in *"line 3 (stop-hook=zig) means nothing since 0.7.0"*) ;; *) fail "993: a stop-hook=zig line was not said to mean nothing since 0.7.0: $out" ;; esac
 case "$out" in *"line 5"*) fail "993: a hw=go line was said something about: $out" ;; esac
 [ "$(cat "$IMPL")" = "$IMPLWAS" ] || fail "993: the install rewrote a switch file that has retired lines: $(cat "$IMPL" 2>&1)"
-pass "993: an install over a switch file says each retired line, and each tool=bash line that still means something, and leaves the file"
+pass "993: an install over a switch file says each retired line, with the release that removed it, and leaves the file"
 
 # ── 4. no Go, an older Go, a go that says nothing, --no-core: the install REFUSES before writing anything ───────────
 # refuses <label> <expected text> <env…> -- the install is run against a brain that does not exist: it exits 1, says why, and creates nothing

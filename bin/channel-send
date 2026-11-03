@@ -52,7 +52,6 @@
 # toolchain on PATH. HW_IMPL, HW_IMPL_CHANNEL_SEND and the switch file name a bash twin that 0.6.0 removed: bin/impl-retired.sh
 # says so once and Go runs.
 set -euo pipefail
-case "${OSTYPE:-}" in msys*|cygwin*) HW_MSYS_COMPAT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/msys-compat.sh"; [ ! -f "$HW_MSYS_COMPAT" ] || . "$HW_MSYS_COMPAT" ;; esac
 _cs_src="${BASH_SOURCE[0]}"
 while [ -L "$_cs_src" ]; do
   _cs_dir="$(cd -P "$(dirname "$_cs_src")" && pwd)"

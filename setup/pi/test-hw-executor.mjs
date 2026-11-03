@@ -15,6 +15,7 @@
 //   specialists       the lane's `.claude/agents` registered with pi-subagents (HW_PI_CLAUDE_AGENT_DIRS):
 //                     tools mapped, model left to the executor, a `.pi/agents` copy left alone
 //                     (needs HW_PI_SUBAGENTS_DIR to hold a stub src/agents/frontmatter.js)
+import { resolve } from "node:path";
 const [adapter, mode] = process.argv.slice(2);
 const mod = await import(adapter);
 // One fake ExtensionAPI per loaded instance: pi-subagents' child loads the extension again, so a
@@ -391,17 +392,39 @@ if (mode === "guard") {
   await call("session_start", { type: "session_start", reason: "startup" }, ctx);
   const by = Object.fromEntries(regs.map((r) => [r.req.name, r.req.definition]));
   ok(regs.length > 0 && regs.every((r) => r.name === "pi-subagents:runtime-agent-register:v1" && r.req.version === 1), "each specialist goes through pi-subagents' runtime-agent event, version 1");
-  ok(JSON.stringify(Object.keys(by).sort()) === JSON.stringify(["collides", "plain", "qa-tester"]), "the frontmatter name is the agent's name; jd-*, a no-description file and a name a .pi/agents copy provides are not registered");
+  ok(JSON.stringify(Object.keys(by).sort()) === JSON.stringify(["collides", "jd-judge-a", "jd-x", "plain", "qa-tester", "webby"]), "the frontmatter name is the agent's name; the Judgment Day judges are registered, a framework agent (sdd-), a no-description file and a name a .pi/agents copy provides are not");
+  ok(by.plain?.systemPrompt === "Plain body." && regs.filter((r) => r.req.name === "plain").length === 1, "a name in two directories is registered once, from the first: the lane's agent shadows the account's");
+  ok(JSON.stringify(by["jd-judge-a"]?.tools) === JSON.stringify(["read", "grep"]) && by["jd-judge-a"]?.systemPrompt === "Judge body.", "an agent of the account's directory is registered next to the lane's");
   ok(JSON.stringify(by["qa-tester"]?.tools) === JSON.stringify(["read", "grep", "find", "bash"]), "Claude's Read, Grep, Glob, Bash become pi's read, grep, find, bash; Task and mcp__* are dropped");
   ok(by["qa-tester"] && !("model" in by["qa-tester"]), "the file's model: sonnet is not carried: pi would answer 'Unknown subagent model'");
   ok(by["qa-tester"]?.systemPrompt.startsWith("You are the QA runner") && !/^---/.test(by["qa-tester"].systemPrompt), "the body of the file is the prompt, the frontmatter is not");
   ok(by["qa-tester"]?.defaultAsync === false, "foreground by default: a background child needs a host package this pi may not have");
   ok(by.plain && !("tools" in by.plain), "a file with no tools: line keeps every tool, as in Claude");
+  ok(JSON.stringify(by.webby?.tools) === JSON.stringify(["read", "fetch_content"]) && JSON.stringify(by.webby?.extensions) === JSON.stringify([resolve(process.env.HW_PI_SUBAGENTS_DIR, "..", "pi-web-access")]), "WebFetch becomes pi-web-access's fetch_content (WebSearch stays dropped, unmeasured), and the child is told to load that package (a foreground child loads no ambient extension)");
+  const noWeb = mod.claudeAgentDefinition("---\nname: w\ndescription: d\ntools: Read, WebFetch\n---\nB", { parseFrontmatter: (c) => ({ frontmatter: { name: "w", description: "d", tools: "Read, WebFetch" }, body: "B" }), parseFrontmatterList: (r) => r.split(",").map((x) => x.trim()) }, undefined);
+  ok(JSON.stringify(noWeb.definition.tools) === JSON.stringify(["read"]) && !("extensions" in noWeb.definition) && noWeb.dropped.some((d) => /pi-web-access is not installed/.test(d)), "with no pi-web-access on the machine the web tools are left out and the receipt says why, instead of naming a tool the child cannot have");
   const row = (existsSync(`${dir}/receipt.jsonl`) ? readFileSync(`${dir}/receipt.jsonl`, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((x) => x.key === "pi_specialists");
-  ok(row && /registered plain qa-tester/.test(row.value) && /Task/.test(row.value) && /mcp__engram__mem_save/.test(row.value), "the receipt row names what was registered and which tools had no pi counterpart");
+  ok(row && /registered jd-x plain qa-tester jd-judge-a webby/.test(row.value) && /Task/.test(row.value) && /mcp__engram__mem_save/.test(row.value), "the receipt row names what was registered and which tools had no pi counterpart");
   ok(row && /collides \(Runtime agent collides\)/.test(row.value) && /copy \(a \.pi\/agents copy provides it\)/.test(row.value), "a refusal by pi-subagents and a skipped copy are in the row, not silent");
   await call("session_shutdown", { type: "session_shutdown" }, ctx);
   ok(disposed.includes("qa-tester") && disposed.includes("plain"), "the registrations are disposed with the session");
+} else if (mode === "global-rules") {
+  // The account's CLAUDE.md (CLAUDE_CONFIG_DIR) goes into pi's own "user instructions" slot, once, for the executor only.
+  const file = `${process.env.CLAUDE_CONFIG_DIR}/CLAUDE.md`;
+  const ev = () => ({ type: "before_agent_start", prompt: "x", systemPromptOptions: { contextFiles: [{ path: "/w/CLAUDE.md", content: "lane" }] } });
+  const ctx = fakeCtx({ file: "/s/root.jsonl" });
+  await call("session_start", { type: "session_start", reason: "startup" }, ctx);
+  const e1 = ev();
+  await call("before_agent_start", e1, ctx);
+  ok(e1.systemPromptOptions.contextFiles[0]?.path === file && e1.systemPromptOptions.contextFiles[0]?.content === "GLOBAL RULES\n" && e1.systemPromptOptions.contextFiles[1]?.path === "/w/CLAUDE.md", "the account's CLAUDE.md is a context file of the run, before the lane's");
+  await call("before_agent_start", e1, ctx);
+  ok(e1.systemPromptOptions.contextFiles.filter((f) => f.path === file).length === 1, "a second run of the same options does not add it twice");
+  const e2 = ev();
+  await callOn(makePi(), "before_agent_start", e2, fakeCtx({ file: "/s/other.jsonl", id: "other" }));
+  ok(e2.systemPromptOptions.contextFiles.length === 1, "another session of the process (a pi-subagents child loads the file too) gets nothing");
+  const { readFileSync, existsSync } = await import("node:fs");
+  const row = (existsSync(`${process.env.HW_WORKDIR}/.hw/${process.env.HW_RUN}/receipt.jsonl`) ? readFileSync(`${process.env.HW_WORKDIR}/.hw/${process.env.HW_RUN}/receipt.jsonl`, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((x) => x.key === "pi_global_rules");
+  ok(row && row.value.startsWith(file), "the receipt says which file was added");
 } else {
   console.error(`unknown mode ${mode}`); process.exit(2);
 }

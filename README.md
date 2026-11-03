@@ -66,8 +66,8 @@ mechanism here:
 - **Your agent, your model.** Claude Code, OpenCode, pi and Codex
   ([L3](docs/KNOWN-LIMITATIONS.md)) run a lane's executors; each one gets a
   `cheap-explorer` subagent on its vendor's cheapest tier.
-- **Frameworks when you want them.** `--sdd none` makes the brief the whole
-  contract; `--sdd speckit` goes through [Spec Kit](https://github.com/github/spec-kit)'s phases.
+- **Frameworks when you want them.** By default the brief is the whole
+  contract; `--sdd speckit` opts into [Spec Kit](https://github.com/github/spec-kit)'s phases.
 - **Secrets as Bitwarden items.** A brief names `secrets: [item, …]`; the value
   reaches the executor through `hw secret run`, never as text in a brief or a prompt.
 - **A cockpit.** A card per executor, and a band above the brainer's prompt that

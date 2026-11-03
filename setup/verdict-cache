@@ -40,7 +40,7 @@ DEPS_GO = "setup/suite-data/go-test-deps.txt"
 DEPS_SUBJECT = "setup/suite-data/subject-deps.txt"
 # what every job rides on: a change here is a change to what a green means
 COMMON_FILES = ["setup/test-hw", "setup/mutation/mutation-coverage", "setup/mutation/mutation-anchors.tsv", "setup/mutation/mutation-exceptions.tsv",
-                "setup/mutation/mutation-exempt-native-windows.tsv", "setup/mutation/mutation-exempt-no-security.tsv", "setup/mutation/mutation-exempt-not-macos.tsv"]
+                "setup/mutation/mutation-exempt-no-security.tsv", "setup/mutation/mutation-exempt-not-macos.tsv"]
 # the HW_* knobs that change WHAT a job checks (which implementation, which in-process switch), not how fast or where it runs
 ENV_ALLOW = re.compile(r"^HW_(IMPL_|INPROC_|CONTRACT_|C[0-9]+_)[A-Z0-9_]*$")
 RUN_STATE = {".hw", ".artifacts"}

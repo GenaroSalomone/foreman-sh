@@ -18,7 +18,7 @@ BH="$TMP/tree/brain"
 mkdir -p "$BH/bin" "$BH/lib/hw" "$BH/demo" "$BH/demo2" "$BH/cockpit/.claude-plugin" "$TMP/stub"
 cp "$ROOT/lib/hw/deps.sh" "$ROOT/lib/hw/deps.conf" "$BH/lib/hw/"   # the claude floor is a row of this manifest
 cp "${BRAIN_SOURCE:-$ROOT/bin/brain}" "$BH/bin/brain"
-cp "$ROOT/bin/engram-label-proxy" "$ROOT/bin/project-spaces.sh" "$ROOT/bin/runenv" "$ROOT/bin/msys-compat.sh" "$ROOT/bin/sitecustomize.py" "$BH/bin/"
+cp "$ROOT/bin/engram-label-proxy" "$ROOT/bin/project-spaces.sh" "$ROOT/bin/runenv" "$BH/bin/"
 chmod +x "$BH/bin/brain"
 BHP="$(cd -P "$BH" && pwd)"
 printf '{"name":"cockpit","version":"0.1.0"}\n' > "$BH/cockpit/.claude-plugin/plugin.json"

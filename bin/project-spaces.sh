@@ -71,7 +71,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | (["product_repo","hw_aliases","brain_aliases","space","engram","vendor","model","account","artifacts","repoless",
         "checkout","checkout_var","base","base_ref_prefix","branch","worktree_root","worktree","ports",
         "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","qa_target",
-        "model_floor","model_pins","subagent_model","requested_by","opencode_config_dir","suite_lock"]) as $fields
+        "model_floor","model_pins","subagent_model","pi_subagent_models","requested_by","opencode_config_dir","suite_lock"]) as $fields
     | ({model_floor: ["tier","accepts"], deps: ["line","contention"], db: ["line","provisioned","no_worktree","no_db_inert"],
         devserver: ["start","line","off"], reap: ["copies","copies_from","max_worktrees","max_disk_pct","max_build_gb"]}) as $sub
     | ([$lanes | to_entries[] | .key as $l | .value | to_entries[] | select($sub[.key] != null) | .key as $f
@@ -95,6 +95,17 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | ([$lanes | to_entries[] | .key as $l | select(.value.model_pins != null) | .value.model_pins
         | if type == "object" and (to_entries | all(.key | IN("haiku", "sonnet", "opus", "fable")) and all(.value | type == "string" and test("^claude-[a-z0-9.-]+$")))
           then empty else "\($l).model_pins" end]) as $badpins
+    | ([$lanes | to_entries[] | .key as $l | select(.value.pi_subagent_models != null) | .value.pi_subagent_models
+        | if type == "object" and (to_entries | all(
+            (.key | test("^[a-z][a-z0-9-]*$"))
+            and (.key != "default")
+            and (.value | type == "object")
+            and ((.value | keys) - ["model","thinking"] | length == 0)
+            and (.value.model | type == "string" and test("^(inherit|[a-z][a-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*)$"))
+            and ((.value.thinking == null) or (.value.thinking | IN("inherit","off","minimal","low","medium","high","xhigh","max")))
+            and ((.value.model != "inherit") or (.value.thinking == null))))
+          then empty else "\($l).pi_subagent_models" end]) as $badpi
+    | if ($badpi | length) == 0 then . else error("pi_subagent_models maps a tier (haiku, sonnet, opus) or an agent name to {model: provider/id, or inherit with no thinking, thinking: a pi level or inherit}; `default` is not a key (subagent_model decides it): \($badpi | join(", "))") end
     | ([$lanes | to_entries[] | .key as $l | select(.value.subagent_model != null)
         | if (.value.subagent_model | type == "string" and test("^(inherit|haiku|sonnet|opus|fable|claude-[a-z0-9.-]+)$")) then empty else "\($l).subagent_model" end]) as $badsub
     | if ($badsub | length) == 0 then . else error("subagent_model is inherit, a Claude alias (haiku, sonnet, opus, fable) or a claude-* id: \($badsub | join(", "))") end
@@ -132,6 +143,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
           emit($l; "model_floor_accepts"; ($v.model_floor.accepts // []) | join(" ")),
           emit($l; "model_pins"; ($v.model_pins // {}) | to_entries | map("\(.key)=\(.value)") | join(" ")),
           emit($l; "subagent_model"; $v.subagent_model // "inherit"),
+          emit($l; "pi_subagent_models"; ($v.pi_subagent_models // {}) | to_entries | map("\(.key)=\(.value.model)|\(.value.thinking // "inherit")") | join(" ")),
           emit($l; "requested_by"; $v.requested_by // ""),
           emit($l; "suite_lock"; $v.suite_lock // ""),
           emit($l; "account"; $v.account // "default"),

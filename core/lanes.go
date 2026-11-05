@@ -40,6 +40,8 @@ var (
 	reWord  = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	reIdent = regexp.MustCompile(`^([A-Z_][A-Z0-9_]*)?$`)
 	rePin   = regexp.MustCompile(`^claude-[a-z0-9.-]+$`)
+	rePiID  = regexp.MustCompile(`^(inherit|[a-z][a-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*)$`)
+	reThink = regexp.MustCompile(`^(inherit|off|minimal|low|medium|high|xhigh|max)$`)
 	reSub   = regexp.MustCompile(`^(inherit|haiku|sonnet|opus|fable|claude-[a-z0-9.-]+)$`)
 	rePort  = regexp.MustCompile(`^[a-z]+$`)
 )
@@ -47,7 +49,7 @@ var (
 var laneFields = []string{"product_repo", "hw_aliases", "brain_aliases", "space", "engram", "vendor", "model", "account", "artifacts", "repoless",
 	"checkout", "checkout_var", "base", "base_ref_prefix", "branch", "worktree_root", "worktree", "ports",
 	"hint_aliases", "build", "agents_from", "deps", "db", "devserver", "reap", "sweep", "brain_guard", "brief_note", "qa_target",
-	"model_floor", "model_pins", "subagent_model", "requested_by", "opencode_config_dir", "suite_lock"}
+	"model_floor", "model_pins", "subagent_model", "pi_subagent_models", "requested_by", "opencode_config_dir", "suite_lock"}
 
 var laneSub = map[string][]string{
 	"model_floor": {"tier", "accepts"},
@@ -271,6 +273,35 @@ func loadTable(file, home string) (*table, []string) {
 		return true
 	})
 	badsubm := collect("subagent_model", func(v *jval) bool { return v.kind == vStr && reSub.MatchString(v.s) })
+	badpi := collect("pi_subagent_models", func(v *jval) bool {
+		if v.kind != vObj {
+			return false
+		}
+		for _, m := range v.obj {
+			if !reWord.MatchString(m.k) || m.k == "default" || m.v.kind != vObj {
+				return false
+			}
+			model := field(m.v, "model")
+			if model == nil || model.kind != vStr || !rePiID.MatchString(model.s) {
+				return false
+			}
+			if model.s == "inherit" && field(m.v, "thinking") != nil { // no model, no level to attach it to
+				return false
+			}
+			for _, f := range m.v.obj {
+				if !has([]string{"model", "thinking"}, f.k) {
+					return false
+				}
+			}
+			if th := field(m.v, "thinking"); th != nil && (th.kind != vStr || !reThink.MatchString(th.s)) {
+				return false
+			}
+		}
+		return true
+	})
+	if len(badpi) > 0 {
+		return bad("pi_subagent_models maps a tier (haiku, sonnet, opus) or an agent name to {model: provider/id, or inherit with no thinking, thinking: a pi level or inherit}; `default` is not a key (subagent_model decides it): " + strings.Join(badpi, ", "))
+	}
 	if len(badsubm) > 0 {
 		return bad("subagent_model is inherit, a Claude alias (haiku, sonnet, opus, fable) or a claude-* id: " + strings.Join(badsubm, ", "))
 	}

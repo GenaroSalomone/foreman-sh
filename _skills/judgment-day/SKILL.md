@@ -47,6 +47,10 @@ Load only when the user explicitly requests Judgment Day or equivalent dual/adve
 
 1. Build the complete immutable target and freeze the scope both judges will inspect.
 2. Launch both read-only judges in parallel (`jd-judge-a`, `jd-judge-b`) against the same immutable target.
+   **Under pi the two launches are ONE call**, its parallel resource:
+   `subagent(workflow: "parallel", args: {tasks: [{agent: "jd-judge-a", task: <A>}, {agent: "jd-judge-b", task: <B>}]}, async: false)`
+   — pi takes one `subagent` call per turn, so two calls are two round trips (measured 2026-11-04: about 16 minutes
+   for a pair that belongs together). Under Claude Code they are two `Task` calls in one message.
    A background judge re-invokes you when it finishes. Do not wait with `ScheduleWakeup`, `sleep` or polling: end the turn or do other read-only work until both results arrive. `ScheduleWakeup` belongs to `/loop` and refuses a call without its `prompt`.
 3. Merge findings into the frozen ledger and persist it through the selected artifact store. Verify every severe suspect against the source and record its ruling in the ledger.
 4. Ask the human before round-one correction (inside an hw executor: `ask-invoker`, or skip it when the brief already authorizes corrections); run the fix actor (`jd-fix-agent`) only for confirmed severe IDs.

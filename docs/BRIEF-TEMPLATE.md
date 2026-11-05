@@ -107,7 +107,10 @@ prose: in these briefs a `path` and half a sentence of `VAR=1 VAR=2` are spelled
 exactly like a command, so hw does not read them — it would be executing prose.
 
 A heavy command (a subject, the fast gate, `go test` of a package, a release cut) runs as
-`setup/heavy -- <cmd>`: two slots, first come first served, the holders shown. Write
+`setup/heavy -- <cmd>`: two slots, first come first served, the holders shown. A focused
+`-run` test of seconds runs as `setup/heavy --short -- <cmd>` — the short lane goes beside a
+held slot (one short job at a time, capped at 120 s), so it does not queue behind an hour-long
+run. Never a longer job there: anything that can pass 120 s takes a slot. Write
 that and nothing else about the machine: a `pgrep -f` count or a hand-typed lock
 deadlocks the executors, and `hw` refuses a brief that carries the `pgrep` one.
 
@@ -118,11 +121,35 @@ How to run Go tests: `setup/CLAUDE.md`, "Go tests go through the runner".
 A partition is `setup/go-test-core.sh <name>` (`--list` names them), alone only when the
 brief's change can reach just that one. For t5 goldens and t5 mutants name the partitions out loud —
 `setup/go-test-core.sh c843` for the goldens, `c848-1` … `c848-8` for the mutants — not
-`--affected <file>`: its map does not know a golden case, and a change that moves one reaches no
+`--affected`: its map does not know a golden case, and a change that moves one reaches no
 partition it lists.
 
+The Go tests a change touches, spelled so it runs:
+
+```
+git diff --name-only main > /tmp/changed
+bash setup/go-test-core.sh --affected /tmp/changed
+```
+
+`--affected` takes a FILE OF CHANGED PATHS, one per line — never a source file, and never a
+placeholder. Written `--affected <file>` it is not the interface: `<file>` names nothing on disk,
+and a shell reads the angle brackets as a redirect. Handed a real source file it refuses (exit 2);
+`setup/go-test-core.sh --help` carries the same two lines.
+
 A gate's FIRST run is `HW_TEST_GATE=fast bash setup/test-hw --keep-going`: every red shows in one
-pass instead of one per run (half an hour measured, retros 2026-10-16). When
+pass instead of one per run (half an hour measured, retros 2026-10-16).
+
+BEFORE you queue it, run the subjects YOUR DIFF names — they are seconds and the gate is an hour:
+
+```
+git diff --name-only main > /tmp/hw-changed
+. setup/hooks/suite-trigger-pattern.sh
+python3 setup/gate-select "$PWD" /tmp/hw-changed "$SUITE_TRIGGER_PATTERN" touched \
+  | awk '$1=="touched" {print $2}' | while read -r t; do bash "setup/tests/$t" || echo "RED: $t"; done
+```
+
+and `bash setup/test-budget-gate` — it answers a new subject's missing 1:1 budget entry in seconds,
+where the gate would spend a heavy slot to say the same thing. When
 a commit's hook is the red, its full gate output is in `$(git rev-parse --git-common-dir)/hw-precommit-last.out`.
 
 A brief about TIME (a budget, a wait, a speed-up) names a deterministic proxy first — a count of
@@ -140,7 +167,17 @@ just means the report is the only claim there is, which is what it was on
 verification nobody had run.>
 
 ## Committing
-<Commit with `setup/commit-tree`: it takes the tree and the parent from the same ref, refuses a diff that
+<Commit per work unit as you go, and write the changelog fragment
+(`setup/export/overlay/changes/task-<task>.md`) in the same commit as the behaviour.
+Every path you name is RELATIVE TO THE WORKTREE, and the worktree is the only tree
+you commit in — a path under the brain root names the brainer's checkout, which
+is not yours to edit.
+
+ORDER WHEN THE CLOSE HAS A JUDGMENT DAY: commit, then the judges, then the fix
+rounds, and only then the ONE fast gate — on the FINAL tree. A gate run before the
+fixes is a run about a tree nobody is going to merge.
+
+Commit with `setup/commit-tree`: it takes the tree and the parent from the same ref, refuses a diff that
 touches a path you did not name, and never runs a hook. `setup/commit-tree -m "<msg>" <path>...` on your
 branch; `--onto <base>` to commit onto a branch that is not HEAD; `-F <file>` for a long message. Never
 `git add -A`, never `git commit` in a shared tree, never `--no-verify`. The lane rules are `<lane>/CLAUDE.md`
@@ -184,7 +221,11 @@ type `discovery`, `topic_key: <lane>/<task>/findings`) and, if any, the open
 questions (type `manual`, `topic_key: <lane>/<task>/open-questions`). No
 `findings.md`: engram is the one store, and `hw` has already pinned your label.
 Without engram, the report carries them. Then `done-invoker "<one paragraph:
-what you established, and the observation ids>"`. Once, last thing.
+what you established, and the observation ids>"` — **at most 900 characters**, counted as characters,
+with no code fences, and each observation named as `#<id>` (the number `mem_save` returned; a summary
+that names none is refused, and one whose ids are not under this lane's project is refused too). Run `done-invoker --check "<the same paragraph>"` first when the close is a
+build: it runs the same gates (the 900 limit, checks.md's verdicts, the design boundary, the plugin
+review proof) and delivers nothing, so a refusal costs no work. Once, last thing.
 
 ## If you get blocked
 Report it blocked. Do not find a way around it, and close with

@@ -85,7 +85,7 @@ if [ "$hook_merge" = 1 ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     blob="$(git cat-file -p ":$f" 2>/dev/null)" || continue  # MUTATION-ANCHOR: 1060-M01
-    first="$(printf '%s\n' "$blob" | head -1)"
+    first="${blob%%$'\n'*}"  # MUTATION-ANCHOR: 1060-M06 — not `printf | head -1`: head quits at line 1 and, under pipefail, the SIGPIPE of a blob over the pipe buffer (16K) made this hook exit 141 on a merge
     case "$f:$first" in
       *.py:*|*:'#!'*python*) printf '%s\n' "$blob" | python3 -I -c 'import ast,sys; ast.parse(sys.stdin.read())' >/dev/null 2>&1 \
                                 || merge_bad="$merge_bad

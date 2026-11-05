@@ -25,6 +25,7 @@ const t3RulingQueueCap = 5
 
 type execState struct {
 	verdict, status, rundir, seq, cwd string
+	vendor                            string // herdr's `agent` for the pane: claude, codex, opencode, pi
 }
 
 // t3WitnessRunDir is witness_run_dir: the run directory at or above cwd, the pane's own run first.
@@ -133,7 +134,8 @@ func (t *t3) executorState(pane string) execState {
 	default:
 		verdict = "working"
 	}
-	return execState{verdict, status, rundir, seq, cwd}
+	return execState{verdict: verdict, status: status, rundir: rundir, seq: seq, cwd: cwd,
+		vendor: jqRawOr(info, "", "result", "agent", "agent")}
 }
 
 // t3RulingRefusal is hw-actions' ruling_refusal: the die() text for a verdict, "" when it would queue.
@@ -340,12 +342,20 @@ func (t *t3) queueRetract(d string, n int64) bool {
 
 // queueClaimAll is ruling_queue_claim_all: every pending ruling, oldest first, each claimed with a
 // rename; the delivery text, and whether there was one.
-func (t *t3) queueClaimAll(d, via string) (string, bool) {
+func (t *t3) queueClaimAll(d, via string) (string, bool) { return t.queueClaimOnly(d, via, nil) }
+
+// queueClaimOnly is queueClaimAll over the pending files in `only` (nil: every one). steerPi claims exactly what it sent:
+// a ruling queued after its read is not in the sent text and must stay pending for the turn end, not be recorded as
+// delivered (Judgment Day, both judges: it was lost).
+func (t *t3) queueClaimOnly(d, via string, only map[string]bool) (string, bool) {
 	t.fs.watch(d)
 	at := t3IsoNow()
 	count := 0
 	first, body := "", ""
 	for _, f := range t3QueuePending(d) {
+		if only != nil && !only[f] {
+			continue
+		}
 		n := f[len(d+"/pending-ruling"):]
 		n = strings.TrimPrefix(n, ".")
 		if n == "" {
@@ -473,6 +483,12 @@ loop:
 		t.die(why)
 	}
 	rundir := st.rundir
+	steer := st.verdict == "working" && st.vendor == "pi" && !t.fs.readonly
+	if dry && steer {
+		t.printf("  would deliver a ruling to %s (pi, working, task %s) NOW, through pi's native steering (it lands after the tool call in flight), and record it in %s/ruling-delivered.N; nothing is queued for the turn end by this dry run\n",
+			pane, st.seq, rundir)
+		return 0
+	}
 	if dry {
 		waiting := len(t3QueuePending(rundir))
 		t.printf("  would queue a ruling for %s (%s, task %s) in %s, behind %d undelivered (cap %d)\n  delivered at its next turn end, or by its done-invoker if it reports first; nothing is queued by this dry run\n",
@@ -501,8 +517,65 @@ loop:
 	}
 	num := entry[strings.LastIndexByte(entry, '.')+1:]
 	t.transcriptAppend(rundir, "RULING-QUEUED", "ruling:"+num+" task="+st.seq, text) // # MUTATION-ANCHOR: 841-Q01
+	if steer {
+		if t.steerPi(pane, rundir, st.seq, num) {
+			return 0
+		}
+	}
 	t.ok("ruling queued for " + pane + " (" + st.verdict + ", task " + st.seq + "), number " + itoa(pos) + " in its queue — delivered at its next turn end, or by its done-invoker if it reports first; either way before the task can close, and after every ruling queued ahead of it. It is NOT delivered yet; " + rundir + "/ruling-delivered." + num + " records it once it lands.")
 	return 0
+}
+
+// queueBody is the delivery text queueClaimAll builds, read WITHOUT claiming: the pending rulings, oldest first, one
+// bare or numbered under the same header; "" when there is none.
+func queueBody(d string) (string, map[string]bool) {
+	count, first, body := 0, "", ""
+	files := map[string]bool{}
+	for _, f := range t3QueuePending(d) {
+		text := mkReadSub(f)
+		if text == "" {
+			continue
+		}
+		files[f] = true
+		count++
+		if count == 1 {
+			first = text
+		}
+		body += "── ruling " + strconv.Itoa(count) + " ──\n" + text + "\n\n"
+	}
+	switch count {
+	case 0:
+		return "", nil
+	case 1:
+		return first, files
+	}
+	return strconv.Itoa(count) + " RULINGS, in the order your brainer sent them. Where a later one disagrees with an earlier one, the later one stands.\n\n" + strings.TrimSuffix(body, "\n\n"), files
+}
+
+// steerPi delivers the queue to a WORKING pi executor now, through pi's own steering: text typed into a pi session while
+// it works is delivered after the tool call in flight, with no wait for a turn end. Measured 2026-11-04: pi turns last
+// hours, four executors held 3-5 queued rulings for over an hour, and the brainer delivered them by hand with
+// `herdr pane send-text`. The route is `herdr agent prompt`, the one channel-send uses for every pane; claude and opencode
+// keep the queue (their gate refuses mid-turn delivery on purpose: a ruling lands where the loop happens to be).
+// ORDER: send, THEN claim. A claim first would record a delivery that did not happen when the send fails; a send first
+// leaves the rulings queued for the turn end if it fails, and claiming after a good send writes the delivered records
+// (via=pi-steer) and removes the pending files THAT WERE SENT, so the turn end finds nothing to repeat and a ruling queued
+// after the read stays pending for it. The window where the turn end claims between the send and the claim can repeat
+// one delivery, never lose one. Returns whether it was delivered.
+func (t *t3) steerPi(pane, rundir, seq, num string) bool {
+	text, sent := queueBody(rundir)
+	if text == "" {
+		return false
+	}
+	msg := "RULING FROM YOUR BRAINER, delivered while you work because it changes the premise of your task. Read it before your next step, and if it contradicts what you have already done, say so rather than quietly redoing it.\n\n" + text
+	out, rc := herdrClient{getenv: t.getenv}.capture("agent", "prompt", pane, msg)
+	if rc != 0 {
+		t.warn("pi steering did not reach " + pane + " (herdr agent prompt exit " + itoa(rc) + ": " + strings.TrimSpace(bashSub(out)) + "): the ruling stays queued and is delivered at its next turn end")
+		return false
+	}
+	t.queueClaimOnly(rundir, "pi-steer", sent)
+	t.ok("ruling " + num + " delivered to " + pane + " NOW through pi's native steering (task " + seq + "); recorded in " + rundir + "/ruling-delivered." + num + " (via=pi-steer), nothing left queued for the turn end")
+	return true
 }
 
 // resumeBlocked is _ruling_resume_blocked: RESUME A TASK THAT REPORTED BLOCKED, in the pane done-invoker kept for it.

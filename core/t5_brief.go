@@ -899,6 +899,48 @@ func (d *dsp) checkBriefAffectedSourceRule() {
 	d.die("the brief's Verification hands `--affected` a source file (" + line + "). It takes a FILE OF CHANGED PATHS, one per line — given a source file it reads its lines as paths, matches nothing, prints nothing and exits 0, which reads as \"my change reaches no partition\" (measured 2026-11-01). NOTHING was built. Write the paths first (`git diff --name-only main > /tmp/changed`) and pass that file.")
 }
 
+// checkBriefAffectedPlaceholder WARNS — it never refuses — when the brief spells `--affected` with a PLACEHOLDER
+// (`--affected <file>`, `--affected <each core file you changed>`) as if it took a source file. MEASURED 2026-11-04
+// (retro of pi-plugins-parity): four briefs carried that spelling in their Limits, an executor read it as "pass a .go
+// file", ran 45 raw `go test -run` and 0 `--affected`, and a stale test went red only in the full gate. A placeholder
+// names nothing on disk, and a shell reads `<file>` as a redirect, so the line does not run. A brief that also spells
+// the route that DOES run (`--affected /tmp/changed`) knows the interface, and is not told. Held by
+// core/t5_brief_test.go (TestBrAffectedPlaceholderWarns).
+func (d *dsp) checkBriefAffectedPlaceholder() {
+	line := d.briefAffectedPlaceholderLine()
+	if line == "" {
+		return
+	}
+	if len(line) > 200 {
+		line = line[:200] + "…"
+	}
+	d.warn("the brief hands `--affected` a placeholder (" + line + ") as if it took a source file. It takes a FILE OF CHANGED PATHS, one per line: `--affected <file>` names nothing on disk and a shell reads `<file>` as a redirect, so the line does not run. Spell the two that do: `git diff --name-only main > /tmp/changed` then `bash setup/go-test-core.sh --affected /tmp/changed` (the same pair setup/go-test-core.sh --help prints).")
+}
+
+// brAffectedPlaceholderRe matches an `--affected` argument that is a placeholder: `<` where a path would start.
+var brAffectedPlaceholderRe = regexp.MustCompile(`--affected(?:=|\s+)['"]?<`)
+
+// brAffectedPathRe matches `--affected` handed anything that is not a placeholder — the brief knows the interface.
+var brAffectedPathRe = regexp.MustCompile(`--affected(?:=|\s+)['"]?[^<\s'"]`)
+
+// briefAffectedPlaceholderLine is the first line of the WHOLE brief that hands `--affected` a placeholder, or "".
+// The whole brief, not only `## Verification`: the four measured briefs carried it in Limits prose.
+func (d *dsp) briefAffectedPlaceholderLine() string {
+	if d.brief == "" || !brReadable(d.brief) {
+		return ""
+	}
+	b, err := os.ReadFile(d.brief)
+	if err != nil || brAffectedPathRe.Match(b) {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if brAffectedPlaceholderRe.MatchString(line) {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
 // checkBriefBrainLanePath WARNS — it never refuses — when a SETUP-lane brief names `brain/setup/CLAUDE.md`, the
 // brain root's spelling of the setup lane file. Inside a setup worktree that path does not exist; there the file is
 // `setup/CLAUDE.md`, repo-relative. 126 briefs carried the unopenable one (measured 2026-11-01);
@@ -910,11 +952,58 @@ func (d *dsp) checkBriefBrainLanePath() {
 		return
 	}
 	b, err := os.ReadFile(d.brief)
-	if err != nil || !brRelativeBrainLanePathRe.Match(b) {
+	if err != nil {
 		return
 	}
-	d.warn("the brief names brain/setup/CLAUDE.md, which does not exist inside a setup worktree: there the lane file is setup/CLAUDE.md, repo-relative. Point the executor at setup/CLAUDE.md.")
+	if brRelativeBrainLanePathRe.Match(b) {
+		d.warn("the brief names brain/setup/CLAUDE.md, which does not exist inside a setup worktree: there the lane file is setup/CLAUDE.md, repo-relative. Point the executor at setup/CLAUDE.md.")
+	}
+	// AND A BRAIN-ROOT PATH NAMED AS A PLACE TO EDIT IS THE BRAINER'S CHECKOUT, not the executor's tree: inside a setup
+	// worktree the tree to edit is the worktree itself, named repo-relative (measured 2026-11-04: a brief's "edit … under
+	// <brain root>" sent an executor to cd into the brainer's checkout and commit on its main).
+	if n, where := d.brainRootEditTarget(b); n > 0 {
+		d.warn("line " + strconv.Itoa(n) + " tells this executor to edit " + where + ", which is the BRAINER's checkout: the tree this executor edits is its own worktree, and a path in the worktree is named repo-relative. setup/commit-tree refuses a repository that is not HW_WORKDIR (measured 2026-11-04: a task commit landed on the brainer's main).")
+	}
 }
+
+// brBrainRootEditTarget is the first line of a brief body that names the BRAIN ROOT and an edit verb: a line number and
+// the form it spelled, or 0. Reading there is fine (the lane file, a decision, a brief); editing there is not the
+// executor's to do. The root is the dispatch's own (never a literal path: the export ships this code to other roots).
+func (d *dsp) brainRootEditTarget(b []byte) (int, string) {
+	roots := d.brainRootForms()
+	if len(roots) == 0 {
+		return 0, ""
+	}
+	for i, line := range strings.Split(string(b), "\n") {
+		if !brEditVerbRe.MatchString(line) {
+			continue
+		}
+		for _, r := range roots {
+			if strings.Contains(line, r) {
+				return i + 1, r
+			}
+		}
+	}
+	return 0, ""
+}
+
+// brainRootForms is the brain root as a brief may spell it: the absolute path, `~/<rest>` and `$HOME/<rest>` when it
+// lives under HOME.
+func (d *dsp) brainRootForms() []string {
+	root := d.c.brain
+	if root == "" {
+		return nil
+	}
+	out := []string{root}
+	if home := d.c.home; home != "" && strings.HasPrefix(root, home+"/") {
+		rest := strings.TrimPrefix(root, home)
+		out = append(out, "~"+rest, "$HOME"+rest)
+	}
+	return out
+}
+
+// brEditVerbRe is the edit verb a line must carry to be a place-to-edit rather than a place-to-read.
+var brEditVerbRe = regexp.MustCompile(`(?i)\b(edit|edits|editing|write|writes|writing|create|creates|creating|modify|modifies|modifying|appends?|append to|change|changes|patch|commits?)\b`)
 
 // brRelativeBrainLanePathRe matches the unopenable RELATIVE spelling; an occurrence preceded by `/` is part of an
 // absolute path and exists.
@@ -986,7 +1075,9 @@ func (d *dsp) checkBriefContract() {
 	d.checkBriefHeavyRule()
 	d.checkBriefGoTestRule()
 	d.checkBriefAffectedSourceRule()
+	d.checkBriefAffectedPlaceholder()
 	d.checkBriefBrainLanePath()
+	d.warnTaskOverlap() // two live tasks in one file: a warning, never a refusal (2026-11-04)
 	decls := d.loadBriefDecls()
 	inferred := brTaskKindFromName(d.task)
 	if decls == "" {
@@ -1425,7 +1516,7 @@ func (d *dsp) checkSecrets() {
 		rc := run(&buf, "ensure")
 		d.err.Write(buf.Bytes())
 		if rc != 0 {
-			d.die("the brief's secrets: (" + d.brSecrets + ") need the Bitwarden vault unlocked and it is not. NOTHING was built. A person, once: secret-unlock --setup (the LaunchAgent then keeps it unlocked). Or pass --no-handle-check.")
+			d.die("the brief's secrets: (" + d.brSecrets + ") need the Bitwarden vault unlocked and it is not. NOTHING was built. A person, once: secret-unlock --setup (a scheduled `secret-unlock --auto` then keeps it unlocked). Or pass --no-handle-check.")
 		}
 	}
 	// out="$(hw-secret check items 2>&1)"

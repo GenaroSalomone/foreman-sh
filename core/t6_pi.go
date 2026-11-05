@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -35,8 +36,10 @@ type piState struct {
 // (setup/decisions.md): build and design/audit run deepseek-v4.1-flash, and fall to v4-pro on a MODEL error (never on a
 // spent quota: the cap is shared dollars); review keeps glm-5.3-flash with that same v4-pro fallback; explore is
 // unchanged and mechanical, on the build model, moves with it but keeps the flash fallback. Thinking stays by kind
-// (explore off, everything else low): measured on 2026-11-01, pi clamps deepseek-v4.1-flash's off and minimal up to
-// low and its medium up to high, so only low and high are real levels there.
+// (explore off, everything else low). MEASURED 2026-11-04, pi's get_state over RPC mode, per requested level on
+// deepseek-v4.1-flash: off→low, minimal→low, low→low, medium→high, high→high, xhigh→max, max→max. THREE rungs are real —
+// low, high and max — not two: the 2026-11-01 ruling measured only up to high, and xhigh/max are not clamped away. `off`
+// and `minimal` are still clamped up to low. See piThinkingMeasured.
 const (
 	piModelDesign      = "opencode-go/deepseek-v4.1-flash"
 	piModelBuild       = "opencode-go/deepseek-v4.1-flash"
@@ -51,6 +54,174 @@ const (
 
 	piEngramProxyLine = "pi extension hw_engram (setup/pi/hw-executor.ts; raw mcp__engram__* refused)"
 )
+
+// THE SUBAGENTS' TIERS. A Claude agent file names an alias (haiku, sonnet, opus), never a pi model, and pi-subagents'
+// runtime-agent API takes a model and a thinking level per agent. These are the pi models an alias resolves to when
+// the lane names no profile: the roster's own ladder, cheapest first. Costs measured in the model catalog 2026-11-04,
+// per Mtok in/out: deepseek-v4.1-flash 0.15/0.60, glm-5.3-flash 0.15/0.50, deepseek-v4-pro 0.66/1.98 — cost alone
+// does not separate the two flashes, so the split follows the roster's roles (build/explore flash, review glm,
+// fallback pro) and the thinking levels follow the shape of 2026-11-04: explore off/low, build and review medium/high.
+const (
+	piSubagentHaiku  = "opencode-go/deepseek-v4.1-flash"
+	piSubagentSonnet = "opencode-go/glm-5.3-flash"
+	piSubagentOpus   = "opencode-go/deepseek-v4-pro"
+)
+
+// piTier is what one alias resolves to: the pi model and the thinking level its child is started with ("inherit" =
+// pi's own default for that model).
+type piTier struct{ Model, Thinking string }
+
+// piTierNames are the Claude aliases a pi dispatch resolves; `fable` and a claude-* id have no pi mapping and are said
+// so in the receipt rather than guessed.
+var piTierNames = []string{"haiku", "sonnet", "opus"}
+
+func piDefaultTiers() map[string]piTier {
+	return map[string]piTier{
+		"haiku":  {piSubagentHaiku, "off"},
+		"sonnet": {piSubagentSonnet, "medium"},
+		"opus":   {piSubagentOpus, "high"},
+	}
+}
+
+// piSubagentProfile is the lane's `pi_subagent_models` over the defaults: `alias=model|thinking` pairs, keyed by
+// tier or by an agent's name (an agent entry outranks its file).
+func (d *dsp) piSubagentProfile() map[string]piTier {
+	prof := piDefaultTiers()
+	for _, pair := range vdIFSFields(d.c.t.get(d.proj, "pi_subagent_models")) {
+		k, v, _ := strings.Cut(pair, "=")
+		if k == "" || v == "" {
+			continue
+		}
+		model, thinking, _ := strings.Cut(v, "|")
+		prof[k] = piTier{orDefaultStr(model, "inherit"), orDefaultStr(thinking, "inherit")}
+	}
+	return prof
+}
+
+// piSubagentResolve is the resolution order of 2026-11-04, per agent: the lane's entry for the agent's name, then the
+// entry for the alias its file names, then a pi id the file names itself, then the lane's `subagent_model` (the
+// default). ok=false means the specialist runs on the executor's model, and why names what had no pi mapping.
+func (d *dsp) piSubagentResolve(agent, fileModel string) (tier piTier, why string, ok bool) {
+	prof := d.piSubagentProfile()
+	if t, found := prof[agent]; found && agent != "" && !has(piTierNames, agent) {
+		return t, "the lane's pi_subagent_models entry for " + agent, t.Model != "" && t.Model != "inherit"
+	}
+	alias := strings.ToLower(strings.TrimSpace(fileModel))
+	if alias != "" {
+		if t, found := prof[alias]; found && has(piTierNames, alias) {
+			return t, "the file's model: " + alias, t.Model != "" && t.Model != "inherit"
+		}
+		if strings.Contains(alias, "/") && rePiID.MatchString(alias) {
+			return piTier{Model: alias, Thinking: "inherit"}, "the pi model the file names", true
+		}
+		return piTier{}, "the file's model: " + alias + " has no pi mapping", false
+	}
+	// no model: in the file — the lane's subagent default, Claude's CLAUDE_CODE_SUBAGENT_MODEL
+	sm := orDefaultStr(d.subagentModel, orDefaultStr(d.c.t.get(d.proj, "subagent_model"), "inherit"))
+	if t, found := prof[sm]; found && has(piTierNames, sm) {
+		return t, "the lane's subagent_model: " + sm, t.Model != "" && t.Model != "inherit"
+	}
+	return piTier{}, "the lane's subagent_model: " + sm + " has no pi mapping", false
+}
+
+// piSubagentModelsEnv is HW_PI_SUBAGENT_MODELS: the whole profile as `key=model|thinking` pairs plus `default=<tier>`
+// (the tier an agent with no model: runs on; `inherit` for none). hw-executor.ts registers each specialist with the
+// model and thinking this resolves, so the split Claude has by alias holds on pi. Sorted, so the same lane exports the
+// same bytes.
+func (d *dsp) piSubagentModelsEnv() string {
+	prof := d.piSubagentProfile()
+	keys := make([]string, 0, len(prof))
+	for k := range prof {
+		if k == "default" { // reserved: the lane's subagent_model decides it, never a profile key
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, k+"="+orDefaultStr(prof[k].Model, "inherit")+"|"+orDefaultStr(prof[k].Thinking, "inherit"))
+	}
+	sm := orDefaultStr(d.subagentModel, orDefaultStr(d.c.t.get(d.proj, "subagent_model"), ""))
+	def := "inherit"
+	if has(piTierNames, sm) {
+		def = sm
+	}
+	return strings.Join(append(parts, "default="+def), ",") // no blanks: hwEnvArgs word-splits its --env values
+}
+
+// piSubagentTiersLine is the profile as the manifest and the preamble say it: every tier with the model and thinking it
+// resolves, every agent the lane classifies by name (the explore class cheap, the build/review class strong), and what an
+// agent with no model: runs on.
+func (d *dsp) piSubagentTiersLine() string {
+	prof := d.piSubagentProfile()
+	var parts []string
+	for _, k := range piTierNames {
+		if t, ok := prof[k]; ok {
+			parts = append(parts, k+"→"+t.Model+"|"+t.Thinking)
+		}
+	}
+	var agents []string
+	for k := range prof {
+		if !has(piTierNames, k) && k != "default" {
+			agents = append(agents, k)
+		}
+	}
+	sort.Strings(agents)
+	var byAgent []string
+	for _, k := range agents {
+		byAgent = append(byAgent, k+"→"+prof[k].Model+"|"+prof[k].Thinking)
+	}
+	def := "the executor's"
+	if sm := orDefaultStr(d.subagentModel, orDefaultStr(d.c.t.get(d.proj, "subagent_model"), "")); has(piTierNames, sm) {
+		def = "subagent_model " + sm
+	}
+	out := strings.Join(parts, ", ") + "; no model: → " + def
+	if len(byAgent) > 0 {
+		out += "; by agent " + strings.Join(byAgent, ", ")
+	}
+	return out
+}
+
+// piThinkingMeasured is what pi REALLY runs per requested level, per model: MEASURED 2026-11-04 with pi's own get_state in
+// RPC mode (no prompt, so no model call), the reading the 2026-11-01 ruling took with pi.getThinkingLevel(). A level the
+// model does not expose is not refused — pi runs the nearest one it has, which is why `off` is a REQUEST and the receipt
+// compares it with what ran (t6_pi_launch.go piReceiptThinking).
+var piThinkingMeasured = map[string]map[string]string{
+	"deepseek-v4.1-flash": {"off": "low", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max"},
+}
+
+// piThinkingRuns is the level pi runs when asked for `asked` on `model`: the level, and whether it is measured at all
+// (an unmeasured model is not guessed at).
+func piThinkingRuns(model, asked string) (string, bool) {
+	if asked == "" {
+		return "", false
+	}
+	name := model
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if i := strings.Index(name, ":"); i >= 0 {
+		name = name[:i]
+	}
+	levels, ok := piThinkingMeasured[name]
+	if !ok {
+		return "", false
+	}
+	runs, ok := levels[asked]
+	return runs, ok
+}
+
+// piThinkingAboveRuling is a level above the pi-roster ruling of 2026-11-01 (build low, design/audit high): nothing has
+// measured xhigh or max for this lane's work, and the ruling's numbers — 120 runs, 18 models (setup/decisions.md) — do not
+// cover them. They run, as max; the warning says the choice is unmeasured, not forbidden.
+func piThinkingAboveRuling(level string) bool {
+	switch level {
+	case "xhigh", "max":
+		return true
+	}
+	return false
+}
 
 // piApplyModelDefault is _apply_pi_model_default: no lane pins a pi model (a lane's own pin is its vendor's id, cleared
 // for an explicit --agent pi), so the roster decides by the brief's kind.
@@ -595,6 +766,8 @@ func (d *dsp) piManifestLines(dir string) string {
 	} else {
 		sub = "NOT LOADED — pi-subagents is not installed under " + d.piSubagentsDir() + ", or lacks src/api/required-child-extensions.js, so a child could not carry the write guard (pi install npm:pi-subagents)"
 	}
+	// the tiers a specialist's model: resolves to, whether or not pi-subagents is loaded here
+	sub += "; subagent tiers " + d.piSubagentTiersLine()
 	proc := d.piOpsProcedureFile()
 	// A dry run has no worktree yet: the lane's checkout is the stand-in for what the worktree will carry.
 	co := orDefaultStr(d.c.checkout(d.proj), dir)
@@ -609,7 +782,7 @@ func (d *dsp) piManifestLines(dir string) string {
 		spec = "the lane's .claude/agents are NOT delegable: pi-subagents is not loaded (see the pi subagents line), and the preamble says so"
 	default:
 		var parts []string
-		const how = "Claude's tool names mapped to pi's in memory, the executor's model instead of the file's model:, nothing copied or rewritten"
+		how := "Claude's tool names mapped to pi's in memory, the file's model: resolved to a pi model (see pi subagents), nothing copied or rewritten"
 		switch {
 		case reg != "" && acct == "":
 			parts = append(parts, "REGISTERED with pi-subagents by hw-executor.ts at session start: "+reg+" (read from "+d.piLaneClaudeAgentDir(co)+" via HW_PI_CLAUDE_AGENT_DIRS; "+how+")")

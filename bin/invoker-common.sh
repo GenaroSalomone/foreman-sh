@@ -299,7 +299,7 @@ invoker_publication_note() {
 # would keep the invoker "running" until the pane died — the same 137, later.
 #
 # A close that fails is not silent: `<state_dir>/close-failed` holds the exit
-# status and the log path, and the operator's toast says so. The report itself
+# status and the log path, and `hw status` shows it. The report itself
 # was delivered before this ran, which is the only fact exit 0 claims.
 INVOKER_CLOSER_SH='
 pid="$1"; state="$2"; hw="$3"; shift 3
@@ -314,7 +314,6 @@ rc=0
 if [ "$rc" != 0 ]; then
   printf "rc=%s\nat=%s\nlog=%s\nthe report was delivered; hw %s exited %s and the pane may still be open\n" \
     "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state/close.log" "$*" "$rc" > "$state/close-failed"
-  herdr notification show "executor close FAILED (exit $rc)" --body "hw $* — see $state/close.log" --sound request >/dev/null 2>&1 || true
 fi
 printf "%s\n" "$rc" > "$state/close-rc"
 '

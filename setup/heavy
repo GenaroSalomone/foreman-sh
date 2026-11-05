@@ -2,8 +2,8 @@
 # setup/heavy [--tag T] -- <cmd…>   run <cmd> holding one heavy-run slot.   setup/heavy --status   who holds, who waits.
 # setup/heavy --short [--max S] [--tag T] -- <cmd…>   the SHORT LANE: a job of seconds does not queue behind a run of hours.
 #
-# THE MACHINE RUNS ONE HEAVY JOB AT A TIME (HW_HEAVY_SLOTS=2 opts into a second while it has memory: two heavy
-# runs lagged the Mac on 2026-10-18, so one is the default). A subject, the fast gate, `go test` of a
+# ONE HEAVY JOB PER SLOT, TWO SLOTS BY DEFAULT (HW_HEAVY_SLOTS=1 asks for one; a second slot only while memory is free: two
+# heavy runs lagged the Mac on 2026-10-18, hence the memory gate, not one slot). A subject, the fast gate, `go test` of a
 # package, a release cut: run it as `setup/heavy -- <cmd>`, never behind a hand-typed lock and never behind a
 # `pgrep -f` count (that one matches the waiters' own `zsh -c until …` loops and every waiter waits on the others:
 # measured 2026-10-18, four executors ~2h17).
@@ -11,9 +11,11 @@
 #   slot 1   ~/.cache/hw/heavy.lock     (the lock the briefs already running take by hand: compatible)
 #   slot 2   ~/.cache/hw/heavy.lock.2   only while >= HW_HEAVY_MIN_FREE (20) percent of memory is free
 #            (macOS `memory_pressure`, Linux MemAvailable/MemTotal); HW_HEAVY_SLOTS (default 1; 2 opens slot 2) is how many slots exist
-#   queue    ~/.cache/hw/heavy.queue/   one ticket per waiter, FIFO: only the head may take a free slot, and only
-#            the head reclaims a slot whose owner pid is dead (so two reclaimers never race). A ticket whose pid
-#            is dead is dropped.
+#   queue    ~/.cache/hw/heavy.queue/   one ticket per waiter, FIFO: the head takes the first slot it may use, and
+#            only the head reclaims a slot whose owner pid is dead (so two reclaimers never race). A waiter behind a
+#            head that CANNOT use a free slot (its ticket's third line names how many slots its run may use) takes
+#            that slot itself: a free slot 2 behind a head launched with one slot is capacity nobody can reach.
+#            A ticket whose pid is dead is dropped.
 #   log      ~/.cache/hw/heavy.log      `start end wall rc tag cmd` per run: the measured durations a report quotes
 #
 # THE SHORT LANE (`--short [--max S]`, default and cap 120 s) runs BESIDE a holder of slot 1, never behind the slot queue:
@@ -28,11 +30,11 @@
 # While it waits it says, once a minute on stderr, who holds each slot (tag, pid, elapsed) and your position.
 # It releases on exit and on INT/TERM and exits with the command's own code (128+N for a signal). It removes only a lock whose
 # owner file names its own pid. On INT/TERM the command's process group is TERMed and CONTinued (a TERM stays pending on a process the
-# one-test-at-a-time guard SIGSTOPped), then KILLed after HW_HEAVY_KILL_GRACE (3 s): nothing it started outlives it. When the command
+# memory guard SIGSTOPped), then KILLed after HW_HEAVY_KILL_GRACE (3 s): nothing it started outlives it. When the command
 # ends by itself, whatever it left in its group is KILLed too (a leftover the guard stops later would have no one to resume it).
 #
 # A run that cannot make progress says so (2026-10-20: a release cut sat frozen 15 h, SIGSTOPped by the
-# `one-test-at-a-time` LaunchAgent, and nobody was told). This file only READS that guard's published numbers; it never
+# machine's memory guard, and nobody was told). This file only READS that guard's published numbers; it never
 # touches the guard or its thresholds.
 #   preflight  as the command starts, free memory under HW_HEAVY_RESUME_FREE (26, the guard's resume line) prints one
 #              warning and the 5 biggest processes by RSS, then starts anyway; HW_HEAVY_REQUIRE_FREE=1 refuses (exit 75)
@@ -61,11 +63,11 @@ set -u
 D="${HW_HEAVY_DIR:-$HOME/.cache/hw}"
 Q="$D/heavy.queue"
 LOG="$D/heavy.log"
-SLOTS="${HW_HEAVY_SLOTS:-1}"
+SLOTS="${HW_HEAVY_SLOTS:-2}"   # two is the default: one run at a time lost a whole slot whenever a waiter was launched without the variable
 MINFREE="${HW_HEAVY_MIN_FREE:-20}"
 POLL="${HW_HEAVY_POLL:-5}"
 REPORT="${HW_HEAVY_REPORT:-60}"
-RESUME_FREE="${HW_HEAVY_RESUME_FREE:-26}"        # one-test-at-a-time resumes over this; a mirror of its number, not a control of it
+RESUME_FREE="${HW_HEAVY_RESUME_FREE:-26}"        # the memory guard resumes over this; a mirror of its number, not a control of it
 WATCH="${HW_HEAVY_WATCH:-60}"
 FROZEN_MIN="${HW_HEAVY_FROZEN_ALERT_MIN:-20}"
 ALERTS="$D/heavy-alerts.log"
@@ -95,6 +97,26 @@ EOF
 }
 
 lockdir() { if [ "$1" = 1 ]; then printf '%s' "$D/heavy.lock"; else printf '%s' "$D/heavy.lock.$1"; fi; }
+# EVERY SLOT THAT EXISTS, not just the ones THIS caller may use. `--status` used to list only 1..HW_HEAVY_SLOTS of the caller,
+# so a bare `--status` (SLOTS=1) showed slot 2 free while setup-effort-help held heavy.lock.2 (2026-11-04 11:51).
+slot_dirs() {  # in numeric order, no repeats: 1..SLOTS first, then every heavy.lock[.N] on disk
+  local k d n
+  {
+    for k in $(seq 1 "$SLOTS"); do printf '%s\n' "$k"; done
+    for d in "$D"/heavy.lock "$D"/heavy.lock.*; do  # MUTATION-ANCHOR: 1040-H19
+      [ -e "$d" ] || continue
+      n="${d##*/heavy.lock}"; n="${n#.}"
+      case "$n" in ''|*[!0-9]*) continue ;; esac   # heavy.lock and heavy.lock.<n> only; heavy.lock.stale.<pid> is not a slot
+      printf '%s\n' "$n"
+    done
+  } | sort -n -u
+}
+ticket_slots() {  # <ticket path> → the slots the ticket's run may use; a ticket from before the third line keeps its old reach
+  local f="$1" a="" b="" t=""
+  [ -r "$f" ] || { printf '%s' "$SLOTS"; return; }
+  { IFS= read -r a; IFS= read -r b; IFS= read -r t; } < "$f" 2>/dev/null || true
+  case "$t" in ''|*[!0-9]*) printf '%s' "$SLOTS" ;; *) printf '%s' "$t" ;; esac
+}
 # A zombie answers `kill -0` and will never run again (2026-10-30: a queued run, a zombie under a stopped zsh, held the queue 35 min): it is dead.
 alive() {
   local st
@@ -197,7 +219,7 @@ live_tickets() {  # [queue dir] live ticket names, oldest first; a ticket whose 
 status_text() {  # <my ticket or ''>
   local k pos=0 i=0 t total free
   free="$(free_pct)"
-  for k in $(seq 1 "$SLOTS"); do
+  for k in $(slot_dirs); do
     printf 'heavy: slot %s: %s' "$k" "$(holder_text "$k")"
     [ "$k" -ge 2 ] && printf '  (needs >= %s%% memory free; now %s%%)' "$MINFREE" "$free"
     printf '\n'
@@ -389,7 +411,7 @@ set -m   # the command gets its own process group, so a signal reaches everythin
 stamp="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)"
 [ -n "$stamp" ] || stamp="$(now)000000000"
 MYT="$stamp.$$"
-{ printf '%s\n' "$TAG"; run_of_env; printf '\n'; } > "$MYQ/$MYT"
+{ printf '%s\n' "$TAG"; run_of_env; printf '\n'; printf '%s\n' "$SLOTS"; } > "$MYQ/$MYT"   # line 2 ends before line 3: run_of_env writes no newline
 
 # A slot whose owner pid is dead is the head's to reclaim, and it says so. An owner file that never appeared is
 # given a minute: the lock is made with mkdir, and the owner written a moment later.
@@ -418,12 +440,18 @@ reclaim_at() {  # <lock dir> <what to call it>
 [ "$WHEN_IDLE" = 0 ] || acct_begin   # the wait for a slot is not the caller's running time either
 last=0; first=1
 while :; do
-  head="$(live_tickets "$MYQ" | head -n 1)"  # MUTATION-ANCHOR: 1040-H01
+  # ONE READ, NEVER A PIPE INTO `head`. `live_tickets … | head -n 1` made the ticket printer write into a closed pipe once the
+  # head left, and one gate log carried 394 `Broken pipe` lines for 6 filter calls (2026-11-04).
+  live="$(live_tickets "$MYQ")"  # MUTATION-ANCHOR: 1040-H01
+  head="${live%%$'\n'*}"  # MUTATION-ANCHOR: 1040-H20
   if [ "$head" = "$MYT" ] && [ "$SHORT" = 1 ]; then
     reclaim_at "$SL" "the short lane"
     if mkdir "$SL" 2>/dev/null; then HOLD="$SL"; break; fi  # MUTATION-ANCHOR: 1040-H14
-  elif [ "$head" = "$MYT" ]; then
+  elif [ "$SHORT" = 0 ]; then  # MUTATION-ANCHOR: 1040-H18
+    # THE HEAD KEEPS PRIORITY FOR EVERY SLOT IT MAY USE. A waiter behind a head that CANNOT use a free slot takes it: four
+    # waiters sat behind a head launched without HW_HEAVY_SLOTS=2 while slot 2 was free at 38% memory (2026-11-04 15:40Z).
     k=1
+    [ "$head" = "$MYT" ] || { k=$(( $(ticket_slots "$MYQ/$head") + 1 )); [ "$k" -ge 2 ] || k=2; }
     while [ "$k" -le "$SLOTS" ]; do
       L="$(lockdir "$k")"
       reclaim_if_stale "$k"
@@ -466,7 +494,7 @@ preflight() {
 }
 
 # What the command left in its process group when it ended. A child that outlives its parent is reparented to launchd and, if the
-# one-test-at-a-time guard then SIGSTOPs it, nobody will ever resume it (the 72 orphans of 2026-10-30): so nothing of the command's
+# memory guard then SIGSTOPs it, nobody will ever resume it (the 72 orphans of 2026-10-30): so nothing of the command's
 # group outlives the run. KILL reaches a stopped process too.
 kill_group_leftovers() {  # <group leader pid>
   kill -KILL -- "-$1" 2>/dev/null || true  # MUTATION-ANCHOR: 1134-M05
@@ -491,7 +519,7 @@ tree_frozen() {  # <root pid> -> 0 when the tree is mostly stopped
 alert_frozen() {  # <since-epoch> <now-epoch>
   local mins=$(($2 - $1)) msg rc cs
   mins=$((mins / 60))
-  msg="heavy: $TAG (pid $CPID) has been FROZEN since $(hhmm "$1") ($mins min): its process tree is stopped (state T), most likely by the one-test-at-a-time guard; free memory is ${3}% and the guard resumes over ${RESUME_FREE}%"
+  msg="heavy: $TAG (pid $CPID) has been FROZEN since $(hhmm "$1") ($mins min): its process tree is stopped (state T), most likely by a memory guard on this machine; free memory is ${3}% and the guard resumes over ${RESUME_FREE}%"
   printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$msg" >> "$ALERTS"
   [ -n "${HW_INVOKER_PANE:-}" ] || return 0
   cs="${HW_HEAVY_CHANNEL_SEND:-$HEAVY_BIN/channel-send}"
@@ -502,8 +530,10 @@ watch_frozen() {  # <command pid> <lock dir>
   local since="" alerted=0 t
   while kill -0 "$1" 2>/dev/null; do
     sleep "$WATCH" & wait $!
-    if [ -e "$2/paused" ]; then since=""; alerted=0; rm -f "$2/frozen"; continue; fi  # a pause this made itself is not the guard's freeze  # MUTATION-ANCHOR: 1131-H04
-    if tree_frozen "$1"; then
+    # a pause this made itself is not the guard's freeze. The marker is read AFTER the sample, not before it: `ps` of the whole machine takes
+    # seconds on a loaded one, and a pause that began inside it (the marker is written BEFORE the stop) is seen as a stopped tree; checked
+    # only before, a zero-minute threshold alerted at once (1131, 2026-11-05). A pause in progress falls to the clearing branch below.
+    if tree_frozen "$1" && [ ! -e "$2/paused" ]; then  # MUTATION-ANCHOR: 1131-H04
       t="$(wnow)"
       if [ -z "$since" ]; then since="$t"; alerted=0; printf '%s\n' "$since" > "$2/frozen.$$" && mv -f "$2/frozen.$$" "$2/frozen"; fi
       if [ "$alerted" = 0 ] && [ $((t - since)) -ge $((FROZEN_MIN * 60)) ]; then  # MUTATION-ANCHOR: 1040-H11  # MUTATION-ANCHOR: 1040-H13

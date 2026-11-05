@@ -179,9 +179,71 @@ func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string
 	}
 	how := "the way your vendor records an invocation"
 	if proof != nil && proof.Vendor == "pi" {
-		how = "the way pi records one: read the skill's SKILL.md (plugins/<plugin>/skills/<skill>/SKILL.md), or run the agent with the `subagent` tool, agent that full name AND a task AND async:false (a management call such as action:get, an async launch, and workflow:true or a script run nothing foreman can see)"
+		how = "the way pi records one: read the skill's SKILL.md (plugins/<plugin>/skills/<skill>/SKILL.md), or run the agent with the `subagent` tool, agent that full name AND a task AND async:false — a pstack agent, with pstack's `agent` tool, subagent_type that name and no run_in_background (a management call such as action:get, an async launch, and workflow:true or a script run nothing foreman can see)"
 	}
 	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each over your committed range under its full name (plugin:skill), "+how+" — or write a line  review-skip: <skill> — <why>  for a piece your vendor cannot run (no such agent registered, not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
+}
+
+// JudgmentDayGate holds a done report to the Judgment Day its closing declared: one call to EACH judge the receipt
+// names, proved by the executor's own transcript. It exists because the two names in the prompt were not a proof: the
+// measured pi session in testdata/transcripts/pi_judges.jsonl runs the builtin `reviewer` in a judge's slot, so a
+// report (or a proof) that says jd-judge-a says a specialist of that name ran, not that two blind judges did. A vendor
+// where the judges are not registered never writes the receipt row, so its closing is not held to this.
+func JudgmentDayGate(judges, summary string, proof *TranscriptProof, why string) (note string, err error) {
+	var missing, shown []string
+	for _, n := range strings.Split(judges, ",") {
+		if n == "" {
+			continue
+		}
+		shown = append(shown, n)
+		switch {
+		case proof != nil && proof.Has(n): // a call that ran and was answered
+		case proof == nil && mentionsToken(summary, n): // no transcript: the report's words, and the note says unverified
+		default:
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) == 0 {
+		if proof == nil {
+			return "\njudgment day: unverified: transcript not reachable (" + why + "); the report text names each judge", nil
+		}
+		return "", nil
+	}
+	proofIs := "your transcript (and your subagents') has no call to " + strings.Join(missing, " or ")
+	if proof == nil {
+		proofIs = "unverified: transcript not reachable (" + why + "), and the report does not name " + strings.Join(missing, " or ") + " as a whole token"
+	}
+	how := "the way your vendor records one"
+	if proof != nil && proof.Vendor == "pi" {
+		how = "the way pi records one: the `subagent` tool with agent that name, a task, and async:false — or, for a pstack agent, pstack's `agent` tool with subagent_type that name and no run_in_background (a management call such as action:get, an async launch, and workflow:true or a script run nothing foreman can see)"
+	}
+	return "", die("%s", fmt.Sprintf("this task's closing declared Judgment Day with its judges %s, and %s. Launch each judge over `git diff \"$(hw review-range)\"..HEAD`, %s. The builtin `reviewer` is not a judge where those agents are registered — a report is not a run. If a judge cannot be launched, that is a blocker: report it with done-invoker --blocked. NOTHING was sent or marked.", strings.Join(shown, " and "), proofIs, how))
+}
+
+// SerialJudgesWarning is the WARNING (never a refusal) a done-invoker prints when a declared Judgment Day was proved
+// by the right judges in the wrong SHAPE: both names are in the transcript, but no single call launched them together.
+// MEASURED 2026-11-04 (retro of no-notifications): the two judges ran one after the other, twice, ~13 min lost each
+// time. The proof already read for the gate carries the groups; this only asks whether one group holds every judge.
+// Empty when the judges ran together, when fewer than two are declared, or when the proof does not hold them all (the
+// gate itself refuses that case).
+func SerialJudgesWarning(judges string, proof *TranscriptProof) string {
+	if proof == nil {
+		return ""
+	}
+	var names []string
+	for _, n := range strings.Split(judges, ",") {
+		if n == "" {
+			continue
+		}
+		if !proof.Has(n) {
+			return ""
+		}
+		names = append(names, n)
+	}
+	if len(names) < 2 || proof.Together(names...) {
+		return ""
+	}
+	return fmt.Sprintf("the declared Judgment Day judges (%s) were proved one call after another, not in ONE parallel call. Two blind judges must be launched in the same call — one `subagent({workflow:\"parallel\",args:{tasks:[…]}})` in pi, one assistant message with both Agent/Task tool_uses in Claude — or the second waits for the first and the minutes are paid twice (measured 2026-11-04, no-notifications: ~13 min). This is a WARNING, not a refusal: the report is delivered. Distil it into decisions.md and run the next Judgment Day in one call.", strings.Join(names, ", "))
 }
 
 // reviewSkipped is a `review-skip: <skill>` line naming the skill (full name or its bare skill part).

@@ -89,6 +89,22 @@ func (a *app) outboxQuiet(proj string) int {
 	return 0
 }
 
+// vaultQuiet: ONE LINE while the LaunchAgent's last --auto left an alert open (core/hw_secret.go vaultAlert): the vault
+// failed to unlock, or its session ends within two hours. Silent when healthy, and when the file is absent.
+func (a *app) vaultQuiet() int {
+	dir := os.Getenv("HW_SECRET_DIR")
+	if dir == "" {
+		dir = os.Getenv("HOME") + "/.cache/hw"
+	}
+	b, err := os.ReadFile(dir + "/vault-alert-state")
+	if err != nil || strings.TrimSpace(string(b)) == "" {
+		return 0
+	}
+	a.printf("\n")
+	a.warn("vault: " + strings.TrimSpace(string(b)) + " — " + dir + "/vault-alerts.log")
+	return 0
+}
+
 // ── _tabs_quiet ─────────────────────────────────────────────────────────────
 
 // jqLines is a jq program that prints one string per element of `.result.<key>[]`: the lines it printed before an

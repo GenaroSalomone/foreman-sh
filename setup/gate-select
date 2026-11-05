@@ -20,6 +20,9 @@ touched_budget_seconds:
     touched <name> <path>                  run it beside the fast gate
     touched-skipped <name> <secs> <path>   over the budget: left to the full run
 
+    A subject of seconds (`touched_cheap_seconds`, default 15) is never cut, and the cap spends itself cheapest-first,
+    so the subjects it cuts are the slowest.
+
     (`# gate-when-body: <regex>` selects a subject when a CHANGED SUBJECT's text matches: 1004, for every one that builds a mutant)
 
     reference <name> <path>  a SLOW subject that declares `# gate-reference:` and
@@ -329,17 +332,34 @@ def slow_hits(root, changed, trigger):
 
 
 def touched(root, changed, trigger):
-    """The slow subjects that name a changed path, ranked and cut by budget."""
+    """The slow subjects that name a changed path: the cheap ones always, the rest cut SLOWEST FIRST.
+
+    A subject that runs in seconds is never cut. Cutting it saves the budget nothing worth the red it prevents, and on
+    2026-11-04 (vault-stays-unlocked) the cheapest-first cut took 1009-1012 and 1223 — each 3 to 13 s — while slower
+    subjects ran: with the budget spent on cheap ones, the cut landed in name order, not on the expensive tail. Now:
+    every subject at or under `touched_cheap_seconds` (default 15) runs whatever is left of the cap, and the cap is
+    spent by considering the SLOWEST candidate first, so what gets cut is always the most expensive thing left."""
     budgets = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))
     cap = budgets.get("touched_budget_seconds", 180)
+    cheap = float(budgets.get("touched_cheap_seconds", 15))
     found, slow, pinned = slow_hits(root, changed, trigger)
-    spent = 0.0
-    for n in sorted(found, key=lambda n: (n not in pinned, found[n][0], slow[n], n)):
-        if n in pinned or spent + slow[n] <= cap:
+    kept = {n for n in found if n in pinned or slow[n] <= cheap}  # MUTATION-ANCHOR: 510-T01
+    spent = sum(slow[n] for n in kept)  # a pinned subject is never cut, and its cost is still what the run pays
+    cut = set()
+    # ASCENDING: the cheapest of what is left goes first, so the subjects that end up CUT are the ones that do not fit —
+    # the slowest. (The 2026-11-04 defect was the other direction of the same fact: the pinned goldens spent the cap
+    # before the 3-13 s subjects were even considered.)
+    for n in sorted((n for n in found if n not in kept), key=lambda n: (slow[n], n)):  # MUTATION-ANCHOR: 510-T02
+        if spent + slow[n] <= cap:
             spent += slow[n]
-            print("touched %s %s" % (n, found[n][1]))
+            kept.add(n)
         else:
+            cut.add(n)
+    for n in sorted(found, key=lambda n: (slow[n], n)):
+        if n in cut:
             print("touched-skipped %s %s %s" % (n, slow[n], found[n][1]))
+        else:
+            print("touched %s %s" % (n, found[n][1]))
     return 0
 
 

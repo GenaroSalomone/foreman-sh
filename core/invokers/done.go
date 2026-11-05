@@ -25,8 +25,23 @@ const (
 	exitHeldForRuling      = 6
 )
 
-// doneUsage is what `done-invoker --help` prints; the unknown-option refusal quotes the same line.
+// doneUsage is the one-line shape the unknown-option refusal quotes; --help prints doneHelp, which starts with it.
 const doneUsage = "Usage: done-invoker [--blocked] [--retask] \"<one paragraph>\" (at most 900 characters, counted as characters; artifacts are counted from $HW_ARTIFACTS, do not pass them)"
+
+// doneHelp is what `done-invoker --help` prints: every shape it takes, and what --check does. A run that met an
+// "unknown option: --help" (2026-11-04) asked for exactly this and got a refusal instead.
+const doneHelp = doneUsage + `
+
+FLAGS
+  --blocked    file the task as blocked instead of done: only the summary and the engram id are checked
+  --retask     claim the next task number, when the brainer re-tasked you WITHOUT hw next moving the counter
+  --check      run every close gate the real call would run and print what they accept or refuse, WITHOUT
+               delivering a report, writing the done marker or closing the pane. It validates the summary's
+               900-character limit, checks.md (one row per requirement of the brief, verdict exactly pass,
+               fail or unresolved), a brief's declared design boundary, and the plugin review proof.
+               Same flags and summary as the real call: run it first, because a refusal found there costs nothing.
+  --help, -h   this text, wherever it stands among the flags
+`
 
 // Done is bin/done-invoker.
 func Done(c *Ctx, args []string) int {
@@ -65,7 +80,7 @@ lane_get "$2" engram 2>/dev/null`
 
 func (c *Ctx) done(args []string) error {
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
-		c.printf(c.Stdout, "%s\n", doneUsage)
+		c.printf(c.Stdout, "%s\n", doneHelp)
 		return nil
 	}
 	if c.get("HW_SANDBOX") == "1" { // 322-M02
@@ -81,6 +96,7 @@ func (c *Ctx) done(args []string) error {
 
 	status := "done"
 	retask := false
+	checkOnly := false
 loop:
 	for len(args) > 0 {
 		switch args[0] {
@@ -89,6 +105,11 @@ loop:
 		case "--done":
 		case "--retask":
 			retask = true
+		case "--check":
+			checkOnly = true
+		case "--help", "-h": // anywhere among the flags, not only first: that is how a run met "unknown option: --help"
+			c.printf(c.Stdout, "%s\n", doneHelp)
+			return nil
 		default:
 			break loop
 		}
@@ -101,7 +122,7 @@ loop:
 			args = args[1:]
 		case args[0] == "-":
 		case strings.HasPrefix(args[0], "-"):
-			return die("unknown option: %s — this invoker takes NO flags but [--blocked] and [--retask], and the status is that flag, not a value. Silently folding it into the summary is how a blocked task gets filed as done. %s", args[0], doneUsage)
+			return die("unknown option: %s — this invoker takes NO flags but [--blocked], [--retask], [--check] and [--help], and the status is that flag, not a value. Silently folding it into the summary is how a blocked task gets filed as done. %s", args[0], doneUsage)
 		}
 	}
 
@@ -135,28 +156,36 @@ loop:
 		}
 	}
 
-	if c.has("HW_INVOKER_PANE") && c.get("HW_INVOKER_PANE") == "" { // 68-M01 68-M02
-		return die("HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (`unset HW_INVOKER_PANE`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean.")
-	}
-
-	c.adoptEnvFile()
-	if err := c.runLockAcquire(); err != nil { // 66-M06
-		return err
-	}
+	// --check validates and delivers nothing: it takes no run lock, and it does not need a brainer address.
 	var reportingMarker string
-	c.cleanups = append(c.cleanups, func() {
-		if reportingMarker != "" {
-			os.Remove(reportingMarker)
+	if checkOnly {
+		c.adoptEnvFile()
+	} else {
+		if c.has("HW_INVOKER_PANE") && c.get("HW_INVOKER_PANE") == "" { // 68-M01 68-M02
+			return die("HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (`unset HW_INVOKER_PANE`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean.")
 		}
-	})
-
-	pane := c.get("HW_INVOKER_PANE")
-	if pane == "" {
-		return die("no HW_INVOKER_PANE — this pane was not launched by hw with --here, so there is no brainer to notify. Report to %s in this pane instead.", c.operator())
+		c.adoptEnvFile()
+		if err := c.runLockAcquire(); err != nil { // 66-M06
+			return err
+		}
+		c.cleanups = append(c.cleanups, func() {
+			if reportingMarker != "" {
+				os.Remove(reportingMarker)
+			}
+		})
 	}
+	pane := c.get("HW_INVOKER_PANE")
 	herdrPane := c.get("HERDR_PANE_ID")
-	if herdrPane == "" {
-		return die("no HERDR_PANE_ID — not running inside a herdr pane.")
+	if !checkOnly {
+		if pane == "" {
+			return die("no HW_INVOKER_PANE — this pane was not launched by hw with --here, so there is no brainer to notify. Report to %s in this pane instead.", c.operator())
+		}
+		if herdrPane == "" {
+			return die("no HERDR_PANE_ID — not running inside a herdr pane.")
+		}
+	}
+	if err := c.refuseForeignPaneRun(); err != nil { // 1241-M01: the pane is this run's
+		return err
 	}
 
 	task := c.or("HW_TASK", "unknown")
@@ -164,8 +193,12 @@ loop:
 	workdir := c.or("HW_WORKDIR", "<unknown>")
 	artifacts := c.or("HW_ARTIFACTS", workdir)
 
+	// What --check prints when every gate accepted: one line per gate it actually ran, so the rehearsal says what it proved.
+	var preflight []string
 	if n := utf8.RuneCountInString(summary); n > doneMaxChars {
 		return die("summary is %d chars, limit is %d. This is a pointer, not the report — mem_save the report and name its id here.", n, doneMaxChars)
+	} else {
+		preflight = append(preflight, sprintf("summary: %d characters, limit %d", n, doneMaxChars))
 	}
 	if strings.Contains(summary, "```") {
 		return die("no code fences. The findings belong in engram, not in this message.")
@@ -218,6 +251,13 @@ loop:
 			if !ok {
 				return die("none of the observations you named exists under project %s:%s. A save that landed elsewhere (manual-save-*, another project) is not this lane's report. Save again with project: %s and session_id: %s, name the returned id as #<id>, and re-run. NOTHING was sent or marked.", label, seenNote, label, sess)
 			}
+			shown := ""
+			for _, id := range ids {
+				shown += " #" + id
+			}
+			preflight = append(preflight, sprintf("engram:%s exists under project %s", shown, label))
+		} else {
+			preflight = append(preflight, "engram: this run has no hw- session, so no observation id is owed")
 		}
 	}
 
@@ -227,6 +267,7 @@ loop:
 			if err := DesignGate(artifacts, boundary); err != nil {
 				return err
 			}
+			preflight = append(preflight, "design: judged APPROVED for boundary "+boundary)
 		}
 	}
 	// -- a build closes on checks.md
@@ -238,6 +279,9 @@ loop:
 				return err
 			}
 			checksNote = n
+			preflight = append(preflight, "checks.md: "+strings.TrimPrefix(strings.TrimSpace(n), "checks.md:")+" (it has rows and every verdict is one of pass, fail, unresolved)")
+		} else {
+			preflight = append(preflight, "checks.md: not owed by this task's brief")
 		}
 	}
 
@@ -251,7 +295,41 @@ loop:
 				return err
 			}
 			checksNote += note
+			unverified := ""
+			if proof == nil {
+				unverified = " (unverified: no transcript reachable, so the report must name each skill)"
+			}
+			preflight = append(preflight, "plugin review: "+skills+" proved"+unverified)
+		} else {
+			preflight = append(preflight, "plugin review: none owed by this task's closing")
 		}
+	}
+
+	// -- a pi closing that declared Judgment Day closes on one call to each judge it named
+	if status == "done" {
+		if judges := receiptValue(receipt, "jd_agents_t"+c.taskSeq()); judges != "" {
+			key := "jd_agents_t" + c.taskSeq()
+			proof, why := c.ReadTranscriptProof(receipt, receiptAt(receipt, key))
+			note, err := JudgmentDayGate(judges, summary, proof, why)
+			if err != nil {
+				return err
+			}
+			checksNote += note
+			if w := SerialJudgesWarning(judges, proof); w != "" { // 1247-M01: warns, never refuses
+				c.errf("done-invoker: warning: %s\n", w)
+				checksNote += "\njudgment day: WARNING — " + w
+			}
+		}
+	}
+
+	// --check IS THE REHEARSAL: every gate above ran, and nothing below runs at all.
+	if checkOnly {
+		c.printf(c.Stdout, "check ok — every close gate this task would run accepts the call:\n")
+		for _, l := range preflight {
+			c.printf(c.Stdout, "  · %s\n", l)
+		}
+		c.printf(c.Stdout, "NOTHING was sent, no done marker was written and nothing was closed: --check delivers nothing. Run the same command without --check to report.\n")
+		return nil
 	}
 
 	retaskNote := ""
@@ -333,7 +411,7 @@ loop:
 		engramLabel = project
 	}
 
-	var head, tail, sound string
+	var head, tail string
 	nfiles := itoa(files)
 	switch {
 	case status == "done":
@@ -348,7 +426,6 @@ loop:
 			"for `hw next` and expiry closes it automatically.\n" +
 			"A failed close leaves the pane open and a `close-failed` file (and `close.log`) beside the\n" +
 			"run's done marker — this report is delivered and safe and only the close failed, NOT lost."
-		sound = "done"
 	case chainingLease || legacyKeep:
 		kept := "the legacy keep-pane contract, and nothing expires it"
 		if chainingLease {
@@ -361,7 +438,6 @@ loop:
 			"The pane is kept by " + kept + ". It is NOT marked waiting for a ruling, so\n" +
 			"`hw ruling` will not resume it: re-task it with `hw next`, or close it with\n" +
 			"`hw done " + project + " " + task + " --blocked`."
-		sound = "request"
 	default:
 		head = "[executor BLOCKED and waiting — " + project + ":" + task + ", pane " + herdrPane + "]"
 		tail = "Partial output: " + nfiles + " file(s) in " + artifacts + "\n\n" +
@@ -371,7 +447,6 @@ loop:
 			"resumes THIS task in the same session, and it reports again with its own\n" +
 			"done-invoker. `hw done " + project + " " + task + " --blocked` closes it now; unanswered, `hw reap`\n" +
 			"closes it after " + c.or("HW_BLOCKED_WAIT_HOURS", "24") + "h (HW_BLOCKED_WAIT_HOURS)."
-		sound = "request"
 	}
 
 	envelope := c.envelopePrefix() + ":done"
@@ -408,9 +483,6 @@ loop:
 		c.errf("done-invoker: warning: completion metadata is unverified (herdr-rpc exit %d); continuing to the brainer without a verified record.\n", pubRC)
 	}
 	pubNote := publicationNote(pubRC)
-
-	c.quiet("herdr", "notification", "show", "executor "+status+" · "+project+":"+task,
-		"--body", nfiles+" file(s) in "+filepath.Base(artifacts)+" — notifying brainer in "+pane, "--sound", sound)
 
 	route := c.route()
 	if err := c.outboxPut(envelope, msg, status); err != nil {

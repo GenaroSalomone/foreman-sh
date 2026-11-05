@@ -46,15 +46,30 @@
 //      ones the worktree carries (`HW_PI_CLAUDE_AGENT_DIRS`, PATH-style) and this
 //      registers each as a RUNTIME agent through pi-subagents' process-local event,
 //      translated in memory at session start (`claudeAgentDefinition`): nothing is
-//      copied or rewritten on disk.
+//      copied or rewritten on disk. The file's `model:` (a Claude alias) is resolved
+//      through the lane's tier profile (`HW_PI_SUBAGENT_MODELS`) to a pi model and
+//      thinking level, and the receipt's pi_specialists row names what each runs.
 //
-// Inert outside an hw executor (HW_TASK/HW_RUN/HW_WORKDIR), except the guard,
-// which is policy for any session that loads this file.
+//   7. THE BACKGROUND SHELL. pi's `bash` has no run_in_background, so `bash_background`
+//      starts a command, returns at once, and wakes the session with its exit code and
+//      log path when it ends — Claude's background-Bash notification, on pi. The
+//      sleep-poll rule (setup/guards/deny-executor-sleep-poll.py) is asked for pi's
+//      `bash` too, and its refusal names that tool instead of a flag pi does not have.
+//
+//   8. THE EXPLORATION BUDGET. Per request, the root session counts pi's discovery
+//      results (read, grep, find, ls) and, past 3 lookups or 40 KB of text, steers
+//      the run ONCE toward the explorer with pi's native sendMessage(deliverAs:
+//      "steer"). hw arms it only where an explorer exists (HW_PI_EXPLORE_AGENT).
+//
+// Inert outside an hw executor (HW_TASK/HW_RUN/HW_WORKDIR) — no turn end, no receipt,
+// no runtime record — except the guards, which are policy for any session that loads
+// this file, the account's global rules, and the background-shell tool, a plain tool
+// whose log then lives under the system temp dir.
 
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -230,7 +245,8 @@ function absolutePath(p: string, cwd: string): string {
 // argument). A bash is judged by the paths its text NAMES, not by what it runs: this is a string-level guard, not a
 // sandbox. A path assembled at run time (`cat $(printf .e)nv`) is not seen; `--sandbox` denies the OS-level read of
 // ~/.ssh (bin/hw-sandbox) and nothing else (docs/pi-vendor.md, "The secret read guard").
-function homeDir(): string { return userInfo().homedir; }
+const HOME_DIR = (() => { try { return userInfo().homedir; } catch { return process.env.HOME || ""; } })();
+function homeDir(): string { return HOME_DIR; }
 const SECRET_SUFFIXES: Array<[string, string]> = [[".db", "*.db"], [".credentials", "*.credentials"], [".pem", "*.pem"], [".key", "*.key"]];
 // A path (absolute, lexically normalised) → the rule it breaks, or null. `bareHidden`: a bare `.foo.key` in a
 // command is far likelier a jq/JSON expression than a file, so the suffix rules skip it (`.env*` and `.credentials` do not).
@@ -537,6 +553,40 @@ async function brainVerdict(payload: Record<string, unknown>): Promise<string | 
   }
 }
 
+// THE SLEEP-POLL RULE IS ASKED HERE TOO (pi parity, 2026-11-04). It is the one hw rule that lives in a personal
+// guard rather than an exported one (setup/export/manifest), so the copy THIS TREE carries is the one asked:
+// a session's rule is versioned with the session. It also judges a raw foreground `go test` over core/ now, which
+// is why a command with neither `sleep` nor `tail` can still be sent to it (retro-fixes-rc3). (The personal ~/.claude/hooks copy is Claude's and is not a
+// fallback on purpose — measured while building this: it is an older revision, so a pi executor would be
+// judged by whatever age that install happened to have.) With no copy in the tree the rule does not run here,
+// and the receipt says so once rather than letting a pi executor believe it was judged.
+// The payload's `background_tool` is what makes the refusal name pi's own tool: the Python says
+// run_in_background because that is Claude's flag, and pi has no such flag — it has `bash_background`.
+const SLEEP_POLL_GUARD = join(BRAIN, "setup", "guards", "deny-executor-sleep-poll.py");
+let sleepPollMissing = false;
+function sleepPollGuard(): string | null {
+  if (existsSync(SLEEP_POLL_GUARD)) return SLEEP_POLL_GUARD;
+  if (!sleepPollMissing) {
+    sleepPollMissing = true;
+    receiptRow("pi_sleep_poll", `NOT LOADED — no ${SLEEP_POLL_GUARD} in this tree, so the sleep-poll rule does not run for pi here`, "hw-executor.ts judge");
+  }
+  return null;
+}
+function sleepPollVerdict(command: string, bg: boolean): string | null {
+  // The guard's own early exit, asked before the interpreter starts: a command with none of these words is never
+  // judged by it (measured by Judgment Day round 1: a python start on every bash call is a cost for nothing).
+  if (!command.includes("sleep") && !command.includes("tail") && !command.includes("pgrep") && !/go\s+test/.test(command)) return null;
+  const file = sleepPollGuard();
+  if (!file) return null;
+  const r = spawnSync(process.platform === "win32" ? "python3" : "/usr/bin/python3", [file], {
+    input: JSON.stringify({ tool_name: "Bash", tool_input: { command, run_in_background: bg }, background_tool: BG_TOOL, cwd: process.cwd() }),
+    encoding: "utf8", timeout: 20000,
+  });
+  if (r.error) return `Blocked: the sleep-poll guard ${file} could not run (${r.error.message}), so this command was not judged.`;
+  if (r.status === 2) return (r.stderr || "").trim() || `Blocked by the sleep-poll guard ${file}`;
+  return null;
+}
+
 // THE TWO GLOBAL HOOKS EVERY AGENT IS UNDER (~/.claude/hooks, one Python rule set each, the same
 // one Claude, Codex and OpenCode ask): a Keychain secret read, a blind pkill/killall.
 // Exit 2 is their refusal; a python that could not start reached no verdict, so it refuses too.
@@ -554,6 +604,35 @@ function globalHookVerdict(command: string): string | null {
     if (r.error) return `Blocked: the global guard ${h.file} could not run (${r.error.message}), so this command was not judged.`;
     if (r.status === 2) return (r.stderr || "").trim() || `Blocked by ${h.file}`;
   }
+  return null;
+}
+
+// A SETUP EXECUTOR DOES NOT WRITE IN THE BRAINER'S CHECKOUT OF BRAIN. Claude loads setup/guards/deny_setup_brain_writes.py
+// from the tracked .claude/settings.json; pi has no settings hooks, so this asks the same file with the same payload.
+// The file decides from the environment (HW_TASK + HW_PROJECT=setup), so for any other lane it is a no-op, and it fails
+// closed: a python that could not start, or a guard that is missing, reached no verdict and refuses.
+const SETUP_BRAIN_GUARD = join(BRAIN, "setup", "guards", "deny_setup_brain_writes.py");
+function setupBrainGuardOn(): boolean {
+  return isHwExecutor() && process.env.HW_PROJECT === "setup";
+}
+function setupBrainVerdict(payload: Record<string, unknown>): string | null {
+  if (!existsSync(SETUP_BRAIN_GUARD)) {
+    return `Blocked: the setup brain-write guard ${SETUP_BRAIN_GUARD} is not in this tree, so this call was not judged.`;
+  }
+  const r = spawnSync(process.platform === "win32" ? "python3" : "/usr/bin/python3", [SETUP_BRAIN_GUARD], {
+    input: JSON.stringify(payload), encoding: "utf8", timeout: 20000,
+  });
+  if (r.error) return `Blocked: the setup brain-write guard could not run (${r.error.message}), so this call was not judged.`;
+  if (r.status === 2) return (r.stderr || "").trim() || `Blocked by ${SETUP_BRAIN_GUARD}`;
+  // FAIL CLOSED: a guard that crashed (exit 1 with a traceback) or was killed (status null) reached no verdict, and only
+  // exit 0 is the guard saying "not mine / allowed" (Judgment Day, judge A).
+  if (r.status !== 0) return `Blocked: the setup brain-write guard ended with ${r.status === null ? "a signal" : "exit " + r.status} and reached no verdict, so this call was not judged.`;
+  try {
+    const out = JSON.parse(r.stdout || "{}");
+    if (out?.hookSpecificOutput?.permissionDecision === "deny") {
+      return String(out.hookSpecificOutput.permissionDecisionReason || `Blocked by ${SETUP_BRAIN_GUARD}`);
+    }
+  } catch { /* no JSON on stdout: the guard said nothing */ }
   return null;
 }
 
@@ -577,9 +656,11 @@ export async function judge(toolName: string, input: any, cwd: string): Promise<
     return `Blocked: the ${LANE} read-only guard could not read the ${toolName} arguments. Refused rather than guessed.`;
   }
   const own = ownWorkdirProtected();
-  const commandIn = (command: string): string | null => {
+  const commandIn = (command: string, background = false): string | null => {
     const g = globalHookVerdict(command);
     if (g) return g;
+    const sp = sleepPollVerdict(command, background);
+    if (sp) return sp;
     // A product executor's shell is judged with its OWN worktree taken out of the picture: the lane's
     // checkout and its sibling worktrees stay protected, the worktree it was given does not.
     const judged = own ? withoutOwnWorkdir(command, own) : command;  // # MUTATION-ANCHOR: 991-M06
@@ -601,6 +682,10 @@ export async function judge(toolName: string, input: any, cwd: string): Promise<
     return null;
   };
   // What the tool writes or runs, however its arguments are named.
+  // `bash_background` runs its command in the background BY DEFINITION: the sleep-poll rule judges it with
+  // Claude's run_in_background=true semantics (a long sleep or a short poll is fine there, an unbounded poll
+  // loop or a follow is not).
+  const backgroundTool = toolName === BG_TOOL;
   let paths: string[] = [], commands: string[] = [];
   if (kind === "bash") {
     commands = [typeof input.command === "string" ? input.command : ""];
@@ -618,8 +703,18 @@ export async function judge(toolName: string, input: any, cwd: string): Promise<
     }
     paths = s.paths; commands = s.commands;
   }
-  for (const c of commands) { const r = commandIn(c); if (r) return r; }
+  for (const c of commands) { const r = commandIn(c, backgroundTool); if (r) return r; }
   for (const p of paths) { const r = pathIn(p); if (r) return r; }
+  if (setupBrainGuardOn()) {  // # MUTATION-ANCHOR: 1241-M01
+    for (const c of commands) {
+      const r = setupBrainVerdict({ tool_name: "Bash", tool_input: { command: c }, cwd });
+      if (r) return r;
+    }
+    for (const p of paths) {
+      const r = setupBrainVerdict({ tool_name: "Write", tool_input: { file_path: absolutePath(p, cwd) }, cwd });
+      if (r) return r;
+    }
+  }
   if (brainGuardOn()) {  // # MUTATION-ANCHOR: 988-M01
     for (const c of commands) {
       const r = await brainVerdict({ tool_name: "Bash", tool_input: { command: c }, cwd });
@@ -759,29 +854,79 @@ export function mapClaudeTools(list: string[]): { tools: string[]; web: boolean;
 }
 
 // A Claude agent file → pi-subagents' runtime definition. `parse` is pi-subagents' own frontmatter reader, so the
-// file is read the way a pi agent file is. `model` is left out on purpose: a Claude alias (sonnet, opus) is not a pi
-// model, and a definition without one follows the executor's. No `tools:` line means every tool, as in Claude.
-export function claudeAgentDefinition(content: string, parse: any, webAccessDir?: string) {
+// file is read the way a pi agent file is. `model:` IS carried, through the lane's tier profile (setup/decisions.md
+// 2026-11-04): a Claude alias is not a pi model, so `piTierFor` resolves it (the lane's entry for the agent, then the
+// entry for the alias, then a pi id the file names itself, then the lane's default) and the definition is registered
+// with that pi model and thinking level. No `tools:` line means every tool, as in Claude.
+export type PiTier = { model?: string; thinking?: string };
+
+export function piSubagentTiers(env: Record<string, string | undefined> = process.env): Map<string, PiTier> {
+  const out = new Map<string, PiTier>();
+  for (const pair of String(env.HW_PI_SUBAGENT_MODELS || "").split(",").map((p) => p.trim()).filter(Boolean)) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const [model, thinking] = pair.slice(eq + 1).split("|");
+    out.set(pair.slice(0, eq), {
+      model: model && model !== "inherit" ? model : undefined,
+      thinking: thinking && thinking !== "inherit" ? thinking : undefined,
+    });
+  }
+  return out;
+}
+
+// piTierFor resolves one agent's model against the profile. `why` is the fact the receipt's pi_specialists row names:
+// where the model came from, or why there is none (the child then runs on the executor's, Claude's own `inherit`).
+const PI_TIERS = ["haiku", "sonnet", "opus"];
+// the same shape the lane table validates (core/t6_pi.go rePiID): a file's `model:` that is not one is not carried
+const PI_MODEL_ID = /^[a-z][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export function piTierFor(agent: string, fileModel: string | undefined, tiers: Map<string, PiTier> = piSubagentTiers()): { tier: PiTier; why: string } {
+  if (![...PI_TIERS, "default"].includes(agent)) {
+    const named = tiers.get(agent);
+    if (named) return { tier: named, why: "the lane's entry for the agent" };
+  }
+  const named = String(fileModel ?? "").trim();
+  const alias = named.toLowerCase();
+  if (alias) {
+    const hit = tiers.get(alias);
+    if (hit && PI_TIERS.includes(alias)) return { tier: hit, why: `model: ${alias}` };
+    // a pi id is carried AS THE FILE WROTE IT: the lane table admits uppercase in the id half, and lowering it
+    // would register a model pi does not have while the same value in projects.json is honoured
+    if (PI_MODEL_ID.test(named)) return { tier: { model: named }, why: `model: ${named}` };
+    return { tier: {}, why: `model: ${named} has no pi mapping` };
+  }
+  const fallback = tiers.get("default")?.model;
+  if (fallback && PI_TIERS.includes(fallback)) {
+    return { tier: tiers.get(fallback) ?? {}, why: `no model:, the lane's subagent_model ${fallback}` };
+  }
+  return { tier: {}, why: "no model:, the lane inherits" };
+}
+
+export function claudeAgentDefinition(content: string, parse: any, webAccessDir?: string, tiers?: Map<string, PiTier>) {
   const { frontmatter: fm, body } = parse.parseFrontmatter(content);
   if (!fm?.name || !fm?.description) return null;
   const declared = parse.parseFrontmatterList(fm.tools);
   const mapped = declared ? mapClaudeTools(declared) : { tools: undefined, web: false, dropped: [] as string[] };
   const web = mapped.web && !!webAccessDir; // no pi-web-access on this machine: the web tools have nothing to come from
   const tools = web ? mapped.tools : mapped.tools?.filter((t) => t !== "fetch_content");
+  const resolved = piTierFor(String(fm.name), fm.model, tiers);
+  const model = resolved.tier.model;
   return {
     name: String(fm.name),
     definition: {
       description: String(fm.description), systemPrompt: body, defaultAsync: false,
+      ...(model ? { model, ...(resolved.tier.thinking ? { thinking: resolved.tier.thinking } : {}) } : {}),
       ...(tools ? { tools } : {}), ...(web ? { extensions: [webAccessDir] } : {}),
     },
+    resolved,
     dropped: web || !mapped.web ? mapped.dropped : [...mapped.dropped, "WebFetch (pi-web-access is not installed)"],
   };
 }
 
 // Registers every specialist of HW_PI_CLAUDE_AGENT_DIRS and returns what it did, for the receipt. A name a `.pi/agents`
 // copy already provides (PI_SUBAGENT_EXTRA_AGENT_DIRS) is left to that copy.
-async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ registered: string[]; skipped: string[]; dropped: string[]; disposers: Array<() => void> }> {
-  const out = { registered: [] as string[], skipped: [] as string[], dropped: [] as string[], disposers: [] as Array<() => void> };
+async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ registered: string[]; skipped: string[]; dropped: string[]; runs: string[]; disposers: Array<() => void> }> {
+  const out = { registered: [] as string[], skipped: [] as string[], dropped: [] as string[], runs: [] as string[], disposers: [] as Array<() => void> };
+  const tiers = piSubagentTiers();
   const dirs = (process.env.HW_PI_CLAUDE_AGENT_DIRS || "").split(":").filter(Boolean);
   if (!dirs.length || typeof pi.events?.emit !== "function") return out;
   const parse = await import(pathToFileURL(join(sub, "src", "agents", "frontmatter.js")).href);
@@ -799,7 +944,7 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
       const base = f.slice(0, -3);
       if (NOT_SPECIALIST.test(base)) continue;
       try {
-        const def = claudeAgentDefinition(readFileSync(join(d, f), "utf8"), parse, webAccessDir);
+        const def = claudeAgentDefinition(readFileSync(join(d, f), "utf8"), parse, webAccessDir, tiers);
         if (!def) { out.skipped.push(`${base} (no name/description)`); continue; }
         if (seen.has(def.name)) continue;
         seen.add(def.name);
@@ -809,6 +954,8 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
         if (!req.result) { out.skipped.push(`${def.name} (pi-subagents did not answer)`); continue; }
         if (!req.result.ok) { out.skipped.push(`${def.name} (${String(req.result.error?.message ?? req.result.error).slice(0, 80)})`); continue; }
         out.registered.push(def.name);
+        const t = def.resolved.tier;
+        out.runs.push(`${def.name}→${t.model ? t.model + (t.thinking ? "|" + t.thinking : "") : "the executor's model"} (${def.resolved.why})`);
         out.disposers.push(() => req.result.registration?.dispose?.());
         for (const t of def.dropped) if (!out.dropped.includes(t)) out.dropped.push(t);
       } catch (e: any) { out.skipped.push(`${base} (${String(e?.message ?? e).slice(0, 80)})`); }
@@ -817,7 +964,295 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
   return out;
 }
 
+// ── 7. A SHELL COMMAND THAT WAKES THE SESSION WHEN IT ENDS ──────────────────
+// pi's `bash` tool has no run_in_background (dist/core/tools/bash.js: `command`, `timeout`), so a pi executor
+// that must wait on its own long run had nothing to wait WITH: MEASURED 2026-11-04 (executor
+// effort-help-matches-code). It hand-rolled `nohup bash -c 'while kill -0 $PID; do sleep 20; done; …' &`
+// plus a foreground `timeout 3000 tail -f log | grep -m1 GATE-DONE`, and its own reasoning named pi's
+// `bg_wait` — which waits for background SUBAGENTS, not for a shell job.
+//
+// The shape is the one gentle-pi (MIT, read as a reference, 2026-11-04) settled on and pi has no native
+// version of: a job registry that owns live jobs, one notice per job when it ends on its own, a bounded tail
+// (the last 20 lines), the full output in a file the `read` tool can open, and a cap on how many run at once.
+// What is NOT ours, on purpose: the command runs through pi's OWN shell operations
+// (`createLocalBashOperations` from the host package) rather than a hand-built spawn, so the configured shell,
+// the stdin/argv command transport, the detached process group and the process-tree kill are the ones native
+// `bash` uses; and the wake is pi's own `sendMessage` with triggerTurn, the call the turn end below already
+// makes. What differs from gentle-pi: our write and secret guards judge the command before it starts (its
+// registry leaves that to its callers), the notice travels as an `hw-bg-exit` custom message instead of
+// through its delivery router, and there is no `monitor`/`job_list` — a line-per-event tool and a second
+// source of truth for ids the model already holds are not what this executor was missing.
+const BG_TOOL = "bash_background";
+const BG_STOP_TOOL = "job_stop";
+const BG_MAX_RUNNING = 25;      // gentle-pi's cap; a runaway fleet is not a wait
+const BG_TAIL_LINES = 20;
+
+interface BgJob {
+  id: string; label: string; command: string; cwd: string; log: string;
+  started: number; status: "running" | "exited" | "stopped" | "failed";
+  exit?: number | null; error?: string; ended?: number;
+  tail: string[]; partial: string; abort: any; dropped: number;
+}
+
+// The jobs this process started. Module level because the turn end reads them too; only the executor's
+// session registers the tools, and a subagent's child is not the executor (see the factory).
+const BG_JOBS = new Map<string, BgJob>();
+let bgSeq = 0;   // module level: a re-registration must not reuse an id a live job still answers to
+
+export function bgLogDir(dir: string | null): string {
+  return dir ? join(dir, "bg") : join(tmpdir(), "hw-pi-bg");
+}
+
+// The line the messages quote: a command's first non-empty line, capped.
+export function firstLine(text: string, cap = 120): string {
+  const one = String(text).split("\n").map((l) => l.trim()).filter(Boolean)[0] ?? "";
+  return one.length > cap ? one.slice(0, cap - 1) + "…" : one;
+}
+
+// ONE output stream, judged line by line, for BOTH readers of it: the wake's tail and the log file. A
+// recursive `grep -r KEY .` that names no secret path is allowed by the guard on purpose — the foreground
+// path then removes the protected file's lines from the tool result (`redactSecretLines`, the `tool_result`
+// handler). A background job has no tool result, and its log outlives the turn, so the same filter runs
+// HERE: a line that a protected file answered with never reaches the log or the notice (Judgment Day round
+// 1, judge A). `sink.partial` is capped, so newline-free output cannot grow the process's heap.
+export function pushTail(job: { tail: string[]; partial: string; dropped: number }, chunk: string, cwd: string, write: (line: string) => void): void {
+  const keep = (raw: string) => {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const { text, dropped } = redactSecretLines(line, cwd, undefined);
+    if (dropped) { job.dropped += dropped; return; }
+    write(text + "\n");                                    // the log IS the output: never truncated
+    job.tail.push(text.length > 2000 ? "…" + text.slice(-2000) : text);   // the wake's tail is the display
+    if (job.tail.length > BG_TAIL_LINES) job.tail.shift();
+  };
+  const parts = (job.partial + chunk).split("\n");
+  job.partial = parts.pop() ?? "";
+  for (const part of parts) keep(part);
+  if (job.partial.length > 64 * 1024) { keep(job.partial); job.partial = ""; }   // one endless line
+}
+
+function bgTail(job: BgJob): string[] {
+  // an unterminated last line is output too (judges of round 2, both): it is shown, shortened like the rest
+  const lines = job.partial ? [...job.tail, job.partial.length > 2000 ? "…" + job.partial.slice(-2000) : job.partial] : job.tail;
+  return lines.slice(-BG_TAIL_LINES);
+}
+
+function bgRunning(): number {
+  let n = 0;
+  for (const j of BG_JOBS.values()) if (j.status === "running") n++;
+  return n;
+}
+
+// What the session is told when a job ends: what ran, how it ended, its last lines and where the whole
+// output lives — everything needed to act without polling.
+export function bgNotice(job: { id: string; label: string; command: string; exit?: number | null; status: string; error?: string; log: string; seconds: number; lines: string[] }): string {
+  const outcome = job.status === "stopped" ? "was stopped"
+    : job.status === "failed" ? `could not run: ${job.error ?? "unknown error"}`
+    : `exited with code ${job.exit ?? "?"}`;
+  const head = `[hw background] ${job.id} ("${firstLine(job.label, 60)}") ${outcome} after ${job.seconds}s.\ncommand: ${firstLine(job.command)}`;
+  const tail = job.lines.length ? `last ${job.lines.length} line(s) of output:\n${job.lines.join("\n")}` : "no output.";
+  const dropped = (job as { dropped?: number }).dropped ? `\n[hw] ${(job as { dropped?: number }).dropped} line(s) of a protected secret file were removed from this log (secret read guard).` : "";
+  return `${head}\n${tail}${dropped}\nfull output: ${job.log} (read it with the read tool if you need more)`;
+}
+
+// THE HOST'S OWN SHELL OPERATIONS. An extension loaded from a worktree has no node_modules to resolve
+// `@earendil-works/pi-coding-agent` from, so the package is found the way the running process knows it:
+// from the entry script (`argv[1]`, the package's dist/bundle/cli.js) up to the package root. A tree whose
+// host does not expose it falls back to a plain /bin/bash spawn and says so in the receipt.
+const BG_SHELL_ENV = "HW_PI_SHELL_MODULE";   // a test's pointer AT A DIRECTORY (its package name is checked, below)
+let bgOps: { exec: (command: string, cwd: string, options: any) => Promise<{ exitCode: number | null }> } | null = null;
+let bgOpsSource = "";
+// The package root of a path that must be pi itself: the name in its package.json is the identity, never the
+// presence of a file (an inherited env var that names an arbitrary module would decide the shell and the kill).
+function piPackageRoot(from: string): string | null {
+  let dir = from;
+  for (let i = 0; i < 6 && dir && dir !== "/"; i++, dir = dirname(dir)) {
+    const pkg = join(dir, "package.json");
+    if (!existsSync(pkg)) continue;
+    try {
+      if (String(JSON.parse(readFileSync(pkg, "utf8")).name) === "@earendil-works/pi-coding-agent") return dir;
+    } catch { /* not a readable package */ }
+  }
+  return null;
+}
+
+async function shellOperations(): Promise<typeof bgOps> {
+  if (bgOpsSource) return bgOps;
+  const roots: string[] = [];
+  try { const r = piPackageRoot(dirname(realpathSync(process.argv[1] || ""))); if (r) roots.push(r); } catch { /* argv[1] is not a path we can read */ }
+  const hinted = process.env[BG_SHELL_ENV];
+  if (hinted) { try { const r = piPackageRoot(isAbsolute(hinted) ? hinted : resolve(hinted)); if (r) roots.push(r); } catch { /* ignored */ } }
+  const tries = roots.map((r) => join(r, "dist", "index.js"));
+  for (const entry of tries) {
+    try {
+      const mod: any = await import(pathToFileURL(entry).href);
+      if (typeof mod.createLocalBashOperations === "function") {
+        bgOps = mod.createLocalBashOperations();
+        bgOpsSource = entry;
+        receiptRow("pi_background_shell", `native — createLocalBashOperations from ${entry}`, "hw-executor.ts bash_background");  // # MUTATION-ANCHOR: 1235-M01
+        return bgOps;
+      }
+    } catch { /* try the next one */ }
+  }
+  bgOps = null;
+  bgOpsSource = "fallback";
+  receiptRow("pi_background_shell", `NOT NATIVE — no host createLocalBashOperations found (tried ${tries.join(", ") || "nothing"}); a plain /bin/bash spawn runs background jobs`, "hw-executor.ts bash_background");
+  return null;
+}
+
+// The fallback, only for a host that did not hand us its shell operations: same contract.
+function fallbackOps(log: string) {
+  return {
+    exec: (command: string, cwd: string, options: { onData: (d: Buffer) => void; signal?: AbortSignal }) => new Promise<{ exitCode: number | null }>((done, fail) => {
+      const win = process.platform === "win32";
+      const child = spawn(win ? process.env.ComSpec || "cmd.exe" : "/bin/bash", [win ? "/c" : "-c", command], { cwd, detached: !win, stdio: ["ignore", "pipe", "pipe"] });
+      const killTree = () => { try { process.kill(-(child.pid as number), "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* gone */ } } };
+      if (options.signal?.aborted) killTree();   // a stop that landed before the child existed still kills it
+      else options.signal?.addEventListener("abort", killTree, { once: true });
+      child.stdout?.on("data", options.onData);
+      child.stderr?.on("data", options.onData);
+      child.on("error", (e) => fail(e));
+      child.on("close", (code) => done({ exitCode: code }));
+    }),
+  };
+}
+
+function registerBackgroundTools(pi: any, dir: string | null) {
+  pi.registerTool({
+    name: BG_TOOL,
+    label: "Bash (background)",
+    // pi takes the schema as plain JSON Schema (an extension here has no typebox to import), and the model sees
+    // this text: the tool has to say what happens next, or the agent polls.
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The shell command to run in the session's working directory." },
+        label: { type: "string", description: "Short human-readable label, e.g. \"fast gate for this branch\"." },
+      },
+      required: ["command"],
+      additionalProperties: false,
+    },
+    description: "Run a shell command in the background and return at once with a job id. When the command exits this session is woken ONCE, automatically, with its exit code, its last 20 output lines and the path of its full output (pi's answer to Claude's `run_in_background=true`). Do not poll, sleep, `tail -f` or delegate a subagent to wait: the notice is the wait. Put the wait condition inside the command so its exit is the event — `timeout 600 bash -c 'until curl -sf localhost:3000/health; do sleep 2; done'` (the `timeout` is what makes it a bounded wait; an unbounded poll loop or a `tail -f` is refused even here), or `gh run watch <id> --exit-status`. Use it for a long or unknown-duration run — the fast gate, a heavy job, a build, a service — and use `bash` for a finite check you expect within 30 s. Stop it with `job_stop`; at most " + BG_MAX_RUNNING + " run at once.",
+    promptSnippet: "Run a shell command in the background; the session is woken when it exits",
+    async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
+      const command = typeof params?.command === "string" ? params.command : "";
+      const label = typeof params?.label === "string" && params.label.trim() ? params.label.trim() : command;
+      if (!command.trim()) {
+        return { content: [{ type: "text", text: "bash_background needs a `command`." }], isError: true };
+      }
+      if (bgRunning() >= BG_MAX_RUNNING) {
+        return { content: [{ type: "text", text: `${BG_MAX_RUNNING} background jobs are already running; stop one with job_stop first.` }], isError: true };
+      }
+      const dirOf = bgLogDir(dir);
+      const cwd = ctx?.cwd || process.cwd();
+      const id = `bg-${++bgSeq}`;
+      const log = join(dirOf, `${id}.log`);
+      const job: BgJob = { id, label, command, cwd, log, started: Date.now(), status: "running", tail: [], partial: "", abort: new AbortController(), dropped: 0 };
+      try { mkdirSync(dirOf, { recursive: true }); writeFileSync(log, ""); } catch { /* the stream below will say why */ }
+      BG_JOBS.set(id, job);
+      const settle = (status: "exited" | "failed", exit: number | null, error?: string) => {
+        if (job.status !== "running") return;  // an abort already said "stopped"
+        job.status = status; job.exit = exit; job.error = error; job.ended = Date.now();
+        const seconds = Math.max(0, Math.round((job.ended - job.started) / 1000));
+        try { writeAtomic(join(dirOf, `${id}.json`), JSON.stringify({ id, label, command, log, exit, status, error, seconds, ended: job.ended }) + "\n"); } catch { /* evidence, not a dependency */ }
+        receiptRow("pi_background", `${id} ${status === "exited" ? "exit " + exit : "failed: " + (error ?? "")} after ${seconds}s — ${firstLine(command)} (log ${log})`, "hw-executor.ts bash_background");
+        // THE WAKE. deliverAs steer: it joins a turn already running, and triggerTurn starts one when the session
+        // is idle — the same call the turn end makes for a queued ruling, and the same one pi-subagents makes for a
+        // background child. A stopped job says nothing: whoever stopped it already knows.
+        try {
+          Promise.resolve(pi.sendMessage(
+            { customType: "hw-bg-exit", content: bgNotice({ ...job, seconds, lines: bgTail(job) }), display: true,
+              details: { id, label, exit, status, log, seconds } },
+            { triggerTurn: true, deliverAs: "steer" },
+          )).catch(() => { /* the session went away with the job: the .json and the receipt carry the fact */ });
+        } catch { /* same */ }
+      };
+      void (async () => {
+        const ops = (await shellOperations()) ?? fallbackOps(log);
+        const out = createWriteStream(log, { flags: "a" });
+        out.on("error", () => { /* a lost log must not crash the session: the tail survives */ });
+        let decoder = new TextDecoder("utf-8");
+        try {
+          const { exitCode } = await ops.exec(command, cwd, {
+            signal: job.abort.signal,
+            onData: (data: Buffer) => {
+              const text = decoder.decode(data, { stream: true });
+              if (text) pushTail(job, text, cwd, (line) => out.write(line));
+            },
+          });
+          const rest = decoder.decode();
+          if (rest) pushTail(job, rest, cwd, (line) => out.write(line));
+          if (job.partial) { pushTail(job, "\n", cwd, (line) => out.write(line)); }   // the last, unterminated line
+          await new Promise<void>((r) => out.end(r));
+          settle("exited", exitCode);
+        } catch (e: any) {
+          if (job.partial) { pushTail(job, "\n", cwd, (line) => out.write(line)); }   // a stopped or failed job keeps its last line too
+          await new Promise<void>((r) => out.end(r));
+          if (job.status === "running") settle("failed", null, String(e?.message ?? e));
+        }
+      })();
+      return {
+        content: [{ type: "text", text:
+          `Started ${id} ("${firstLine(label, 60)}") in the background.\nlog: ${log}\n` +
+          "You will be woken once, when it exits, with its exit code and its last lines — do not poll, sleep or `tail -f` for it. End your turn, or do other work." }],
+        details: { id, label, log },
+      };
+    },
+  });
+
+  // STOP: a job nobody stops can outlive a whole task. The abort is pi's own — its shell operations kill the
+  // job's whole process tree on that signal, the same kill native `bash` gives the Stop button.
+  pi.registerTool({
+    name: BG_STOP_TOOL,
+    label: "Stop background job",
+    parameters: { type: "object", properties: { job_id: { type: "string", description: "The id bash_background returned, e.g. bg-2." } }, required: ["job_id"], additionalProperties: false },
+    description: "Stop a background job started with bash_background, killing its whole process tree. A stopped job sends no exit notice (whoever stops it already knows), and its log stays on disk.",
+    async execute(_id: string, params: any) {
+      const wanted = typeof params?.job_id === "string" ? params.job_id : "";
+      const job = BG_JOBS.get(wanted);
+      if (!job) return { content: [{ type: "text", text: `No background job ${wanted || "(none named)"} in this session.` }], isError: true };
+      if (job.status !== "running") return { content: [{ type: "text", text: `${job.id} was already ${job.status}.` }], details: { id: job.id, status: job.status } };
+      job.status = "stopped"; job.ended = Date.now();
+      try { job.abort.abort(); } catch { /* the tree is already gone */ }
+      receiptRow("pi_background", `${job.id} stopped by the executor after ${Math.max(0, Math.round((job.ended - job.started) / 1000))}s — ${firstLine(job.command)}`, "hw-executor.ts job_stop");
+      return { content: [{ type: "text", text: `Stopped ${job.id} ("${firstLine(job.label, 60)}"). Its log stays at ${job.log}.` }], details: { id: job.id, status: "stopped" } };
+    },
+  });
+}
+
+// THE LIVE JOBS, for hw's turn end: a turn that ends while one runs is legal (ended_awaiting_child), which is
+// what lets the wake start the next turn instead of hw refusing the handoff.
+export function liveBackgroundTasks(): Array<{ type: string; status: string; command: string }> {
+  return [...BG_JOBS.values()].filter((j) => j.status === "running")
+    .map((j) => ({ type: "shell", status: "running", command: firstLine(j.command) }));
+}
+
+// Stop what this session started: a pi process that ends must not leave its background shells running.
+export function stopBackgroundJobs(): number {
+  let n = 0;
+  for (const j of BG_JOBS.values()) {
+    if (j.status !== "running") continue;
+    j.status = "stopped"; j.ended = Date.now(); n++;
+    try { j.abort.abort(); } catch { /* already gone */ }
+  }
+  return n;
+}
+
 const ROOT_SESSION = Symbol.for("hw.pi.root-session");
+
+// ── the exploration budget ──────────────────────────────────────────────────
+// MEASURED 2026-11-04: a pi executor calls a subagent in ~35% of sessions where a Claude executor does in ~100%, and
+// reads file after file inline instead. The IDEA — a per-request budget of discovery results, steered ONCE toward the
+// explorer — was read as a reference from gentle-pi (MIT, 078a7eb). NO CODE is copied from it: this is our own minimal
+// version, on pi's own tools (read/grep/find/ls; no bash phase inference, no memory tools) with its own state,
+// thresholds and text, and it steers through pi's native sendMessage(deliverAs:"steer"). A lane with no explorer is
+// never nudged: hw sets HW_PI_EXPLORE_AGENT only when pi-subagents and the explorer are both there.
+const DISCOVERY_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const EXPLORATION_LOOKUPS = 3, EXPLORATION_BYTES = 40_000;
+function explorationNotice(agent: string, lookups: number, bytes: number): string {
+  return `[hw] Exploration budget: ${lookups} lookups and ${bytes.toLocaleString("en-US")} bytes read inline this turn. ` +
+    `Past this point, delegate the reading: call the \`subagent\` tool with agent "${agent}" and work from its answer — it runs on the cheap tier and returns facts, not files. ` +
+    `Read only what you need to make your own edit.`;
+}
 
 // The account's global rules file: $CLAUDE_CONFIG_DIR/CLAUDE.md, default ~/.claude/CLAUDE.md. "" when absent or empty.
 export function globalRulesFile(): string {
@@ -825,21 +1260,60 @@ export function globalRulesFile(): string {
   try { const st = statSync(file); return st.isFile() && st.size > 0 ? file : ""; } catch { return ""; }
 }
 
-export default function (pi: any) {
+// THE GUARDS AS PI EVENTS, registered by every pi process that must be held to the policy: the executor's default
+// export below, and a plugin's children (setup/pi/hw-child-guard.ts), which start pi with discovery ON and would
+// otherwise find no guard at all. `before` is an extra refusal the caller owns; a child passes none.
+// `pi.on("tool_result")` returns nothing at any point (the redaction is a result rewrite, not a refusal).
+// A BASH CALL THAT SETS NO TIMEOUT IS BOUNDED. pi's `bash` has "no default timeout" (dist/core/tools/bash.js), and a
+// call that blocks cannot be steered: MEASURED 2026-11-04 in pi-theme-and-models, two foreground probes hung 83 min
+// (`script … pi` 28 min; `tail -f /dev/null | … timeout 60 pi` 55 min, the `tail -f` keeping the pipe open past pi's
+// own timeout) until a ruling arrived. The default is 600 s: the longest a Claude Bash call may run (its own maximum),
+// 4.5x the longest probe an executor legitimately needs in the foreground, and far under the 28 min that already
+// cost an hour. Anything longer belongs in `bash_background`, which wakes the session when it ends. A call that
+// sets ANY timeout keeps it, `bash_background` is untouched, and a session with no HW_* environment is not an executor.
+// HW_PI_BASH_DEFAULT_TIMEOUT_S overrides the number (the probe and the tests use a short one); 0 turns it off.
+const BASH_DEFAULT_TIMEOUT_S = 600;
+function bashDefaultTimeoutS(): number {
+  const raw = process.env.HW_PI_BASH_DEFAULT_TIMEOUT_S;
+  if (raw === undefined || raw === "") return BASH_DEFAULT_TIMEOUT_S;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : BASH_DEFAULT_TIMEOUT_S;
+}
+const defaultedBashCalls = new Map<string, number>(); // toolCallId -> the seconds hw put on a call that set none
+export function applyBashDefaultTimeout(event: any): void {
+  if (event?.toolName !== "bash" || !isHwExecutor()) return;
+  const input = event?.input;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return;
+  if (input.timeout !== undefined && input.timeout !== null) return;  // the model chose one: it keeps it
+  const secs = bashDefaultTimeoutS();
+  if (secs <= 0) return;
+  input.timeout = secs;  // # MUTATION-ANCHOR: 1243-M01
+  if (typeof event.toolCallId === "string") defaultedBashCalls.set(event.toolCallId, secs);
+}
+export function bashTimeoutNote(event: any): string | null {
+  const id = event?.toolCallId;
+  if (event?.toolName !== "bash" || typeof id !== "string") return null;
+  const secs = defaultedBashCalls.get(id);
+  if (secs === undefined) return null;
+  defaultedBashCalls.delete(id);
+  const text = Array.isArray(event?.content) ? event.content.map((c: any) => (typeof c?.text === "string" ? c.text : "")).join("\n") : "";
+  if (!text.includes(`Command timed out after ${secs} seconds`)) return null;
+  return `[hw] this bash call set no timeout, so hw bounded it at ${secs} s: a foreground command that never ends holds your whole turn, and a ruling cannot reach you while it blocks (two probes hung 83 min, 2026-11-04). ` +
+    `Run anything long or open-ended with ${BG_TOOL} (it returns at once and wakes you when the command ends), or pass an explicit timeout.`;
+}
+
+export function registerGuards(pi: any, before?: (event: any, ctx: any) => any): void {
   pi.on("tool_call", async (event: any, ctx: any) => {
-    // A SUBAGENT'S CHILD IS GUARDED ONLY IF THIS FILE WAS REGISTERED AS A REQUIRED CHILD EXTENSION (session_start,
-    // below). When that did not happen — the API is missing in this pi-subagents, the session had no id, the call
-    // threw — the child would run with no guard at all, and a scan of the tool's arguments cannot see what a child
-    // does. So the tool is refused rather than trusted: the guard fails closed.
-    if (isHwExecutor() && /^subagents?$/.test(String(event?.toolName ?? "")) && !(globalThis as any)[Symbol.for("hw.pi.required-child")]) {  // # MUTATION-ANCHOR: 988-M05
-      return { block: true, reason: "Blocked: the subagent tool is refused because this executor's write guard is NOT registered as a required child extension of pi-subagents (see the pi_child_guard row of the receipt), so a child would run unguarded." };
-    }
+    const first = before?.(event, ctx);
+    if (first) return first;
+    applyBashDefaultTimeout(event);
     const reason = await judge(event?.toolName, event?.input, ctx?.cwd || process.cwd());
     return reason ? { block: true, reason } : undefined;
   });
 
   pi.on("tool_result", (event: any, ctx: any) => {
     if ((event?.toolName !== "grep" && event?.toolName !== "bash") || !Array.isArray(event?.content)) return;
+    const timeoutNote = bashTimeoutNote(event);
     const cwd = ctx?.cwd || process.cwd();
     let dropped = 0;
     const content = event.content.map((c: any) => {
@@ -848,8 +1322,35 @@ export default function (pi: any) {
       dropped += r.dropped;
       return { ...c, text: r.text };
     });
-    if (!dropped) return;
-    return { content: [...content, { type: "text", text: `[hw] ${dropped} matching line(s) of a protected secret file were removed from this result (secret read guard).` }] };
+    const notes: any[] = [];
+    if (dropped) notes.push({ type: "text", text: `[hw] ${dropped} matching line(s) of a protected secret file were removed from this result (secret read guard).` });
+    if (timeoutNote) notes.push({ type: "text", text: timeoutNote });
+    if (!notes.length) return;
+    return { content: [...content, ...notes] };
+  });
+}
+
+export default function (pi: any) {
+  // THE BACKGROUND SHELL IS A PLAIN TOOL, not executor state: every pi session that loads this file gets it, so a
+  // probe with no HW_* environment can use it too (its log then lives under the temp dir). A pi-subagents child
+  // is skipped: it is not the executor, its turn is its parent's foreground call, and hw runs specialists
+  // foreground-only. Registering twice is harmless (pi keys tools by name), which keeps a reload simple.
+  if (process.env.PI_SUBAGENT_CHILD !== "1" && typeof pi.registerTool === "function") {
+    registerBackgroundTools(pi, runDir());
+    // A session with no HW_* gets the tools too (its log lives in the temp dir), so its shutdown must stop its
+    // jobs as well: the executor's handler below is past an early return (Judgment Day round 1, judge B).
+    pi.on("session_shutdown", () => { try { stopBackgroundJobs(); } catch { /* nothing left to stop */ } });
+  }
+
+  registerGuards(pi, (event) => {
+    // A SUBAGENT'S CHILD IS GUARDED ONLY IF THIS FILE WAS REGISTERED AS A REQUIRED CHILD EXTENSION (session_start,
+    // below). When that did not happen — the API is missing in this pi-subagents, the session had no id, the call
+    // threw — the child would run with no guard at all, and a scan of the tool's arguments cannot see what a child
+    // does. So the tool is refused rather than trusted: the guard fails closed.
+    if (isHwExecutor() && /^subagents?$/.test(String(event?.toolName ?? "")) && !(globalThis as any)[Symbol.for("hw.pi.required-child")]) {  // # MUTATION-ANCHOR: 988-M05
+      return { block: true, reason: "Blocked: the subagent tool is refused because this executor's write guard is NOT registered as a required child extension of pi-subagents (see the pi_child_guard row of the receipt), so a child would run unguarded." };
+    }
+    return undefined;
   });
 
   if (!isHwExecutor()) return;
@@ -892,6 +1393,7 @@ export default function (pi: any) {
   let turns = 0, inputs = 0, switchedTo: string | null = null;
   let lastError: { message: string; model: string } | null = null;
   let inputSinceSettle = false;
+  let exploration = { lookups: 0, bytes: 0, notified: false };
 
   const modelOf = (ctx: any): string => (ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : "");
   const thinkingOf = (ctx: any): string => {
@@ -960,7 +1462,7 @@ export default function (pi: any) {
       if (process.env.HW_PI_CLAUDE_AGENT_DIRS && G[Symbol.for("hw.pi.required-child")] && !G[SPECIALISTS_FLAG]) {
         const r = await registerClaudeSpecialists(pi, sub);
         G[SPECIALISTS_FLAG] = r.disposers;
-        receiptRow("pi_specialists", `registered ${r.registered.join(" ") || "none"}${r.skipped.length ? `; skipped ${r.skipped.join(", ")}` : ""}${r.dropped.length ? `; tools with no pi counterpart dropped: ${r.dropped.join(" ")}` : ""}`, "hw-executor.ts session_start");
+        receiptRow("pi_specialists", `registered ${r.registered.join(" ") || "none"}${r.runs.length ? `; runs ${r.runs.join(", ")}` : ""}${r.skipped.length ? `; skipped ${r.skipped.join(", ")}` : ""}${r.dropped.length ? `; tools with no pi counterpart dropped: ${r.dropped.join(" ")}` : ""}`, "hw-executor.ts session_start");
       }
     } catch (e: any) {
       receiptRow("pi_specialists", `NOT REGISTERED — ${String(e?.message ?? e).slice(0, 200)}`, "hw-executor.ts session_start");
@@ -968,6 +1470,7 @@ export default function (pi: any) {
   });
   pi.on("session_shutdown", () => {
     if (!isRoot) return; // a child's shutdown is not the process's
+    try { stopBackgroundJobs(); } catch { /* nothing left to stop */ }
     try { G[Symbol.for("hw.pi.required-child")]?.dispose?.(); } catch { /* idempotent */ }
     G[Symbol.for("hw.pi.required-child")] = undefined;
     for (const d of G[SPECIALISTS_FLAG] ?? []) { try { d(); } catch { /* idempotent */ } }
@@ -991,7 +1494,30 @@ export default function (pi: any) {
     } catch { /* evidence */ }
   });
 
-  pi.on("agent_start", (_e: any, ctx: any) => { lastError = null; publishRuntime(ctx); });
+  pi.on("agent_start", (_e: any, ctx: any) => { lastError = null; exploration = { lookups: 0, bytes: 0, notified: false }; publishRuntime(ctx); });
+  // The budget is counted per request (agent_start resets it) and steered once. It is the root executor's: a child's
+  // reads are what the explorer is for, and a nested call is one lookup, not the tool it wrapped.
+  pi.on("tool_result", async (event: any, ctx: any) => {
+    const agent = process.env.HW_PI_EXPLORE_AGENT;
+    if (!agent || event?.parentToolCallId || event?.isError || !DISCOVERY_TOOLS.has(String(event?.toolName ?? ""))) return;
+    if (!ensureRoot(ctx)) return;
+    exploration.lookups++;
+    for (const c of Array.isArray(event?.content) ? event.content : []) {
+      if (c?.type === "text" && typeof c.text === "string") exploration.bytes += Buffer.byteLength(c.text, "utf8");
+    }
+    if (exploration.notified || (exploration.lookups <= EXPLORATION_LOOKUPS && exploration.bytes <= EXPLORATION_BYTES)) return;
+    exploration.notified = true;
+    let outcome = "HELD (the run was idle)";
+    try {
+      if (typeof ctx?.isIdle !== "function" || !ctx.isIdle()) {
+        // the API is promise-returning (a rejected delivery would be an unhandled rejection and end the session):
+        // await it, the way the background shell's wake does
+        await Promise.resolve(pi.sendMessage({ customType: "hw.exploration-budget", content: explorationNotice(agent, exploration.lookups, exploration.bytes), display: true }, { deliverAs: "steer", triggerTurn: true }));
+        outcome = "SENT";
+      }
+    } catch (e: any) { outcome = `FAILED (${String(e?.message ?? e).slice(0, 80)})`; /* advisory only */ }
+    receiptRow("pi_exploration_budget", `${exploration.lookups} lookups, ${exploration.bytes} bytes; steer ${outcome} → ${agent}`, "hw-executor.ts tool_result");
+  });
   pi.on("model_select", (_e: any, ctx: any) => publishRuntime(ctx));
   pi.on("thinking_level_select", (_e: any, ctx: any) => publishRuntime(ctx));
   pi.on("message_end", (event: any, ctx: any) => {
@@ -1050,9 +1576,16 @@ export default function (pi: any) {
     const hadInput = inputSinceSettle;
     inputSinceSettle = false;
     const usage = ctxUsage(ctx);
+    // A TURN THAT ENDS WHILE A BACKGROUND SHELL RUNS IS LEGAL. hw's turn-end predicate refuses a "handback" — a turn
+    // ending with no fact on disk — and the one legal end it cannot read off disk is a live child (core/t3_turnend.go,
+    // background_tasks). Claude's Stop payload carries it; pi's event does not, so the adapter hands over the jobs its
+    // own tool started. Without this the executor would be forced to keep the turn alive, and the wake would land
+    // after the work it was meant to deliver.
+    const live = liveBackgroundTasks();
     const reason = await runTurnEnd(hadInput, {
       session_id: sessionOf(ctx), model: modelOf(ctx) || null, thinking: thinkingOf(ctx) || null,
       ...(usage ? { ctx: usage } : {}),
+      ...(live.length ? { background_tasks: live } : {}),
     });
     if (!reason) return;
     return {

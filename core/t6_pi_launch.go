@@ -83,6 +83,16 @@ func (l *lch) piProjectSkillsPrepare() bool {
 	return true
 }
 
+// piExploreAgentName is the explorer a pi executor may delegate to, "" when there is one no: the nudge the adapter
+// injects after a few inline lookups names this agent, so it is only set when pi-subagents is loaded AND the explorer's
+// directory is on disk (the same two facts PI_SUBAGENT_EXTRA_AGENT_DIRS carries).
+func (l *lch) piExploreAgentName() string {
+	if l.agent != "pi" || !l.piSubagentsReady() || l.explorer().piAgentDirOK() == "" {
+		return ""
+	}
+	return explorerName
+}
+
 // ── the environment pi's children share ──────────────────────────────────────
 
 // piExportEnv is the `pi` half of _export_hw_env: pi's HALVES of the guard and the roster travel as environment, because
@@ -94,7 +104,7 @@ func (l *lch) piExportEnv(cwd string) {
 		// the real one (resolved BEFORE the variable that carries it goes), never a directory its parent's `hw done` deletes
 		inheritedShadow := l.piIsShadowDir(l.env("PI_CODING_AGENT_DIR"))
 		real := l.piAgentDir()
-		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS", piRealAgentDirEnv)
+		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "HW_PI_CLAUDE_AGENT_DIRS", "HW_PI_SUBAGENT_MODELS", "HW_PI_EXPLORE_AGENT", "PI_SUBAGENT_EXTRA_AGENT_DIRS", piRealAgentDirEnv)
 		if inheritedShadow {
 			l.setEnv("PI_CODING_AGENT_DIR", real)
 		}
@@ -117,6 +127,14 @@ func (l *lch) piExportEnv(cwd string) {
 		l.unsetEnv("HW_PI_ASKED_MODEL")
 	}
 	l.setEnv("HW_PI_SUBAGENTS_DIR", l.piSubagentsDir())
+	// THE SUBAGENTS' TIERS: the lane's profile over the roster's, as `key=model|thinking` pairs (t6_pi.go). The adapter
+	// registers each specialist with the model and thinking this resolves, so Claude's alias split holds on pi.
+	l.setEnv("HW_PI_SUBAGENT_MODELS", l.piSubagentModelsEnv())
+	if exp := l.piExploreAgentName(); exp != "" {
+		l.setEnv("HW_PI_EXPLORE_AGENT", exp)
+	} else {
+		l.unsetEnv("HW_PI_EXPLORE_AGENT")
+	}
 	if dirs := l.piAgentDirs(cwd); dirs != "" {
 		l.setEnv("PI_SUBAGENT_EXTRA_AGENT_DIRS", dirs)
 	} else {
@@ -157,6 +175,10 @@ func (l *lch) piHwEnvFlags(cwd string) string {
 		s += " --env HW_PI_ASKED_MODEL=" + l.model
 	}
 	s += " --env HW_PI_SUBAGENTS_DIR=" + l.piSubagentsDir()
+	s += " --env HW_PI_SUBAGENT_MODELS=" + l.piSubagentModelsEnv()
+	if exp := l.piExploreAgentName(); exp != "" {
+		s += " --env HW_PI_EXPLORE_AGENT=" + exp
+	}
 	if dirs := l.piAgentDirs(cwd); dirs != "" {
 		s += " --env PI_SUBAGENT_EXTRA_AGENT_DIRS=" + dirs
 	}
@@ -370,10 +392,9 @@ func (l *lch) piSpecialistNote(list string) string {
 	model := orDefaultStr(l.env("HW_PI_ASKED_MODEL"), l.model)
 	var b strings.Builder
 	if deleg != "" || reg != "" {
-		b.WriteString("This executor is pi. The specialists of this lane (" + list + ") are registered with pi-subagents, so you CAN\n" +
-			"delegate: call the `subagent` tool with agent \"<name>\" (its frontmatter `name:`). A specialist runs on YOUR model, not its file's `model:`, with\n" +
-			"pi's tools (read, grep, find, bash, edit, write); what its file needs Task, WebFetch, WebSearch or MCP for, it cannot do.\n" +
-			"Your guards travel with each child.")
+		b.WriteString("This executor is pi. The lane's specialists (" + list + ") are registered with pi-subagents; call `subagent` with agent \"<name>\".\n" +
+			"It runs on the lane profile's model (the receipt names each one), not on yours; the Task/WebFetch/WebSearch/MCP\n" +
+			"tools its file needs are dropped. Your guards travel with each child.")
 		if deleg != "" {
 			b.WriteString("\n" + deleg + " also has a pi copy in `.pi/agents`, which pi-subagents loads by itself: its file pins an openai-codex model this\n" +
 				"machine's login cannot refresh (measured: a 401 and a failed mission), so a call for it ALWAYS passes `model: \"" + orDefaultStr(model, "the opencode-go model you run on") + "\"`.")

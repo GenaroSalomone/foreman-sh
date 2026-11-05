@@ -521,7 +521,10 @@ master password in the login Keychain so a dispatch can unlock by itself;
 nothing else here reads it.
 
 What this release does **not** ship: the global guard that refuses an agent's
-own `bw get|unlock|export|list|serve` and the unlock LaunchAgent installer.
+own `bw get|unlock|export|list|serve`, and the job that runs `secret-unlock
+--auto` on a schedule: you write that one yourself, and only on macOS, where
+`--auto` has a Keychain to read (launchd; elsewhere unlock with
+`secret-unlock` before the dispatch).
 Without the guard, `hw secret run` is the sanctioned path and nothing forces an
 agent onto it, and the session token opens the whole vault, not just the folder.
 See `KNOWN-LIMITATIONS.md` L23.

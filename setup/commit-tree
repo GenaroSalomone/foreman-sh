@@ -153,6 +153,23 @@ root="$(git rev-parse --show-toplevel)" || ct_refuse "cannot resolve the reposit
 prefix="$(git rev-parse --show-prefix)"
 cd -- "$root" || ct_refuse "cannot enter $root"
 
+# ── AN EXECUTOR COMMITS IN ITS OWN WORKTREE, NEVER IN THE BRAINER'S CHECKOUT ─
+# 2026-11-04: a setup executor read a brief whose wording said "edit … under <brain root>", ran
+# `cd <brain root> && setup/commit-tree …`, and put a task commit on the brainer's `main` — outside any merge. This
+# helper trusted its caller's cwd. With HW_TASK set (an executor's environment) the repository it is standing in must be
+# HW_WORKDIR; the brainer runs with no HW_TASK and is unaffected. Without HW_WORKDIR there is nothing to compare to, so
+# the refusal says that rather than guessing.
+if [ -n "${HW_TASK:-}" ]; then
+  if [ -z "${HW_WORKDIR:-}" ]; then
+    ct_refuse "HW_TASK is set and HW_WORKDIR is not, so commit-tree cannot prove this repository ($root) is the executor's worktree. An executor commits only in the worktree hw built for its task. The ref was not moved."
+  fi
+  want="$(cd "$HW_WORKDIR" 2>/dev/null && pwd -P)" || want=""
+  have="$(cd "$root" && pwd -P)"
+  if [ -z "$want" ] || [ "$want" != "$have" ]; then
+    ct_refuse "this repository is $have, and this executor's worktree is ${want:-<HW_WORKDIR does not resolve: $HW_WORKDIR>}. An executor commits only in its own worktree: the brain root is the brainer's checkout, and a commit there lands on its branch outside any merge (measured 2026-11-04). cd to your worktree, or name the paths from there. The ref was not moved."
+  fi
+fi
+
 # ── the ref: one name, resolved once, used as tree, parent and guard ─────────
 if [ -n "$onto" ]; then
   ref="$onto"
@@ -224,75 +241,104 @@ ct_syntax_check
 # `Foo.go` and `foo.go` are the same file on a case-insensitive filesystem, so
 # committing the one while the tree holds the other writes the wrong blob under
 # a name nobody can check out. Refuse instead of guessing.
+#
+# THE TREE LISTING IS NUL-SEPARATED, and the comparison happens in ONE python
+# pass. MEASURED 2026-11-04 (retro-fixes-rc3): `git ls-tree -r --name-only` C-quotes
+# a name with a TAB, a newline or a non-ASCII byte (`"Docs/\303\251.txt"`), so a
+# named `docs/new.txt` beside an existing `Docs/é.txt` was NOT refused — the
+# quoted line matched neither the name nor its directory. The collision it
+# missed is exactly the one this filesystem cannot hold. `-z` with a reader that
+# splits on NUL keeps every byte, and one pass keeps the 344-path commit in
+# seconds (the pairwise version forked ~2M `tr`s and ran 32 min; tests/1233 G13b
+# still holds the TAB-in-directory case, G17 the non-ASCII and TAB-in-file ones).
 case "$(uname -s)" in
   Darwin)
-    tree_names="$(mktemp "${TMPDIR:-/tmp}/commit-tree-paths.XXXXXX")" || ct_refuse "cannot create a temporary file"
-    tree_dirs="$(mktemp "${TMPDIR:-/tmp}/commit-tree-dirs.XXXXXX")" || { rm -f "$tree_names"; ct_refuse "cannot create a temporary file"; }
-    git ls-tree -r --name-only "$old" > "$tree_names" || { rm -f "$tree_names" "$tree_dirs"; ct_refuse "cannot list $full's tree"; }
-    # every DIRECTORY the tree already holds, one prefix per line
-    awk '{ n = split($0, c, "/"); p = ""; for (i = 1; i < n; i++) { p = (i > 1 ? p "/" : "") c[i]; print p } }' "$tree_names" | sort -u > "$tree_dirs"
-    # two names in one run that differ only in case are one file here: the second
-    # silently rewrites what the first named.
-    lower_seen=$'\n'
-    for p in "${paths[@]}"; do
-      lp="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')"
-      case "$lower_seen" in
-        *$'\n'"$lp"$'\n'*) rm -f "$tree_names" "$tree_dirs"; ct_refuse "$p differs only in case from another path named in this run; on this case-insensitive filesystem they are one file. The ref was not moved." ;;
+    tree_list="$(mktemp "${TMPDIR:-/tmp}/commit-tree-paths.XXXXXX")" || ct_refuse "cannot create a temporary file"
+    git ls-tree -r -z --name-only "$old" > "$tree_list" || { rm -f "$tree_list"; ct_refuse "cannot list $full's tree"; }
+    collide="$(python3 - "$tree_list" "${paths[@]}" <<'PY'
+import sys
+
+data = open(sys.argv[1], 'rb').read()
+names = [n.decode('utf-8', 'surrogateescape') for n in data.split(b'\0') if n]
+paths = sys.argv[2:]
+
+
+def out(kind, a, b=''):
+    sys.stdout.write(kind + '\t' + a + '\t' + b)
+    raise SystemExit(0)
+
+
+# two names in one run that differ only in case are one file here: the second
+# silently rewrites what the first named.
+seen = {}
+for p in paths:
+    lp = p.lower()
+    if lp in seen and seen[lp] != p:
+        out('same-run', p)
+    seen.setdefault(lp, p)
+
+# two NEW directories differing only in case (`New/a` and `new/b`) are one
+# directory here, and no listing of the tree catches them: neither is in it.
+first = {}
+for p in paths:
+    parts = p.split('/')
+    for i in range(1, len(parts)):
+        pre = '/'.join(parts[:i])
+        key = pre.lower()
+        if key not in first:
+            first[key] = pre
+        elif first[key] != pre:
+            out('newdir', first[key], pre)
+
+nameset = set(names)
+lower = {}
+for n in names:
+    lower.setdefault(n.lower(), n)
+
+# a path that differs only in case from an entry already in the tree
+for p in paths:
+    if p in nameset:
+        continue
+    hit = lower.get(p.lower())
+    if hit is not None and hit != p:
+        out('treefile', p, hit)
+
+dirs = set()
+for n in names:
+    parts = n.split('/')
+    for i in range(1, len(parts)):
+        dirs.add('/'.join(parts[:i]))
+dlower = {}
+for d in dirs:
+    dlower.setdefault(d.lower(), d)
+
+# a DIRECTORY component is a file on this filesystem too: `Setup/new` under an
+# existing `setup/` would be a second name for the same directory.
+for p in paths:
+    parts = p.split('/')
+    for i in range(1, len(parts)):
+        pre = '/'.join(parts[:i])
+        if pre in dirs:
+            continue
+        hit = dlower.get(pre.lower())
+        if hit is not None and hit != pre:
+            out('treedir', p, hit)
+PY
+)"
+    rc=$?
+    rm -f "$tree_list"
+    if [ -n "$collide" ]; then
+      kind="${collide%%$'\t'*}"; rest="${collide#*$'\t'}"
+      p1="${rest%%$'\t'*}"; p2=""
+      case "$rest" in *$'\t'*) p2="${rest#*$'\t'}" ;; esac
+      case "$kind" in
+        same-run) ct_refuse "$p1 differs only in case from another path named in this run; on this case-insensitive filesystem they are one file. The ref was not moved." ;;
+        newdir)   ct_refuse "$p1 differs only in case from '$p2', a directory named by another path in this run; on this case-insensitive filesystem they are one directory. The ref was not moved." ;;
+        treefile) ct_refuse "$p1 differs only in case from '$p2', which is already in $full; on this case-insensitive filesystem they are one file. The ref was not moved." ;;
+        treedir)  ct_refuse "$p1 differs only in case from '$p2/', a directory already in $full; on this case-insensitive filesystem they are one directory. The ref was not moved." ;;
       esac
-      lower_seen="${lower_seen}${lp}"$'\n'
-    done
-    # two NEW directories differing only in case (`New/a` and `new/b`) are one
-    # directory here, and no listing of the tree catches them: neither is in it.
-    # Compare every directory prefix of every named arg against every OTHER
-    # named arg's prefixes, case-insensitively.
-    prefixes=()
-    for p in "${paths[@]}"; do
-      pre=""; rest="$p"; item=""
-      while :; do
-        case "$rest" in */*) ;; *) break ;; esac
-        comp="${rest%%/*}"; rest="${rest#*/}"
-        pre="${pre}${comp}"
-        item="${item}${pre}"$'\n'
-        pre="${pre}/"
-      done
-      prefixes+=("$item")
-    done
-    npaths=${#paths[@]}
-    for ((i = 0; i < npaths; i++)); do
-      for ((j = i + 1; j < npaths; j++)); do
-        while IFS= read -r pi; do
-          [ -n "$pi" ] || continue
-          lpi="$(printf '%s' "$pi" | tr '[:upper:]' '[:lower:]')"
-          while IFS= read -r pj; do
-            [ -n "$pj" ] || continue
-            [ "$pi" != "$pj" ] || continue
-            [ "$lpi" = "$(printf '%s' "$pj" | tr '[:upper:]' '[:lower:]')" ] || continue
-            rm -f "$tree_names" "$tree_dirs"
-            ct_refuse "$pi differs only in case from '$pj', a directory named by another path in this run; on this case-insensitive filesystem they are one directory. The ref was not moved."
-          done <<<"${prefixes[j]}"
-        done <<<"${prefixes[i]}"
-      done
-    done
-    for p in "${paths[@]}"; do
-      if ! grep -qxF -- "$p" "$tree_names"; then
-        hit="$(grep -ixF -m 1 -- "$p" "$tree_names")"
-        [ -z "$hit" ] || { rm -f "$tree_names" "$tree_dirs"; ct_refuse "$p differs only in case from '$hit', which is already in $full; on this case-insensitive filesystem they are one file. The ref was not moved."; }
-      fi
-      # a DIRECTORY component is a file on this filesystem too: `Setup/new`
-      # under an existing `setup/` would be a second name for the same directory.
-      rest="$p"; pre=""
-      while :; do
-        case "$rest" in */*) ;; *) break ;; esac
-        comp="${rest%%/*}"; rest="${rest#*/}"
-        pre="${pre}${comp}"
-        if ! grep -qxF -- "$pre" "$tree_dirs"; then
-          dh="$(grep -ixF -m 1 -- "$pre" "$tree_dirs")"
-          [ -z "$dh" ] || { rm -f "$tree_names" "$tree_dirs"; ct_refuse "$p differs only in case from '$dh/', a directory already in $full; on this case-insensitive filesystem they are one directory. The ref was not moved."; }
-        fi
-        pre="${pre}/"
-      done
-    done
-    rm -f "$tree_names" "$tree_dirs"
+    fi
+    [ "$rc" = 0 ] || ct_refuse "the case-collision check could not read the paths (python3 exit $rc); the ref was not moved."
     ;;
 esac
 
@@ -316,7 +362,42 @@ tmpidx="$(mktemp "${TMPDIR:-/tmp}/commit-tree-index.XXXXXX")" || ct_refuse "cann
 trap 'rm -f "$tmpidx"' EXIT
 GIT_INDEX_FILE="$tmpidx" git read-tree "$old" || ct_refuse "cannot read $full's tree"
 
+# ONE `hash-object` AND ONE `update-index --index-info` FOR THE WHOLE SET. Per path this cost ~25 ms of git twice —
+# 30 s of process spawns for a commit naming 635 paths, 619 of them unchanged goldens (2026-11-04). A path holding a tab
+# or a newline cannot be expressed in --index-info's line format, so it keeps the per-path path.
+files_list="$(mktemp "${TMPDIR:-/tmp}/commit-tree-files.XXXXXX")" || ct_refuse "cannot create a temporary index input"
+shas_file="$(mktemp "${TMPDIR:-/tmp}/commit-tree-shas.XXXXXX")" || { rm -f "$files_list"; ct_refuse "cannot create a temporary index input"; }
+modes_file="$(mktemp "${TMPDIR:-/tmp}/commit-tree-modes.XXXXXX")" || { rm -f "$files_list" "$shas_file"; ct_refuse "cannot create a temporary index input"; }
+idxinfo="$(mktemp "${TMPDIR:-/tmp}/commit-tree-index-info.XXXXXX")" || { rm -f "$files_list" "$shas_file" "$modes_file"; ct_refuse "cannot create a temporary index input"; }
+trap 'rm -f "$tmpidx" "$files_list" "$shas_file" "$modes_file" "$idxinfo"' EXIT
+: > "$files_list"; : > "$idxinfo"
+per_path=()
 for p in "${paths[@]}"; do
+  case "$p" in *$'\t'*|*$'\n'*|*\\*) per_path+=("$p"); continue ;; esac
+  if [ -L "$p" ]; then
+    target="$(readlink -- "$p")" || ct_refuse "cannot read symlink $p"
+    blob="$(printf '%s' "$target" | git hash-object -w --stdin)" || ct_refuse "cannot hash $p"
+    printf '120000 %s\t%s\n' "$blob" "$p" >> "$idxinfo"
+  elif [ -d "$p" ]; then
+    ct_refuse "$p is a directory; name its files"
+  elif [ -e "$p" ]; then
+    printf '%s\n' "$p" >> "$files_list"
+    if [ -x "$p" ]; then printf '100755\n' >> "$modes_file"; else printf '100644\n' >> "$modes_file"; fi
+  else
+    printf '0 0000000000000000000000000000000000000000\t%s\n' "$p" >> "$idxinfo"
+  fi
+done
+if [ -s "$files_list" ]; then
+  git hash-object -w --stdin-paths < "$files_list" > "$shas_file" || { rm -f "$files_list" "$shas_file" "$modes_file" "$idxinfo"; ct_refuse "cannot hash the named paths"; }
+  [ "$(wc -l < "$shas_file")" -eq "$(wc -l < "$files_list")" ] || { rm -f "$files_list" "$shas_file" "$modes_file" "$idxinfo"; ct_refuse "hash-object did not return one id per named path"; }
+  paste -d' ' "$modes_file" "$shas_file" | paste -d'\t' - "$files_list" >> "$idxinfo"
+fi
+if [ -s "$idxinfo" ]; then
+  GIT_INDEX_FILE="$tmpidx" git update-index --index-info < "$idxinfo" || { rm -f "$files_list" "$shas_file" "$modes_file" "$idxinfo"; ct_refuse "cannot add the named paths to the index"; }
+fi
+rm -f "$files_list" "$shas_file" "$modes_file" "$idxinfo"
+trap 'rm -f "$tmpidx"' EXIT
+for p in ${per_path[@]+"${per_path[@]}"}; do
   if [ -L "$p" ]; then
     target="$(readlink -- "$p")" || ct_refuse "cannot read symlink $p"
     blob="$(printf '%s' "$target" | git hash-object -w --stdin)" || ct_refuse "cannot hash $p"

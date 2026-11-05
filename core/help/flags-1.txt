@@ -23,8 +23,14 @@ FLAGS
     --requested-by <s> the request this dispatch answers, in the asker's words.
                        Same as `requested_by:` in a brief, and wins over it.
                        Required or warned per lane (projects.json).
-    --effort <e>       low|medium|high|xhigh|max. claude and codex only —
-                       opencode's interactive command has no such flag.
+    --effort <e>       how hard the vendor should think, in that vendor's own
+                       form: claude --effort, codex -c
+                       model_reasoning_effort=, pi --thinking, and opencode an
+                       OPENCODE_CONFIG_CONTENT overlay on its primary agent's
+                       reasoningEffort (no CLI flag of its own), read back as
+                       effort_applied. Levels: low|medium|high|xhigh|max, plus
+                       ultra for codex and off|minimal for pi (pi never takes
+                       ultra; with none given pi sets low, and off for explore).
     --subagent-model <m> inherit | haiku|sonnet|opus|fable | claude-*. The model
                        a Claude executor's subagents run on when they name
                        none (CLAUDE_CODE_SUBAGENT_MODEL). Lane default:

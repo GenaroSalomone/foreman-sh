@@ -48,8 +48,8 @@
 #      command exits, by a process of its own (invoker_close_after_exit) — so
 #      the exit status is the delivery's, never the close's SIGKILL, which is
 #      what "Exit code 137" was. A close that then fails leaves
-#      `<state dir>/close-failed` and a toast. (Or no close was owed, because
-#      chaining is enabled.)
+#      `<state dir>/close-failed`, which `hw status` shows. (Or no close was
+#      owed, because chaining is enabled.)
 #   1  NOT DELIVERED — nothing was reported, no marker was written, the pane is
 #      the only copy. Retryable. Also every refusal that happens BEFORE any
 #      report is attempted, for the same reason: nothing moved.

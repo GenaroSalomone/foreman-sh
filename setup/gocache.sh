@@ -110,7 +110,7 @@ gocache_pool_busy() {
 # <old-dir>s; both only while nobody else is running. Says what it did (or why it did not) on stderr; never fails.
 gocache_trim() {
   local cache="$1" cap="$2" pool="$3" old kb; shift 3
-  case "$cap" in ''|*[!0-9]*) cap=4096 ;; esac
+  case "$cap" in ''|*[!0-9]*) cap=12288 ;; esac
   if [ -n "$pool" ] && gocache_pool_busy "$pool"; then   # MUTATION-ANCHOR: 1004-M03
     printf 'runner: go cache not trimmed — another run holds the machine\n' >&2; return 0
   fi
@@ -145,7 +145,7 @@ gocache_trim() {
 # (S-claims `start:*`).
 gocache_trim_start() {
   local cache="$1" cap="$2" stamp lock kb over tier min order=-n   # MUTATION-ANCHOR: 1004-M09
-  case "$cap" in ''|*[!0-9]*) cap=4096 ;; esac
+  case "$cap" in ''|*[!0-9]*) cap=12288 ;; esac
   [ -d "$cache" ] || return 0
   stamp="$cache.trimmed"; lock="$cache.trimming"
   if [ -f "$stamp" ] && [ -z "$(find "$stamp" -mmin +1 2>/dev/null)" ]; then return 0; fi

@@ -73,6 +73,18 @@ func (a *app) executorGate(argv []string) {
 		}
 		return false
 	}
+	// A DRY RUN CREATES NOTHING, so a REHEARSAL OF A DISPATCH is not a brainer verb. `hw setup <task> --dry-run` was
+	// refused and the executor got past the gate with `env -u HW_TASK` — five calls for a report it was owed (measured
+	// 2026-11-04). It is the DISPATCH arm only: a brainer verb that merely tolerates the flag still changes state, and
+	// `--dry-run` was not a validation — `hw sweep --apply --dry-run` closed other runs and `hw preview release <proj>
+	// <task> --dry-run` removed another run's lease (Judgment Day, 2026-11-05). So every named verb's refusal stays.
+	dryRun := false
+	for _, x := range argv {
+		if x == "--dry-run" {
+			dryRun = true
+			break
+		}
+	}
 	switch first {
 	case "":
 		a.executorRefuse("with no arguments (the picker)", "does not dispatch")
@@ -118,6 +130,9 @@ func (a *app) executorGate(argv []string) {
 		}
 	default:
 		if strings.HasPrefix(first, "-") || executorAllowed[first] {
+			return
+		}
+		if dryRun { // a dispatch as a rehearsal: it creates no worktree, agent, database or repo write
 			return
 		}
 		a.executorRefuse(first+" …", "does not dispatch executors") // anything else is `hw <project> <task> …`, a dispatch

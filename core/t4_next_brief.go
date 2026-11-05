@@ -312,6 +312,23 @@ func (a *app) nextReviewReceipt(rundir, key, brief string) {
 	a.receiptInto(rundir, key, mode, reviewReceiptSource(brief, mode, nextPluginsDeclared(brief)))
 }
 
+// nextJdAgentsReceipt is jdAgentsReceipt for a re-task: the same row, the same condition (pi, a DECLARED
+// Judgment Day, and both judges on disk), keyed by the task it belongs to.
+func (a *app) nextJdAgentsReceipt(rundir, key, brief, vendor, workdir string) {
+	// The same gates the re-task's closing has (`f.jd` in t4_next_msg.go): a resolved base ref and a build kind, or
+	// there is no Judgment Day to hold the close to. Judgment Day, both judges, 2026-11-04.
+	if vendor != "pi" || !nextJudgmentDayRequired(brief) || a.nextEnvVal(rundir, "HW_REVIEW_BASE_REF") == "" || !nextIsBuild(brief) {
+		return
+	}
+	home := a.getenv("HOME")
+	cfg := orDefaultStr(a.nextEnvVal(rundir, "CLAUDE_CONFIG_DIR"), home+"/.claude")
+	if j, _, _ := jdFacts("pi", cfg, home, workdir, "", a.explorerFor("").piSubagentsReady()); j != "agents" {
+		return
+	}
+	a.receiptInto(rundir, key, "jd-judge-a,jd-judge-b",
+		"brief review: in "+brief+" at hw next, and pi's judges are registered — done-invoker requires a call to each judge, not `reviewer`")
+}
+
 // nextPluginReviewReceipt is the plugin review skills the NEW brief's closing names, keyed by task like the review above.
 func (a *app) nextPluginReviewReceipt(rundir, key, brief string) {
 	sk := pluginReviewSkillsNamed(nextReviewMode(brief), a.nextEnvVal(rundir, "HW_REVIEW_BASE_REF"), nextIsBuild(brief), nextPluginsDeclared(brief))

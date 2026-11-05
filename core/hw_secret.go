@@ -15,6 +15,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -121,17 +122,23 @@ func (w *hsWorld) needBw() string {
 
 // bw runs the vault CLI with its stderr dropped and returns stdout and the exit status (-1: it did not start).
 func (w *hsWorld) bw(bw string, env []string, args ...string) (string, int) {
+	o, _, rc := w.bwStderr(bw, env, args...)
+	return o, rc
+}
+
+// bwStderr is bw that also hands back stderr. Only --auto's unlock reads it, and only to log it through redact.
+func (w *hsWorld) bwStderr(bw string, env []string, args ...string) (string, string, int) {
 	c := exec.Command(bw, args...)
 	c.Env = env
-	var o bytes.Buffer
-	c.Stdout = &o
+	var o, e bytes.Buffer
+	c.Stdout, c.Stderr = &o, &e
 	if err := c.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return o.String(), ee.ExitCode()
+			return o.String(), e.String(), ee.ExitCode()
 		}
-		return o.String(), -1
+		return o.String(), e.String(), -1
 	}
-	return o.String(), 0
+	return o.String(), e.String(), 0
 }
 
 // noSession is `env -u BW_SESSION`.
@@ -180,6 +187,16 @@ func (w *hsWorld) sessionLoad(bw string) bool {
 	return true
 }
 
+// sessionExp: the live session file's expiry (epoch seconds), 0 when there is none.
+func (w *hsWorld) sessionExp() int64 {
+	b, err := os.ReadFile(w.sessionFile())
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(strings.TrimPrefix(strings.SplitN(string(b), "\n", 2)[0], "expires="), 10, 64)
+	return n
+}
+
 func hsUntil(exp string) string {
 	n, err := strconv.ParseInt(exp, 10, 64)
 	if err != nil {
@@ -217,9 +234,58 @@ func (w *hsWorld) autoStatus(state, why string) {
 	os.WriteFile(w.statusFile(), []byte(line+"\n"), 0o600)
 }
 
-func (w *hsWorld) autoFail(why string) int {
+// autoLog appends one timestamped line to bw-unlock.log (0600). The LaunchAgent AND every `ensure`/`check` try write it,
+// so the file is the whole history of --auto; callers pass only text that went through redact.
+func (w *hsWorld) autoLog(msg string) {
+	dir := w.secretDir()
+	os.MkdirAll(dir, 0o700)
+	os.Chmod(dir, 0o700)
+	f, err := os.OpenFile(dir+"/bw-unlock.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", w.now().Format(time.RFC3339), msg)
+}
+
+var (
+	hsBWAssign = regexp.MustCompile(`(?i)\bBW_[A-Z0-9_]*\s*[=:]\s*\S+`)
+	hsSession  = regexp.MustCompile(`(?i)--session\s+\S+`)
+	hsLongTok  = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
+)
+
+// redact makes bw's stderr safe for the log: the given secrets and the value (4+ bytes) of every BW_* variable in the environment are
+// replaced first (whatever their shape), then BW_*=… assignments, --session arguments and any long token-looking run;
+// whitespace collapses to single spaces and the text stops at 300 runes.
+func (w *hsWorld) redact(s string, secrets ...string) string {
+	for _, e := range w.env {
+		if k, v, ok := strings.Cut(e, "="); ok && strings.HasPrefix(k, "BW_") && len(v) >= 4 {
+			secrets = append(secrets, v)
+		}
+	}
+	for _, sec := range secrets {
+		if sec != "" {
+			s = strings.ReplaceAll(s, sec, "[redacted]")
+		}
+	}
+	s = hsBWAssign.ReplaceAllString(s, "BW_…=[redacted]")
+	s = hsSession.ReplaceAllString(s, "--session [redacted]")
+	s = hsLongTok.ReplaceAllString(s, "[redacted]")
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > 300 {
+		s = string(r[:300]) + "…"
+	}
+	return s
+}
+
+func (w *hsWorld) autoFail(why string, detail ...string) int {
 	w.autoStatus("failed", why) // # MUTATION-ANCHOR: 1012-G02
 	w.note("secret-unlock --auto failed: " + why)
+	log := "failed: " + why
+	if len(detail) > 0 && detail[0] != "" {
+		log += " (bw said: " + detail[0] + ")"
+	}
+	w.autoLog(log)
 	return 1
 }
 
@@ -308,22 +374,40 @@ func (w *hsWorld) cmdAuto(hours int64) int {
 	if pw == "" {
 		return w.autoFail("no " + hsMasterService + " item in the Keychain (secret-unlock --setup, once)")
 	}
-	tokOut, rc := w.bw(bw, envSet(w.noSession(), "BW_HW_MASTER", pw), "unlock", "--passwordenv", "BW_HW_MASTER", "--raw") // # MUTATION-ANCHOR: 1012-G01
+	tokOut, errOut, rc := w.bwStderr(bw, envSet(w.noSession(), "BW_HW_MASTER", pw), "unlock", "--passwordenv", "BW_HW_MASTER", "--raw") // # MUTATION-ANCHOR: 1012-G01
 	tok := trimNL(tokOut)
 	if rc != 0 {
 		tok = ""
 	}
-	pw = ""
 	if tok == "" {
-		return w.autoFail("bw rejected the stored master password")
+		return w.autoFail("bw rejected the stored master password", w.redact(errOut, pw, tokOut))
 	}
+	pw = ""
 	keep := w.out
 	w.out = io.Discard
 	w.sessionWrite(tok, hours)
 	w.out = keep
 	w.autoStatus("ok", "")
+	w.autoLog(fmt.Sprintf("ok: unlocked, new %d h session", hours))
 	fmt.Fprintln(w.out, "unlocked (auto)")
 	return 0
+}
+
+// autoFresh: --auto from the LaunchAgent runs every hour, and a live session with more than half its life left needs no
+// `bw unlock`: it says so, and logs it. Anything shorter-lived is renewed, so a session never reaches a night's sleep near its end.
+func (w *hsWorld) autoFresh(bw string, hours int64) bool {
+	if !w.sessionLoad(bw) {
+		return false
+	}
+	left := w.sessionExp() - w.now().Unix()
+	if left <= hours*3600/2 { // the installer's hourly slot renews inside this margin
+		return false
+	}
+	w.autoStatus("ok", "")
+	msg := fmt.Sprintf("noop: already unlocked, %d min left (renews under %d min); no bw unlock", left/60, hours*60/2)
+	w.autoLog(msg)
+	fmt.Fprintln(w.out, msg)
+	return true
 }
 
 // readLine is `IFS= read -r` (or `-rs`: the echo off when stdin is a terminal).
@@ -385,7 +469,7 @@ func (w *hsWorld) cmdSetup() int {
 		why, _ := w.statusReason()
 		w.die("bw did not accept that password (or is not logged in): the Keychain item was removed. " + why)
 	}
-	fmt.Fprintf(w.out, "stored as the Keychain service %s and unlocked once; the LaunchAgent (setup/install/install-bw-unlock-agent.sh) keeps it unlocked\n", hsMasterService)
+	fmt.Fprintf(w.out, "stored as the Keychain service %s and unlocked once; a scheduled `secret-unlock --auto` keeps it unlocked\n", hsMasterService)
 	return 0
 }
 
@@ -410,7 +494,7 @@ func (w *hsWorld) cmdUnlock(args []string) int {
 			mode = "setup"
 			args = args[1:]
 		case "-h", "--help":
-			fmt.Fprintf(w.out, "usage: secret-unlock [--hours N]   unlock Bitwarden (bw prompts for the master password); default 12 h\n       secret-unlock --lock       lock the vault and drop the session file\n       secret-unlock --setup      ONCE, a person: store the master password in the Keychain (service %s)\n       secret-unlock --auto       unlock from that item, no prompt (the LaunchAgent runs this every 11 h)\n", hsMasterService)
+			fmt.Fprintf(w.out, "usage: secret-unlock [--hours N]   unlock Bitwarden (bw prompts for the master password); default 12 h\n       secret-unlock --lock       lock the vault and drop the session file\n       secret-unlock --setup      ONCE, a person: store the master password in the Keychain (service %s)\n       secret-unlock --auto       unlock from that item, no prompt (a job you schedule runs this hourly; a session with over half its life left is left alone)\n", hsMasterService)
 			return 0
 		default:
 			w.die("unknown option: " + args[0] + " (secret-unlock --help)")
@@ -429,7 +513,12 @@ func (w *hsWorld) cmdUnlock(args []string) int {
 	}
 	switch mode {
 	case "auto":
-		return w.cmdAuto(h)
+		rc := 0
+		if !w.autoFresh(bw, h) {
+			rc = w.cmdAuto(h)
+		}
+		w.vaultAlert(rc)
+		return rc
 	case "setup":
 		return w.cmdSetup()
 	}
@@ -527,7 +616,7 @@ func (w *hsWorld) cmdCheck(args []string) int {
 		w.die("usage: hw secret check <item>[.<field>]…")
 	}
 	bw := w.needBw()
-	if !w.sessionLoad(bw) {
+	if !w.sessionOrAuto(bw) {
 		w.note("the vault is LOCKED, so nothing can be checked: run secret-unlock in a terminal")
 		return 2
 	}
@@ -581,18 +670,24 @@ func (w *hsWorld) cmdStatus() int {
 	return 0
 }
 
-// cmdEnsure: unlocked, or ONE `secret-unlock --auto` try (the Keychain's master password, no prompt) before refusing.
-func (w *hsWorld) cmdEnsure() int {
-	bw := w.needBw()
+// sessionOrAuto: a live session, or ONE `secret-unlock --auto` try (the Keychain's master password, no prompt). `ensure`
+// and `check` share it, so no verb refuses a locked vault the Keychain could have opened.
+func (w *hsWorld) sessionOrAuto(bw string) bool {
 	if w.sessionLoad(bw) {
-		return 0
+		return true
 	}
 	w.note("the vault is locked: one secret-unlock --auto try (the master password comes from the Keychain)")
 	keep := w.out
 	w.out = io.Discard
 	w.quietly(func() { w.cmdAuto(12) }) // # MUTATION-ANCHOR: 1012-G06
 	w.out = keep
-	if w.sessionLoad(bw) {
+	return w.sessionLoad(bw)
+}
+
+// cmdEnsure: unlocked, or ONE `secret-unlock --auto` try before refusing.
+func (w *hsWorld) cmdEnsure() int {
+	bw := w.needBw()
+	if w.sessionOrAuto(bw) {
 		return 0
 	}
 	why, ok := w.statusReason()
@@ -981,4 +1076,130 @@ func hwSecretMain(args []string, stdout, stderr *os.File) int {
 		out: stdout, err: stderr, in: os.Stdin, env: os.Environ(), now: time.Now,
 		execChild: hsExecProcess, tty: isTerminal(os.Stdin),
 	})
+}
+
+// ── the alert: a person must learn the vault is going to lock ───────────────
+
+const hsAlertWindow = 2 * 3600 // a session ending within this is reported even when the last --auto succeeded
+
+func (w *hsWorld) alertFile(name string) string { return w.secretDir() + "/" + name }
+
+func (w *hsWorld) alertLog(msg string) {
+	os.MkdirAll(w.secretDir(), 0o700)
+	if f, err := os.OpenFile(w.alertFile("vault-alerts.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		fmt.Fprintf(f, "%s %s\n", w.now().Format(time.RFC3339), msg)
+		f.Close()
+	}
+}
+
+// vaultAlert runs after the LaunchAgent's --auto (never after ensure/check, which a dispatch drives). A failed last
+// outcome, or a session ending within two hours, is ONE alert per episode: the state file names the kind being alerted,
+// `hw status` prints it, and it is removed (and a log line says so) the first run that finds the vault healthy again.
+func (w *hsWorld) vaultAlert(rc int) {
+	left := w.sessionExp() - w.now().Unix()
+	kind, detail := "", ""
+	switch {
+	case rc != 0:
+		why, _ := w.statusReason()
+		kind, detail = "failed", "--auto failed: "+why
+	case left > 0 && left <= hsAlertWindow:
+		kind, detail = "expiring", fmt.Sprintf("session ends in %d min", left/60)
+	}
+	state, sent := w.alertFile("vault-alert-state"), w.alertFile("vault-alert-sent")
+	prev, _ := os.ReadFile(state)
+	if kind == "" {
+		if len(prev) > 0 {
+			os.Remove(state)
+			os.Remove(sent)
+			w.alertLog("recovered: the vault is unlocked with a healthy session")
+		}
+		return
+	}
+	if got, _ := os.ReadFile(sent); string(got) == kind {
+		return // this episode was already reported
+	}
+	if strings.HasPrefix(string(prev), kind+" ") {
+		w.alertLog("retrying the report of the open " + kind + " alert") // the last send never landed
+	} else {
+		line := kind + " " + w.now().Format("2006-01-02 15:04:05") + " — " + detail
+		os.MkdirAll(w.secretDir(), 0o700)
+		os.WriteFile(state, []byte(line+"\n"), 0o600)
+		os.Remove(sent)
+		w.alertLog("ALERT " + detail)
+	}
+	lane := w.getenv("HW_VAULT_ALERT_TO")
+	if lane == "" {
+		lane = "setup"
+	}
+	pane := w.brainerPane(lane)
+	if pane == "" {
+		w.alertLog("send skipped: no single herdr pane labelled brain in the " + lane + " lane directory")
+		return
+	}
+	msg := "vault: " + detail + ". Log: " + w.alertFile("vault-alerts.log") + ". A person, once, in a terminal: secret-unlock (or secret-unlock --setup)."
+	cs := w.getenv("HW_CHANNEL_SEND")
+	if cs == "" {
+		cs = hsLookPath("channel-send", w.env)
+	}
+	if cs == "" {
+		w.alertLog("send skipped: no channel-send")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second) // channel-send's own wait for a busy pane is 90 s
+	defer cancel()
+	c := exec.CommandContext(ctx, cs, "--report", "herdr", pane, "-", "-")
+	c.Env = w.alertEnv()
+	c.Stdin = strings.NewReader(msg)
+	if err := c.Run(); err != nil {
+		w.alertLog("send to " + pane + " failed: " + err.Error()) // the log and the status line stay the record
+		return
+	}
+	os.WriteFile(sent, []byte(kind), 0o600)
+	w.alertLog("reported to " + pane)
+}
+
+// alertEnv is what herdr and channel-send get: no vault session (they never need it), and the herdr socket a LaunchAgent
+// does not inherit (bin/herdr-rpc exits 3 without HERDR_SOCKET_PATH).
+func (w *hsWorld) alertEnv() []string {
+	env := w.noSession()
+	if w.getenv("HERDR_SOCKET_PATH") == "" {
+		env = envSet(env, "HERDR_SOCKET_PATH", w.getenv("HOME")+"/.config/herdr/herdr.sock")
+	}
+	return env
+}
+
+// brainerPane: the one herdr pane labelled brain whose cwd is the lane's brain directory, "" when none or many. Pane ids
+// change with every relaunch, so it is resolved at send time with brainerVerdict, the predicate bin/brain launches by.
+func (w *hsWorld) brainerPane(lane string) string {
+	root := w.getenv("HW_BRAIN_ROOT")
+	if root == "" { // the agent's plist sets it; a bare run has no brain to look in
+		return ""
+	}
+	hp := hsLookPath("herdr", w.env)
+	if hp == "" {
+		return ""
+	}
+	c := exec.Command(hp, "pane", "list")
+	c.Env = w.alertEnv()
+	out, err := c.Output()
+	if err != nil {
+		return ""
+	}
+	v, ok := bjParse(string(out))
+	if !ok {
+		return ""
+	}
+	list, _ := bjGet(v, "result", "panes").([]any)
+	var hits []string
+	for _, e := range list {
+		if p, isMap := e.(jmap); isMap {
+			if id, isStr := p["pane_id"].(string); isStr && brainerVerdict(string(out), id, root+"/"+lane) == "ok" {
+				hits = append(hits, id)
+			}
+		}
+	}
+	if len(hits) != 1 {
+		return ""
+	}
+	return hits[0]
 }

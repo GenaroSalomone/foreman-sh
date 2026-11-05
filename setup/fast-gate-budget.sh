@@ -182,7 +182,7 @@ fg_drift_warn() {
 # and exits 124; the runner turns that into the red line.
 #
 # FROZEN TIME IS NOT TEST TIME (2026-10-21: the cut of 0.5.0-rc.1 sat 15 h under
-# the one-test-at-a-time freezer, which SIGSTOPs a unit's tree under 20% free
+# the machine's memory freezer, which SIGSTOPs a unit's tree under 20% free
 # memory). The ceiling counts the time the subject was RUNNING: a tick that found
 # its process group stopped (every live member in state T) is not spent, and
 # neither is the excess of a tick that took over 5 s longer than its wait (the
@@ -254,7 +254,7 @@ def ps_stats(*args):
     except (OSError, subprocess.SubprocessError):
         return []
 def group_stopped():
-    # the freezer (one-test-at-a-time) SIGSTOPs the whole tree of a unit: stopped is every live member of
+    # the memory freezer SIGSTOPs the whole tree of a unit: stopped is every live member of
     # the subject group in state T. The leader is read first (one cheap ps); the group only when it is stopped.
     if windows:
         return False

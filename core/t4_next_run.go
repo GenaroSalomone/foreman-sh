@@ -164,6 +164,7 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 	}
 	if s.brief != "" {
 		a.nextPluginReviewReceipt(s.rundir, "plugin_review_t"+nextSeq, s.brief)
+		a.nextJdAgentsReceipt(s.rundir, "jd_agents_t"+nextSeq, s.brief, s.vendor, s.wtdir)
 	}
 	// THE REVIEW THE NEW BRIEF CHOSE, keyed by task like the boundary above.
 	if s.brief != "" {

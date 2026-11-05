@@ -115,6 +115,7 @@ func (a *app) cmdStatusFull() int {
 		return rc
 	}
 	a.orphansQuiet(orphans)
+	a.vaultQuiet()
 	for _, j := range []*heldJob{release, gate, outbox, agentTools} {
 		if rc := a.replay(j); rc != 0 {
 			return rc

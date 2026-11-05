@@ -19,7 +19,6 @@ rc=0
 if [ "$rc" != 0 ]; then  # 899-M05
   printf "rc=%s\nat=%s\nlog=%s\nthe report was delivered; hw %s exited %s and the pane may still be open\n" \
     "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state/close.log" "$*" "$rc" > "$state/close-failed"
-  herdr notification show "executor close FAILED (exit $rc)" --body "hw $* — see $state/close.log" --sound request >/dev/null 2>&1 || true
 fi
 printf "%s\n" "$rc" > "$state/close-rc"
 `

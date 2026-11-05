@@ -40,6 +40,6 @@ out="$(cd "$ROOT/core" && GOCACHE="${GOCACHE:-$HW_GOCACHE_DEFAULT}" GOPATH="$TMP
   go test -count=1 -timeout 600s -v -run "$regex" . 2>&1)" \
   || fail "hw unstick no longer refuses, records or recovers as claimed: $(printf '%s\n' "$out" | tail -40)"
 for t in $TESTS; do
-  printf '%s\n' "$out" | grep -qF -- "--- PASS: $t " || fail "hw unstick: the case $t did not run and pass: $(printf '%s\n' "$out" | tail -20)"
+  has_fixed "$out" "--- PASS: $t " || fail "hw unstick: the case $t did not run and pass: $(printf '%s\n' "$out" | tail -20)"
   pass "hw unstick: $t (hw-core)"
 done

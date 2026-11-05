@@ -106,7 +106,7 @@ func (l *lch) promptFacts() *promptFacts {
 	f.build = l.checksGateApplies()
 	f.jd = l.judgmentDayApplies()
 	piSkill, _ := l.piSkillDirFor("judgment-day")
-	f.jdJudges, f.jdSkill, f.jdSkillPath = jdFacts(f.vendor, l.accountConfigDir, l.env("HOME"), l.workdir(), piSkill)
+	f.jdJudges, f.jdSkill, f.jdSkillPath = jdFacts(f.vendor, l.accountConfigDir, l.env("HOME"), l.workdir(), piSkill, l.piSubagentsReady())
 	f.fastGate = isFile(l.workdir() + "/setup/test-hw")
 	f.reviewMode = l.reviewMode()
 	f.designGate = l.designGateApplies()

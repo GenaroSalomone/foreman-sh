@@ -506,6 +506,7 @@ var layoutBaseEnvKeys = []string{"HW_PROJECT", "HW_TASK", "HW_WORKDIR", "HW_RUN"
 	"OPENCODE_CONFIG",
 	// pi's guard halves and roster fallback (t6_pi_launch.go: exportHwEnv exports them)
 	"HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR",
+	"HW_PI_SUBAGENT_MODELS", "HW_PI_EXPLORE_AGENT",
 	"HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS",
 	// and the private agent directory a session with plugins runs on (t6_pi_shadow.go)
 	"PI_CODING_AGENT_DIR", piRealAgentDirEnv}

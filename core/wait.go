@@ -600,27 +600,7 @@ func (a *app) hwBin() string { return filepath.Join(a.binDir(), "hw") }
 func (a *app) waitMonitorOne(pane, waitMS string) int {
 	cmd := exec.Command(a.hwBin(), "wait-one", pane, "--timeout-ms", waitMS)
 	cmd.Stdout, cmd.Stderr = a.out, a.err
-	rc := exitStatus(cmd.Run())
-	label, body := "", ""
-	switch rc {
-	case 0:
-		label, body = "ready", "reached idle/done"
-	case 2:
-		label, body = "timeout", "spent its wait budget"
-	case 5:
-		label, body = "settled", "proved unable to change"
-	case 6:
-		label, body = "awaiting-human", "confirmed a person is required"
-	case 7:
-		label, body = "stranded", "ended with an undelivered report"
-	case 8:
-		label, body = "handback-refused", "ended without a legal handoff fact"
-	default:
-		label, body = "wait-error-"+itoa(rc), "the monitor could not establish an executor verdict"
-	}
-	tab := orStr(a.getenv("HERDR_TAB_ID"), "unknown")
-	herdrOut(0, "notification", "show", "wait "+label+" · "+pane, "--body", body+" — monitor tab "+tab, "--sound", "done")
-	return rc
+	return exitStatus(cmd.Run())
 }
 
 func (a *app) cmdWaitMonitor() int {
@@ -762,7 +742,7 @@ func (a *app) cmdWait() int {
 	}
 	a.ok("monitoring " + itoa(len(panes)) + " executor(s) in tab " + tab + " (pane " + monitor + "); this brainer is NOT waiting and remains reachable")
 	a.info("targets: " + strings.Join(panes, " "))
-	a.info("the monitor prints each witness explanation once, then short heartbeats; each verdict also sends a system notification")
+	a.info("the monitor prints each witness explanation once, then short heartbeats")
 	return 0
 }
 

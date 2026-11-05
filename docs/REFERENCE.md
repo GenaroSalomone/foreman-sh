@@ -158,7 +158,8 @@ name and `{task}` the task name.
 | `model_floor` | object | `tier` (`haiku`, `sonnet` or `opus`) is the lowest Claude tier `hw` launches without `--below-floor-why`; `accepts` lists off-ladder model ids the lane admits. | no floor |
 | `model_pins` | object | Maps an alias (`haiku`, `sonnet`, `opus`, `fable`) to the full `claude-*` id `hw` passes in its place. | the alias as typed |
 | `subagent_model` | string | The model a Claude Code executor's subagents run on when they name none: `inherit`, an alias (`haiku`, `sonnet`, `opus`, `fable`) or a `claude-*` id. `hw` exports it as `CLAUDE_CODE_SUBAGENT_MODEL`, to Claude Code only (the manifest says `NOT APPLIED` for the others); `--subagent-model` overrides it per dispatch. An agent that pins its own `model:` keeps it. | `inherit` |
-| `account` | string | The Claude Code account the lane's sessions run under: `default` or `personal`. | `default` |
+| `pi_subagent_models` | object | A pi executor's profile: `haiku`, `sonnet` and `opus` map a Claude agent's `model:` to `{model: a pi provider/id, thinking: a pi level}`, and an entry keyed by an agent's name outranks what its file says (`default` is not a key: `subagent_model` decides it, and `model: inherit` takes no thinking). Explore agents read cheap at off/low, build and review agents run strong at medium/high; the receipt's `pi_specialists` row names what each runs. | the pi roster's tiers in `core/t6_pi.go` |
+| `account` | string | The Claude Code account the lane's sessions run under: `default`, or `personal`, the second account. | `default` |
 | `artifacts` | string | Where executors may publish claude.ai artifacts: `deny`, `default` or `personal`. | the lane's `account` |
 | `requested_by` | string | `required` refuses a dispatch whose brief cites no request; `warn` says so and launches. | off |
 | `brief_note` | string | Text `hw` appends to the preamble of every executor prompt of this lane. See below. | none |

@@ -188,6 +188,9 @@ func (e *piExtractor) line(raw []byte, p *TranscriptProof) {
 		for _, n := range names {
 			p.Names[n] = true
 		}
+		// this call's own names, together: a toolCall is one call, so its `workflow:"parallel"`
+		// children are one group (retro-fixes-rc3 item 7).
+		p.Groups = append(p.Groups, names)
 	case "assistant":
 		for _, b := range line.Message.Content {
 			if b.Type != "toolCall" || b.ID == "" {
@@ -238,6 +241,7 @@ func piCallNames(name string, args json.RawMessage) []string {
 			Args struct {
 				Tasks []struct {
 					Agent string `json:"agent"`
+					Task  string `json:"task"`
 				} `json:"tasks"`
 			} `json:"args"`
 		}
@@ -258,15 +262,19 @@ func piCallNames(name string, args json.RawMessage) []string {
 			add(st.piChild)
 			add(st.Parallel...)
 		}
-		// workflow:"review" is pi-subagents' named review resource, which runs the `reviewer` agent; workflow:true or a
-		// script path runs code foreman cannot read an agent out of, so it proves nothing (a stated limit: review-skip).
+		// workflow:"review" is pi-subagents' named review resource, which runs the `reviewer` agent. workflow:"parallel"
+		// is the shipped parallel resource: its `args.tasks` are the children it launches, together, so a foreground call
+		// naming both judges IS both judges. Any other workflow (true, a script path, a name we do not know) runs code
+		// foreman cannot read an agent out of, so its `args` prove nothing (a stated limit: review-skip).
 		var wf string
 		if json.Unmarshal(a.Workflow, &wf) == nil && wf == "review" {
 			names = append(names, "reviewer")
 		}
-		for _, t := range a.Args.Tasks {
-			if t.Agent != "" {
-				names = append(names, t.Agent)
+		if wf == "parallel" {
+			for _, t := range a.Args.Tasks {
+				if t.Agent != "" && t.Task != "" {
+					names = append(names, t.Agent)
+				}
 			}
 		}
 		return names
@@ -280,6 +288,18 @@ func piCallNames(name string, args json.RawMessage) []string {
 		if a.SubagentType != "" {
 			return []string{a.SubagentType}
 		}
+	case "agent":
+		// pstack's own runner (plugins/pstack/pi/agent-tools.ts), how a pi executor launches pstack's review agent:
+		// a FOREGROUND call waits for the child and answers with its result, while run_in_background only answers
+		// "running" and proves the launch, not the run. The agent is Claude's `subagent_type`.
+		var a struct {
+			SubagentType    string `json:"subagent_type"`
+			RunInBackground *bool  `json:"run_in_background"`
+		}
+		if json.Unmarshal(args, &a) != nil || a.SubagentType == "" || (a.RunInBackground != nil && *a.RunInBackground) {
+			return nil
+		}
+		return []string{a.SubagentType}
 	}
 	return nil
 }

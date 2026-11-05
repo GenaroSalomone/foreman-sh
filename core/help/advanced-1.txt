@@ -15,7 +15,8 @@ ADVANCED
 
   ACCOUNTS
     --account <name>   default | personal. Which Claude Code account the executor
-                       runs under (CLAUDE_CONFIG_DIR). A lane's own default is
+                       runs under (CLAUDE_CONFIG_DIR): `default`, or the second
+                       account, `personal`. A lane's own default is
                        listed below; anywhere else `personal` is reached
                        only by typing it, and the manifest marks it chosen.
                        Claude Code only:

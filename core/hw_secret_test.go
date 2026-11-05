@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -472,8 +473,8 @@ func TestHwSecretAutoFailureStatus(t *testing.T) {
 	if !strings.HasPrefix(string(b), "failed ") || !strings.Contains(string(b), "secret-unlock --setup") {
 		t.Fatalf("the failure left no readable status naming --setup: %q", b)
 	}
-	if ents, _ := os.ReadDir(filepath.Join(h.home, ".cache", "hw")); len(ents) != 1 {
-		t.Fatalf("a failed --auto left more than the status file: %v", ents)
+	if ents, _ := os.ReadDir(filepath.Join(h.home, ".cache", "hw")); len(ents) != 4 { // the status file, bw-unlock.log, and the alert (vault-alert-state, vault-alerts.log)
+		t.Fatalf("a failed --auto left more than the status file, the log and the alert: %v", ents)
 	}
 	if !strings.Contains(h.err.String(), "secret-unlock --auto failed: no hw-bw-master item in the Keychain (secret-unlock --setup, once)") {
 		t.Fatalf("stderr: %q", h.err)
@@ -636,5 +637,188 @@ func TestHwSecretLookPathAndExec(t *testing.T) {
 	}
 	if rc, _ := hsExecProcess([]string{dir}, env); rc != 126 {
 		t.Fatalf("a directory: %d", rc)
+	}
+}
+
+// ── --auto stays unlocked: the log, the no-op, and `check` ──────────────────
+
+func (h *hsT) autoLog() string {
+	b, _ := os.ReadFile(filepath.Join(h.home, ".cache", "hw", "bw-unlock.log"))
+	return string(b)
+}
+
+func TestHwSecretAutoLogRedacted(t *testing.T) {
+	h := newHsT(t)
+	os.WriteFile(filepath.Join(h.sec, "item"), []byte("MASTER-STUB-PW"), 0o644)
+	// bw rejects the password and, in its own words, echoes the password, the stub token, a BW_ assignment and a --session argument
+	h.w.env = append(h.w.env, "BW_STUB_MASTER=SOMETHING-ELSE", "STUB_UNLOCK_ERR=nope @MASTER@ SESSIONTOKENabcdefghijklmnopqrstuvwxyz0123456789== BW_SESSION=abcSECRET123 --session xyzTOKEN99 tail")
+	if rc := h.run("unlock", "--auto"); rc != 1 {
+		t.Fatalf("a rejected --auto: rc=%d", rc)
+	}
+	log := h.autoLog()
+	for _, secret := range []string{"MASTER-STUB-PW", "SESSIONTOKEN", "abcSECRET123", "xyzTOKEN99"} {
+		if strings.Contains(log+h.out.String()+h.err.String(), secret) {
+			t.Fatalf("%q reached the log or the output:\n%s", secret, log)
+		}
+	}
+	if ok, _ := regexp.MatchString(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\S* failed: bw rejected the stored master password \(bw said: nope \[redacted\].*tail\)\n$`, log); !ok {
+		t.Fatalf("the log line is not timestamped, or lost bw's redacted text:\n%s", log)
+	}
+}
+
+func TestHwSecretAutoLogsEveryOutcome(t *testing.T) {
+	h := newHsT(t)
+	h.run("unlock", "--auto") // no item
+	os.WriteFile(filepath.Join(h.sec, "item"), []byte("MASTER-STUB-PW"), 0o644)
+	h.mustRC(0, "unlock", "--auto")
+	lines := strings.Split(strings.TrimSpace(h.autoLog()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "failed: no hw-bw-master item") || !strings.Contains(lines[1], "ok: unlocked") {
+		t.Fatalf("each --auto outcome is one log line: %q", lines)
+	}
+	if st, err := os.Stat(filepath.Join(h.home, ".cache", "hw", "bw-unlock.log")); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("the log is not 0600: %v", err)
+	}
+}
+
+func TestHwSecretAutoNoopWhileSessionIsFresh(t *testing.T) {
+	h := newHsT(t)
+	os.WriteFile(filepath.Join(h.sec, "item"), []byte("MASTER-STUB-PW"), 0o644)
+	os.Remove(filepath.Join(h.state, "locked"))
+	h.session(7*3600, "TOK-STUB-123") // more than half of 12 h left
+	h.mustRC(0, "unlock", "--auto")
+	if strings.Contains(h.bwCalls(), "unlock ") || !strings.Contains(h.out.String(), "noop") || !strings.Contains(h.autoLog(), "noop:") {
+		t.Fatalf("a fresh session must be left alone and say so: calls=%q out=%q log=%q", h.bwCalls(), h.out, h.autoLog())
+	}
+	h.session(5*3600, "TOK-STUB-123") // under half: renewed
+	h.mustRC(0, "unlock", "--auto")
+	if strings.Count(h.bwCalls(), "unlock ") != 1 {
+		t.Fatalf("a session under half its life must be renewed once: %q", h.bwCalls())
+	}
+}
+
+func TestHwSecretCheckTriesAutoOnce(t *testing.T) {
+	h := newHsT(t)
+	os.WriteFile(filepath.Join(h.sec, "item"), []byte("MASTER-STUB-PW"), 0o644)
+	h.mustRC(0, "check", "github-token")
+	if n := strings.Count(h.bwCalls(), "unlock "); n != 1 {
+		t.Fatalf("check on a locked vault must make exactly one --auto try: %q", h.bwCalls())
+	}
+	h = newHsT(t)
+	if rc := h.run("check", "github-token"); rc != 2 || !strings.Contains(h.err.String(), "the vault is LOCKED, so nothing can be checked") {
+		t.Fatalf("with no item check still refuses with the old message: rc=%d %q", rc, h.err)
+	}
+}
+
+// ── item 6: the alert to the setup brainer ──────────────────────────────────
+
+// alertWorld: a herdr stub that lists panes from $HERDR_PANES and a channel-send stub that records its argv and stdin.
+func alertWorld(t *testing.T, panes string, sendRC string) (*hsT, string) {
+	h := newHsT(t)
+	os.WriteFile(filepath.Join(h.sec, "item"), []byte("MASTER-STUB-PW"), 0o644)
+	rec := filepath.Join(h.home, "sent")
+	os.WriteFile(filepath.Join(h.stubBin, "herdr"), []byte("#!/bin/sh\nprintf '%s' \"$HERDR_PANES\"\n"), 0o755)
+	os.WriteFile(filepath.Join(h.stubBin, "channel-send"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+rec+"\"; printf 'env %s %s\\n' \"$HERDR_SOCKET_PATH\" \"${BW_SESSION:-none}\" >> \""+rec+".env\"; cat >> \""+rec+"\"; exit "+sendRC+"\n"), 0o755)
+	h.w.env = append(h.w.env, "HERDR_PANES="+panes, "HW_BRAIN_ROOT="+filepath.Join(h.home, "brain"))
+	return h, rec
+}
+
+func panesJSON(h *hsT, entries ...string) string {
+	return `{"result":{"panes":[` + strings.Join(entries, ",") + `]}}`
+}
+
+func (h *hsT) alertLog() string {
+	b, _ := os.ReadFile(filepath.Join(h.home, ".cache", "hw", "vault-alerts.log"))
+	return string(b)
+}
+
+func TestHwSecretAlertSentToTheResolvedBrainerPane(t *testing.T) {
+	h, rec := alertWorld(t, "", "0")
+	panes := panesJSON(h,
+		`{"pane_id":"w7G:p1F1","label":"brain","cwd":"`+filepath.Join(h.home, "brain", "setup")+`"}`,
+		`{"pane_id":"w7G:p2","label":"brain","cwd":"`+filepath.Join(h.home, "brain", "other-lane")+`"}`,
+		`{"pane_id":"w7G:p3","label":"other","cwd":"`+filepath.Join(h.home, "brain", "setup")+`"}`)
+	h.w.env = append(h.w.env, "HERDR_PANES="+panes) // the later entry wins in exec
+	os.Remove(filepath.Join(h.sec, "item"))         // no Keychain item: --auto fails
+	if rc := h.run("unlock", "--auto"); rc != 1 {
+		t.Fatalf("rc=%d", rc)
+	}
+	sent, _ := os.ReadFile(rec)
+	if !strings.HasPrefix(string(sent), "--report herdr w7G:p1F1 - -\n") || !strings.Contains(string(sent), "vault: --auto failed") {
+		t.Fatalf("the report must go to the pane resolved NOW (the brain-labelled one in brain/setup), message on stdin: %q", sent)
+	}
+	if st, _ := os.ReadFile(filepath.Join(h.home, ".cache", "hw", "vault-alert-state")); !strings.HasPrefix(string(st), "failed ") {
+		t.Fatalf("no state for hw status: %q", st)
+	}
+	envSeen, _ := os.ReadFile(rec + ".env")
+	if want := "env " + filepath.Join(h.home, ".config", "herdr", "herdr.sock") + " none\n"; string(envSeen) != want {
+		t.Fatalf("channel-send must get the herdr socket a LaunchAgent lacks, and no vault session: %q want %q", envSeen, want)
+	}
+	// the same failure an hour later: no second report
+	h.run("unlock", "--auto")
+	if again, _ := os.ReadFile(rec); string(again) != string(sent) {
+		t.Fatalf("a continuing failure was reported again:\n%s", again)
+	}
+	// recovery clears the state
+	os.WriteFile(filepath.Join(h.sec, "item"), []byte("MASTER-STUB-PW"), 0o644)
+	h.mustRC(0, "unlock", "--auto")
+	if _, err := os.Stat(filepath.Join(h.home, ".cache", "hw", "vault-alert-state")); err == nil || !strings.Contains(h.alertLog(), "recovered") {
+		t.Fatalf("recovery left the alert open: %v\n%s", err, h.alertLog())
+	}
+}
+
+func TestHwSecretAlertUnresolvedOrFailedSendIsNotAnError(t *testing.T) {
+	// no pane resolves
+	h, rec := alertWorld(t, `{"result":{"panes":[]}}`, "0")
+	os.Remove(filepath.Join(h.sec, "item"))
+	if rc := h.run("unlock", "--auto"); rc != 1 { // 1 is --auto's own failure, not the alert's
+		t.Fatalf("rc=%d", rc)
+	}
+	if _, err := os.Stat(rec); err == nil {
+		t.Fatal("channel-send ran with no pane to send to")
+	}
+	if !strings.Contains(h.alertLog(), "ALERT") || !strings.Contains(h.alertLog(), "send skipped: no single herdr pane") {
+		t.Fatalf("the unresolved send is not in the durable log:\n%s", h.alertLog())
+	}
+	// a pane resolves and channel-send exits non-zero
+	h, _ = alertWorld(t, "", "1")
+	h.w.env = append(h.w.env, "HERDR_PANES="+panesJSON(h, `{"pane_id":"w7G:p1","label":"brain","cwd":"`+filepath.Join(h.home, "brain", "setup")+`"}`))
+	os.Remove(filepath.Join(h.sec, "item"))
+	h.run("unlock", "--auto")
+	if !strings.Contains(h.alertLog(), "send to w7G:p1 failed") {
+		t.Fatalf("a failed send is not logged:\n%s", h.alertLog())
+	}
+}
+
+func TestHwSecretAlertWhenTheSessionEndsWithinTwoHoursAndOnlyFromTheAgent(t *testing.T) {
+	h, _ := alertWorld(t, "", "0")
+	h.w.env = append(h.w.env, "HERDR_PANES="+panesJSON(h, `{"pane_id":"w7G:p1","label":"brain","cwd":"`+filepath.Join(h.home, "brain", "setup")+`"}`), "BW_STUB_MASTER=SOMETHING-ELSE")
+	os.Remove(filepath.Join(h.state, "locked"))
+	h.session(3600, "TOK-STUB-123") // 1 h left, renewal rejected by the vault
+	h.run("unlock", "--auto")
+	if st, _ := os.ReadFile(filepath.Join(h.home, ".cache", "hw", "vault-alert-state")); !strings.HasPrefix(string(st), "failed ") {
+		t.Fatalf("a failed renewal with the session ending within 2 h must alert: %q", st)
+	}
+	// ensure/check (a dispatch) never send
+	h2, rec2 := alertWorld(t, "", "0")
+	h2.run("ensure")
+	h2.run("check", "github-token")
+	if _, err := os.Stat(rec2); err == nil {
+		t.Fatal("ensure/check sent an alert; only the agent's --auto does")
+	}
+}
+
+func TestHwSecretAlertRetriesUntilTheSendLands(t *testing.T) {
+	h, rec := alertWorld(t, "", "1")
+	h.w.env = append(h.w.env, "HERDR_PANES="+panesJSON(h, `{"pane_id":"w7G:p1","label":"brain","cwd":"`+filepath.Join(h.home, "brain", "setup")+`"}`))
+	os.Remove(filepath.Join(h.sec, "item"))
+	h.run("unlock", "--auto") // the send fails (exit 1)
+	os.WriteFile(filepath.Join(h.stubBin, "channel-send"), []byte("#!/bin/sh\ncat >> \""+rec+".ok\"\n"), 0o755)
+	h.run("unlock", "--auto") // same failure, the brainer is reachable now
+	if b, _ := os.ReadFile(rec + ".ok"); !strings.Contains(string(b), "vault: --auto failed") {
+		t.Fatalf("a failed send must be retried by the next run: %q\n%s", b, h.alertLog())
+	}
+	h.run("unlock", "--auto") // landed: no third report
+	if b, _ := os.ReadFile(rec + ".ok"); strings.Count(string(b), "vault:") != 1 {
+		t.Fatalf("a landed report was repeated: %q", b)
 	}
 }

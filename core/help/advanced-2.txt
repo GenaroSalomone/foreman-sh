@@ -23,7 +23,7 @@
                                     store the value a PIPE on stdin carries (a hidden field when .<field>);
                                     never printed, never in argv; an existing one is refused without --replace
     hw secret check <item>...       present / absent, no value      hw secret status | ensure
-    secret-unlock --setup             once, a person: the master password into the Keychain (a LaunchAgent unlocks from it)
+    secret-unlock --setup             once, a person: the master password into the Keychain (a scheduled `secret-unlock --auto` unlocks from it)
     secret-unlock [--hours N|--lock]  an interactive unlock / lock
 
   THE ONE-SHOT ESCAPE

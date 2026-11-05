@@ -123,7 +123,6 @@ type dsp struct {
 	depsLine          string
 	hwRun             string
 	routeForecastTTL  string // HW_ROUTE_FORECAST_TTL, as the text prints it
-	notifyBody        string // the operator notification of a launch (t5l.go)
 }
 
 // env is bash's ${VAR:-}: what the dispatch assigned, else the process's environment.

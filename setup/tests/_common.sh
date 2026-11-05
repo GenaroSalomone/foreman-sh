@@ -559,6 +559,26 @@ home_opencode_config() {
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
+# has_text <text> <regex> — does the text hold a line matching the regex?
+#
+# NEVER `printf '%s' "$text" | rg -q …` UNDER THIS FILE'S PIPEFAIL. MEASURED 2026-11-04: `rg -q` leaves at its
+# first match, the writer behind it dies of EPIPE on the rest, and pipefail makes that 141 the pipeline's status.
+# On a mutant's `go test` output (tens of KB) that turned a KILLED mutant into "VACUOUS — no test failed" — the
+# 1150-G11 red that printed beside `printf: write error: Broken pipe` and passed when run alone. Reproduced 5/5
+# with a 200 KB payload whose match is early; a here-string has no writer behind it and was green 5/5. The `&&`
+# direction is the same defect mirrored: a false GREEN, the assertion never reached. 47 lost a gate run to it on
+# 2026-11-04 (`--- PASS: TestBriefPromptOutsideFlowAndUnattended` in hand, then "the prompt test did not run and pass"),
+# and the sweep that followed converted EVERY `printf … | rg -q|rg -qF|rg -qx|rg -qi|grep -qF …` of a captured output in
+# this directory — `rg -qx` as `^…$`, `rg -qi` as `(?i)…`, `rg -qw` as a bracketed word, a fixed string as
+# has_fixed — 74 call sites in 35 subjects (git diff e8e1d2c0 -- setup/tests | grep -c '^+.*has_text|has_fixed').
+# The one place the old idiom STAYS is where it is the subject: 1150's own reproduction line says so in a comment.
+# LEFT ALONE on purpose, and named so nobody thinks the sweep was blind: `grep -q` over a BRE, and only that — rg's
+# engine is not grep's, so `grep -q 'a|b'` means the literal `a|b`, and converting one by hand is a fix with its own test.
+has_text() { rg -q -- "$2" <<<"$1"; }
+
+# has_fixed <text> <string> — the same, for a FIXED string (grep -qF's meaning: no regex metacharacters).
+has_fixed() { grep -qF -- "$2" <<<"$1"; }
+
 # link_tool <program path> <dir> [<name>] — one program on a PATH of single links.
 link_tool() {
   local p="$1" d="$2" n="${3:-${1##*/}}"

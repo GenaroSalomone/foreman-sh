@@ -55,6 +55,16 @@ func t5FillLaneFields(t *table, home string) {
 			}
 		}
 		set("model_pins", pins)
+		pim := ""
+		if pm := field(v, "pi_subagent_models"); pm != nil && pm.kind == vObj {
+			for i, e := range pm.obj {
+				if i > 0 {
+					pim += " "
+				}
+				pim += e.k + "=" + orDefault(field(e.v, "model"), "inherit") + "|" + orDefault(field(e.v, "thinking"), "inherit")
+			}
+		}
+		set("pi_subagent_models", pim)
 		set("requested_by", str("requested_by", ""))
 		set("suite_lock", str("suite_lock", ""))
 		set("account", str("account", "default"))

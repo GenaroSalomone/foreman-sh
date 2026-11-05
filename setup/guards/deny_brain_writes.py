@@ -672,7 +672,14 @@ def _judge(cfg, seg, cwd, local=None, env=None):
         rel, via = prog
         want = cfg["programs"].get(rel)
         rest = args[1:] if via else args
-        if want and via in _vias(want[0]) and not _first_ok(want[1], rest):
+        # A DRY RUN CREATES NOTHING. `hw <lane> <task> --dry-run` is a rehearsal of a dispatch: it builds no worktree,
+        # starts no agent and writes no repo, which is what `first=` exists to separate. Without this an executor of the
+        # setup lane could not read its own manifest and got past the guard with `env -u HW_TASK` (measured 2026-11-04).
+        # It is the DISPATCH only: a brainer verb that tolerates the flag still changes state, so BRAINER_FIRSTS never
+        # takes the bypass (Judgment Day, 2026-11-05).
+        dry_run = (rel == "bin/hw" and via is None and "--dry-run" in rest
+                   and rest and rest[0] not in BRAINER_FIRSTS)
+        if not dry_run and want and via in _vias(want[0]) and not _first_ok(want[1], rest):
             return _refuse("run", "`%s` takes only these first arguments here; call it "
                            "as: %s" % (rel, _allowed_form(cfg, rel, want)))
         # A lookup (`command -v hw`) is not a call, and the bare call is allowed: the
@@ -781,6 +788,12 @@ def _vias(spec):
 # not know the verbs finds them (measured 2026-10-30: a bare lane script was
 # refused 3 times). One rule for every `first=` line.
 HELP_FIRST = ("help", "-h", "--help")
+
+# The verbs hw-core's own executor gate refuses, and the loop that lets a `--dry-run` through must not reach them: the
+# flag is not a validation. `hw sweep --apply --dry-run` and `hw preview release <proj> <task> --dry-run` ignore it and
+# closed/released anyway (Judgment Day, 2026-11-05). A rehearsal is a DISPATCH (`hw <lane> <task> --dry-run`), whose
+# first word is the lane's.
+BRAINER_FIRSTS = ("next", "ruling", "unstick", "reap", "sweep", "briefs", "preview", "revive", "train", "done")
 
 
 def _first_ok(first, rest):

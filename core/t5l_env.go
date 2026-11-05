@@ -88,6 +88,26 @@ func (l *lch) subagentModelReceiptSource() string {
 // brainGuardOn is `_brain_guard_on`: it applies AND it is on disk.
 func (l *lch) brainGuardOn() bool { return l.brainGuardApplies() && l.brainGuardPresent() }
 
+// jdAgentsReceipt is THE JUDGMENT DAY JUDGES THE CLOSING REQUIRED, keyed by task 1. Written for a pi close that
+// DECLARES Judgment Day and whose judges hw found on disk (jdFacts "agents"): done-invoker then requires one call to
+// each, from the transcript. Absent where the closing fell back to two blind `reviewer` subagents (the dispatch says
+// so itself), where the review is not declared (the optional close may skip Judgment Day entirely), and for every
+// other vendor (unchanged).
+func (l *lch) jdAgentsReceipt(dir string) {
+	// THE SAME GATES THE CLOSING HAS (`f.jd = l.judgmentDayApplies()`): a declared Judgment Day AND a resolved base
+	// ref AND a build kind. Without them the prompt renders no judge call at all, so a row written here would refuse a
+	// close nothing asked for (Judgment Day, both judges, 2026-11-04).
+	if l.agent != "pi" || !l.reviewDeclared() || l.reviewMode() != "judgment-day" || !l.judgmentDayApplies() {
+		return
+	}
+	cfg := orDefaultStr(l.env("CLAUDE_CONFIG_DIR"), l.env("HOME")+"/.claude")
+	if j, _, _ := jdFacts("pi", cfg, l.env("HOME"), l.workdir(), "", l.piSubagentsReady()); j != "agents" {
+		return
+	}
+	l.receiptInto(dir, "jd_agents_t1", "jd-judge-a,jd-judge-b",
+		"brief review: in "+l.brief+" at dispatch, and pi's judges are registered — done-invoker requires a call to each judge, not `reviewer`")
+}
+
 // pluginReviewReceipt is THE PLUGIN REVIEW SKILLS THE CLOSING NAMED, keyed by task 1: done-invoker refuses a done
 // report with no evidence that each ran.
 func (l *lch) pluginReviewReceipt(dir string) {
@@ -643,6 +663,7 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 			"kind build (declared or undeclared) at dispatch — done-invoker requires $HW_ARTIFACTS/checks.md")
 	}
 	l.pluginReviewReceipt(dir)
+	l.jdAgentsReceipt(dir)
 	if l.reportToChosen {
 		l.receiptInto(dir, "report_route",
 			invoker+" — chosen by --report-to (lane postcondition deliberately overridden)",
@@ -707,6 +728,8 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		"HW_PI_FALLBACK_THINKING":      env("HW_PI_FALLBACK_THINKING"),
 		"HW_PI_ASKED_MODEL":            env("HW_PI_ASKED_MODEL"),
 		"HW_PI_SUBAGENTS_DIR":          env("HW_PI_SUBAGENTS_DIR"),
+		"HW_PI_SUBAGENT_MODELS":        env("HW_PI_SUBAGENT_MODELS"),
+		"HW_PI_EXPLORE_AGENT":          env("HW_PI_EXPLORE_AGENT"),
 		"HW_PI_CLAUDE_AGENT_DIRS":      env("HW_PI_CLAUDE_AGENT_DIRS"),
 		"PI_SUBAGENT_EXTRA_AGENT_DIRS": env("PI_SUBAGENT_EXTRA_AGENT_DIRS"),
 	} {

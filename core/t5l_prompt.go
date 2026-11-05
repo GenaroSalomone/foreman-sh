@@ -98,8 +98,23 @@ func noRemoteText(*promptFacts) string {
 	return "No remote operation is authorized for this task, for you or a child: stay local, and report what needs one as blocked."
 }
 
-func noSpecialists(f *promptFacts) bool { return f.piNote == "" && f.specialists == "" }
+// THE GUARD A PI EXECUTOR IS JUDGED BY IS NOT THE ONE ITS BRANCH CARRIES. MEASURED 2026-11-04 (retro of
+// pi-plugins-parity): hw loads `<lane root>/setup/pi/hw-executor.ts` — `piExtensionArgs` builds it from `vdRoot()`,
+// core/t6_pi.go, which is HW_CORE_ROOT, the brain root bin/hw:64 exports — so a worktree's newer adapter never judges
+// its own executor, and the adapter a session loaded is the one it keeps (measured: a session kept refusing `sleep 45`
+// with the code it had loaded after the file on disk was patched, while a NEW session on that file ran it). In that run
+// the branch had gained the sleep-poll call by rebase and a `sleep 540` still ran unrefused. Two ages, and Judgment Day
+// round 1 is why the line states both: the ADAPTER is from session start, while the `.py` rules it asks
+// (`sleepPollVerdict`, the two global hooks) are spawned per call and read then — from the LANE ROOT, which a branch's
+// copy is not. The line tells the executor to report which guard judged it instead of re-running the command.
+func hasPiGuardLine(f *promptFacts) bool { return f.vendor == "pi" }
+func piGuardText(*promptFacts) string {
+	return "Your guards are the LANE ROOT's: the adapter from this session's start (a rebase or ruling reaches a NEW " +
+		"session only), the `.py` rules it asks on every call. Report which guard judged you; do not re-run a refused " +
+		"command to prove one."
+}
 
+func noSpecialists(f *promptFacts) bool { return f.piNote == "" && f.specialists == "" }
 const noSpecialistsLine = "No specialist subagents in this lane (no ops-investigator, no qa-tester)."
 
 func noSpecialistsText(*promptFacts) string { return noSpecialistsLine } // # MUTATION-ANCHOR: 847-C-05
@@ -123,6 +138,7 @@ var promptBlocks = []promptBlock{
 	{"specialists", grpContract, hasSpecialists, specialistsText},
 	{"specialists-none", grpContract, noSpecialists, noSpecialistsText},
 	{"remote-none", grpContract, hasNoRemoteLine, noRemoteText},
+	{"pi-guard-session", grpContract, hasPiGuardLine, piGuardText},
 	{"tier", grpContract, hasTier, tierText},
 	{"codex-rules", grpContract, isCodex, codexRulesText},
 	{"lane-note", grpContract, hasLaneNote, func(f *promptFacts) string { return f.laneNote }},
@@ -358,13 +374,26 @@ func closeJudgmentDayText(f *promptFacts) string {
 		judges = "with its judges jd-judge-a and jd-judge-b"
 	case "reviewers":
 		judges = "with two blind `reviewer` subagents (read-only), judging the same candidate blind, one at a time if need be"
+		if f.vendor == "pi" {
+			// the dispatch says WHY it fell back: pi registers the account's judges, and hw found them missing
+			judges += " (jd-judge-a and jd-judge-b are not on disk for pi, so this is what hw can promise)"
+		}
+	case "none":
+		judges = "with no judge at all: pi-subagents is not loaded in this executor, so neither jd-judge-a/jd-judge-b nor a `reviewer` subagent can be launched — say so in the report (a REQUIRED Judgment Day is then --blocked, never skipped silently)"
 	default:
 		judges = "with its judges jd-judge-a and jd-judge-b; where no such agent is registered, with two blind builtin `reviewer` subagents (read-only), judging the same candidate blind, one at a time if need be"
 	}
 	if f.vendor == "pi" {
-		// pi-subagents runs a call asynchronously unless it says async:false, and an async call's own result is only "launched":
-		// done-invoker (core/invokers/transcript_pi.go) counts only the call that ran and waited.
-		judges += ". Judge/plugin subagent calls need agent, task, async:false"
+		// pi-subagents refuses a second subagent call in the same turn ("a subagent call is already in progress" —
+		// measured 2026-11-04), so two independent judges travel in ONE call, the shipped `parallel` workflow resource. The close
+		// counts only a call that ran and waited (async:false), and `reviewer` is not one of the two: a measured session
+		// used it in a judge's slot. Paid for by the shorter specialist note (t6_pi_launch.go), inside the 5000 B budget.
+		if f.jdJudges == "agents" {
+			judges += ", both in ONE `subagent({workflow:\"parallel\",args:{tasks:[{agent:\"jd-judge-a\",…},{agent:\"jd-judge-b\",…}]},async:false})` call; one per turn. Plugins: async:false"
+		} else if f.jdJudges != "none" {
+			// "none" just said no subagent tool is loaded: an async:false rule for one would contradict it
+			judges += ". Judge/plugin subagent calls need agent, task, async:false"
+		}
 	}
 	var rule, report string
 	switch {
@@ -435,33 +464,43 @@ the Limits forbid it; a red is yours to fix.`
 	return s
 }
 
+// claudeDirsHas is a file under the two `.claude` roots an executor reads: the account's config dir (default
+// ~/.claude) and the work directory's. A Claude executor reads both; pi registers the same `.claude/agents` with
+// pi-subagents (piClaudeAgentDirs), so one predicate answers for both.
+func claudeDirsHas(cfgDir, home, workdir, rel string) bool {
+	if cfgDir == "" {
+		cfgDir = home + "/.claude"
+	}
+	return isFile(cfgDir+"/"+rel) || isFile(workdir+"/.claude/"+rel)
+}
+
 // jdFacts is what hw KNOWS of the Judgment Day a vendor can run, so the prompt states it instead of asking the executor to work
 // it out: claude has the skill and the two judge agents on its config dir's path (or the work directory's); pi has the skill
 // where piSkillDirFor finds it and the judges registered (hw-executor.ts registers jd-*); for any other vendor hw cannot tell.
-func jdFacts(vendor, cfgDir, home, workdir, piSkillDir string) (judges, skill, skillPath string) {
+func jdFacts(vendor, cfgDir, home, workdir, piSkillDir string, piSubagents bool) (judges, skill, skillPath string) {
 	switch vendor {
 	case "claude":
-		if cfgDir == "" {
-			cfgDir = home + "/.claude"
-		}
-		roots := []string{cfgDir, workdir + "/.claude"}
-		has := func(rel string) bool {
-			for _, r := range roots {
-				if isFile(r + "/" + rel) {
-					return true
-				}
-			}
-			return false
-		}
 		judges, skill = "reviewers", "no"
-		if has("agents/jd-judge-a.md") && has("agents/jd-judge-b.md") {
+		if claudeDirsHas(cfgDir, home, workdir, "agents/jd-judge-a.md") && claudeDirsHas(cfgDir, home, workdir, "agents/jd-judge-b.md") {
 			judges = "agents"
 		}
-		if has("skills/judgment-day/SKILL.md") {
+		if claudeDirsHas(cfgDir, home, workdir, "skills/judgment-day/SKILL.md") {
 			skill = "yes"
 		}
 	case "pi":
+		// The judges pi can launch are the ones hw registers with pi-subagents (piClaudeAgentDirs: the lane's
+		// `.claude/agents` then the account's), so hw can see whether they exist instead of handing over two names
+		// that are not registered. Where they are absent the generic "reviewers" wording is the honest answer.
+		// Without pi-subagents nothing can be launched at all — no judge and no `reviewer` — so the closing says that.
 		judges, skill = "agents", "no"
+		switch {
+		case !piSubagents:
+			judges = "none"
+		default:
+			if !claudeDirsHas(cfgDir, home, workdir, "agents/jd-judge-a.md") || !claudeDirsHas(cfgDir, home, workdir, "agents/jd-judge-b.md") {
+				judges = "reviewers"
+			}
+		}
 		if piSkillDir != "" {
 			skill, skillPath = "yes", piSkillDir+"/SKILL.md"
 		}

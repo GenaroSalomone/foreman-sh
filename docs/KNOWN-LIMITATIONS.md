@@ -306,8 +306,11 @@ it leaves the brain directory, is unguarded even with the hook registered.
     pi-subagents when the session starts, translated in memory (nothing is
     copied or rewritten): a pi executor delegates to the same specialists and
     judges a Claude one sees (the lane's file shadows the account's of the same
-    name). What does not carry over: the file's `model:` (a Claude alias is not a
-    pi model, so a specialist runs on the executor's), and the tools pi has no
+    name). The file's `model:` is resolved, not dropped: the lane's
+    `pi_subagent_models` in `projects.json` maps the alias (and, by name, an agent
+    the lane classifies) to a pi model and thinking level, registered in
+    pi-subagents' own fields, and the `pi_specialists` row says what each runs.
+    What does not carry over: the tools pi has no
     counterpart for, dropped and named in the receipt's `pi_specialists` row (`WebSearch`, `Task` and `mcp__*`):
     `Task` (a child of a child: measured, `allowNestedSubagents` and
     `tools: subagent` both leave the child without a `subagent` tool) and `mcp__*`
@@ -368,6 +371,52 @@ it leaves the brain directory, is unguarded even with the hook registered.
     there is no pre-dispatch usage gate (the cap is shared dollars: a spent plan
     ends the run as `provider_quota`, and the fallback model is for model errors
     only).
+  - **Optimisations: claude has one, pi's equivalent or why not (measured 2026-11-04).** Each row names the
+    mechanism, where hw applies it, and what holds it. A row marked `pending` is another task's and says so.
+    - **Subagent model.** claude: `CLAUDE_CODE_SUBAGENT_MODEL` exported at launch (`core/t5l_env.go:332`), recorded as
+      `subagent_model`. pi: the variable is `NOT APPLIED` (`core/t5l_env.go:73-85`), but the outcome is not — the
+      lane's `pi_subagent_models` profile resolves each definition's `model:` (an alias, never a Claude id) to a pi
+      model and thinking level, and hw-executor registers both in pi-subagents' own fields
+      (`setup/pi/hw-executor.ts:815-880`); the receipt's `pi_specialists` row says what each one runs
+      (`docs/pi-vendor.md:29`).
+    - **Explorer (cheap tier).** claude: `cheap-explorer` through `--agents` (`core/t5_explorer.go:226`, L21). pi: the
+      same definition in `setup/pi/agents`, handed over as `PI_SUBAGENT_EXTRA_AGENT_DIRS` on `HW_EXPLORER_MODEL_PI`
+      (`core/t6_pi.go:105-118`, `:181-199`); only where pi-subagents is loaded, and the prompt says so when it is not.
+    - **Effort / thinking.** claude: `--effort` (`core/t5_vendor_agent.go:145`). pi: `--thinking` by kind
+      (`core/t6_pi.go:425`), and pi CLAMPS a level the model does not support (`off` runs `low` on
+      `deepseek-v4.1-flash`); the receipt's `thinking_verdict` says DIVERGENCE instead of claiming the asked level
+      (`core/t6_pi_launch.go:348`).
+    - **Guards.** claude: `--permission-mode` plus the deny hooks (`setup/guards/deny-repo-writes.py`,
+      `~/.claude/hooks/`). pi: the adapter's `tool_call` runs the SAME `decide`/`insideProtected`
+      (`setup/pi/hw-executor.ts` `judge`; setup test 983), a secret-read guard (989), the brain guard (988), and every
+      child: pi-subagents' through its required-child API, pstack's through the private directory's own extension
+      (983, 2026-11-04).
+    - **Review proof.** claude: a `Skill` or `Agent` tool_use of the exact name (`core/invokers/transcript.go`). pi: a
+      read of the skill's `SKILL.md` in its measured layout, or a waited `subagent`/`Agent`/pstack foreground
+      `agent` call (`core/invokers/transcript_pi.go`); a declared Judgment Day is TWO judges, proved from ONE
+      `workflow:"parallel"` call naming both, or one call each (setup test 1150's `jd_judges_*` goldens).
+    - **Plugin hooks.** claude: one `--plugin-dir` per plugin, and every hook command runs through `hw/hook-env` with
+      its state in `$HW_ARTIFACTS/plugin-state` (`core/t5_plugins.go:107-132`, L22). pi: `-e <plugin>` loads the
+      plugin's extension and skills; pi HAS no hook system, so the extension is the equivalent (pstack's tools,
+      ponytail's answer), and there is no hook state to redirect.
+    - **Account.** claude: `CLAUDE_CONFIG_DIR`, and `hw` refuses an account not at parity. pi: `NOT APPLIED` (above).
+    - **Waiting on a background command.** claude: the Agent tool's `run_in_background` and its completion notice.
+      pi: the same guarantee, pi-native — `bash_background` starts a command and returns a job id, its exit wakes the
+      session ONCE with the exit code, the last 20 lines and the log path, and `job_stop` ends it
+      (`setup/pi/hw-executor.ts:927-1199`, registered only in a non-child session). The sleep-poll guard refuses a
+      poll loop in both, `bash_background` included. It is not Claude's flag: pi has no `run_in_background`. Owning
+      task `setup/pi-background-wait`, merged 2026-11-04; setup test 1235 and `docs/pi-vendor.md` "The background
+      shell".
+    - **Theme and settings.** A plugin dispatch runs pi on the private agent directory; its `settings.json` keeps
+      every field except discovery. The theme that `theme` names is linked READ-ONLY into
+      `<private>/themes/<name>.json` — from the real `themes/` or from a package's `pi.themes`/`themes/` — so pi no
+      longer falls back with `Failed to load theme "<name>"` (measured 2026-11-04; `core/t6_pi_shadow.go`
+      `piShadowThemeFile`). Owning task `setup/pi-theme-and-models`, merged 2026-11-04.
+    - **Vendor-neutral, so no row of its own:** the ports and the dev server, the per-worktree database,
+      `harness`/`browser-close`, the engram label proxy, the processed-brief proof, `checks.md`, the engram ids, the
+      sandbox, and the turn end (claude's Stop hook and pi's `agent_before_settle` run the same
+      `hw executor-turn-end`, test 982).
+
 - **Evidence:** `measured` live on pi 1.1.0, and by setup tests 980–989 with their
   mutants.
 - **Workaround:** `--sdd none`, or Claude Code where a framework flow is needed.
@@ -415,10 +464,18 @@ it leaves the brain directory, is unguarded even with the hook registered.
     at startup. A pi dispatch whose brief declares a plugin therefore runs with `PI_CODING_AGENT_DIR` pointing at
     `$HW_ARTIFACTS/pi-agent`: symlinks to the real agent directory (auth, models, trust, npm, bin, sessions — never
     its `extensions/`, which a subagent must not load) and a `settings.json` copied without `packages` or
-    `extensions`. `~/.pi` is not written and a plain pi session is untouched; the top-level session is unchanged
-    because `-ne` already loaded nothing ambient. **Not covered:** those children are not under hw's write guard —
-    pstack's runner has no required-child-extension API, so `hw-executor.ts` cannot travel to them — and pstack's
-    agents are reachable through pstack's own `agent` tool, not through pi-subagents' `subagent` roster.
+    `extensions`. The `theme` the real settings name is kept, and its JSON is linked read-only into
+    `<private>/themes/<name>.json` — from the real `themes/` directory or from a package's `pi.themes`/`themes/`
+    (measured 2026-11-04: without that link pi printed `Failed to load theme "catppuccin-mocha"` and fell back to
+    the system theme, while the same theme's colours appeared with it). `~/.pi` is not written and a plain pi
+    session is untouched; the top-level session is unchanged because `-ne` already loaded nothing ambient. The
+    private directory's own `extensions/` carries ONE file, the
+    child guard (`hw-child-guard.ts`, a re-export of `setup/pi/hw-child-guard.ts`): a child that discovers it is
+    held to the same `judge` and secret-read redaction the executor is, without hw-executor's default factory (which
+    would claim the child as the root session). Measured live with a pstack child: with the file absent it ran
+    `echo x > <product repo>/__probe__/x` and bash failed on the missing directory; with the file present the same
+    call was refused by the guard. pstack's agents are reachable through pstack's own `agent` tool, not through
+    pi-subagents' `subagent` roster.
   - **The export ships no plugin.** The copies carry third-party text and its licenses; `setup/vendor/` is
     excluded from the export, so there `--with-review-plugins` refuses and `plugins:` refuses every name until
     you put one at `<brain>/plugins/<name>/` with a `.claude-plugin/plugin.json`.
@@ -434,15 +491,24 @@ it leaves the brain directory, is unguarded even with the hook registered.
     and `n`, and `.claude/skills/<n>/SKILL.md` (project or user) proves `n`; a partial read (`offset`/`limit`)
     still counts. Any other `<x>/SKILL.md` proves nothing, and a plugin laid out differently is released with
     `review-skip: <skill> — <why>`.
-  - **`unverified`: pi's Judgment Day may be the builtin `reviewer`.** Measured on the real sessions on disk, a pi
-    executor usually runs its two blind judges as `reviewer`, not `jd-judge-a`/`jd-judge-b`; the closing permits
-    that substitution, so a proof naming `jd-judge-a` says a specialist of that name ran, not that a blind judge did.
+  - **A pi close that DECLARES Judgment Day is held to the two judges.** The receipt carries `jd_agents_t<N>` when the
+    brief declares `review: judgment-day` (or a list naming it), the lane is pi, and BOTH `jd-judge-a` and
+    `jd-judge-b` exist in the directories pi registers (the lane's `.claude/agents`, then the account's);
+    `done-invoker` then refuses a done report unless the pi session (and its subagents') records a `subagent` call to
+    EACH judge with agent, task and `async:false`. The builtin `reviewer` is not a substitute where those agents are
+    registered: a measured session used it in a judge's slot, and a proof naming one name is not proof of two blind
+    judges. Where the judges are not on disk the dispatch says so itself ("jd-judge-a and jd-judge-b are not on disk
+    for pi"), no row is written and the close is not held to them; an UNDECLARED (optional) Judgment Day writes no
+    row either, because skipping it is permitted. Claude's closing is unchanged (no such gate).
   - **Cost.** pstack puts ≈12.5 KB of skill descriptions in the executor's context for as long as it runs.
 - **Evidence:** `measured` for the dispatch lines, the receipt, the launch flags and the refusals (setup tests 843,
   844, 847, 848 and 979, bash against Go on the same goldens, with a mutant on each decision), and for a real
   executor of each vendor that sees a plugin's skill when its brief asks and does not when it does not, with
-  `~/.claude` and `~/.pi` unchanged. `unverified`: that a plugin improves any task; that is a question for a
-  measurement of its own.
+  `~/.claude` and `~/.pi` unchanged. The child guard and the two judges are held by setup test 983 (the driver runs
+  `setup/pi/hw-child-guard.ts` as a child would) and hw-core's tests (`TestJdAgentsReceipt*`, `TestJdFactsByVendor`,
+  `TestJudgmentDayGateRequiresBothJudges`, and the four `jd_judges_*` scenarios in `TestDiffDone`, whose goldens fail
+  when the gate's condition is reverted); the live pstack child is in that test's header. `unverified`: that a plugin
+  improves any task; that is a question for a measurement of its own.
 - **Workaround:** none needed; declare only the plugins the task wants.
 
 ### L27. Lane-local executor rules reach Claude Code and pi only
@@ -653,7 +719,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   `secret-unlock` and, where it is installed, the global guard
   `deny-bitwarden-secrets.py` (Claude, Codex, OpenCode). **This export ships
   `hw secret`, `secret-unlock` and the `secrets:` preflight, and does not ship the
-  guard or the LaunchAgent installer** (`setup/install/install-bw-unlock-agent.sh`): on a
+  guard or a scheduled unlock** (you set up the job that runs `secret-unlock --auto`): on a
   machine installed from it nothing refuses an agent's own `bw` call, so
   `hw secret run` is the sanctioned path and not an enforced one, and the vault
   is unlocked by a person with `secret-unlock`. The Keychain half
@@ -662,7 +728,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   Needs the `bw` CLI, which the installer does not install.
 - **Impact:** the master password (`secret-unlock --setup`) is kept in the login
   Keychain as the service `hw-bw-master`, readable by any process of the user that
-  passes the item's ACL, and a LaunchAgent unlocks from it at load and every 11 h.
+  passes the item's ACL, and a scheduled `secret-unlock --auto` unlocks from it at load and every hour (and renews a session with under 6 h left).
   Where the guard is installed it cuts AGENTS (a Keychain read of it,
   `secret-unlock --auto|--setup`), not a process made on purpose. `~/.cache/hw/bw-session` (0600) holds a
   token that opens the WHOLE vault, not only the folder `agents`: `hw secret run`
@@ -781,8 +847,9 @@ it leaves the brain directory, is unguarded even with the hook registered.
   not is cached on bytes that do not hold its answer. **Nothing measures that, and a new subject that reads the world without the
   declaration is still not refused.** A text rule cannot stand in for the measurement: `$HOME`/`~`, a URL that is not loopback, `ssh` and
   an agent CLI by absolute path flag 90 of the 522 subjects, and the narrowest sane version of it still flags 33 — of which 32 are a stub
-  they build or an assertion on a path string, and 1 was real: `setup/tests/122-the-account-an-executor-inherits.sh` asks this machine's
-  PATH for `claude-personal` (line 129), which it now declares. Every `$HOME`/`~` in the rest is the run's own temp home (`tests/_common.sh`
+  they build or an assertion on a path string, and 1 was real: the subject that asks the PATH for the second
+  account's CLI (`setup/tests/122-the-account-an-executor-inherits.sh`, `claude-personal` at line 129), which it
+  now declares. Every `$HOME`/`~` in the rest is the run's own temp home (`tests/_common.sh`
   pins it, with `XDG_CONFIG_HOME` and the per-vendor pointers), so it is not the machine's;
   (4) a subject nobody measured is keyed to the whole tree, which is today's behaviour, never a smaller one: until
   `python3 setup/measure/subject-deps.py` has run, only a byte-identical tree hits. Measured 2026-11-01: 4 subjects took 50 s with
@@ -998,8 +1065,8 @@ it leaves the brain directory, is unguarded even with the hook registered.
   `HW_VERDICT_MAX_CHAIN=1` restores one hop.
 
 ### L25. `setup/heavy` reports a frozen or starved run; it does not unfreeze it
-- **Scope:** `setup/heavy` on a machine where something SIGSTOPs heavy trees under memory pressure (the maintainer's
-  `one-test-at-a-time` LaunchAgent; nothing in this repo installs it).
+- **Scope:** `setup/heavy` on a machine where something SIGSTOPs heavy trees under memory pressure (a memory-pressure
+  guard local to that machine; nothing in this repo installs it).
 - **Impact:** (1) the preflight warns when free memory is under `HW_HEAVY_RESUME_FREE` (26, a copy of that guard's
   resume line, not read from it — if the guard's thresholds move, this number does not follow) and starts anyway;
   `HW_HEAVY_REQUIRE_FREE=1` makes it refuse with exit 75. (2) A watchdog reads the holder's process tree every

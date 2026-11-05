@@ -121,7 +121,7 @@ func (a *app) nextEnvFacts(e nextMsgEnv) *promptFacts {
 		f.piNote = l.piSpecialistNote(f.specialists)
 	}
 	piSkill, _ := l.piSkillDirFor("judgment-day")
-	f.jdJudges, f.jdSkill, f.jdSkillPath = jdFacts(f.vendor, a.nextEnvVal(e.rundir, "CLAUDE_CONFIG_DIR"), a.getenv("HOME"), e.workdir, piSkill)
+	f.jdJudges, f.jdSkill, f.jdSkillPath = jdFacts(f.vendor, a.nextEnvVal(e.rundir, "CLAUDE_CONFIG_DIR"), a.getenv("HOME"), e.workdir, piSkill, l.piSubagentsReady())
 	f.fastGate = isFile(e.workdir + "/setup/test-hw")
 	// DELEGATE BY MODEL TIER: only when the session being re-tasked was LAUNCHED with the explorer (its receipt says
 	// so), so the prompt never names an agent that session does not have.

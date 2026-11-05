@@ -111,6 +111,9 @@ func (c *Ctx) ask(args []string) error {
 	if c.get("HERDR_PANE_ID") == "" {
 		return die("no HERDR_PANE_ID — not running inside a herdr pane, so the brainer would have nowhere to reply.")
 	}
+	if err := c.refuseForeignPaneRun(); err != nil { // 1241-M01: the pane is this run's
+		return err
+	}
 	task := c.or("HW_TASK", "unknown")
 	project := c.or("HW_PROJECT", "unknown")
 
@@ -252,8 +255,6 @@ func (c *Ctx) ask(args []string) error {
 	}
 	if rc == 2 && route == "herdr" {
 		logAsk("timeout")
-		c.quiet("herdr", "notification", "show", "executor waiting · "+project+":"+task,
-			"--body", "brainer still busy after "+itoa(c.waitMs()/1000)+"s — "+pubNote, "--sound", "request")
 		return die("the brainer at %s was still working after %ds, so the question was NOT sent. Sending it mid-turn would not lose it — it would get answered somewhere inside the turn the brainer is already in, against context you never saw, which is the whole point of this gate. %s No ask was spent (%s of %d used). Either re-run the same command, or give it a longer budget with a matching Bash timeout: HW_INVOKER_WAIT_MS=540000 ask-invoker \"…\". If it keeps failing, stop and report the blocker to %s in this pane.", pane, c.waitMs()/1000, pubNote, count, max, c.operator())
 	}
 	if rc != 0 {
@@ -275,8 +276,6 @@ func (c *Ctx) ask(args []string) error {
 	c.transcriptAppend(stateDir, k, envelope, question)
 	publishAsk("delivered")
 	c.cockpitKick()
-	c.quiet("herdr", "notification", "show", "executor blocked · "+project+":"+task,
-		"--body", "asked the brainer ("+label+") via "+route, "--sound", "request")
 	if route == "herdr" {
 		c.printf(c.Stdout, "asked the brainer (%s) via %s. The receiver ADMITTED envelope %s (admission only, not proof it was read); wait for the reply in this pane.\n", label, route, envelope)
 	} else {

@@ -26,6 +26,8 @@ provided in the delegate prompt exactly.
 
 **Precision gate.** Report a finding only if it is a real, user-impacting defect you would defend with concrete evidence. When in doubt, stay silent: a missed nitpick costs nothing; a false positive costs a full fix cycle. Style and preference findings are banned unless they obscure a defect.
 
+**Trust boundary.** A value the change READS instead of CREATES is an input, whatever the diff calls it: an environment variable it inherits from its parent, argv, a file, a directory listing, a message from a peer process. Name who can supply it and what the code does when it is missing, stale, garbage or hostile. A value used without validating it is a finding and not a nitpick — presence is not validation — and the precision gate does not silence it, because the blast radius is what the value decides, not the happy path.
+
 **Findings ledger.** Emit a findings ledger with this schema for every entry:
 
 | Field | Values |

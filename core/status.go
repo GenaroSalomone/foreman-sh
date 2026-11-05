@@ -161,6 +161,7 @@ func (a *app) statusTable(project string, all bool) (int, []orphanLine) {
 	for _, o := range auditCh() {
 		a.term.out.Write(o)
 	}
+	a.term.out.Write(a.guardDriftOutput())
 	return 0, s.orphanLines(orphans)
 }
 

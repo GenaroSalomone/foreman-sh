@@ -363,7 +363,7 @@ reconcile_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/hw-reconc
 # | wc -l …)"` was one of the accepted debts, and the fix that made a FAILED
 # `git status` produce `undetermined` instead of `safe` removed the whole
 # re-read. Paying a debt down must not read as a regression; ADDING one must.
-[ "$brain_archive_count:$hw_count:$reconcile_count" = "1:1:11" ] \
+[ "$brain_archive_count:$hw_count:$reconcile_count" = "0:1:11" ] \
   || fail "lint-shell: full-bin finding distribution changed (brain-archive:hw:hw-reconcile=$brain_archive_count:$hw_count:$reconcile_count)"
 # THE SUMMARY LINE IS NOT A FINDING, and hashing it made this ratchet fire on
 # things that are not findings. `lint-shell` now ends with "N finding(s) in M
@@ -391,8 +391,10 @@ actual_hash="$(printf '%s\n' "$normalized" | shasum -a 256 | cut -d ' ' -f1)"
 #   go-060 S4: 21 -> 13 findings (hw 9 -> 1: only the shim's `shift 2` remains; brain-archive 1 and hw-reconcile 11
 #   unchanged). The old set minus the eight bash-body findings is the new set; the scan of the pre-change tree
 #   reproduces fd2bbf67… with this very pipeline, so the move of the hash is the removed bash and nothing else.
+#   0.7.0: brain-archive lost its bash body (91bc2e367) and its one finding (`HEAD_SHA="$(git -C "$BRAIN" rev-parse HEAD)"`) left with it:
+#   13 -> 12, distribution 1:1:11 -> 0:1:11. Triage: the old normalized set is the new one plus exactly that line, and hashes 09d84dd2…
 #   2026-10-18: `sort` became `LC_ALL=C sort` — Linux sorted the same 21 findings in another order and hashed
 #   d4273575…; the set did not change, only the collation that orders it. 14cb75e5… was macOS UTF-8 order.
-[ "$actual_hash" = 09d84dd2c12f09ca548a7be2b9a24a08a3efef0e9a3881ab0df818e720d96c9c ] \
+[ "$actual_hash" = 42c86a203eb7338a241c04c20982f5a10815fec577347eedffe5838b2cbadfdd ] \
   || fail "lint-shell: full-bin semantic finding set changed (sha256=$actual_hash) and needs fresh triage: $bin_lint_out"
-pass "lint-shell: full bin/* scan is automatic and its 13 active-errexit consumer findings are exact, not an untriaged dump"
+pass "lint-shell: full bin/* scan is automatic and its 12 active-errexit consumer findings are exact, not an untriaged dump"

@@ -384,7 +384,12 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 		if f, err := os.Create(reviveReopenedMarker(rundir)); err == nil {
 			f.Close()
 		}
-		a.receiptInto(rundir, "reopened", "yes", "the run had "+filepath.Base(marker)+" and hw revive gave it a live pane; cleared by the next done-invoker or hw done")
+		// THE DONE MARKER GOES WITH THE REOPEN. channel-send's --report-state refuses EVERY report while it stands ("task
+		// state already has a done marker", not even the blocked-pane bypass), so a reopened run could not report at all
+		// and the executor moved the marker by hand (2026-11-04). The earlier report stays on record — it is in the
+		// receipt and in the ledger — and the reopened marker is what says this task is open again.
+		os.Remove(marker)
+		a.receiptInto(rundir, "reopened", "yes", "the run had "+filepath.Base(marker)+" and hw revive gave it a live pane; its done marker was cleared so the next done-invoker can deliver (the earlier report stays in the receipt and the ledger)")
 		a.ok("run marked reopened — its earlier report stands, a new done-invoker is expected (no --retask), and hw status shows it as reopened")
 	}
 	a.ok("revived " + proj + ":" + task + " in tab " + tab + ", pane " + pane + " — " + vendor + " " + st.agentArgs + " in " + cwd)

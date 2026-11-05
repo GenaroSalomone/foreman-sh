@@ -21,6 +21,18 @@ for env_set in "plain" "executor"; do
   printf '%s\n' "$out" | while IFS= read -r l; do case "$l" in "ok - "*) pass "$env_set: ${l#ok - }" ;; esac; done
 done
 
+# A PLUGIN'S CHILD IS GUARDED TOO (setup/pi/hw-child-guard.ts). pstack's `agent` starts pi with discovery ON and no
+# `-ne` (setup/vendor/plugins/pstack/pi/agents.ts), so the private agent directory's extensions/ is all a child finds;
+# its one file registers the same `judge` and the same secret-read redaction, without hw-executor's default factory.
+# OLD: no such file and no such registration — measured live, a pstack child's product-repo write ran unguarded
+# (docs/pi-vendor.md; the report of setup/pi-plugins-parity). NEW: the same child is refused.
+CHILD_GUARD="$ROOT/setup/pi/hw-child-guard.ts"
+[ -r "$CHILD_GUARD" ] || fail "no child guard at $CHILD_GUARD — a plugin's children run unguarded"
+out="$(env HW_PROJECT=setup HW_BRAIN_ROOT="$ROOT" \
+  node --experimental-strip-types --no-warnings "$DRIVER" "$CHILD_GUARD" child-guard 2>&1)" \
+  || fail "a plugin child's guard did not behave: $out"
+printf '%s\n' "$out" | while IFS= read -r l; do case "$l" in "ok - "*) pass "plugin child: ${l#ok - }" ;; esac; done
+
 # A guard that cannot load its module refuses every bash/edit/write.
 out="$(HW_PROJECT=setup HW_BRAIN_ROOT="$TMP/nowhere" node --experimental-strip-types --no-warnings --input-type=module -e '
   const m = await import(process.argv[1]);

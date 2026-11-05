@@ -74,7 +74,7 @@ stop_dir="$(rg -o "bash '([^']+)/bin/hw-stop-hook\.sh' stop" -r '$1' "$HOME/.cla
 export TMPDIR="$TMP"
 dry="$(cd "$B" && hw app probe --sdd none --no-report --no-brief --dry-run < /dev/null 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
 for want in "dispatch app:probe" "worktree    $(dirname "$B")/work/app/probe  (new, own branch off trunk)" "engram      app" "agent       claude  (lane default for app)"; do
-  printf '%s\n' "$dry" | rg -qF -- "$want" || fail "the new brain's dry run has no '$want': $(printf '%s' "$dry" | tail -3 | tr '\n' ' ')"
+  has_fixed "$dry" "$want" || fail "the new brain's dry run has no '$want': $(printf '%s' "$dry" | tail -3 | tr '\n' ' ')"
 done
 pass "one command installs a brain whose bin/ is this tree's, links hw and the invokers, merges the Stop hook, and \`hw app probe --dry-run\` dispatches from the table"
 
@@ -82,7 +82,7 @@ pass "one command installs a brain whose bin/ is this tree's, links hw and the i
 t0="$(tree)"
 out="$(inst --brain ~/brain --lane app --repo "$REPO")" || fail "the second run failed: $(printf '%s' "$out" | tail -3)"
 [ "$(tree)" = "$t0" ] || fail "a second identical run changed files"
-printf '%s\n' "$out" | rg -q '^  \+ ' && fail "a second identical run reported writes: $(printf '%s\n' "$out" | rg '^  \+ ')"
+has_text "$out" '^  \+ ' && fail "a second identical run reported writes: $(printf '%s\n' "$out" | rg '^  \+ ')"
 pass "a second identical run changes no file and reports no write"
 
 # ── 3b. no rsync (Git for Windows ships none), and an rsync that fails ─────
@@ -99,7 +99,7 @@ H2="$TMP/no-rsync-home"; mkdir -p "$H2"
 out="$(HOME="$H2" PATH="$NORS" "$INSTALL" --brain "$H2/brain" --lane app --repo "$REPO" 2>&1)" || fail "with no rsync on PATH the install failed: $(printf '%s' "$out" | tail -3)"
 diff -r "$ROOT/bin" "$H2/brain/bin" >/dev/null || fail "with no rsync on PATH the new brain's bin/ is not the tree's: $(printf '%s' "$out" | rg 'bin/')"
 out="$(HOME="$H2" PATH="$NORS" "$INSTALL" --brain "$H2/brain" --lane app --repo "$REPO" 2>&1)" || fail "with no rsync the second run failed"
-printf '%s\n' "$out" | rg -q '^  \+ ' && fail "with no rsync a second identical run reported writes: $(printf '%s\n' "$out" | rg '^  \+ ')"
+has_text "$out" '^  \+ ' && fail "with no rsync a second identical run reported writes: $(printf '%s\n' "$out" | rg '^  \+ ')"
 FRS="$TMP/failing-rsync-bin"; mkdir -p "$FRS"; printf '#!/bin/sh\nexit 23\n' > "$FRS/rsync"; chmod +x "$FRS/rsync"
 H3="$TMP/failing-rsync-home"; mkdir -p "$H3"
 HOME="$H3" PATH="$FRS:$NORS" "$INSTALL" --brain "$H3/brain" --lane app --repo "$REPO" > "$TMP/frs.out" 2>&1 \

@@ -743,7 +743,7 @@ count_into() {
 [ ! -f "$SOURCE_ROOT/setup/gocache.sh" ] || . "$SOURCE_ROOT/setup/gocache.sh"
 # THE CAP IS HELD AT THE START OF EVERY RUN, fast gates included: the end-of-full-run trim almost never fires, and the
 # cache reached 192 GB (2026-10-16). Oldest entries first, none in use (setup/gocache.sh, tests/1004).
-if type gocache_trim_start >/dev/null 2>&1; then gocache_trim_start "${GOCACHE:-$(gocache_default)}" "${HW_TEST_GOCACHE_CAP_MB:-4096}" || true; fi   # MUTATION-ANCHOR: 1004-M11
+if type gocache_trim_start >/dev/null 2>&1; then gocache_trim_start "${GOCACHE:-$(gocache_default)}" "${HW_TEST_GOCACHE_CAP_MB:-12288}" || true; fi   # MUTATION-ANCHOR: 1004-M11
 SUITE_WORK="${WORK:-}"
 if [ -z "$SUITE_WORK" ]; then
   SUITE_WORK="$(jq -r '.work // empty' "$SOURCE_ROOT/projects.json" 2>/dev/null || true)"
@@ -1729,7 +1729,7 @@ _gocache_trim_at_exit() {
   type gocache_trim >/dev/null 2>&1 || return 0
   local cache="${GOCACHE:-$(gocache_default)}" old=""
   [ -n "${GOCACHE:-}" ] || old="$(dirname "$cache")/hw-go-cache"   # MUTATION-ANCHOR: 1004-M05
-  gocache_trim "$cache" "${HW_TEST_GOCACHE_CAP_MB:-4096}" "$POOL_DIR" ${old:+"$old"}
+  gocache_trim "$cache" "${HW_TEST_GOCACHE_CAP_MB:-12288}" "$POOL_DIR" ${old:+"$old"}
 }
 WITNESS_PID=""
 # _reap_job_groups — on ANY exit (a signal, a `set -e` death, a normal end), KILL what a job left in its group: a job still running, or
@@ -1989,7 +1989,7 @@ _tree_pids() {
 # _kill_job <pid> — end one job and EVERYTHING it started, stopped or not. Each job runs in its own process group (_launch_job), so the
 # group reaches what ppid does not (a grandchild whose parent already exited); the ppid walk reaches what left the group (a child that
 # ran under `set -m`). TERM first so a subject's own EXIT trap can clean its $TMP — and CONT with it, because a TERM left pending on a
-# process the one-test-at-a-time guard SIGSTOPped is never delivered: that is how 72 stopped orphans outlived their suites for days
+# process the machine's memory guard SIGSTOPped is never delivered: that is how 72 stopped orphans outlived their suites for days
 # (2026-10-30). A subject runs under fg_capped in a session of its own, so every pid of the tree is also KILLed as a group of its own.
 # Whatever still lives after HW_TEST_KILL_GRACE seconds (default 3) gets KILL, which no state defers.
 _kill_job() {
@@ -2321,6 +2321,7 @@ _budget_refusal() { # <name> <wall> <cpu> <budget> <mode> <why> <load descriptio
 _job_red() {
   local _defer="$_RED_DEFER"; _RED_DEFER=0
   JOB_RED[${_i:-0}]=1
+  JOB_REDLINE[${_i:-0}]="$2"   # the final labelled list reads it for EVERY red, not only the deferred ones
   if [ "$KEEP_GOING" != 1 ] && [ "$_defer" != 1 ]; then
     _stop_everything; _report_unretried
     [ -z "$RED_LINES" ] || printf '\nnot ok - suite: red job(s) found earlier, not retried because the run stopped on another red:%s\n' "$RED_LINES" >&2
@@ -2726,9 +2727,109 @@ _results_write
 # EVERY RED OF A --keep-going RUN, together, and still no number. The exit is
 # the first red job's, so a caller that tested `$? -ne 0` reads the same verdict
 # a stopped run gave it.
+# ── EVERY RED, LABELLED (item 4, 2026-11-04) ─────────────────────────────────
+# A red under --keep-going used to stop at the line it printed, and telling a real red from a false one cost one run about 23
+# calls. Each red subject is now RE-RUN ALONE with `env -i` — the gate's environment and its neighbours out of it — and
+# labelled, printed beside the red in the final list:
+#   ENV-ONLY       it passes alone: something in the run's environment or its neighbours was the cause
+#   FLAKY          it fails alone, then passes on a second lone run
+#   STALE-AT-BASE  it fails alone AND at the merge base (its own branch is not what broke it)
+#   REAL           it fails alone and passes at the merge base: this branch broke it
+# BOUNDED, and the bound is said out loud: HW_TEST_LABEL_MAX (6) subjects and HW_TEST_LABEL_BUDGET (600) seconds in total,
+# never a subject the runner cannot re-run alone (a go-test partition, the witness). Past the bound the label is
+# UNLABELLED — never guessed. HW_TEST_NO_LABEL=1 skips the pass.
+LABEL_FILE=""
+red_alone_rc() { # <root> <repo-relative subject> → its exit status; sets LAST_FAIL to its first not-ok line
+  local root="$1" rel="$2" log rc
+  log="$(mktemp "${TMPDIR:-/tmp}/hw-label.XXXXXX")"
+  ( cd "$root" && env -i HOME="${HOME:-}" PATH="$PATH" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" \
+      nice -n 10 bash "$rel" ) >"$log" 2>&1
+  rc=$?
+  LAST_FAIL="$(grep -m1 '^not ok' "$log" 2>/dev/null | cut -c1-160)"
+  rm -f "$log"
+  return "$rc"
+}
+label_base_tree() { # builds ONCE (called directly, never in a $(…): the cache is a variable) a worktree at the merge base → LABEL_BASE, or ""
+  [ -z "${LABEL_BASE_TRIED:-}" ] || return 0
+  LABEL_BASE_TRIED=1; LABEL_BASE=""
+  # THE RUNNER'S TREE IS A SNAPSHOT AND HAS NO .git (the diff is the live checkout's, line ~421): the merge base is the LIVE
+  # checkout's. Asking the snapshot found no base, so every red that failed alone was called REAL (found by 1245).
+  local live="${TEST_HW_LIVE_ROOT:-$SOURCE_ROOT}" b
+  b="$(git -C "$live" merge-base HEAD origin/main 2>/dev/null || git -C "$live" merge-base HEAD main 2>/dev/null)" || b=""
+  [ -n "$b" ] || return 0
+  LABEL_BASE_REPO="$live"
+  LABEL_BASE="$(mktemp -d "${TMPDIR:-/tmp}/hw-label-base.XXXXXX")"
+  git -C "$live" worktree add --detach "$LABEL_BASE/wt" "$b" >/dev/null 2>&1 \
+    && ( cd "$LABEL_BASE/wt" && nice -n 10 bash setup/build-core --native >/dev/null 2>&1 ) \
+    || { label_base_drop; }
+  return 0
+}
+label_base_drop() { # the base worktree is a temporary: take it out of the live repo's worktree list and off disk
+  [ -z "${LABEL_BASE:-}" ] || {
+    git -C "${LABEL_BASE_REPO:-$SOURCE_ROOT}" worktree remove --force "$LABEL_BASE/wt" >/dev/null 2>&1 || true
+    rm -rf "$LABEL_BASE"
+  }
+  LABEL_BASE=""
+}
+red_label_pass() {
+  local max="${HW_TEST_LABEL_MAX:-6}" budget="${HW_TEST_LABEL_BUDGET:-600}" idx f rel lab t0 spent=0 n=0 base
+  case "$max" in ''|*[!0-9]*|0) max=6 ;; esac
+  case "$budget" in ''|*[!0-9]*|0) budget=600 ;; esac
+  LABEL_FILE="$(mktemp "${TMPDIR:-/tmp}/hw-labels.XXXXXX")"
+  for idx in "${!JOB_PATH[@]}"; do
+    [ -n "${JOB_RED[$idx]:-}" ] || continue
+    f="${JOB_PATH[$idx]}"
+    case "$f" in */setup/tests/*.sh) ;; *) continue ;; esac   # only a subject file can be re-run alone
+    if [ "$n" -ge "$max" ] || [ "$spent" -ge "$budget" ]; then
+      printf '%s\t%s\n' "$idx" "UNLABELLED (the label pass stopped at its bound: HW_TEST_LABEL_MAX=$max, HW_TEST_LABEL_BUDGET=${budget}s)" >>"$LABEL_FILE"
+      continue
+    fi
+    rel="${f#*/setup/}"
+    rel="setup/${rel#setup/}"
+    t0="$(date +%s)"; n=$((n + 1))
+    if red_alone_rc "$SOURCE_ROOT" "$rel"; then
+      lab="ENV-ONLY"
+    elif red_alone_rc "$SOURCE_ROOT" "$rel"; then
+      lab="FLAKY"
+    else
+      label_base_tree; base="$LABEL_BASE"
+      # red_alone_rc returns the subject's own exit status: 0 is a PASS. STALE-AT-BASE is a subject that FAILS at the merge
+      # base too (found by 1245, the first forced-red gate: the test here was inverted and called a base that PASSED stale).
+      if [ -z "$base" ]; then
+        lab="UNLABELLED (no merge-base worktree could be built, so whether the base is red too is unknown)"
+      elif [ ! -f "$base/wt/$rel" ]; then
+        lab="REAL"   # the subject is NEW on this branch: it has no base to be red at (bash would exit 127 there, which is not "red")
+      elif ! red_alone_rc "$base/wt" "$rel"; then  # MUTATION-ANCHOR: 1245-M01
+        lab="STALE-AT-BASE"
+      else
+        lab="REAL"
+      fi
+    fi
+    spent=$((spent + $(date +%s) - t0))
+    printf '%s\t%s\t%s\n' "$idx" "$lab" "$(printf '%s' "${LAST_FAIL:-}" | tr '\t\n' '  ')" >>"$LABEL_FILE"
+  done
+  label_base_drop
+  printf 'runner: labelled %s red job(s) alone under env -i, %ss spent (bound %ss, at most %s)\n' "$n" "$spent" "$budget" "$max" >&2
+}
+labels_for() { # <idx> → its label, or UNLABELLED when the pass could not tell
+  [ -n "$LABEL_FILE" ] || { printf 'UNLABELLED'; return; }
+  local l; l="$(awk -F'\t' -v i="$1" '$1 == i { print $2; exit }' "$LABEL_FILE")"
+  printf '%s' "${l:-UNLABELLED}"
+}
+
 if [ "$RED_COUNT" -gt 0 ]; then
+  [ "${HW_TEST_NO_LABEL:-0}" = 1 ] || red_label_pass
   printf '\nnot ok - suite: %s red job(s) in this --keep-going run, in print order:%s\n' "$RED_COUNT" "$RED_LINES" >&2
+  # THE LABEL IS PART OF THE FINAL LIST, on both streams: a reader greps `not ok` and gets the verdict with it.
+  for _lb_i in "${!JOB_PATH[@]}"; do
+    [ -n "${JOB_RED[$_lb_i]:-}" ] || continue
+    _lb_l="$(labels_for "$_lb_i")"
+    _lb_line="  not ok - ${JOB_REDLINE[$_lb_i]}  [$_lb_l]"
+    printf '%s\n' "$_lb_line" >&2
+    printf '%s\n' "$_lb_line"
+  done
   printf '\nKEEP-GOING RUN FAILED — %s red job(s):%s\n' "$RED_COUNT" "$RED_LINES"
+  [ -z "$LABEL_FILE" ] || rm -f "$LABEL_FILE"
   abort_marker; exit "$RED_RC"
 fi
 

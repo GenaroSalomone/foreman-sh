@@ -74,7 +74,6 @@ func (d *dsp) launch() {
 	if !d.c.t.known(d.proj) {
 		l.branch = "task/" + d.task
 	}
-	l.herdr(true, true, "", "notification", "show", "dispatch "+d.proj+":"+d.task, "--body", d.notifyBody)
 	l.setEnv("HW_RUN", d.hwRun) // bash: `export HW_RUN` right after the manifest
 	l.run()
 }

@@ -297,6 +297,26 @@ func (d *dsp) dispatchManifest(dir string) {
 		}
 		effortLine += "\n  carried      via OPENCODE_CONFIG_CONTENT in the pane env (tab, --here, .hw/<run>/env) → agent \"" + pa + "\".reasoningEffort\n  verified     UNVERIFIED at dispatch — read back from the live executor's GET /config after start (receipt: effort_applied)\n  overlay      " + d.opencodeEffortOverlay
 	}
+	// A pi model CLAMPS a level it does not expose, so the level asked for is a request: the dry run says which one the
+	// session will really run at, and warns when that is not what was asked, or when it is above what the lane's ruling
+	// decided (2026-11-04: a dispatch asked --effort high for a requested "max" and nothing said what pi would do).
+	if d.agent == "pi" {
+		runs, measured := piThinkingRuns(d.model, d.effort)
+		switch {
+		case d.effort == "":
+			effortLine += "\n  pi runs      pi's own default — no --thinking is passed, so the session decides; the receipt's thinking_running says what ran"
+		case measured:
+			effortLine += "\n  pi runs      thinking=" + runs + " (asked " + d.effort + ") — measured 2026-11-04 with pi's get_state on " + d.model
+			if runs != d.effort {
+				d.warn("pi CLAMPS thinking: asked " + d.effort + ", " + d.model + " runs " + runs + " — this model has no " + d.effort + " rung")
+			}
+			if piThinkingAboveRuling(d.effort) {
+				d.warn("--effort " + d.effort + " is ABOVE the pi-roster ruling (build low, design/audit high, 2026-11-01) and runs as " + runs + " there: xhigh and max were measured on 2026-11-04 and are real, but nothing has measured them for this lane's work. A live session changes its level in place (`/thinking`, shift+tab), no relaunch needed.")
+			}
+		default:
+			effortLine += "\n  pi runs      UNESTABLISHED — no measured level map for " + d.model + "; the receipt's thinking_running says what really ran"
+		}
+	}
 
 	var placement, dbLine, entryLine, chainingLine, devserverLine string
 	if inPlay {
@@ -707,13 +727,8 @@ func (d *dsp) dispatchManifest(dir string) {
 		d.ok("dry run — nothing created, no agent started (except the route forecast named above)")
 		return
 	}
-	// Straight to the operator, not through the brainer (bin/hw "herdr notification show"): sent by launch() (t5l.go).
-	// `${verify_cmds:+$(… | head -1)}${verify_cmds:-none}`: the first line, then the whole of it — or "none".
-	verifyShown := "none"
-	if verifyCmds != "" {
-		verifyShown = strings.SplitN(verifyCmds, "\n", 2)[0] + verifyCmds
-	}
-	d.notifyBody = "framework " + orDefaultStr(live, "?") + " (" + sddSrc + ") · model " + orDefaultStr(d.model, "default") + " · verify " + verifyShown
+
+
 }
 
 func basename(p string) string { return filepath.Base(p) }

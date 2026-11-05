@@ -15,7 +15,38 @@ import (
 // the agents it launched with the subagent/Agent tool (pi), from the moment the task's receipt line was written.
 type TranscriptProof struct {
 	Names  map[string]bool
-	Vendor string // the vendor whose session was read; the refusal names that vendor's mechanism
+	Groups [][]string // names launched TOGETHER by one call (pi: one toolCall; claude: one assistant message)
+	Vendor string     // the vendor whose session was read; the refusal names that vendor's mechanism
+}
+
+// Together is true when ONE recorded call launched every name it is given: the
+// two blind judges of a Judgment Day must run in the same parallel call, and two
+// calls one after the other cost the same minutes twice (measured 2026-11-04,
+// no-notifications: ~13 min). A judge proved by a different call does not count.
+func (p *TranscriptProof) Together(names ...string) bool {
+	if p == nil || len(names) == 0 {
+		return false
+	}
+	for _, g := range p.Groups {
+		have := map[string]bool{}
+		for _, n := range g {
+			have[n] = true
+		}
+		all := true
+		for _, n := range names {
+			if n == "" {
+				continue
+			}
+			if !have[n] {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
 
 // Has is true when name ran: a namespaced `plugin:skill` must be equal to one of the names; a bare one must be the
@@ -80,7 +111,7 @@ type vendorTranscript struct {
 }
 
 var transcriptVendors = map[string]vendorTranscript{
-	"claude": {files: (*Ctx).transcriptFiles, extractor: func() transcriptExtractor { return claudeExtractor{} }},
+	"claude": {files: (*Ctx).transcriptFiles, extractor: func() transcriptExtractor { return &claudeExtractor{} }},
 	"pi": {files: (*Ctx).piTranscriptFiles, extractor: func() transcriptExtractor {
 		return &piExtractor{pending: map[string][]string{}}
 	}},
@@ -151,14 +182,18 @@ func scanTranscripts(files []string, since time.Time, newExtractor func() transc
 
 // claudeExtractor reads a claude jsonl line: a `Skill` tool_use proves the skill it names, and an `Agent`/`Task`
 // tool_use proves its `subagent_type`. A call is recorded on one line, so every assistant tool_use counts.
-type claudeExtractor struct{}
+type claudeExtractor struct {
+	lastID    string // message.id of the last assistant line that launched agents
+	lastGroup int    // its index in TranscriptProof.Groups
+}
 
-func (claudeExtractor) flush(*TranscriptProof) {}
+func (*claudeExtractor) flush(*TranscriptProof) {}
 
-func (claudeExtractor) line(raw []byte, p *TranscriptProof) {
+func (e *claudeExtractor) line(raw []byte, p *TranscriptProof) {
 	var line struct {
 		Type    string `json:"type"`
 		Message struct {
+			ID      string          `json:"id"`
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
@@ -191,11 +226,31 @@ func (claudeExtractor) line(raw []byte, p *TranscriptProof) {
 			}
 		}
 	}
+	// One assistant message with two Agent/Task tool_uses is ONE parallel call: that is the shape a
+	// Judgment Day needs, and the reason the group is kept (1241's sibling, retro-fixes-rc3 item 7).
+	var group []string
+	for _, b := range blocks {
+		if b.Type == "tool_use" && (b.Name == "Agent" || b.Name == "Task") && b.Input.SubagentType != "" {
+			group = append(group, b.Input.SubagentType)
+		}
+	}
+	if len(group) == 0 {
+		return
+	}
+	// Claude Code writes each tool_use block of ONE parallel assistant message as its own jsonl line, all sharing
+	// message.id (measured: two Agent calls of one message on lines 388 and 390 of a real transcript), so the
+	// group is the message, not the line. A line with no id is its own group.
+	if line.Message.ID != "" && line.Message.ID == e.lastID && e.lastGroup < len(p.Groups) {
+		p.Groups[e.lastGroup] = append(p.Groups[e.lastGroup], group...)
+		return
+	}
+	p.Groups = append(p.Groups, group)
+	e.lastID, e.lastGroup = line.Message.ID, len(p.Groups)-1
 }
 
 // ProofFromFiles scans claude jsonl transcripts for assistant tool_use blocks named Skill, Agent or Task.
 func ProofFromFiles(files []string, since time.Time) *TranscriptProof {
-	p, _ := scanTranscripts(files, since, func() transcriptExtractor { return claudeExtractor{} })
+	p, _ := scanTranscripts(files, since, func() transcriptExtractor { return &claudeExtractor{} })
 	return p
 }
 

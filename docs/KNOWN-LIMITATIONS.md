@@ -1079,3 +1079,9 @@ it leaves the brain directory, is unguarded even with the hook registered.
   `setup/tests/1040-una-corrida-pesada-a-la-vez.sh` (F12-F16; mutants H09-H13). `unverified`: against the real guard
   freezing a real run (nothing was frozen for real), and `ps` state letters on Linux.
 - **Workaround:** `setup/heavy --status`; free memory (the guard resumes the run over its resume line).
+
+### L28. `secret-unlock --auto` tells a wrong password from a broken tool by bw's words, and a broken bw is caught at the next hourly run, not at update time
+- **Scope:** `core/hw_secret_classify.go`, `core/hw_secret.go` (`cmdAuto`, `vaultAlert`, `cmdStatus`).
+- **Impact:** only bw's own answer `Invalid master password.` (`@bitwarden/cli` 2026.10.1, `build/locales/en/messages.json:77`) is a rejection; every other failure is a tool, migration, network, timeout or unknown failure that keeps a live session and pages only under 60 min of session left (or with no session). (1) A bw release that rewords that message, or a non-English locale, would make a real rejection read as "unknown" (retried and paged under the tool wording, never silently dropped) until `hsRejectedRe` follows it. (2) No update hook exists to run `bw --version` at brew/npm upgrade time: `hw secret status` runs it, and the hourly `--auto` meets a broken bw within the hour. (3) A user whose account verifies the password on the server gets `Invalid master password.` for any server error on that path, so such an error still reads as a rejection.
+- **Evidence:** `measured` with stub bw binaries reproducing the dyld crash and the 404 migration error (`core/hw_secret_classify_test.go`, `setup/tests/1012` A07). `unverified`: against a real bw release other than 2026.10.1.
+- **Workaround:** `hw secret status` after a brew/npm upgrade; `~/.cache/hw/bw-unlock.log` names every outcome.

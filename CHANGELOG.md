@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.7.2] — 2026-11-05
+
+### Fixed
+- `secret-unlock --auto` no longer calls every `bw unlock` failure a rejected master password. Only bw's own
+  "Invalid master password." is one; a broken node/bw, a migration error, a server or network error and a timeout
+  are reported as what they are, keep a live session and retry on the next run, and page the setup brainer only when
+  the session has under 60 minutes left (or none), naming the machine's fix instead of asking for the password.
+  `secret-unlock --setup` keeps the stored password when bw could not judge it.
+- `hw secret status` runs a no-vault `bw --version` and reports a bw that cannot start.
+
 ## [0.7.1] — 2026-11-05
 
 ### Added

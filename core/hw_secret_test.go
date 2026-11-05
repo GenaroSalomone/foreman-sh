@@ -651,7 +651,7 @@ func TestHwSecretAutoLogRedacted(t *testing.T) {
 	h := newHsT(t)
 	os.WriteFile(filepath.Join(h.sec, "item"), []byte("MASTER-STUB-PW"), 0o644)
 	// bw rejects the password and, in its own words, echoes the password, the stub token, a BW_ assignment and a --session argument
-	h.w.env = append(h.w.env, "BW_STUB_MASTER=SOMETHING-ELSE", "STUB_UNLOCK_ERR=nope @MASTER@ SESSIONTOKENabcdefghijklmnopqrstuvwxyz0123456789== BW_SESSION=abcSECRET123 --session xyzTOKEN99 tail")
+	h.w.env = append(h.w.env, "BW_STUB_MASTER=SOMETHING-ELSE", "STUB_UNLOCK_ERR=Invalid master password: @MASTER@ SESSIONTOKENabcdefghijklmnopqrstuvwxyz0123456789== BW_SESSION=abcSECRET123 --session xyzTOKEN99 tail")
 	if rc := h.run("unlock", "--auto"); rc != 1 {
 		t.Fatalf("a rejected --auto: rc=%d", rc)
 	}
@@ -661,7 +661,7 @@ func TestHwSecretAutoLogRedacted(t *testing.T) {
 			t.Fatalf("%q reached the log or the output:\n%s", secret, log)
 		}
 	}
-	if ok, _ := regexp.MatchString(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\S* failed: bw rejected the stored master password \(bw said: nope \[redacted\].*tail\)\n$`, log); !ok {
+	if ok, _ := regexp.MatchString(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\S* failed: bw rejected the stored master password \(bw said: Invalid master password: \[redacted\].*tail\)\n$`, log); !ok {
 		t.Fatalf("the log line is not timestamped, or lost bw's redacted text:\n%s", log)
 	}
 }

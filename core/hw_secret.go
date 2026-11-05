@@ -45,6 +45,13 @@ type hsWorld struct {
 	// execChild replaces the process (it returns only when it could not): the exit status to die with, and why.
 	execChild func(argv, env []string) (rc int, why string)
 	tty       bool // stdin is a terminal: the password prompts switch the echo off
+
+	// What the last cmdAuto concluded, for the callers that decide what a failure means (vaultAlert, ensure, --setup).
+	// autoKind: "" nothing failed; "person" a real rejection, no Keychain item or bw not logged in (only a person fixes it);
+	// "machine" bw/node, the network, a migration or a timeout (the master password was never judged).
+	// autoDegraded: a machine failure that left a live session in place, so cmdAuto answered 0.
+	autoKind     string
+	autoDegraded bool
 }
 
 func (w *hsWorld) getenv(k string) string {
@@ -141,6 +148,33 @@ func (w *hsWorld) bwStderr(bw string, env []string, args ...string) (string, str
 	return o.String(), e.String(), 0
 }
 
+// bwStderrT is bwStderr with a deadline: timedOut says this process killed bw for exceeding it.
+func (w *hsWorld) bwStderrT(bw string, env []string, limit time.Duration, args ...string) (string, string, int, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	c := exec.CommandContext(ctx, bw, args...)
+	c.Env = env
+	c.WaitDelay = 5 * time.Second // a node that left a child holding the pipes must not hold us
+	var o, e bytes.Buffer
+	c.Stdout, c.Stderr = &o, &e
+	if err := c.Run(); err != nil {
+		timedOut := ctx.Err() == context.DeadlineExceeded
+		if ee, ok := err.(*exec.ExitError); ok && !timedOut {
+			return o.String(), e.String(), ee.ExitCode(), false
+		}
+		return o.String(), e.String(), -1, timedOut
+	}
+	return o.String(), e.String(), 0, false
+}
+
+// hsUnlockTimeout: seconds bw unlock may take (HW_BW_UNLOCK_TIMEOUT, 1 to 600; default 120). A KDF takes seconds, not minutes.
+func hsUnlockTimeout(v string) int {
+	if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 600 {
+		return n
+	}
+	return 120
+}
+
 // noSession is `env -u BW_SESSION`.
 func (w *hsWorld) noSession() []string {
 	return envWithout(w.env, func(n string) bool { return n == "BW_SESSION" })
@@ -178,7 +212,12 @@ func (w *hsWorld) sessionLoad(bw string) bool {
 		return false
 	}
 	// The token must still open the vault: someone may have run `bw lock` since.
-	out, _ := w.bw(bw, envSet(w.env, "BW_SESSION", tok), "status")
+	out, rc := w.bw(bw, envSet(w.env, "BW_SESSION", tok), "status")
+	if hsStatus(out) == "" && rc != 0 {
+		// bw could not even answer (a broken node, a migration error): that says nothing about the token. The file stays, so the
+		// session is there the moment bw runs again; for now it is "not usable".
+		return false
+	}
 	if hsStatus(out) != "unlocked" { // # MUTATION-ANCHOR: 1009-G07
 		os.Remove(w.sessionFile())
 		return false
@@ -195,6 +234,24 @@ func (w *hsWorld) sessionExp() int64 {
 	}
 	n, _ := strconv.ParseInt(strings.TrimPrefix(strings.SplitN(string(b), "\n", 2)[0], "expires="), 10, 64)
 	return n
+}
+
+// keptSessionLeft: seconds the session file still promises (0: no file, no token, or past its expiry). It never runs bw, so
+// it holds when bw is the thing that is broken.
+func (w *hsWorld) keptSessionLeft() int64 {
+	b, err := os.ReadFile(w.sessionFile())
+	if err != nil {
+		return 0
+	}
+	lines := strings.SplitN(string(b), "\n", 3)
+	if len(lines) < 2 || lines[1] == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimPrefix(lines[0], "expires="), 10, 64)
+	if err != nil || n <= w.now().Unix() {
+		return 0
+	}
+	return n - w.now().Unix()
 }
 
 func hsUntil(exp string) string {
@@ -279,6 +336,8 @@ func (w *hsWorld) redact(s string, secrets ...string) string {
 }
 
 func (w *hsWorld) autoFail(why string, detail ...string) int {
+	// only a person fixes what reaches here: a rejection, no Keychain item, bw not logged in
+	w.autoKind = "person"
 	w.autoStatus("failed", why) // # MUTATION-ANCHOR: 1012-G02
 	w.note("secret-unlock --auto failed: " + why)
 	log := "failed: " + why
@@ -286,6 +345,29 @@ func (w *hsWorld) autoFail(why string, detail ...string) int {
 		log += " (bw said: " + detail[0] + ")"
 	}
 	w.autoLog(log)
+	return 1
+}
+
+// autoMachineFail: bw failed for a reason that is not the password (bw/node, the network, a migration, a timeout). A live
+// session is kept untouched and the run is a logged retry (rc 0); with no live session there is nothing to keep, so it is a
+// failure (rc 1) that still names the machine's cause, never the password.
+func (w *hsWorld) autoMachineFail(reason, detail string) int {
+	w.autoKind = "machine"
+	log := reason
+	if detail != "" {
+		log += " (bw said: " + detail + ")"
+	}
+	if left := w.keptSessionLeft(); left > 0 {
+		w.autoDegraded = true
+		why := fmt.Sprintf("%s; the live session is kept (%d min left)", reason, left/60)
+		w.autoStatus("degraded", why)
+		w.note("secret-unlock --auto could not renew: " + why)
+		w.autoLog(fmt.Sprintf("degraded: %s; session kept, %d min left, retry on the next run", log, left/60))
+		return 0
+	}
+	w.autoStatus("broken", reason)
+	w.note("secret-unlock --auto failed: " + reason)
+	w.autoLog("broken: " + log)
 	return 1
 }
 
@@ -364,6 +446,7 @@ func (w *hsWorld) masterForget(sec string) {
 
 // cmdAuto: the Keychain item → bw unlock --passwordenv → the session file. It returns the status of the bash's.
 func (w *hsWorld) cmdAuto(hours int64) int {
+	w.autoKind, w.autoDegraded = "", false
 	bw := w.needBw()
 	sec := w.needSecurity()
 	out, _ := w.bw(bw, w.noSession(), "status")
@@ -374,13 +457,19 @@ func (w *hsWorld) cmdAuto(hours int64) int {
 	if pw == "" {
 		return w.autoFail("no " + hsMasterService + " item in the Keychain (secret-unlock --setup, once)")
 	}
-	tokOut, errOut, rc := w.bwStderr(bw, envSet(w.noSession(), "BW_HW_MASTER", pw), "unlock", "--passwordenv", "BW_HW_MASTER", "--raw") // # MUTATION-ANCHOR: 1012-G01
+	secs := hsUnlockTimeout(w.getenv("HW_BW_UNLOCK_TIMEOUT"))
+	tokOut, errOut, rc, timedOut := w.bwStderrT(bw, envSet(w.noSession(), "BW_HW_MASTER", pw), time.Duration(secs)*time.Second, "unlock", "--passwordenv", "BW_HW_MASTER", "--raw") // # MUTATION-ANCHOR: 1012-G01
 	tok := trimNL(tokOut)
 	if rc != 0 {
 		tok = ""
 	}
 	if tok == "" {
-		return w.autoFail("bw rejected the stored master password", w.redact(errOut, pw, tokOut))
+		kind, reason := hsClassifyUnlock(rc, errOut+"\n"+tokOut, timedOut, secs)
+		detail := w.redact(errOut, pw, tokOut)
+		if kind == hsFailRejected {
+			return w.autoFail(reason, detail)
+		}
+		return w.autoMachineFail(reason, detail)
 	}
 	pw = ""
 	keep := w.out
@@ -464,6 +553,11 @@ func (w *hsWorld) cmdSetup() int {
 	w.out = io.Discard
 	rc := w.cmdAuto(12)
 	w.out = keep
+	if w.autoKind == "machine" {
+		// bw never judged this password (it could not run, or the server did not answer): the item stays, and nothing here says it was wrong.
+		why, _ := w.statusReason()
+		w.die("the password is stored in the Keychain but was NOT verified: " + why + ". Fix that, then run secret-unlock --auto")
+	}
 	if rc != 0 {
 		w.masterForget(sec) // # MUTATION-ANCHOR: 1012-G03
 		why, _ := w.statusReason()
@@ -660,6 +754,14 @@ func (w *hsWorld) cmdCheck(args []string) int {
 
 func (w *hsWorld) cmdStatus() int {
 	bw := w.needBw()
+	// No vault is opened: a bw that cannot print its own version cannot unlock anything, and that is the machine's, not the password's.
+	if vo, ve, vrc := w.bwStderr(bw, w.noSession(), "--version"); vrc != 0 || trimNL(vo) == "" {
+		fmt.Fprintf(w.out, "%s\n", hsToolReason(w.redact(ve+" "+vo)))
+		if left := w.keptSessionLeft(); left > 0 {
+			fmt.Fprintf(w.out, "the session is kept (%d min left) and works again once bw runs\n", left/60)
+		}
+		return 1
+	}
 	if !w.sessionLoad(bw) {
 		fmt.Fprint(w.out, "locked\n")
 		return 1
@@ -693,6 +795,10 @@ func (w *hsWorld) cmdEnsure() int {
 	why, ok := w.statusReason()
 	if !ok {
 		why = "no reason recorded"
+	}
+	if w.autoKind == "machine" {
+		w.note("the vault is not usable right now (" + why + "). Not the master password: retyping it will not help; the machine's fix is in the reason")
+		return 1
 	}
 	w.note("the vault is still locked (" + why + "). A person, once: secret-unlock --setup")
 	return 1
@@ -1081,6 +1187,7 @@ func hwSecretMain(args []string, stdout, stderr *os.File) int {
 // ── the alert: a person must learn the vault is going to lock ───────────────
 
 const hsAlertWindow = 2 * 3600 // a session ending within this is reported even when the last --auto succeeded
+const hsToolAlertWindow = 3600 // a tool failure (bw, node, the network) pages only once the session it could not renew has less than this left
 
 func (w *hsWorld) alertFile(name string) string { return w.secretDir() + "/" + name }
 
@@ -1098,15 +1205,24 @@ func (w *hsWorld) alertLog(msg string) {
 func (w *hsWorld) vaultAlert(rc int) {
 	left := w.sessionExp() - w.now().Unix()
 	kind, detail := "", ""
+	machine := w.autoKind == "machine"
+	why, _ := w.statusReason()
 	switch {
-	case rc != 0:
-		why, _ := w.statusReason()
+	case rc != 0 && !machine:
 		kind, detail = "failed", "--auto failed: "+why
+	case rc != 0: // a tool failure with no live session left to keep: nothing is usable until the machine is fixed
+		kind, detail = "tool", "--auto failed and there is no live session: "+why
+	case machine && left > 0 && left <= hsToolAlertWindow: // a tool failure, but the session carries on until it is nearly over
+		kind, detail = "expiring", fmt.Sprintf("session ends in %d min and the renewal keeps failing: %s", left/60, why)
+	case machine: // the live session still has over an hour: a retry on the next run, not a page
 	case left > 0 && left <= hsAlertWindow:
 		kind, detail = "expiring", fmt.Sprintf("session ends in %d min", left/60)
 	}
 	state, sent := w.alertFile("vault-alert-state"), w.alertFile("vault-alert-sent")
 	prev, _ := os.ReadFile(state)
+	if kind == "" && machine {
+		return // a retry under a live session is not a healthy one: an open alert stays open, and nothing says "recovered"
+	}
 	if kind == "" {
 		if len(prev) > 0 {
 			os.Remove(state)
@@ -1137,6 +1253,9 @@ func (w *hsWorld) vaultAlert(rc int) {
 		return
 	}
 	msg := "vault: " + detail + ". Log: " + w.alertFile("vault-alerts.log") + ". A person, once, in a terminal: secret-unlock (or secret-unlock --setup)."
+	if machine { // the reason names the machine's fix; the master password was never judged wrong
+		msg = "vault: " + detail + ". Log: " + w.alertFile("vault-alerts.log") + ". This is the machine's fix, not a person's: the master password was never judged wrong, so nobody retypes it."
+	}
 	cs := w.getenv("HW_CHANNEL_SEND")
 	if cs == "" {
 		cs = hsLookPath("channel-send", w.env)

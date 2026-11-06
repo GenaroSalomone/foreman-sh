@@ -4,9 +4,11 @@ package main
 // bin/hw: _brief_review_mode, _review_skills_of_plugin, _review_skills_declared, _review_gate, _review_declared,
 // _review_effect, _review_lines, _review_receipt, _plugins_review_note.
 //
-//	review: judgment-day   the Judgment Day closing (DEFAULT, also when absent)
+//	review: judgment-day   the Judgment Day closing
 //	review: plugins        the review skills of the brief's `plugins:`, and no Judgment Day
-//	review: none           no review note at all
+//	review: none           no review note at all (ALSO when `review:` is absent, on any kind: a review is opt-in, and
+//	                       choosing none needs no review-skip: line. 2026-11-05, the operator: «some executor tasks don't
+//	                       require it … not needed in the brief»)
 //
 // One reader, so the launch, the manifest, the receipt and `hw next` read ONE answer. `rdd` is the retired
 // spelling of the gentle-ai review: it warns and falls back to judgment-day. The pure halves are here; the
@@ -91,11 +93,11 @@ func reviewModeOf(raw string) (string, bool) {
 		return raw, false
 	}
 	switch raw {
-	case "", "rdd", "judgment-day":
+	case "rdd", "judgment-day":
 		return "judgment-day", true // # MUTATION-ANCHOR: 1020-G01
 	case "plugins":
 		return "plugins", true // # MUTATION-ANCHOR: 1020-G02
-	case "none":
+	case "", "none":
 		return "none", true // # MUTATION-ANCHOR: 1020-G03
 	}
 	return raw, false

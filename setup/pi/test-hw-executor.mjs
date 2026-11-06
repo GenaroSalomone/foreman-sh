@@ -448,6 +448,129 @@ if (mode === "guard") {
   // the secret guard still judges the job's command exactly as it judges bash's
   const secret = await refuse("bash_background", "cat ." + "env");
   ok(secret?.block === true && /secret/i.test(secret.reason ?? ""), "the secret read guard still judges a bash_background command");
+} else if (mode === "monitor") {
+  // `monitor` (line events with a MANDATORY timeout) and `job_list`, over the same job registry and guards as bash_background.
+  const { readFileSync, existsSync } = await import("node:fs");
+  const wait = async (fn, ms = 10000) => { for (let i = 0; i < ms / 100; i++) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } return fn(); };
+  const executor = !!process.env.HW_TASK;
+  const mon = tools["monitor"], list = tools["job_list"], stop = tools["job_stop"];
+  const text = (r) => r?.content?.[0]?.text ?? "";
+  ok(!!mon && !!list, "monitor and job_list are registered");
+  ok(mon?.parameters?.required?.includes("timeout_seconds") && mon.parameters.required.includes("command") && mon.parameters.properties?.pattern?.type === "string",
+     "monitor's JSON Schema REQUIRES `timeout_seconds` and `command`, and takes an optional `pattern`");
+  ok(/timeout is mandatory/.test(mon.description) && /WAKES/.test(mon.description) && /job_stop/.test(mon.description) && /job_list/.test(mon.description),
+     "its text says the timeout is mandatory, that batches wake the session, and names job_stop and job_list");
+  // the mandatory timeout: refused, not defaulted
+  for (const [label, params] of [["no timeout", { command: "echo x" }], ["timeout 0", { command: "echo x", timeout_seconds: 0 }], ["a negative timeout", { command: "echo x", timeout_seconds: -5 }],
+                                 ["a timeout over the maximum", { command: "echo x", timeout_seconds: 99999 }], ["a non-numeric timeout", { command: "echo x", timeout_seconds: "soon" }]]) {
+    const r = await mon.execute("m0", params, undefined, undefined, fakeCtx());
+    ok(r?.isError === true && /timeout_seconds/.test(text(r)) && Object.keys(r?.details ?? {}).length === 0, `monitor refuses ${label} and starts nothing`);
+  }
+  const badPattern = await mon.execute("m0", { command: "echo x", timeout_seconds: 5, pattern: "(" }, undefined, undefined, fakeCtx());
+  ok(badPattern?.isError === true && /regular expression/.test(text(badPattern)), "an invalid pattern is an error, not a silent match-all");
+  ok(pi.sent.length === 0, "none of the refused calls started a job or woke the session");
+
+  // line events: only matching lines, batched, then the end of the monitor
+  const t0 = Date.now();
+  const r1 = await mon.execute("m1", { command: "for i in 1 2 3 4; do echo \"line $i\"; done; echo ERR-FOUND; sleep 0.3; echo ERR-AGAIN", timeout_seconds: 20, pattern: "ERR|line 2", label: "watch" }, undefined, undefined, fakeCtx());
+  ok(Date.now() - t0 < 700 && /Monitoring bg-1 \("watch"\) for up to 20s/.test(text(r1)) && /do not poll or sleep/.test(text(r1)), "monitor returns at once, naming the job, its timeout and that nothing is to be polled");
+  const ended1 = await wait(() => pi.sent.find((m) => m.message.customType === "hw-bg-exit"));
+  const lines1 = pi.sent.filter((m) => m.message.customType === "hw-monitor-lines").map((m) => m.message.content).join("\n");
+  ok(/line 2/.test(lines1) && /ERR-FOUND/.test(lines1) && /ERR-AGAIN/.test(lines1) && !/line 1|line 3|line 4/.test(lines1),
+     "the events are the lines matching the pattern, and only those");
+  ok(pi.sent.filter((m) => m.message.customType === "hw-monitor-lines").length <= 2, "a burst of lines is a batch, not one wake per line");
+  ok(pi.sent.every((m) => m.options?.triggerTurn === true && m.options?.deliverAs === "steer"), "every event batch and the end are pi's own wake: triggerTurn with deliverAs steer");
+  ok(/exited with code 0/.test(ended1?.message?.content ?? "") && /3 event line\(s\) were sent/.test(ended1?.message?.content ?? ""), "the monitor ends with its own notice: the exit code and how many events were sent");
+  const log1 = /log: (\S+)/.exec(text(r1))?.[1] ?? "";
+  ok(existsSync(log1) && /line 1/.test(readFileSync(log1, "utf8")), "the log holds every line, matching or not");
+
+  // the timeout ends it, kills the command and says so
+  const before2 = pi.sent.length;
+  const r2 = await mon.execute("m2", { command: "echo start; sleep 30", timeout_seconds: 1, label: "slow" }, undefined, undefined, fakeCtx());
+  const ended2 = await wait(() => pi.sent.slice(before2).find((m) => m.message.customType === "hw-bg-exit"), 6000);
+  ok(/ended: its timeout \(1 s\)/.test(ended2?.message?.content ?? "") && ended2?.message?.details?.status === "timeout", "a monitor ends at its timeout and the notice says it was the timeout");
+  const all = await list.execute("l1", { status: "all" }, undefined, undefined, fakeCtx());
+  ok(/bg-2 timeout/.test(text(all)), "job_list shows it as ended by timeout");
+
+  // the event cap
+  const before3 = pi.sent.length;
+  await mon.execute("m3", { command: "for i in $(seq 1 30); do echo event-$i; done; sleep 20", timeout_seconds: 30, max_events: 3, label: "capped" }, undefined, undefined, fakeCtx());
+  const ended3 = await wait(() => pi.sent.slice(before3).find((m) => m.message.customType === "hw-bg-exit"), 6000);
+  ok(/event cap \(3\) reached/.test(ended3?.message?.content ?? ""), "a monitor stops at its event cap, and says so");
+
+  // job_list: running only by default, with the id job_stop takes
+  const r4 = await mon.execute("m4", { command: "sleep 30", timeout_seconds: 60, label: "long watch" }, undefined, undefined, fakeCtx());
+  const running = await list.execute("l2", {}, undefined, undefined, fakeCtx());
+  ok(new RegExp(`${r4.details.id} running`).test(text(running)) && /\[monitor 0 event\(s\)\]/.test(text(running)) && !/bg-2 timeout/.test(text(running)), "job_list shows the running monitor (and only the running ones by default)");
+  // the sleep rule hears the work in flight: a standalone sleep is refused while a job runs, and is a plain delay when none does
+  const haveGuard = existsSync(`${process.env.HW_BRAIN_ROOT || ""}/setup/guards/deny-executor-sleep-poll.py`);
+  const refuse = (toolName, command) => call("tool_call", { type: "tool_call", toolCallId: "x", toolName, input: { command } }, fakeCtx());
+  if (haveGuard) {
+    const withWork = await refuse("bash", "sleep 2");
+    ok(withWork?.block === true && /standalone sleep while background work is running \(1 in flight\)/.test(withWork.reason ?? ""), "a standalone sleep is refused while a monitor runs (pi counts its own jobs)");
+    const stopped = await stop.execute("s1", { job_id: r4.details.id }, undefined, undefined, fakeCtx());
+    ok(/Stopped/.test(text(stopped)), "job_stop stops a monitor");
+    const noWork = await refuse("bash", "sleep 2");
+    ok(!noWork, "with no work in flight the same short sleep is a plain delay, allowed");
+    const bounded = await refuse("bash", "timeout 60 bash -c 'until [ -s out ]; do sleep 2; done'");
+    ok(!bounded, "a short bounded wait is allowed in the foreground (the narrower rule)");
+    // the guards judge a monitor's command, as a background tool
+    const unbounded = await refuse("monitor", "until [ -s out ]; do sleep 3; done");
+    ok(unbounded?.block === true && /timeout/.test(unbounded.reason ?? ""), "monitor is judged as a background tool: an UNBOUNDED poll loop in its command is refused");
+  } else {
+    await stop.execute("s1", { job_id: r4.details.id }, undefined, undefined, fakeCtx());
+    ok(true, "this tree carries no deny-executor-sleep-poll guard, so the sleep arms were not asked (the export)");
+  }
+  const secret = await refuse("monitor", "cat ." + "env");
+  ok(secret?.block === true && /secret/i.test(secret.reason ?? ""), "the secret read guard judges a monitor's command before it starts");
+  const { PRODUCT_REPOS } = await import(`${process.env.HW_BRAIN_ROOT}/setup/guards/deny-repo-writes.js`);
+  const write = await refuse("monitor", `echo x > ${PRODUCT_REPOS[0]}/pi-test-nonexistent/f.txt`);
+  ok(write?.block === true && /Blocked/.test(write.reason ?? ""), "the write guard judges a monitor's command too (a redirect into a product repo is refused)");
+  // the output filter: a protected file's line never reaches an event, the log or the end notice
+  const before5 = pi.sent.length;
+  await mon.execute("m5", { command: "printf '.e%s:1:TOKEN=leaked\\nvisible event\\n' nv", timeout_seconds: 10 }, undefined, undefined, fakeCtx());
+  const ended5 = await wait(() => pi.sent.slice(before5).find((m) => m.message.customType === "hw-bg-exit"), 6000);
+  const everything = pi.sent.slice(before5).map((m) => m.message.content).join("\n");
+  // (the notice quotes the COMMAND, which names the token text itself: what must be absent is the protected file's own line)
+  ok(/visible event/.test(everything) && !everything.includes("." + "env:1:") && /1 line\(s\) of a protected secret file were removed/.test(ended5?.message?.content ?? ""),
+     "a line a protected file answered with never reaches an event or the end notice (the same filter as bash_background)");
+  // a turn may end while a monitor runs; hw's predicate is told it is a monitor
+  if (executor) {
+    await mon.execute("m6", { command: "sleep 3", timeout_seconds: 10, label: "turn end" }, undefined, undefined, fakeCtx());
+    await call("agent_before_settle", { type: "agent_before_settle", outcome: "completed", entries: [], continue: false }, fakeCtx());
+    let live = null; try { live = JSON.parse(readFileSync(`${process.env.STUB_LOG}.payload`, "utf8")); } catch { /* no payload */ }
+    ok(live?.background_tasks?.[0]?.type === "monitor" && live.background_tasks[0].status === "running", "a turn end while a monitor runs hands hw background_tasks (type monitor)");
+  }
+} else if (mode === "bg-subagents") {
+  // can a background subagent start here? (backgroundSubagentsStatus: the receipt row pi_background_subagents)
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = mkdtempSync(join(tmpdir(), "bgsub-"));
+  const pkg = (dir, json) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "package.json"), JSON.stringify(json)); return dir; };
+  const chord = (host) => pkg(join(host, "node_modules", "@earendil-works", "chord"), { name: "@earendil-works/chord", version: "1.5.0" });
+  const { backgroundSubagentsStatus: status } = mod;
+  const hostNoChord = pkg(join(root, "pi15"), { name: "@earendil-works/pi-coding-agent", version: "1.5.0", dependencies: {} });
+  let r = status(pkg(join(root, "sub085"), { name: "pi-subagents", version: "0.85.0" }), hostNoChord);
+  ok(r.ok && /can start/.test(r.text) && /declares no chord/.test(r.text), "pi 1.5.0 (no chord declared) with pi-subagents 0.85.0 can start a child, with no chord present");
+  r = status(pkg(join(root, "sub077"), { name: "pi-subagents", version: "0.77.0" }), hostNoChord);
+  ok(!r.ok && /NOT ABLE TO START/.test(r.text) && /Background children require the host npm package/.test(r.text) && /0\.78\.0/.test(r.text), "pi-subagents 0.77.0 cannot start a child without chord: the row says so and names the fix version");
+  const hostDeclares = pkg(join(root, "pi11"), { name: "@earendil-works/pi-coding-agent", version: "1.1.0", dependencies: { "@earendil-works/chord": "^1.1.0" } });
+  r = status(join(root, "sub085"), hostDeclares);
+  ok(!r.ok && /declares @earendil-works\/chord and it is missing/.test(r.text) && /pi update/.test(r.text), "a host that DECLARES chord and has lost it (what `pi update` does) is NOT ABLE TO START, naming the cause");
+  chord(hostDeclares);
+  r = status(join(root, "sub085"), hostDeclares);
+  ok(r.ok && /declared and present/.test(r.text), "...and with chord back it can start");
+  r = status(join(root, "nowhere"), hostNoChord);
+  ok(!r.ok && /not installed/.test(r.text), "no pi-subagents at all is said, not assumed");
+  r = status(join(root, "sub085"), null);
+  ok(r.ok && /not found, so chord was not checked/.test(r.text), "no host package found: the row says chord was not checked, it does not guess");
+  // and the session_start handler writes the row
+  const dirRun = `${process.env.HW_WORKDIR}/.hw/${process.env.HW_RUN}`;
+  process.env.HW_PI_SUBAGENTS_DIR = join(root, "sub077");
+  await call("session_start", { type: "session_start", reason: "startup" }, fakeCtx());
+  const rows = existsSync(`${dirRun}/receipt.jsonl`) ? readFileSync(`${dirRun}/receipt.jsonl`, "utf8") : "";
+  ok(/"key":"pi_background_subagents"/.test(rows), "session_start writes the pi_background_subagents receipt row");
 } else if (mode === "runtime") {
   const dir = `${process.env.HW_WORKDIR}/.hw/${process.env.HW_RUN}`;
   const { readFileSync, existsSync } = await import("node:fs");

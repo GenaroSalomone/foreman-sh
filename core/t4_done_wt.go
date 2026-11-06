@@ -560,7 +560,11 @@ func (d *doneRun) reapWorktree(proj, main, wt, branch, base string) bool {
 	if d.agentsBlock {
 		doneGit(wt, "checkout", "--", "AGENTS.md")
 	}
-	if !removeWithRunTmps(d.app.getenv, wt, a.warn, func() bool {
+	transcriptDir := dest // beside the archived outputs, or where they would go
+	if transcriptDir == "" {
+		transcriptDir = d.archiveRoot() + "/" + proj + "/" + doneBasename(wt)
+	}
+	if !removeWithRunTmps(d.app.getenv, wt, transcriptDir, a.warn, a.info, func() bool {
 		_, rc := doneTool("", nil, "git", "-C", main, "worktree", "remove", wt)
 		return rc == 0
 	}) {

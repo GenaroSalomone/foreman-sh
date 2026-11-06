@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 
-export async function startStubProvider({ command, final = "FINISHED", port = 0 } = {}) {
+export async function startStubProvider({ command, final = "FINISHED", port = 0, respond } = {}) {
   const requests = [];
   const sse = (res, chunks) => {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
@@ -34,6 +34,24 @@ export async function startStubProvider({ command, final = "FINISHED", port = 0 
         requests.push(json);
         const messages = Array.isArray(json.messages) ? json.messages : [];
         const hasToolResult = messages.some((m) => m.role === "tool");
+        // `respond(body)` is a probe's own script: it returns { text } or { tool, args } (a tool call), optionally with
+        // `delayMs` (the answer is held back, so a child outlives the turn that started it), or null for the default.
+        const scripted = typeof respond === "function" ? respond(json, requests.length) : null;
+        if (scripted) {
+          const chunks = scripted.tool
+            ? [
+                { ...base, choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: `call_stub_${requests.length}`, type: "function", function: { name: scripted.tool, arguments: JSON.stringify(scripted.args ?? {}) } }] }, finish_reason: null }] },
+                { ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } },
+                "[DONE]",
+              ]
+            : [
+                { ...base, choices: [{ index: 0, delta: { role: "assistant", content: scripted.text ?? "" }, finish_reason: null }] },
+                { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+                "[DONE]",
+              ];
+          setTimeout(() => sse(res, chunks), scripted.delayMs ?? 0);
+          return;
+        }
         if (!hasToolResult && command) {
           sse(res, [
             { ...base, choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: "call_stub_1", type: "function", function: { name: "bash", arguments: JSON.stringify({ command }) } }] }, finish_reason: null }] },

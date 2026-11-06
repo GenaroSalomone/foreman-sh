@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# The next three statements run before anything else: a function the caller exported, imported at startup, must not
+# shadow a command this file calls, and the caller's PATH must not choose the hasher, the copier or awk it runs.
+while builtin read -r _ _ _fn; do builtin unset -f "$_fn" 2>/dev/null || true; done < <(builtin declare -Fx)
+builtin set +o xtrace; builtin unset BASH_ENV ENV PS4 2>/dev/null || true
+PATH_ORIG="$PATH"; PATH=/usr/bin:/bin   # hw alone is called with the original PATH (it needs bw and friends)
+# gh-attach — attach screenshots to a GitHub PR or issue as user-attachments, in one command.
+#
+#   gh-attach <owner/repo> <pr-or-issue-number> <image>... [--comment "<text>"]
+#
+# Prints one markdown reference per image (![name](https://github.com/user-attachments/assets/…)) on stdout.
+# With --comment it also posts them, with the text above them, as ONE comment (gh api, the caller's own gh login).
+# No commit, no branch, no release asset: the image goes in through GitHub's web upload flow, which has no API,
+# so it is replayed by the pinned gh-image (drogers0/gh-image) with the operator's user_session cookie.
+#
+# Mechanism: bin/gh-attach (this file)        Precheck: `gh-attach --check` (item present, tool installed and hashed)
+# Failure:   a refusal line naming the fix — a missing item names `pbpaste | hw secret put github-user-session`,
+#            a missing tool names setup/install/install-gh-image.sh, a changed checksum is REFUSED. Report it blocked.
+#
+# WHAT HOLDS THE LINE (docs/gh-attach.md has the audit that chose the tool):
+#   · the cookie comes ONLY from `hw secret run github-user-session --as GH_SESSION_TOKEN -- …`: in the tool's
+#     environment, never in argv, never on disk. This file never reads it, prints it or passes it in an argument;
+#   · the tool is the pinned build (setup/install/gh-image.pin), hashed on EVERY run, before anything else happens;
+#   · gh-image's other credential roads are shut: it gets an environment of its own (PATH and HOME of its own, every
+#     other variable dropped), a `gh` that answers only the repo-id lookup this file already did (so `gh auth token`
+#     — the gh login — is unreachable), and an empty HOME, so a browser's cookie store has no path to be found at.
+#     The tool is never started without a non-empty token: with none, the cookie-store road would be the fallback;
+#   · what the tool prints on either stream is scrubbed of the token before it reaches this file's output.
+#
+#   · NO environment variable chooses what runs: hw is <this checkout>/bin/hw, the pin is <this checkout>/setup/install/
+#     gh-image.pin, the install tree is ~/.local/share/hw/tools/gh-image, gh is bin/gh beside this file or a system
+#     path, the interpreter is /usr/bin/python3. The caller's PATH is replaced by /usr/bin:/bin for everything this file
+#     runs but hw, and exported shell functions are dropped before the first command, so neither can stand in for the
+#     hasher or the copier. The suite gets its stubs by running a COPY of this file in a sandbox root, never by a
+#     variable; and the tool is copied to a private 0700 dir, hashed THERE, and the copy is run, so the bytes judged
+#     are the bytes executed. (HOME still picks WHERE the installed file is looked for; the pin picks which bytes pass.)
+#     What this does NOT stop: whoever controls this process's environment can already run `hw secret run` himself.
+set -euo pipefail
+
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _d="$(cd -P "$(dirname "$_src")" && pwd)" || break
+  _src="$(readlink "$_src")" || break
+  case "$_src" in /*) ;; *) _src="$_d/$_src" ;; esac
+done
+BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+SELF="$BIN_DIR/$(basename "$_src")"
+ROOT="$(cd "$BIN_DIR/.." && pwd)"
+# shellcheck source=../lib/gh-attach/pin.sh
+. "$ROOT/lib/gh-attach/pin.sh"
+
+ITEM="github-user-session"
+die() { printf 'gh-attach: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+usage: gh-attach <owner/repo> <pr-or-issue-number> <image>... [--comment "<text>"]
+       gh-attach --check
+
+Uploads each image as a GitHub user-attachment and prints its markdown. --comment posts them as one comment.
+The session cookie is the Bitwarden item github-user-session (folder agents), resolved by `hw secret run`.
+EOF
+}
+
+# The scrubber: runs the tool with the env it was given, reads both streams whole, removes the token from them.
+read -r -d '' REDACT <<'PY' || true
+import os, subprocess, sys, urllib.parse
+tok = os.environ.get("GH_SESSION_TOKEN", "")
+secrets = sorted({s for s in (tok, tok.strip(), urllib.parse.quote(tok.strip(), safe="")) if s}, key=len, reverse=True)
+def scrub(b):
+    for s in secrets:
+        b = b.replace(s.encode(), b"[redacted]")
+    return b
+p = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    out, err = p.communicate(timeout=900)
+    rc = p.returncode
+except subprocess.TimeoutExpired:
+    p.kill(); out, err = p.communicate(); rc = 124
+sys.stdout.buffer.write(scrub(out)); sys.stdout.buffer.flush()
+sys.stderr.buffer.write(scrub(err)); sys.stderr.buffer.flush()
+sys.exit(rc)
+PY
+
+# ── inner: runs UNDER `hw secret run`, the token only in its environment ────────────────────────────────────
+if [ "${1:-}" = "--inner" ]; then
+  shift
+  [ "$#" -ge 5 ] || die "internal: --inner <tool> <repo> <shimdir> <home> <image>..."
+  tool="$1"; repo="$2"; shim="$3"; home="$4"; shift 4
+  tok="${GH_SESSION_TOKEN:-}"
+  [ -n "${tok//[[:space:]]/}" ] \
+    || die "no session token in the environment: refusing to start the tool, whose fallback would be the browser's cookie store"
+  py=/usr/bin/python3   # a fixed interpreter: the scrubber runs with the token, so PATH does not choose it
+  [ -x "$py" ] || die "$py is needed to scrub the tool's output"
+  # Every exported variable but the token loses its export, and every exported function is dropped (an imported
+  # BASH_FUNC_* would otherwise reach the tool); the tool then gets an environment of its own.
+  for _v in $(compgen -e); do
+    case "$_v" in GH_SESSION_TOKEN) ;; *) export -n "$_v" 2>/dev/null || true ;; esac
+  done
+  export HOME="$home" PATH="$shim:/usr/bin:/bin" GH_PATH="$shim/gh" LC_ALL=C
+  exec "$py" -I -c "$REDACT" "$tool" --repo "$repo" "$@"
+fi
+
+# ── outer ───────────────────────────────────────────────────────────────────────────────────────────────
+unset GH_SESSION_TOKEN
+HW="$BIN_DIR/hw"   # the hw of this checkout — no variable chooses it
+hw() { PATH="$PATH_ORIG" "$HW" "$@"; }
+GH=""              # resolved lazily by find_gh: bin/gh beside this file, else a system path (never PATH)
+find_gh() {
+  local c
+  for c in "$BIN_DIR/gh" /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh /snap/bin/gh; do
+    if [ -f "$c" ] && [ -x "$c" ]; then GH="$c"; return 0; fi
+  done
+  die "gh is not at $BIN_DIR/gh, /opt/homebrew/bin, /usr/local/bin, /usr/bin or /snap/bin: install the GitHub CLI (or put it beside this script)"
+}
+
+# verify_tool <file> — the bytes of <file> are exactly the pin's for this platform, or die REFUSED
+verify_tool() {
+  local got
+  got="$(ghimg_sha256 "$1")"
+  [ -n "$got" ] || die "no shasum or sha256sum to verify $1 with"
+  [ "$got" = "$WANT" ] \
+    || die "REFUSED: $1 has sha256 $got, the pin ($VERSION, $PLATFORM) says $WANT. Not running it. Reinstall with setup/install/install-gh-image.sh, and if the pin changed, re-audit first."
+}
+
+# the tool: installed, and exactly the pinned bytes (the early look; run_tool judges the copy it will execute)
+check_tool() {
+  local pin
+  pin="$(ghimg_pin_file "$ROOT")"
+  [ -r "$pin" ] || die "no pin at $pin"
+  VERSION="$(ghimg_pin_get "$pin" version)"
+  PLATFORM="$(ghimg_platform)"
+  WANT="$(ghimg_pin_get "$pin" sha256 "$PLATFORM")"
+  [ -n "$VERSION" ] && [ -n "$WANT" ] || die "the pin has no version or no sha256 for $PLATFORM"
+  TOOL="$(ghimg_dir "$VERSION")/gh-image"
+  [ -f "$TOOL" ] && [ -x "$TOOL" ] || die "gh-image $VERSION is not installed at $TOOL: run setup/install/install-gh-image.sh"
+  verify_tool "$TOOL"
+}
+
+# the item: present in Bitwarden, folder agents (a presence check — no value is read)
+check_item() {
+  local rc=0
+  hw secret check "$ITEM" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "the Bitwarden item $ITEM is missing (folder agents). A person stores it, from the cookie on the clipboard: pbpaste | hw secret put $ITEM" ;;
+    2) die "the Bitwarden vault is locked: a person runs secret-unlock in a terminal, then retry" ;;
+    *) die "hw secret check $ITEM failed (exit $rc): run it by hand to see why" ;;
+  esac
+}
+
+if [ "${1:-}" = "--check" ]; then
+  [ "$#" -eq 1 ] || die "--check takes no arguments"
+  check_tool; check_item; find_gh
+  printf 'gh-attach: ok — %s is the pinned build and %s is present\n' "$TOOL" "$ITEM"
+  exit 0
+fi
+
+repo=""; number=""; comment=""; have_comment=0; images=()
+args=("$@"); i=0; positional_only=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a="${args[$i]}"
+  if [ "$positional_only" = 0 ]; then
+    case "$a" in
+      -h|--help) usage; exit 0 ;;
+      --) positional_only=1; i=$((i + 1)); continue ;;
+      --comment) [ $((i + 1)) -lt "${#args[@]}" ] || die "--comment needs a text"
+                 comment="${args[$((i + 1))]}"; have_comment=1; i=$((i + 2)); continue ;;
+      --comment=*) comment="${a#--comment=}"; have_comment=1; i=$((i + 1)); continue ;;
+      --*) die "unknown flag: $a (usage: gh-attach <owner/repo> <number> <image>... [--comment \"<text>\"])" ;;
+    esac
+  fi
+  if [ -z "$repo" ]; then repo="$a"
+  elif [ -z "$number" ]; then number="$a"
+  else images+=("$a")
+  fi
+  i=$((i + 1))
+done
+
+[ -n "$repo" ] && [ -n "$number" ] && [ "${#images[@]}" -gt 0 ] \
+  || { usage >&2; exit 2; }
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "not an owner/repo: $repo"
+[[ "$number" =~ ^[0-9]+$ ]] || die "not a PR or issue number: $number"
+abs=()
+for f in "${images[@]}"; do
+  [ -f "$f" ] && [ -r "$f" ] || die "not a readable file: $f"
+  abs+=("$(cd "$(dirname "$f")" && pwd)/$(basename "$f")")
+done
+
+check_tool
+check_item
+find_gh
+
+id="$("$GH" api "repos/$repo" --jq .id 2>/dev/null)" || die "could not look up the repo id of $repo with gh (is gh authenticated, and the repo visible to it?)"
+[[ "$id" =~ ^[0-9]+$ ]] || die "unexpected repo id from gh for $repo: $id"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/bin" "$work/home"
+# The one gh the tool can reach: it answers the repo-id lookup the tool makes, and refuses everything else —
+# `gh auth token` included, so the gh login is not a road to GitHub for the tool.
+cat > "$work/bin/gh" <<SHIM
+#!/bin/sh
+if [ "\$#" -eq 4 ] && [ "\$1" = api ] && [ "\$2" = "repos/$repo" ] && [ "\$3" = --jq ] && [ "\$4" = .id ]; then
+  printf '%s\n' $id; exit 0
+fi
+echo "gh-attach: gh is not available to gh-image (only the repo id lookup is answered)" >&2
+exit 1
+SHIM
+chmod +x "$work/bin/gh"
+
+# The bytes judged are the bytes run: copy the installed tool into this private 0700 dir, hash THE COPY against the
+# pin, and execute the copy. Whatever happens to the installed file from here on (a swap during `hw secret run`'s
+# vault work, say) cannot reach the process that holds the cookie.
+chmod 0700 "$work"
+cp "$TOOL" "$work/gh-image" || die "could not stage $TOOL"
+chmod 0700 "$work/gh-image"
+verify_tool "$work/gh-image"
+RUN_TOOL="$work/gh-image"
+
+rc=0
+md="$(hw secret run "$ITEM" --as GH_SESSION_TOKEN -- /bin/bash "$SELF" --inner "$RUN_TOOL" "$repo" "$work/bin" "$work/home" "${abs[@]}")" || rc=$?
+[ -z "$md" ] || printf '%s\n' "$md"
+[ "$rc" -eq 0 ] || { printf 'gh-attach: the upload failed (exit %s); no comment was posted\n' "$rc" >&2; exit "$rc"; }
+
+if [ "$have_comment" = 1 ]; then
+  body="$md"
+  [ -z "$comment" ] || body="$comment"$'\n\n'"$md"
+  printf '%s' "$body" | "$GH" api "repos/$repo/issues/$number/comments" -F body=@- >/dev/null \
+    || die "the images are uploaded (markdown above) but posting the comment on $repo#$number failed"
+  printf 'gh-attach: commented on %s#%s\n' "$repo" "$number" >&2
+fi

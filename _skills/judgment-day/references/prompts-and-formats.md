@@ -10,7 +10,7 @@ Target paths: {every file the diff touches, one per line}
 Skills to load: {resolved SKILL.md paths}
 Criteria: correctness, edge cases, error handling, performance, security, project conventions, and trust boundaries.
 
-Set `causal_disposition` to `introduced` when the candidate caused the defect (added it, worsened it, or made it newly reachable) and to `pre-existing` when it was already at the base; a pre-existing defect never blocks and is reported as info.
+Set `causal_disposition` to `introduced` when the candidate caused the defect (added it, worsened it, or made it newly reachable) and to `pre-existing` when it was already at the base; a pre-existing defect never blocks and is reported as info. In a scoped re-judgment the ledger is frozen: report only its entries and, as `"causal_disposition":"fix-caused"`, a defect the fix delta caused; any other new finding is rejected by done-invoker.
 
 Trust boundaries are a criterion, not a lens. For every value the diff READS instead of CREATES — an environment variable it inherits, argv, a file, a directory listing, a message from a peer process — say who can supply it and what the code does when that value is missing, stale, garbage or hostile. A value used without validating it is a finding even when the happy path works; presence is not validation. Name the value it overrides and what that value decides, so the reader can see the blast radius.
 

@@ -81,14 +81,15 @@ func runTmpDirs(getenv func(string) string, wt string) []string {
 	return out
 }
 
-// removeWithRunTmps reads the runs' TMPDIRs under wt, calls rm (which removes wt), and clears those TMPDIRs only if rm succeeded
+// removeWithRunTmps reads the runs' TMPDIRs under wt (archiveDir: where the task's outputs are archived, so a pi run's transcript
+// lands beside them), calls rm (which removes wt), and clears those TMPDIRs only if rm succeeded
 // (a kept work dir keeps its scratch). Go's module cache is read-only: each one is made writable first, and a failure is warned.
-func removeWithRunTmps(getenv func(string) string, wt string, warn func(string), rm func() bool) bool {
+func removeWithRunTmps(getenv func(string) string, wt, archiveDir string, warn, note func(string), rm func() bool) bool {
 	// A PI RUN'S TRANSCRIPT IS OUTSIDE THE WORKTREE and is archived BEFORE anything is removed (2026-11-04): the jsonl
 	// under PI_CODING_AGENT_DIR/sessions survives `git worktree remove`, but every record of which session was this run's
 	// dies with the tree. A near-miss warns and never blocks the removal.
 	dirs := runTmpDirs(getenv, wt)
-	archivePiTranscript(getenv, wt, warn) // "" when the run was not pi; a missing copy warns and never blocks
+	archivePiTranscript(getenv, wt, archiveDir, warn, note) // "" when the run was not pi; a missing copy warns and never blocks
 	if !rm() {
 		return false
 	}

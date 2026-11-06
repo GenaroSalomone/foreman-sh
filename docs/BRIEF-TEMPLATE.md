@@ -33,12 +33,12 @@
 #   requires-agents: [primary:|subagent:]<name>, …
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
-#   review:    [judgment-day]  (the DEFAULT: omit the key) — or judgment-day | plugins | none,
+#   review:    omit the key = NO review (a review is opt-in) — or judgment-day | plugins | none,
 #              or ONE list: [judgment-day, thermo, ponytail, pstack]
 #              — the review the close names, in every lane and --sdd mode. judgment-day orders
 #              Judgment Day over the branch; plugins names only the review pieces of `plugins:`
-#              (below) and no Judgment Day; none adds no review note, and on `kind: build` hw
-#              REFUSES it unless the brief also carries a `review-skip: <piece> — <why>` line.
+#              (below) and no Judgment Day; none (or no key) adds no review note, on any kind,
+#              and needs no `review-skip:` line: say nothing when the task needs no review.
 #              One focus per plugin, each piece once (the first plugin declared wins a piece two carry):
 #              thermo = maintainability; ponytail = senior review (correct, safe, load, tested, fast,
 #              lean); pstack = the diff's security and correctness, blast-radius (what breaks outside

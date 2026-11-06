@@ -97,15 +97,17 @@ func (l *lch) jdAgentsReceipt(dir string) {
 	// THE SAME GATES THE CLOSING HAS (`f.jd = l.judgmentDayApplies()`): a declared Judgment Day AND a resolved base
 	// ref AND a build kind. Without them the prompt renders no judge call at all, so a row written here would refuse a
 	// close nothing asked for (Judgment Day, both judges, 2026-11-04).
-	if l.agent != "pi" || !l.reviewDeclared() || l.reviewMode() != "judgment-day" || !l.judgmentDayApplies() {
+	// pi AND claude (pi-adopt-gentle, 2026-11-05): a declared Judgment Day is held to its protocol on both vendors, read off
+	// each one's own transcript. Another vendor writes no row: hw cannot read its transcript.
+	if (l.agent != "pi" && l.agent != "claude") || !l.reviewDeclared() || l.reviewMode() != "judgment-day" || !l.judgmentDayApplies() {
 		return
 	}
 	cfg := orDefaultStr(l.env("CLAUDE_CONFIG_DIR"), l.env("HOME")+"/.claude")
-	if j, _, _ := jdFacts("pi", cfg, l.env("HOME"), l.workdir(), "", l.piSubagentsReady()); j != "agents" {
+	if j, _, _ := jdFacts(l.agent, cfg, l.env("HOME"), l.workdir(), "", l.agent == "pi" && l.piSubagentsReady()); j != "agents" {
 		return
 	}
 	l.receiptInto(dir, "jd_agents_t1", "jd-judge-a,jd-judge-b",
-		"brief review: in "+l.brief+" at dispatch, and pi's judges are registered — done-invoker requires a call to each judge, not `reviewer`")
+		"brief review: in "+l.brief+" at dispatch, and the judges are registered — done-invoker requires a call to each judge, not `reviewer`, within the Judgment Day budget and frozen ledger")
 }
 
 // pluginReviewReceipt is THE PLUGIN REVIEW SKILLS THE CLOSING NAMED, keyed by task 1: done-invoker refuses a done

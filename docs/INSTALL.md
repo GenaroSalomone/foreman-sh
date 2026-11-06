@@ -371,7 +371,7 @@ warn, then run `--sdd none`; `hw gentle-home` no longer exists; and the
 `sdd_modes` lane field is not a field any more, so a `projects.json` that still
 carries it fails to load (`unknown lane field(s)`): delete the key. A
 `review: rdd` brief warns and closes with Judgment Day. What a task closes with
-is the brief's `review:` (`judgment-day`, the default; `plugins`; `none`), below.
+is the brief's `review:` (`judgment-day`; `plugins`; `none`, which is also what an absent key means), below.
 
 ## Dispatching: briefs, the ledger and `hw preflight`
 
@@ -569,12 +569,11 @@ Then ask a session for "judgment day" over a diff. The judges use engram to
 recall context when it is registered (see Memory above).
 
 **Which review a build closes with is the brief's choice**, in every lane and
-every `--sdd` mode: `review: judgment-day` (the default when the key is absent)
+every `--sdd` mode: `review: judgment-day` (a review is opt-in: with no `review:` key the close names none)
 orders Judgment Day over the branch at the close; `review: plugins` names only
 the review pieces of the brief's `plugins:` (`thermo`, `ponytail`, `pstack`: skills, and
 `pstack`'s `comment-sicko` agent, launched with the Agent tool as `pstack:comment-sicko`; each piece once) and
-no Judgment Day; `review: none` adds no review note, and on a `kind: build` it is
-refused unless the brief also carries a `review-skip: <piece> — <why>` line. Any
+no Judgment Day; `review: none` (or no key) adds no review note, on any kind, with no `review-skip:` line needed. Any
 other value refuses the dispatch, naming those three. The choice is printed in
 the dispatch manifest and recorded in the run's receipt.
 

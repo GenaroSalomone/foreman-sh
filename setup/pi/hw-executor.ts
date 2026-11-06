@@ -56,6 +56,12 @@
 //      sleep-poll rule (setup/guards/deny-executor-sleep-poll.py) is asked for pi's
 //      `bash` too, and its refusal names that tool instead of a flag pi does not have.
 //
+//   9. CAN A BACKGROUND SUBAGENT START? (pi-adopt-gentle, 2026-11-05). pi-subagents wakes the parent itself (its parent-wake, which
+//      holds during compaction and reserves one wake per idle parent) and needs `@earendil-works/chord` ONLY when the host pi
+//      declares it (pi 0.85 to 1.1): since pi-subagents 0.78.0 a pi 1.2+ without chord starts and wakes fine (measured: setup/pi/
+//      test-live-subagent-wake.mjs; 0.77.0 fails to START the child, so there is nothing to wake). hw owns no second wake: it
+//      records at session start whether a child can start (`pi_background_subagents`, backgroundSubagentsStatus), which is the
+//      check nothing made when `pi update` removed a hand-installed chord.
 //   8. THE EXPLORATION BUDGET. Per request, the root session counts pi's discovery
 //      results (read, grep, find, ls) and, past 3 lookups or 40 KB of text, steers
 //      the run ONCE toward the explorer with pi's native sendMessage(deliverAs:
@@ -564,6 +570,13 @@ async function brainVerdict(payload: Record<string, unknown>): Promise<string | 
 // run_in_background because that is Claude's flag, and pi has no such flag — it has `bash_background`.
 const SLEEP_POLL_GUARD = join(BRAIN, "setup", "guards", "deny-executor-sleep-poll.py");
 let sleepPollMissing = false;
+// BACKGROUND WORK IN FLIGHT, as the sleep rule asks for it (a standalone `sleep` while work runs spends a turn on nothing: the
+// completion arrives as a message). The jobs and monitors this process started, plus the async subagents pi-subagents announced
+// and has not yet completed (its own `subagent:async-started` / `-complete` events, keyed by run id).
+const ASYNC_SUBAGENTS = new Set<string>();
+export function activeWork(): number {
+  return bgRunning() + ASYNC_SUBAGENTS.size;
+}
 function sleepPollGuard(): string | null {
   if (existsSync(SLEEP_POLL_GUARD)) return SLEEP_POLL_GUARD;
   if (!sleepPollMissing) {
@@ -579,7 +592,7 @@ function sleepPollVerdict(command: string, bg: boolean): string | null {
   const file = sleepPollGuard();
   if (!file) return null;
   const r = spawnSync(process.platform === "win32" ? "python3" : "/usr/bin/python3", [file], {
-    input: JSON.stringify({ tool_name: "Bash", tool_input: { command, run_in_background: bg }, background_tool: BG_TOOL, cwd: process.cwd() }),
+    input: JSON.stringify({ tool_name: "Bash", tool_input: { command, run_in_background: bg }, background_tool: BG_TOOL, cwd: process.cwd(), active_work: activeWork() }),
     encoding: "utf8", timeout: 20000,
   });
   if (r.error) return `Blocked: the sleep-poll guard ${file} could not run (${r.error.message}), so this command was not judged.`;
@@ -685,7 +698,7 @@ export async function judge(toolName: string, input: any, cwd: string): Promise<
   // `bash_background` runs its command in the background BY DEFINITION: the sleep-poll rule judges it with
   // Claude's run_in_background=true semantics (a long sleep or a short poll is fine there, an unbounded poll
   // loop or a follow is not).
-  const backgroundTool = toolName === BG_TOOL;
+  const backgroundTool = toolName === BG_TOOL || toolName === MONITOR_TOOL;
   let paths: string[] = [], commands: string[] = [];
   if (kind === "bash") {
     commands = [typeof input.command === "string" ? input.command : ""];
@@ -838,7 +851,8 @@ const NOT_SPECIALIST = /^(?:sdd-|speckit-|review-)/;
 // `web_search` through the same `extensions` answered NO WEB TOOL (cause not found). Still dropped, each measured:
 // Task/Agent (a child of a child: `allowNestedSubagents` and `tools: subagent` both left the child with no subagent tool)
 // and mcp__* (pi-subagents hands a child an extension-registered MCP server, hw_engram, only when it runs in the
-// background, which needs @earendil-works/chord in the host pi: "Background children require the host npm package").
+// background (which pi-subagents < 0.78.0 could not start without @earendil-works/chord in the host pi: "Background children require the
+// host npm package"; see backgroundSubagentsStatus).
 const CLAUDE_WEB_TOOLS: Record<string, string> = { webfetch: "fetch_content" };
 
 export function mapClaudeTools(list: string[]): { tools: string[]; web: boolean; dropped: string[] } {
@@ -964,6 +978,35 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
   return out;
 }
 
+// ── 9. CAN A BACKGROUND SUBAGENT START? ─────────────────────────────────────
+// A pure reader over two package roots: pi-subagents' and the host pi's. `ok` is false only where a child cannot start;
+// `text` is the receipt row. pi-subagents < 0.78.0 required chord on every pi ("Background children require the host npm
+// package", measured with 0.77.0); from 0.78.0 it is required only when the host manifest declares it.
+function readJson(file: string): any { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return null; } }
+function versionLt(a: string, b: string): boolean {
+  const pa = a.split(".").map((x) => parseInt(x, 10) || 0), pb = b.split(".").map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) { if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0); }
+  return false;
+}
+export function backgroundSubagentsStatus(subDir: string, hostRoot: string | null): { ok: boolean; text: string } {
+  const sub = readJson(join(subDir, "package.json"));
+  if (!sub) return { ok: false, text: `NOT AVAILABLE — pi-subagents is not installed at ${subDir}: this executor has no background (or foreground) subagent` };
+  const subVersion = String(sub.version ?? "?");
+  if (!hostRoot) return { ok: true, text: `pi-subagents ${subVersion}; the host pi package was not found, so chord was not checked` };
+  const host = readJson(join(hostRoot, "package.json")) ?? {};
+  const hostVersion = String(host.version ?? "?");
+  const declared = [host.dependencies, host.optionalDependencies].some((d: any) => d && typeof d === "object" && Object.hasOwn(d, "@earendil-works/chord"));
+  const present = existsSync(join(hostRoot, "node_modules", "@earendil-works", "chord", "package.json"));
+  const fixHint = "run `pi update`, or install @earendil-works/chord at pi's own version into pi-coding-agent/node_modules/@earendil-works";
+  if (versionLt(subVersion, "0.78.0")) {
+    return { ok: false, text: `NOT ABLE TO START — pi-subagents ${subVersion} requires @earendil-works/chord on every pi and fails a background child with "Background children require the host npm package" (fixed in 0.78.0)${present ? "; chord is present, so it may still start" : "; chord is absent"}: update pi-subagents (\`pi update\`)` };
+  }
+  if (declared && !present) {
+    return { ok: false, text: `NOT ABLE TO START — pi ${hostVersion} declares @earendil-works/chord and it is missing (\`pi update\` removes it), so pi-subagents ${subVersion} cannot start a background child: ${fixHint}` };
+  }
+  return { ok: true, text: `can start — pi-subagents ${subVersion} on pi ${hostVersion}; ${declared ? "chord is declared and present" : "the host declares no chord, so none is needed"}; the wake is pi-subagents' own (no second wake path)` };
+}
+
 // ── 7. A SHELL COMMAND THAT WAKES THE SESSION WHEN IT ENDS ──────────────────
 // pi's `bash` tool has no run_in_background (dist/core/tools/bash.js: `command`, `timeout`), so a pi executor
 // that must wait on its own long run had nothing to wait WITH: MEASURED 2026-11-04 (executor
@@ -984,15 +1027,31 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
 // source of truth for ids the model already holds are not what this executor was missing.
 const BG_TOOL = "bash_background";
 const BG_STOP_TOOL = "job_stop";
+const BG_LIST_TOOL = "job_list";
+const MONITOR_TOOL = "monitor";
 const BG_MAX_RUNNING = 25;      // gentle-pi's cap; a runaway fleet is not a wait
 const BG_TAIL_LINES = 20;
 
 interface BgJob {
   id: string; label: string; command: string; cwd: string; log: string;
-  started: number; status: "running" | "exited" | "stopped" | "failed";
+  started: number; status: "running" | "exited" | "stopped" | "failed" | "timeout";
+  monitor?: MonitorState;
   exit?: number | null; error?: string; ended?: number;
   tail: string[]; partial: string; abort: any; dropped: number;
 }
+
+// A MONITOR is a background job whose matching OUTPUT LINES are events: each (coalesced) batch wakes the session, and the
+// job ends on its own exit, on its mandatory timeout, or on its event cap. Gentle-pi's `monitor` (MIT, read as a reference):
+// line events with a required timeout; our own version, over the same job registry, the same guards and the same output filter.
+export interface MonitorState {
+  pattern: RegExp | null; timeoutMs: number; maxEvents: number;
+  events: number; pending: string[]; flushAt: ReturnType<typeof setTimeout> | null; timer: ReturnType<typeof setTimeout> | null;
+}
+export const MONITOR_MAX_TIMEOUT_S = 3600;
+export const MONITOR_DEFAULT_MAX_EVENTS = 50;
+export const MONITOR_MAX_EVENTS = 500;
+const MONITOR_BATCH_MS = 1000;       // lines of one second are ONE wake (a burst is not fifty turns)
+const MONITOR_BATCH_LINES = 20;
 
 // The jobs this process started. Module level because the turn end reads them too; only the executor's
 // session registers the tools, and a subagent's child is not the executor (see the factory).
@@ -1046,6 +1105,7 @@ function bgRunning(): number {
 // output lives — everything needed to act without polling.
 export function bgNotice(job: { id: string; label: string; command: string; exit?: number | null; status: string; error?: string; log: string; seconds: number; lines: string[] }): string {
   const outcome = job.status === "stopped" ? "was stopped"
+    : job.status === "timeout" ? `ended: ${job.error ?? "its timeout"}`
     : job.status === "failed" ? `could not run: ${job.error ?? "unknown error"}`
     : `exited with code ${job.exit ?? "?"}`;
   const head = `[hw background] ${job.id} ("${firstLine(job.label, 60)}") ${outcome} after ${job.seconds}s.\ncommand: ${firstLine(job.command)}`;
@@ -1116,6 +1176,91 @@ function fallbackOps(log: string) {
   };
 }
 
+// Starts one job (a plain background command, or a monitor when `mon` is given) and returns its record at once. The caller has
+// checked the cap and the arguments; the call was judged by the guards before this runs.
+function startJob(pi: any, dir: string | null, ctx: any, command: string, label: string, mon?: { pattern: RegExp | null; timeoutMs: number; maxEvents: number }): BgJob {
+  const dirOf = bgLogDir(dir);
+  const cwd = ctx?.cwd || process.cwd();
+  const id = `bg-${++bgSeq}`;
+  const log = join(dirOf, `${id}.log`);
+  const job: BgJob = { id, label, command, cwd, log, started: Date.now(), status: "running", tail: [], partial: "", abort: new AbortController(), dropped: 0 };
+  if (mon) job.monitor = { ...mon, events: 0, pending: [], flushAt: null, timer: null };
+  try { mkdirSync(dirOf, { recursive: true }); writeFileSync(log, ""); } catch { /* the stream below will say why */ }
+  BG_JOBS.set(id, job);
+  const wake = (customType: string, content: string, details: Record<string, unknown>) => {
+    // THE WAKE. deliverAs steer: it joins a turn already running, and triggerTurn starts one when the session is idle — the same
+    // call the turn end makes for a queued ruling, and the one pi-subagents makes for a background child.
+    try {
+      Promise.resolve(pi.sendMessage({ customType, content, display: true, details }, { triggerTurn: true, deliverAs: "steer" }))
+        .catch(() => { /* the session went away with the job: the .json and the receipt carry the fact */ });
+    } catch { /* same */ }
+  };
+  const flushEvents = () => {
+    const m = job.monitor;
+    if (!m) return;
+    if (m.flushAt) { clearTimeout(m.flushAt); m.flushAt = null; }
+    if (!m.pending.length) return;
+    const lines = m.pending.splice(0, m.pending.length);
+    const shown = lines.slice(0, MONITOR_BATCH_LINES);
+    wake("hw-monitor-lines", `[hw monitor] ${id} ("${firstLine(label, 60)}") — ${lines.length} new line(s):\n${shown.join("\n")}${lines.length > shown.length ? `\n… and ${lines.length - shown.length} more (full output: ${log})` : ""}`,
+      { id, label, lines: lines.length, log });
+  };
+  const finish = (status: "exited" | "failed" | "timeout" | "stopped", exit: number | null, error?: string) => {
+    if (job.status !== "running") return;  // an abort already said "stopped"
+    job.status = status; job.exit = exit; job.error = error; job.ended = Date.now();
+    if (job.monitor?.timer) { clearTimeout(job.monitor.timer); job.monitor.timer = null; }
+    flushEvents();
+    const seconds = Math.max(0, Math.round((job.ended - job.started) / 1000));
+    try { writeAtomic(join(dirOf, `${id}.json`), JSON.stringify({ id, label, command, log, exit, status, error, seconds, ended: job.ended, ...(job.monitor ? { monitor_events: job.monitor.events } : {}) }) + "\n"); } catch { /* evidence, not a dependency */ }
+    receiptRow("pi_background", `${id} ${status === "exited" ? "exit " + exit : status === "timeout" ? "monitor timeout" : status === "stopped" ? "stopped" : "failed: " + (error ?? "")} after ${seconds}s — ${firstLine(command)} (log ${log})${job.monitor ? ` [monitor, ${job.monitor.events} event(s)]` : ""}`, `hw-executor.ts ${job.monitor ? MONITOR_TOOL : BG_TOOL}`);
+    if (status === "stopped") return;  // whoever stopped it already knows
+    wake("hw-bg-exit", bgNotice({ ...job, seconds, lines: bgTail(job) }) + (job.monitor ? `\n[hw monitor] ${job.monitor.events} event line(s) were sent.` : ""),
+      { id, label, exit, status, log, seconds });
+    if (status === "timeout") { try { job.abort.abort(); } catch { /* gone */ } }
+  };
+  const onLine = (line: string) => {
+    const m = job.monitor;
+    if (!m || job.status !== "running") return;
+    const text = line.replace(/\n$/, "");
+    if (m.pattern && !m.pattern.test(text)) return;
+    m.events++;
+    m.pending.push(text.length > 500 ? text.slice(0, 499) + "…" : text);
+    if (m.events >= m.maxEvents) {
+      finish("timeout", null, `event cap (${m.maxEvents}) reached`);
+      return;
+    }
+    if (m.pending.length >= MONITOR_BATCH_LINES) flushEvents();
+    else if (!m.flushAt) m.flushAt = setTimeout(flushEvents, MONITOR_BATCH_MS);
+  };
+  if (job.monitor) job.monitor.timer = setTimeout(() => { try { finish("timeout", null, `its timeout (${Math.round((job.monitor?.timeoutMs ?? 0) / 1000)} s)`); } catch { /* ended */ } }, job.monitor.timeoutMs);  // # MUTATION-ANCHOR: 1251-M01
+  void (async () => {
+    const ops = (await shellOperations()) ?? fallbackOps(log);
+    const out = createWriteStream(log, { flags: "a" });
+    out.on("error", () => { /* a lost log must not crash the session: the tail survives */ });
+    const decoder = new TextDecoder("utf-8");
+    const sink = (line: string) => { out.write(line); onLine(line); };
+    try {
+      const { exitCode } = await ops.exec(command, cwd, {
+        signal: job.abort.signal,
+        onData: (data: Buffer) => {
+          const text = decoder.decode(data, { stream: true });
+          if (text) pushTail(job, text, cwd, sink);
+        },
+      });
+      const rest = decoder.decode();
+      if (rest) pushTail(job, rest, cwd, sink);
+      if (job.partial) { pushTail(job, "\n", cwd, sink); }   // the last, unterminated line
+      await new Promise<void>((r) => out.end(r));
+      finish("exited", exitCode);
+    } catch (e: any) {
+      if (job.partial) { pushTail(job, "\n", cwd, sink); }   // a stopped or failed job keeps its last line too
+      await new Promise<void>((r) => out.end(r));
+      if (job.status === "running") finish("failed", null, String(e?.message ?? e));
+    }
+  })();
+  return job;
+}
+
 function registerBackgroundTools(pi: any, dir: string | null) {
   pi.registerTool({
     name: BG_TOOL,
@@ -1142,60 +1287,80 @@ function registerBackgroundTools(pi: any, dir: string | null) {
       if (bgRunning() >= BG_MAX_RUNNING) {
         return { content: [{ type: "text", text: `${BG_MAX_RUNNING} background jobs are already running; stop one with job_stop first.` }], isError: true };
       }
-      const dirOf = bgLogDir(dir);
-      const cwd = ctx?.cwd || process.cwd();
-      const id = `bg-${++bgSeq}`;
-      const log = join(dirOf, `${id}.log`);
-      const job: BgJob = { id, label, command, cwd, log, started: Date.now(), status: "running", tail: [], partial: "", abort: new AbortController(), dropped: 0 };
-      try { mkdirSync(dirOf, { recursive: true }); writeFileSync(log, ""); } catch { /* the stream below will say why */ }
-      BG_JOBS.set(id, job);
-      const settle = (status: "exited" | "failed", exit: number | null, error?: string) => {
-        if (job.status !== "running") return;  // an abort already said "stopped"
-        job.status = status; job.exit = exit; job.error = error; job.ended = Date.now();
-        const seconds = Math.max(0, Math.round((job.ended - job.started) / 1000));
-        try { writeAtomic(join(dirOf, `${id}.json`), JSON.stringify({ id, label, command, log, exit, status, error, seconds, ended: job.ended }) + "\n"); } catch { /* evidence, not a dependency */ }
-        receiptRow("pi_background", `${id} ${status === "exited" ? "exit " + exit : "failed: " + (error ?? "")} after ${seconds}s — ${firstLine(command)} (log ${log})`, "hw-executor.ts bash_background");
-        // THE WAKE. deliverAs steer: it joins a turn already running, and triggerTurn starts one when the session
-        // is idle — the same call the turn end makes for a queued ruling, and the same one pi-subagents makes for a
-        // background child. A stopped job says nothing: whoever stopped it already knows.
-        try {
-          Promise.resolve(pi.sendMessage(
-            { customType: "hw-bg-exit", content: bgNotice({ ...job, seconds, lines: bgTail(job) }), display: true,
-              details: { id, label, exit, status, log, seconds } },
-            { triggerTurn: true, deliverAs: "steer" },
-          )).catch(() => { /* the session went away with the job: the .json and the receipt carry the fact */ });
-        } catch { /* same */ }
-      };
-      void (async () => {
-        const ops = (await shellOperations()) ?? fallbackOps(log);
-        const out = createWriteStream(log, { flags: "a" });
-        out.on("error", () => { /* a lost log must not crash the session: the tail survives */ });
-        let decoder = new TextDecoder("utf-8");
-        try {
-          const { exitCode } = await ops.exec(command, cwd, {
-            signal: job.abort.signal,
-            onData: (data: Buffer) => {
-              const text = decoder.decode(data, { stream: true });
-              if (text) pushTail(job, text, cwd, (line) => out.write(line));
-            },
-          });
-          const rest = decoder.decode();
-          if (rest) pushTail(job, rest, cwd, (line) => out.write(line));
-          if (job.partial) { pushTail(job, "\n", cwd, (line) => out.write(line)); }   // the last, unterminated line
-          await new Promise<void>((r) => out.end(r));
-          settle("exited", exitCode);
-        } catch (e: any) {
-          if (job.partial) { pushTail(job, "\n", cwd, (line) => out.write(line)); }   // a stopped or failed job keeps its last line too
-          await new Promise<void>((r) => out.end(r));
-          if (job.status === "running") settle("failed", null, String(e?.message ?? e));
-        }
-      })();
+      const job = startJob(pi, dir, ctx, command, label);
       return {
         content: [{ type: "text", text:
-          `Started ${id} ("${firstLine(label, 60)}") in the background.\nlog: ${log}\n` +
+          `Started ${job.id} ("${firstLine(label, 60)}") in the background.\nlog: ${job.log}\n` +
           "You will be woken once, when it exits, with its exit code and its last lines — do not poll, sleep or `tail -f` for it. End your turn, or do other work." }],
-        details: { id, label, log },
+        details: { id: job.id, label, log: job.log },
       };
+    },
+  });
+
+  // MONITOR: a job whose output LINES are events. Same guards (the call is judged before it starts, as a background tool),
+  // same output filter (every line passes redactSecretLines before it reaches the log or an event), same registry and cap.
+  pi.registerTool({
+    name: MONITOR_TOOL,
+    label: "Monitor (line events)",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The shell command whose output lines are the events, e.g. `tail -n0 -F build.log` or `gh run watch <id>`." },
+        timeout_seconds: { type: "number", description: `REQUIRED. How long the monitor may run, in seconds (1 to ${MONITOR_MAX_TIMEOUT_S}). It ends at its timeout whether or not the command did.` },
+        pattern: { type: "string", description: "Optional regular expression: only output lines matching it are events. Without it every line is." },
+        label: { type: "string", description: "Short human-readable label." },
+        max_events: { type: "number", description: `Stop after this many event lines (default ${MONITOR_DEFAULT_MAX_EVENTS}, at most ${MONITOR_MAX_EVENTS}).` },
+      },
+      required: ["command", "timeout_seconds"],
+      additionalProperties: false,
+    },
+    description: `Watch a long command's output for lines you care about, without polling: it starts the command in the background and returns at once; each batch of matching output lines (one second's worth is ONE batch) WAKES this session as a message, and a final message says why the monitor ended (the command exited, its timeout, or its event cap). A timeout is mandatory, so a monitor cannot outlive the question it was started for. Use it when the lines themselves are the signal (a build's errors, a deploy's phases); use bash_background when only the exit matters. Stop it early with job_stop; list jobs with job_list; at most ${BG_MAX_RUNNING} jobs run at once.`,
+    promptSnippet: "Watch a command's output lines as events; the session is woken per batch, with a mandatory timeout",
+    async execute(_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) {
+      const command = typeof params?.command === "string" ? params.command : "";
+      if (!command.trim()) return { content: [{ type: "text", text: "monitor needs a `command`." }], isError: true };
+      const t = Number(params?.timeout_seconds);
+      if (!Number.isFinite(t) || t <= 0 || t > MONITOR_MAX_TIMEOUT_S) {
+        return { content: [{ type: "text", text: `monitor needs a \`timeout_seconds\` between 1 and ${MONITOR_MAX_TIMEOUT_S}: a monitor with no deadline is an unbounded wait, which this executor does not start.` }], isError: true };
+      }
+      let pattern: RegExp | null = null;
+      if (typeof params?.pattern === "string" && params.pattern !== "") {
+        try { pattern = new RegExp(params.pattern); } catch (e: any) { return { content: [{ type: "text", text: `monitor: \`pattern\` is not a regular expression (${String(e?.message ?? e)}).` }], isError: true }; }
+      }
+      const cap = Number(params?.max_events);
+      const maxEvents = Number.isFinite(cap) && cap >= 1 ? Math.min(Math.floor(cap), MONITOR_MAX_EVENTS) : MONITOR_DEFAULT_MAX_EVENTS;
+      if (bgRunning() >= BG_MAX_RUNNING) {
+        return { content: [{ type: "text", text: `${BG_MAX_RUNNING} background jobs are already running; stop one with job_stop first.` }], isError: true };
+      }
+      const label = typeof params?.label === "string" && params.label.trim() ? params.label.trim() : command;
+      const job = startJob(pi, dir, ctx, command, label, { pattern, timeoutMs: Math.round(t * 1000), maxEvents });
+      return {
+        content: [{ type: "text", text:
+          `Monitoring ${job.id} ("${firstLine(label, 60)}") for up to ${t}s${pattern ? `, events = lines matching /${pattern.source}/` : ""}, at most ${maxEvents} events.\nlog: ${job.log}\n` +
+          "You will be woken with each batch of event lines and once more when the monitor ends — do not poll or sleep. End your turn, or do other work." }],
+        details: { id: job.id, label, log: job.log, timeout_seconds: t },
+      };
+    },
+  });
+
+  // LIST: what this session started, with the state the notices would have said. A read, never a write.
+  pi.registerTool({
+    name: BG_LIST_TOOL,
+    label: "List background jobs",
+    parameters: { type: "object", properties: { status: { type: "string", enum: ["running", "all"], description: "running (default) or all, including the jobs that ended." } }, additionalProperties: false },
+    description: "List the background jobs and monitors this session started (bash_background and monitor): id, status, age, label, command, log path and the last output line. Use it to find a job id for job_stop, or to see what is still running before ending a turn.",
+    async execute(_id: string, params: any) {
+      const all = params?.status === "all";
+      const rows = [...BG_JOBS.values()].filter((j) => all || j.status === "running");
+      if (!rows.length) return { content: [{ type: "text", text: all ? "No background job was started in this session." : "No background job is running." }], details: { jobs: [] } };
+      const now = Date.now();
+      const text = rows.map((j) => {
+        const secs = Math.max(0, Math.round(((j.ended ?? now) - j.started) / 1000));
+        const last = bgTail(j).slice(-1)[0];
+        const kind = j.monitor ? `monitor ${j.monitor.events} event(s)` : "job";
+        return `${j.id} ${j.status}${j.status === "exited" ? ` (exit ${j.exit ?? "?"})` : ""} ${secs}s [${kind}] "${firstLine(j.label, 60)}" — ${firstLine(j.command)}\n  log: ${j.log}${last ? `\n  last: ${firstLine(last, 160)}` : ""}`;
+      }).join("\n");
+      return { content: [{ type: "text", text }], details: { jobs: rows.map((j) => ({ id: j.id, status: j.status, label: j.label, log: j.log })) } };
     },
   });
 
@@ -1212,6 +1377,8 @@ function registerBackgroundTools(pi: any, dir: string | null) {
       if (!job) return { content: [{ type: "text", text: `No background job ${wanted || "(none named)"} in this session.` }], isError: true };
       if (job.status !== "running") return { content: [{ type: "text", text: `${job.id} was already ${job.status}.` }], details: { id: job.id, status: job.status } };
       job.status = "stopped"; job.ended = Date.now();
+      if (job.monitor?.timer) { clearTimeout(job.monitor.timer); job.monitor.timer = null; }
+      if (job.monitor?.flushAt) { clearTimeout(job.monitor.flushAt); job.monitor.flushAt = null; }
       try { job.abort.abort(); } catch { /* the tree is already gone */ }
       receiptRow("pi_background", `${job.id} stopped by the executor after ${Math.max(0, Math.round((job.ended - job.started) / 1000))}s — ${firstLine(job.command)}`, "hw-executor.ts job_stop");
       return { content: [{ type: "text", text: `Stopped ${job.id} ("${firstLine(job.label, 60)}"). Its log stays at ${job.log}.` }], details: { id: job.id, status: "stopped" } };
@@ -1223,7 +1390,7 @@ function registerBackgroundTools(pi: any, dir: string | null) {
 // what lets the wake start the next turn instead of hw refusing the handoff.
 export function liveBackgroundTasks(): Array<{ type: string; status: string; command: string }> {
   return [...BG_JOBS.values()].filter((j) => j.status === "running")
-    .map((j) => ({ type: "shell", status: "running", command: firstLine(j.command) }));
+    .map((j) => ({ type: j.monitor ? "monitor" : "shell", status: "running", command: firstLine(j.command) }));
 }
 
 // Stop what this session started: a pi process that ends must not leave its background shells running.
@@ -1232,6 +1399,8 @@ export function stopBackgroundJobs(): number {
   for (const j of BG_JOBS.values()) {
     if (j.status !== "running") continue;
     j.status = "stopped"; j.ended = Date.now(); n++;
+    if (j.monitor?.timer) { clearTimeout(j.monitor.timer); j.monitor.timer = null; }
+    if (j.monitor?.flushAt) { clearTimeout(j.monitor.flushAt); j.monitor.flushAt = null; }
     try { j.abort.abort(); } catch { /* already gone */ }
   }
   return n;
@@ -1337,9 +1506,14 @@ export default function (pi: any) {
   // foreground-only. Registering twice is harmless (pi keys tools by name), which keeps a reload simple.
   if (process.env.PI_SUBAGENT_CHILD !== "1" && typeof pi.registerTool === "function") {
     registerBackgroundTools(pi, runDir());
+    // the async subagents in flight, for the sleep rule (see activeWork): pi-subagents announces each launch and each completion
+    try {
+      pi.events?.on?.("subagent:async-started", (d: any) => { if (d?.id) ASYNC_SUBAGENTS.add(String(d.id)); });
+      pi.events?.on?.("subagent:async-complete", (d: any) => { if (d?.id) ASYNC_SUBAGENTS.delete(String(d.id)); if (d?.runId) ASYNC_SUBAGENTS.delete(String(d.runId)); });
+    } catch { /* no event bus: the jobs alone are counted */ }
     // A session with no HW_* gets the tools too (its log lives in the temp dir), so its shutdown must stop its
     // jobs as well: the executor's handler below is past an early return (Judgment Day round 1, judge B).
-    pi.on("session_shutdown", () => { try { stopBackgroundJobs(); } catch { /* nothing left to stop */ } });
+    pi.on("session_shutdown", () => { try { stopBackgroundJobs(); } catch { /* nothing left to stop */ } ASYNC_SUBAGENTS.clear(); });
   }
 
   registerGuards(pi, (event) => {
@@ -1454,6 +1628,17 @@ export default function (pi: any) {
       }
     } catch (e: any) {
       receiptRow("pi_child_guard", `NOT REGISTERED — ${String(e?.message ?? e).slice(0, 200)}`, "hw-executor.ts session_start");
+    }
+    // Can a background child start here? The row nothing wrote when `pi update` removed a hand-installed chord.
+    try {
+      const sub = process.env.HW_PI_SUBAGENTS_DIR
+        || join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "npm", "node_modules", "pi-subagents");
+      let hostRoot: string | null = null;
+      try { hostRoot = piPackageRoot(dirname(realpathSync(process.argv[1] || ""))); } catch { /* argv[1] is not a path we can read */ }
+      const st = backgroundSubagentsStatus(sub, hostRoot);
+      receiptRow("pi_background_subagents", st.text, "hw-executor.ts session_start");
+    } catch (e: any) {
+      receiptRow("pi_background_subagents", `NOT CHECKED — ${String(e?.message ?? e).slice(0, 200)}`, "hw-executor.ts session_start");
     }
     // The lane's `.claude/agents`, registered where pi-subagents is loaded and the guard travels with the children.
     try {

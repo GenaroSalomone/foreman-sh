@@ -351,7 +351,7 @@ func (r *reapApplyRun) cmdReap() int {
 							}
 							retKB = r.duKB(wd)
 						}
-						if removeWithRunTmps(a.getenv, wd, a.warn, func() bool { return r.rmWorkdir(wd) }) {
+						if removeWithRunTmps(a.getenv, wd, r.archiveRoot()+"/"+proj+"/"+reapApplyBasename(wd), a.warn, a.info, func() bool { return r.rmWorkdir(wd) }) {
 							totalRemoved++
 							if r.wdRetAge != "" {
 								if !r.logRetention(proj, wd, retKB) {

@@ -1009,66 +1009,6 @@ var brEditVerbRe = regexp.MustCompile(`(?i)\b(edit|edits|editing|write|writes|wr
 // absolute path and exists.
 var brRelativeBrainLanePathRe = regexp.MustCompile(`(?:^|[^/A-Za-z0-9_.~-])brain/setup/CLAUDE\.md`)
 
-// brPlaceholderRe matches template scaffolding (`<piece>`, `<why>`, copied from the help text). It is what
-// brReviewSkipHasReason strips before deciding whether a `review-skip:` line says anything about THIS brief.
-var brPlaceholderRe = regexp.MustCompile(`<[^>]*>`)
-
-// brReviewSkipHasReason reports whether the brief carries a `review-skip: <skill> — <why>` line with a reason
-// after the skill it names. A bare name (`review-skip: judgment-day`) says which review is skipped, not why, and
-// template text (`review-skip: <piece> — <why>`) says nothing about THIS brief: neither is the exception.
-func brReviewSkipHasReason(b []byte) bool {
-	for _, line := range strings.Split(string(b), "\n") {
-		t := strings.TrimLeft(strings.TrimSpace(line), "-*+ \t")
-		if !strings.HasPrefix(t, "review-skip:") {
-			continue
-		}
-		v := strings.TrimSpace(strings.TrimPrefix(t, "review-skip:"))
-		if v == "" {
-			continue
-		}
-		// The NAME is the first token and does not count as a reason: free text must follow it.
-		f := strings.Fields(v)
-		if len(f) < 2 {
-			continue
-		}
-		rest := strings.TrimSpace(strings.TrimPrefix(v, f[0]))
-		rest = strings.TrimSpace(brPlaceholderRe.ReplaceAllString(rest, " "))
-		rest = strings.TrimLeft(rest, " \t—–-:;,.()[]")
-		if rest != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// checkBriefReviewNoneRule refuses `kind: build` + `review: none` unless the brief carries a `review-skip:`
-// line with a reason. A build that closes with no review at all is the exception now, and it has to say why
-// (ruling of 2026-11-01, retro of the 0.7.0 batch): the default is `review: judgment-day`, and silence is not
-// a reason. Only the DECLARED pair counts: an absent `review:` already means judgment-day.
-func (d *dsp) checkBriefReviewNoneRule() {
-	decls := d.loadBriefDecls()
-	if decls == "" || d.brief == "" || !brReadable(d.brief) {
-		return
-	}
-	kind := ""
-	for _, line := range strings.Split(decls, "\n") {
-		if k, v := brReadKV(line); k == "kind" {
-			kind = v
-		}
-	}
-	if kind != "build" {
-		return
-	}
-	if mode, ok := d.briefReviewMode(); !ok || mode != "none" {
-		return
-	}
-	b, err := os.ReadFile(d.brief)
-	if err == nil && brReviewSkipHasReason(b) {
-		return
-	}
-	d.die("the brief is kind: build with review: none and carries no `review-skip:` line with a reason. A build closes with a review — judgment-day unless the brief names plugins — and skipping it is an exception that says why (measured 2026-11-01: review: none as a silent default). NOTHING was built. Put `review: [judgment-day]`, or a line `review-skip: <skill> — <why it does not run>`.")
-}
-
 // checkBriefContract is _check_brief_contract.
 func (d *dsp) checkBriefContract() {
 	bad, requiredAgentBad := false, false
@@ -1205,7 +1145,6 @@ func (d *dsp) checkBriefContract() {
 		}
 		d.die("the brief and the flags disagree (see above). NOTHING was built — no worktree, no database, no pane. Either fix the flags, or change the brief if the brief is what is wrong. This check exists because on 2026-08-24 a brief asking for OpenCode in a project tab was dispatched as Claude in a legacy space, and nothing compared the two.")
 	}
-	d.checkBriefReviewNoneRule()
 	d.warnBriefBodyAgents() // # MUTATION-ANCHOR: 844-A159
 	if d.briefDeclared == "" {
 		d.briefDeclared = "none"

@@ -1,0 +1,16 @@
+# gh-image — the ONE pinned build bin/gh-attach will run. Parsed as data (never sourced).
+#   version <tag>        the upstream tag, drogers0/gh-image (MIT)
+#   commit  <sha>        the commit that tag points at when it was audited (2026-11-05)
+#   url-base <https>     where the release binaries live; install-gh-image.sh refuses any other prefix
+#   sha256 <os-arch> <hex>  checksum of the release binary `<os>-<arch>` (the default, kooky, build — not hbd-*)
+# Changing a line here is a change of the security boundary: re-audit the new tag first
+# (setup/briefs/gh-image-upload-tool.md, § Audit; docs/gh-attach.md).
+# darwin-arm64 was downloaded and hashed by hand on 2026-11-05 and equals the release's checksums.txt;
+# the other three rows are copied from that same checksums.txt (unverified by download).
+version v1.4.1
+commit ca57d96dd4ac72bae5c8264a244116bd17f96ce8
+url-base https://github.com/drogers0/gh-image/releases/download/v1.4.1
+sha256 darwin-arm64 f566ed6ec8aa3a1bf8e51131557d3e1dfa1ece1cc458259119415b8e3e8f7f7f
+sha256 darwin-amd64 a18cef33f7d6d6761632689040f94384608c14b58e4e7d7c1af6bdfe5e13f082
+sha256 linux-amd64 bf23c9ca3d4e6e4a001f53701fcf4ef5fe0f95c92a3bb80b5894e5f5b467cedb
+sha256 linux-arm64 074fefe1a3781490e39333e2577a63e4ee702e71e6056719641b4447b084cb4f

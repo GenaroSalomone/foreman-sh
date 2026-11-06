@@ -315,6 +315,15 @@ loop:
 				return err
 			}
 			checksNote += note
+			pnote, perr := JudgmentDayProtocolGate(proof, summary) // the budget and the frozen ledger, off the same transcript
+			if perr != nil {
+				return perr
+			}
+			if strings.Contains(pnote, "accepted because") { // a breach let through by an ESCALATED report is said in the report itself
+				checksNote += pnote
+			} else if pnote != "" { // only a rehearsal (--check) prints it: a close that read nothing to hold is not a different close
+				preflight = append(preflight, strings.TrimSpace(pnote))
+			}
 			if w := SerialJudgesWarning(judges, proof); w != "" { // 1247-M01: warns, never refuses
 				c.errf("done-invoker: warning: %s\n", w)
 				checksNote += "\njudgment day: WARNING — " + w

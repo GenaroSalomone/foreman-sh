@@ -315,9 +315,11 @@ it leaves the brain directory, is unguarded even with the hook registered.
     `Task` (a child of a child: measured, `allowNestedSubagents` and
     `tools: subagent` both leave the child without a `subagent` tool) and `mcp__*`
     (the judges' `mem_search`: pi-subagents hands a child an extension-registered
-    MCP server only when it runs in the background, and that needs the host pi to
-    carry `@earendil-works/chord`; until it does, a judge reviews from the code
-    alone). `WebFetch` carries over as pi-web-access's `fetch_content` when that
+    MCP server only when it runs in the background; since pi-subagents 0.78.0 a
+    background child starts on a pi 1.2+ WITHOUT `@earendil-works/chord` (measured,
+    `setup/pi/test-live-subagent-wake.mjs`), and the `pi_background_subagents`
+    receipt row says at session start whether one can; where it cannot, a judge
+    reviews from the code alone). `WebFetch` carries over as pi-web-access's `fetch_content` when that
     package is installed; `WebSearch` does not (a child given `web_search` answered
     that it had no such tool, cause not found). Specialists
     run in the foreground. A checkout that tracks `.pi/agents` keeps its own copies
@@ -406,7 +408,11 @@ it leaves the brain directory, is unguarded even with the hook registered.
       (`setup/pi/hw-executor.ts:927-1199`, registered only in a non-child session). The sleep-poll guard refuses a
       poll loop in both, `bash_background` included. It is not Claude's flag: pi has no `run_in_background`. Owning
       task `setup/pi-background-wait`, merged 2026-11-04; setup test 1235 and `docs/pi-vendor.md` "The background
-      shell".
+      shell". `monitor` (a command's matching output lines are events, batched, with a MANDATORY timeout and an event
+      cap) and `job_list` complete it (`pi-adopt-gentle`, 2026-11-05; test 1251). The sleep rule is narrower on both
+      runtimes: a foreground poll loop passes under `timeout <= 120 s`, and a standalone `sleep` is refused while
+      background work is in flight — a state only pi can see (it sends `active_work`; Claude's PreToolUse payload has
+      none, so there the second half never applies: a stated limit; test 1133 k).
     - **Theme and settings.** A plugin dispatch runs pi on the private agent directory; its `settings.json` keeps
       every field except discovery. The theme that `theme` names is linked READ-ONLY into
       `<private>/themes/<name>.json` — from the real `themes/` or from a package's `pi.themes`/`themes/` — so pi no

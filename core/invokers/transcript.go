@@ -17,7 +17,21 @@ type TranscriptProof struct {
 	Names  map[string]bool
 	Groups [][]string // names launched TOGETHER by one call (pi: one toolCall; claude: one assistant message)
 	Vendor string     // the vendor whose session was read; the refusal names that vendor's mechanism
+	// JudgeRounds: one entry per call that launched a Judgment Day judge (jd-judge-*), in the order they ran, with how
+	// many judge runs the call launched and the text its results carried. JudgmentDayProtocolGate reads the protocol
+	// (budget, frozen ledger) off these.
+	JudgeRounds []JudgeRound
 }
+
+// JudgeRound is one launching call of Judgment Day judges and what came back.
+type JudgeRound struct {
+	Runs   int    // judges launched by the call (2 for a round, 1 for a coverage relaunch)
+	Text   string // every result the call returned, concatenated
+	Prompt string // what the call was given (a re-judgment's prompt carries the frozen ledger and the fix delta)
+}
+
+// isJudgeName is a Judgment Day judge (jd-judge-a, jd-judge-b).
+func isJudgeName(n string) bool { return strings.HasPrefix(n, "jd-judge-") }
 
 // Together is true when ONE recorded call launched every name it is given: the
 // two blind judges of a Judgment Day must run in the same parallel call, and two
@@ -185,6 +199,10 @@ func scanTranscripts(files []string, since time.Time, newExtractor func() transc
 type claudeExtractor struct {
 	lastID    string // message.id of the last assistant line that launched agents
 	lastGroup int    // its index in TranscriptProof.Groups
+
+	judgeMsg   string         // message.id of the last assistant message that launched a judge
+	judgeRound int            // its index in TranscriptProof.JudgeRounds
+	judgeByUse map[string]int // tool_use id of a judge call -> its round, to put its result in it
 }
 
 func (*claudeExtractor) flush(*TranscriptProof) {}
@@ -197,15 +215,21 @@ func (e *claudeExtractor) line(raw []byte, p *TranscriptProof) {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
+	if json.Unmarshal(raw, &line) == nil && line.Type == "user" {
+		e.judgeResult(raw, p)
+		return
+	}
 	if json.Unmarshal(raw, &line) != nil || line.Type != "assistant" {
 		return
 	}
 	var blocks []struct {
+		ID    string `json:"id"`
 		Type  string `json:"type"`
 		Name  string `json:"name"`
 		Input struct {
 			Skill        string `json:"skill"`
 			SubagentType string `json:"subagent_type"`
+			Prompt       string `json:"prompt"`
 		} `json:"input"`
 	}
 	if json.Unmarshal(line.Message.Content, &blocks) != nil {
@@ -224,6 +248,25 @@ func (e *claudeExtractor) line(raw []byte, p *TranscriptProof) {
 			if b.Input.SubagentType != "" {
 				p.Names[b.Input.SubagentType] = true
 			}
+		}
+	}
+	// A judge launch: one assistant message is one round (two judges in a parallel call, or one in a relaunch), and its
+	// results arrive on later `user` lines under each tool_use id.
+	for _, b := range blocks {
+		if b.Type != "tool_use" || (b.Name != "Agent" && b.Name != "Task") || !isJudgeName(b.Input.SubagentType) {
+			continue
+		}
+		if e.judgeByUse == nil {
+			e.judgeByUse = map[string]int{}
+		}
+		if line.Message.ID == "" || line.Message.ID != e.judgeMsg || e.judgeRound >= len(p.JudgeRounds) {
+			p.JudgeRounds = append(p.JudgeRounds, JudgeRound{})
+			e.judgeMsg, e.judgeRound = line.Message.ID, len(p.JudgeRounds)-1
+		}
+		p.JudgeRounds[e.judgeRound].Runs++
+		p.JudgeRounds[e.judgeRound].Prompt += "\n" + b.Input.Prompt
+		if b.ID != "" {
+			e.judgeByUse[b.ID] = e.judgeRound
 		}
 	}
 	// One assistant message with two Agent/Task tool_uses is ONE parallel call: that is the shape a
@@ -246,6 +289,56 @@ func (e *claudeExtractor) line(raw []byte, p *TranscriptProof) {
 	}
 	p.Groups = append(p.Groups, group)
 	e.lastID, e.lastGroup = line.Message.ID, len(p.Groups)-1
+}
+
+// judgeResult adds to its round the text of a `user` line's tool_result that answers a judge call.
+func (e *claudeExtractor) judgeResult(raw []byte, p *TranscriptProof) {
+	if len(e.judgeByUse) == 0 {
+		return
+	}
+	var line struct {
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &line) != nil {
+		return
+	}
+	var blocks []struct {
+		Type      string          `json:"type"`
+		ToolUseID string          `json:"tool_use_id"`
+		IsError   bool            `json:"is_error"`
+		Content   json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(line.Message.Content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		round, ok := e.judgeByUse[b.ToolUseID]
+		if b.Type != "tool_result" || !ok || b.IsError || round >= len(p.JudgeRounds) {
+			continue
+		}
+		p.JudgeRounds[round].Text += "\n" + textOfContent(b.Content)
+	}
+}
+
+// textOfContent is the text of a tool_result's content: a string, or a list of {type:text,text}.
+func textOfContent(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	var out []string
+	for _, p := range parts {
+		out = append(out, p.Text)
+	}
+	return strings.Join(out, "\n")
 }
 
 // ProofFromFiles scans claude jsonl transcripts for assistant tool_use blocks named Skill, Agent or Task.

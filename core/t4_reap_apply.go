@@ -176,7 +176,11 @@ func (r *reapApplyRun) reapWorktree(proj, main, wt, branch, base string) bool {
 	if r.agentsBlock { // # MUTATION-ANCHOR: 865-G41
 		reapApplyGitRC(wt, "checkout", "--", "AGENTS.md")
 	}
-	if !removeWithRunTmps(r.a.getenv, wt, a.warn, func() bool { return reapApplyGitRC(main, "worktree", "remove", wt) == 0 }) {
+	transcriptDir := dest // beside the archived outputs, or where they would go
+	if transcriptDir == "" {
+		transcriptDir = r.archiveRoot() + "/" + proj + "/" + reapApplyBasename(wt)
+	}
+	if !removeWithRunTmps(r.a.getenv, wt, transcriptDir, a.warn, a.info, func() bool { return reapApplyGitRC(main, "worktree", "remove", wt) == 0 }) {
 		a.warn("could not remove " + wt + " — run it by hand and read what git says")
 		return false
 	}

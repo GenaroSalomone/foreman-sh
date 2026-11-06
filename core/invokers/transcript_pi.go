@@ -153,9 +153,23 @@ type piChild struct {
 // message or in a result is text about a call, not one.
 type piExtractor struct {
 	pending map[string][]string
+	args    map[string]string // toolCall id -> its arguments, the prompt of a judge call
 }
 
-func (e *piExtractor) flush(*TranscriptProof) { e.pending = map[string][]string{} }
+// piJudgeRuns is how many Judgment Day judges one call's names launch.
+func piJudgeRuns(names []string) int {
+	n := 0
+	for _, x := range names {
+		if isJudgeName(x) {
+			n++
+		}
+	}
+	return n
+}
+
+func (e *piExtractor) flush(*TranscriptProof) {
+	e.pending, e.args = map[string][]string{}, map[string]string{}
+}
 
 func (e *piExtractor) line(raw []byte, p *TranscriptProof) {
 	var line struct {
@@ -168,6 +182,7 @@ func (e *piExtractor) line(raw []byte, p *TranscriptProof) {
 				Type      string          `json:"type"`
 				ID        string          `json:"id"`
 				Name      string          `json:"name"`
+				Text      string          `json:"text"`
 				Arguments json.RawMessage `json:"arguments"`
 			} `json:"content"`
 		} `json:"message"`
@@ -182,6 +197,8 @@ func (e *piExtractor) line(raw []byte, p *TranscriptProof) {
 			return
 		}
 		delete(e.pending, line.Message.ToolCallID)
+		callArgs := e.args[line.Message.ToolCallID]
+		delete(e.args, line.Message.ToolCallID)
 		if line.Message.IsError {
 			return
 		}
@@ -191,6 +208,15 @@ func (e *piExtractor) line(raw []byte, p *TranscriptProof) {
 		// this call's own names, together: a toolCall is one call, so its `workflow:"parallel"`
 		// children are one group (retro-fixes-rc3 item 7).
 		p.Groups = append(p.Groups, names)
+		if runs := piJudgeRuns(names); runs > 0 {
+			var text []string
+			for _, b := range line.Message.Content {
+				if b.Type == "text" {
+					text = append(text, b.Text)
+				}
+			}
+			p.JudgeRounds = append(p.JudgeRounds, JudgeRound{Runs: runs, Text: strings.Join(text, "\n"), Prompt: callArgs})
+		}
 	case "assistant":
 		for _, b := range line.Message.Content {
 			if b.Type != "toolCall" || b.ID == "" {
@@ -198,6 +224,10 @@ func (e *piExtractor) line(raw []byte, p *TranscriptProof) {
 			}
 			if names := piCallNames(b.Name, b.Arguments); len(names) > 0 {
 				e.pending[b.ID] = names
+				if e.args == nil {
+					e.args = map[string]string{}
+				}
+				e.args[b.ID] = string(b.Arguments)
 			}
 		}
 	}
@@ -308,7 +338,7 @@ func piCallNames(name string, args json.RawMessage) []string {
 // from `since` on.
 func ProofFromPiFiles(files []string, since time.Time) *TranscriptProof {
 	p, _ := scanTranscripts(files, since, func() transcriptExtractor {
-		return &piExtractor{pending: map[string][]string{}}
+		return &piExtractor{pending: map[string][]string{}, args: map[string]string{}}
 	})
 	return p
 }

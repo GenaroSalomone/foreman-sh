@@ -78,9 +78,12 @@ func (d *dsp) launch() {
 	l.run()
 }
 
-// run is bin/hw from "# ── --here" to the end.
-func (l *lch) run() {
-	// ── 9. Idempotent: an existing space is focused, not rebuilt ──
+// focusExisting is step 9: an existing space is focused, not rebuilt; true when it ended the run. On herdr-core
+// there is no herdr space to find or focus: a herdr tab that happens to carry the label is not this task.
+func (l *lch) focusExisting() bool {
+	if l.hcRoute() {
+		return false
+	}
 	if l.tab {
 		if existing := l.tabIDByLabel(l.label); existing != "" {
 			if l.liveAgentPanesInTab(existing) == "0" {
@@ -89,7 +92,7 @@ func (l *lch) run() {
 			}
 			l.herdr(true, true, "", "tab", "focus", existing)
 			l.ok("tab " + l.label + " already exists (" + existing + ") — focused, nothing rebuilt (an agent is live in it)")
-			return
+			return true
 		}
 	} else if !l.here {
 		if existing := l.wsIDByLabel(l.label); existing != "" {
@@ -99,8 +102,16 @@ func (l *lch) run() {
 			}
 			l.herdr(true, false, "", "workspace", "focus", existing)
 			l.ok("space " + l.label + " already exists (" + existing + ") — focused, nothing rebuilt (an agent is live in it)")
-			return
+			return true
 		}
+	}
+	return false
+}
+
+// run is bin/hw from "# ── --here" to the end.
+func (l *lch) run() {
+	if l.focusExisting() {
+		return
 	}
 	l.off = l.offset(l.task)
 
@@ -117,6 +128,7 @@ func (l *lch) run() {
 
 // repolessArm is the `repoless)` arm of bin/hw's `case "$_LANE"`.
 func (l *lch) repolessArm() {
+	l.hcLaneGate("repoless")
 	l.wt = filepath.Join(l.c.work, l.proj, l.task)
 	l.step("1/3  work directory")
 	if st, err := os.Stat(l.wt); err == nil && st.IsDir() {

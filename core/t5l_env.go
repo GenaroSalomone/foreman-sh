@@ -733,6 +733,7 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		"HW_PI_SUBAGENT_MODELS":        env("HW_PI_SUBAGENT_MODELS"),
 		"HW_PI_EXPLORE_AGENT":          env("HW_PI_EXPLORE_AGENT"),
 		"HW_PI_CLAUDE_AGENT_DIRS":      env("HW_PI_CLAUDE_AGENT_DIRS"),
+		"HW_PI_PLUGIN_AGENT_DIRS":      env("HW_PI_PLUGIN_AGENT_DIRS"),
 		"PI_SUBAGENT_EXTRA_AGENT_DIRS": env("PI_SUBAGENT_EXTRA_AGENT_DIRS"),
 	} {
 		values.set(k, v)

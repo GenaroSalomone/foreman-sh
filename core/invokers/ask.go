@@ -99,6 +99,9 @@ func (c *Ctx) ask(args []string) error {
 		return die("HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (`unset HW_INVOKER_PANE`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean.")
 	}
 
+	if err := c.refuseNestedHeadless(); err != nil {
+		return err
+	}
 	c.adoptEnvFile()
 	if err := c.runLockAcquire(); err != nil {
 		return err
@@ -108,7 +111,7 @@ func (c *Ctx) ask(args []string) error {
 	if pane == "" {
 		return die("no HW_INVOKER_PANE — this pane was not launched by hw, so there is no brainer to ask. Report the blocker to %s in this pane instead.", c.operator())
 	}
-	if c.get("HERDR_PANE_ID") == "" {
+	if c.selfAddress() == "" {
 		return die("no HERDR_PANE_ID — not running inside a herdr pane, so the brainer would have nowhere to reply.")
 	}
 	if err := c.refuseForeignPaneRun(); err != nil { // 1241-M01: the pane is this run's
@@ -211,9 +214,9 @@ func (c *Ctx) ask(args []string) error {
 	}
 	var msg string
 	if challenge {
-		msg = trimRead(sprintf(challengeMessage, project, task, c.get("HERDR_PANE_ID"), label, envelope, question, replyCmd))
+		msg = trimRead(sprintf(challengeMessage, project, task, c.selfAddress(), label, envelope, question, replyCmd))
 	} else {
-		msg = trimRead(sprintf(askMessage, project, task, c.get("HERDR_PANE_ID"), label, envelope, question, replyCmd, c.operator()))
+		msg = trimRead(sprintf(askMessage, project, task, c.selfAddress(), label, envelope, question, replyCmd, c.operator()))
 	}
 
 	t0 := c.Now().Unix()

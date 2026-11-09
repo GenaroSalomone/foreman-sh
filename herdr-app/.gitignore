@@ -1,0 +1,4 @@
+# Written by the Herdr app into every mod folder on each start: its own type
+# files, and the editor config that points at them. Derived, never edited.
+mods/*/gpui-kit.d.ts
+mods/*/jsconfig.json

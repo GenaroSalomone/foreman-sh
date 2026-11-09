@@ -23,8 +23,10 @@ type dsp struct {
 	rtState
 	piState // t6_pi.go: what --agent pi keeps of the dispatch
 
-	readonly bool              // HW_CORE_READONLY=1: shadow's first leg writes nothing
-	envOver  map[string]string // what the dispatch assigned to the environment (HW_INVOKER_PANE by --report-to)
+	readonly     bool // HW_CORE_READONLY=1: shadow's first leg writes nothing
+	backendKnown bool // core/internal/mux asked once: the ancestor walk is a `ps`
+	backendIsHC  bool
+	envOver      map[string]string // what the dispatch assigned to the environment (HW_INVOKER_PANE by --report-to)
 
 	// identity
 	proj, task string

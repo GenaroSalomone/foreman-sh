@@ -12,6 +12,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"regexp"
 	"strconv"
@@ -83,6 +84,59 @@ func (l *lch) piProjectSkillsPrepare() bool {
 	return true
 }
 
+// piPluginMirrorsPrepare makes the `-e` mirrors piPluginLoads names (never by a dry run), through the launch's own
+// mutation ledger: false when a mirror cannot be built, which refuses the launch — a plugin handed as a half-made
+// mirror is a plugin with skills missing.
+func (l *lch) piPluginMirrorsPrepare() bool {
+	for _, pl := range l.piPluginLoads() {
+		if len(pl.shadow) == 0 {
+			continue
+		}
+		if err := piPluginMirrorMake(pl, l.fs.mkdirAll, l.fs.symlink); err != nil {
+			l.warn("pi plugin mirror: " + err.Error())
+			return false
+		}
+	}
+	return true
+}
+
+// piPluginMirrorMake is one mirror: a link per entry of the plugin and per skill it keeps, so the plugin's own files are
+// read and none is copied. mkdir and link are the platform's, because a launch records every write and a revive does
+// not (t4_revive_start.go). Idempotent: a link already pointing at the plugin is left alone, and so is anything a person
+// put there; two dispatches racing for the same mirror both succeed (the loser finds the winner's link, not an error).
+func piPluginMirrorMake(pl piPluginLoad, mkdir func(string) error, link func(src, dst string) error) error {
+	if err := mkdir(pl.dir + "/skills"); err != nil {
+		return errors.New("cannot create " + pl.dir + ": " + err.Error())
+	}
+	ents, err := os.ReadDir(pl.src)
+	if err != nil {
+		return errors.New("cannot read " + pl.src + ": " + err.Error())
+	}
+	type pair struct{ src, link string }
+	var want []pair
+	for _, e := range ents {
+		if name := e.Name(); name != "skills" {
+			want = append(want, pair{pl.src + "/" + name, pl.dir + "/" + name})
+		}
+	}
+	for _, s := range piPluginSkills(pl.src) {
+		if !has(pl.shadow, s) {
+			want = append(want, pair{pl.src + "/skills/" + s, pl.dir + "/skills/" + s})
+		}
+	}
+	for _, w := range want {
+		if _, lerr := os.Lstat(w.link); lerr == nil {
+			continue // already there, whoever made it
+		}
+		if err := link(w.src, w.link); err != nil {
+			if _, lerr := os.Lstat(w.link); lerr != nil {
+				return errors.New("cannot link " + w.src + ": " + err.Error())
+			}
+		}
+	}
+	return nil
+}
+
 // piExploreAgentName is the explorer a pi executor may delegate to, "" when there is one no: the nudge the adapter
 // injects after a few inline lookups names this agent, so it is only set when pi-subagents is loaded AND the explorer's
 // directory is on disk (the same two facts PI_SUBAGENT_EXTRA_AGENT_DIRS carries).
@@ -104,7 +158,7 @@ func (l *lch) piExportEnv(cwd string) {
 		// the real one (resolved BEFORE the variable that carries it goes), never a directory its parent's `hw done` deletes
 		inheritedShadow := l.piIsShadowDir(l.env("PI_CODING_AGENT_DIR"))
 		real := l.piAgentDir()
-		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "HW_PI_CLAUDE_AGENT_DIRS", "HW_PI_SUBAGENT_MODELS", "HW_PI_EXPLORE_AGENT", "PI_SUBAGENT_EXTRA_AGENT_DIRS", piRealAgentDirEnv)
+		l.unsetEnv("HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR", "HW_PI_CLAUDE_AGENT_DIRS", "HW_PI_PLUGIN_AGENT_DIRS", "HW_PI_SUBAGENT_MODELS", "HW_PI_EXPLORE_AGENT", "PI_SUBAGENT_EXTRA_AGENT_DIRS", "PONYTAIL_QUIET_STARTUP", piRealAgentDirEnv)
 		if inheritedShadow {
 			l.setEnv("PI_CODING_AGENT_DIR", real)
 		}
@@ -127,6 +181,14 @@ func (l *lch) piExportEnv(cwd string) {
 		l.unsetEnv("HW_PI_ASKED_MODEL")
 	}
 	l.setEnv("HW_PI_SUBAGENTS_DIR", l.piSubagentsDir())
+	// THE TOAST NO SETTING REACHES: ponytail's Pi extension prints `Ponytail loaded: <mode>` unless this is set
+	// (hooks/ponytail-config.js getQuietStartup), and it is the only plugin that prints one. Its statusline keeps
+	// naming the mode, so nothing is hidden — the first screen just stops opening on a plugin's announcement.
+	if has(l.pluginsDeclaredInstalled(), "ponytail") {
+		l.setEnv("PONYTAIL_QUIET_STARTUP", "1")
+	} else {
+		l.unsetEnv("PONYTAIL_QUIET_STARTUP")
+	}
 	// THE SUBAGENTS' TIERS: the lane's profile over the roster's, as `key=model|thinking` pairs (t6_pi.go). The adapter
 	// registers each specialist with the model and thinking this resolves, so Claude's alias split holds on pi.
 	l.setEnv("HW_PI_SUBAGENT_MODELS", l.piSubagentModelsEnv())
@@ -144,6 +206,12 @@ func (l *lch) piExportEnv(cwd string) {
 		l.setEnv("HW_PI_CLAUDE_AGENT_DIRS", dirs)
 	} else {
 		l.unsetEnv("HW_PI_CLAUDE_AGENT_DIRS")
+	}
+	// the declared plugins' own agents: registered as `<plugin>:<name>`, the name a Claude executor reads from --plugin-dir
+	if dirs := l.piPluginAgentDirsEnv(); dirs != "" {
+		l.setEnv("HW_PI_PLUGIN_AGENT_DIRS", dirs)
+	} else {
+		l.unsetEnv("HW_PI_PLUGIN_AGENT_DIRS")
 	}
 	// LAST, because everything above resolves pi's REAL directory: a plugin's children discover the ambient extension
 	// that collides with the plugin's own tool unless this run's discovery sees a settings file without packages.
@@ -175,6 +243,9 @@ func (l *lch) piHwEnvFlags(cwd string) string {
 		s += " --env HW_PI_ASKED_MODEL=" + l.model
 	}
 	s += " --env HW_PI_SUBAGENTS_DIR=" + l.piSubagentsDir()
+	if has(l.pluginsDeclaredInstalled(), "ponytail") {
+		s += " --env PONYTAIL_QUIET_STARTUP=1"
+	}
 	s += " --env HW_PI_SUBAGENT_MODELS=" + l.piSubagentModelsEnv()
 	if exp := l.piExploreAgentName(); exp != "" {
 		s += " --env HW_PI_EXPLORE_AGENT=" + exp
@@ -193,6 +264,9 @@ func (l *lch) piHwEnvFlags(cwd string) string {
 	}
 	if dirs := l.piClaudeAgentDirs(cwd); dirs != "" {
 		s += " --env HW_PI_CLAUDE_AGENT_DIRS=" + dirs
+	}
+	if dirs := l.piPluginAgentDirsEnv(); dirs != "" {
+		s += " --env HW_PI_PLUGIN_AGENT_DIRS=" + dirs
 	}
 	return s
 }

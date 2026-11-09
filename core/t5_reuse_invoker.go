@@ -12,7 +12,64 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"hwcore/internal/mux"
 )
+
+// onHC is core/internal/mux's choice — the same one the turn-end tokens make, not
+// a second one — asked once: an app terminal that inherited HERDR_ENV walks the
+// process tree with `ps` to answer it, and the helpers below are called from a
+// dozen call sites.
+func (d *dsp) onHC() bool {
+	if !d.backendKnown {
+		d.backendIsHC = mux.Backend(d.getenv) == mux.HC
+		d.backendKnown = true
+	}
+	return d.backendIsHC
+}
+
+// selfPaneID is the id this call's OWN pane carries: HERDR_PANE_ID on the TUI,
+// HC_TERMINAL_ID on herdr-core. An inherited HERDR_PANE_ID in an app terminal is
+// somebody else's pane (P12), so it is never read there.
+func (d *dsp) selfPaneID() string {
+	if d.onHC() {
+		return d.env("HC_TERMINAL_ID")
+	}
+	return d.env("HERDR_PANE_ID")
+}
+
+// selfPaneVar names that variable, for the refusals that tell a person which one
+// to export. The TUI's words are unchanged.
+func (d *dsp) selfPaneVar() string {
+	if d.onHC() {
+		return "HC_TERMINAL_ID"
+	}
+	return "HERDR_PANE_ID"
+}
+
+// listCommand is the command that lists panes, for the recovery a refusal offers.
+func (d *dsp) listCommand() string {
+	if d.onHC() {
+		return "hc ls"
+	}
+	return "herdr pane list"
+}
+
+// paneListText is the pane list the resolver reads: herdr's own, or the hc
+// terminals normalised into herdr's shape so that one resolver serves both
+// backends (herdr-app-brain, step 2). "" is unreachable, exactly as before.
+// failedIsEmpty is the resolver's `|| panes=''`: a failed `herdr pane list` reads as "".
+// The lane verdict ignored that status, so it keeps whatever the command printed.
+func (d *dsp) paneListText(failedIsEmpty bool) string {
+	if d.onHC() {
+		return brTrimNL(hcPaneListJSON(d.getenv("HW_INVOKER_PANE"), d.env("HC_TERMINAL_ID")))
+	}
+	text, ok := herdrOut(0, "pane", "list")
+	if !ok && failedIsEmpty {
+		return ""
+	}
+	return bashSub(text)
+}
 
 // rtPyTraceback is a Python exception outside the script's own try: the program prints nothing and exits 1.
 type rtPyTraceback struct{}
@@ -112,18 +169,14 @@ func rtPaneID(v any) string {
 // invokerPaneResolve is `_invoker_pane_resolve`: "<pane>\t<how>", "!refuse <message>", or "" when nothing
 // resolved. Its warnings go to stderr as they do in bash.
 func (d *dsp) invokerPaneResolve() string {
-	panesText, ok := herdrOut(0, "pane", "list")
-	if !ok {
-		panesText = "" // `|| panes=''`
-	}
-	panesText = bashSub(panesText)
+	panesText := d.paneListText(true)
 	if panesText == "" { // # MUTATION-ANCHOR: 844-R84
 		unverified := d.env("HW_INVOKER_PANE")
 		if unverified == "" {
-			unverified = d.env("HERDR_PANE_ID")
+			unverified = d.selfPaneID()
 		}
 		if unverified != "" { // # MUTATION-ANCHOR: 844-R85
-			d.warn("HW_INVOKER_PANE unverified (herdr pane list unreachable): " + unverified) // # MUTATION-ANCHOR: 844-R86
+			d.warn("HW_INVOKER_PANE unverified (" + d.listCommand() + " unreachable): " + unverified) // # MUTATION-ANCHOR: 844-R86
 			return unverified + "\tunverified"
 		}
 		return ""
@@ -140,8 +193,8 @@ func (d *dsp) invokerPaneResolve() string {
 		return "!refuse " + how
 	}
 	if pane == "" { // # MUTATION-ANCHOR: 844-R88
-		d.warn("HW_INVOKER_PANE UNRESOLVED — ask-invoker and done-invoker will refuse, so the executor cannot report back. Inherited HERDR_PANE_ID=" + orDefaultStr(d.env("HERDR_PANE_ID"), "unset") + " is not a live pane.") // # MUTATION-ANCHOR: 844-R89
-		d.warn("if you know your own pane id, export it and re-run: HW_INVOKER_PANE=$(herdr pane list | jq -r ...) hw …  — an explicit id is honoured first, and still checked for liveness.")                                 // # MUTATION-ANCHOR: 844-R90
+		d.warn("HW_INVOKER_PANE UNRESOLVED — ask-invoker and done-invoker will refuse, so the executor cannot report back. Inherited " + d.selfPaneVar() + "=" + orDefaultStr(d.selfPaneID(), "unset") + " is not a live pane.") // # MUTATION-ANCHOR: 844-R89
+		d.warn("if you know your own pane id, export it and re-run: HW_INVOKER_PANE=$(" + d.listCommand() + " | jq -r ...) hw …  — an explicit id is honoured first, and still checked for liveness.")                           // # MUTATION-ANCHOR: 844-R90
 		return ""
 	}
 	if how == "explicit" { // # MUTATION-ANCHOR: 844-R91
@@ -149,7 +202,7 @@ func (d *dsp) invokerPaneResolve() string {
 		fmt.Fprintf(d.err, "  %s·%s %s\n", d.cDim, d.c0, "invoker pane taken from HW_INVOKER_PANE="+pane+" (named explicitly; verified live and not an executor pane)") // # MUTATION-ANCHOR: 844-R92
 	}
 	if how == "cwd" {
-		d.warn("invoker pane resolved by " + how + " to " + pane + "; inherited HERDR_PANE_ID=" + orDefaultStr(d.env("HERDR_PANE_ID"), "unset") + " is STALE (this pane was moved)")
+		d.warn("invoker pane resolved by " + how + " to " + pane + "; inherited " + d.selfPaneVar() + "=" + orDefaultStr(d.selfPaneID(), "unset") + " is STALE (this pane was moved)")
 	}
 	return pane + "\t" + how
 }
@@ -160,7 +213,7 @@ func (d *dsp) rtResolveScript(panesText string) string {
 	if !ok {
 		return ""
 	}
-	envID := d.env("HERDR_PANE_ID")
+	envID := d.selfPaneID()
 	byID := map[string]jmap{}
 	for _, p := range panes {
 		id := p["pane_id"]
@@ -183,7 +236,7 @@ func (d *dsp) rtResolveScript(panesText string) string {
 	if wantID != "" { // # MUTATION-ANCHOR: 844-R94
 		p, live := byID[wantID]
 		if !live { // # MUTATION-ANCHOR: 844-R95
-			return "!refuse\tHW_INVOKER_PANE=" + wantID + " was named explicitly but is not a live pane (herdr pane list does not know it), so every executor launched here would have nowhere to report. Export the id `herdr pane list` actually shows for your brainer, or unset HW_INVOKER_PANE and let hw resolve it."
+			return "!refuse\tHW_INVOKER_PANE=" + wantID + " was named explicitly but is not a live pane (" + d.listCommand() + " does not know it), so every executor launched here would have nowhere to report. Export the id `" + d.listCommand() + "` actually shows for your brainer, or unset HW_INVOKER_PANE and let hw resolve it."
 		}
 		if p["label"] == "agent" { // # MUTATION-ANCHOR: 844-R96
 			return "!refuse\tHW_INVOKER_PANE=" + wantID + " is an EXECUTOR pane (hw labels every executor it builds `agent`), not a brainer. Reports delivered there land on an agent that cannot act on them and will not say so. Name the brainer pane, or unset HW_INVOKER_PANE."
@@ -240,7 +293,7 @@ func (d *dsp) invokerPaneInit() {
 		d.die(strings.TrimPrefix(r, "!refuse "))
 	}
 	if r == "" { // # MUTATION-ANCHOR: 844-R109
-		d.die("HW_INVOKER_PANE is UNRESOLVED — every executor launched here would have nowhere to report. Export the id `herdr pane list` actually shows for your brainer, or pass --no-report for a deliberate fire-and-forget dispatch.") // # MUTATION-ANCHOR: 844-R110
+		d.die("HW_INVOKER_PANE is UNRESOLVED — every executor launched here would have nowhere to report. Export the id `" + d.listCommand() + "` actually shows for your brainer, or pass --no-report for a deliberate fire-and-forget dispatch.") // # MUTATION-ANCHOR: 844-R110
 	}
 	if i := strings.Index(r, "\t"); i >= 0 { // # MUTATION-ANCHOR: 844-R111
 		d.invokerResolved, d.invokerHow = r[:i], r[i+1:]
@@ -355,14 +408,13 @@ func (d *dsp) validateInvokerLane() {
 	if pane == "" {
 		return
 	}
-	panesText, _ := herdrOut(0, "pane", "list")
-	panesText = bashSub(panesText)
+	panesText := d.paneListText(false)
 	how := orDefaultStr(d.invokerHow, "unknown")
 	if panesText == "" { // # MUTATION-ANCHOR: 844-R113
 		if d.reportToChosen {
 			return
 		}
-		d.die("invoker resolved to " + pane + " by " + how + ", but herdr pane list is unreachable, so hw cannot prove it is the " + d.proj + " brainer (label brain, cwd " + expected + "). Run `brain " + d.proj + "` and launch from that pane, or deliberately route elsewhere with `--report-to " + pane + "`. NOTHING was built.")
+		d.die("invoker resolved to " + pane + " by " + how + ", but " + d.listCommand() + " is unreachable, so hw cannot prove it is the " + d.proj + " brainer (label brain, cwd " + expected + "). Run `brain " + d.proj + "` and launch from that pane, or deliberately route elsewhere with `--report-to " + pane + "`. NOTHING was built.")
 	}
 	verdict := d.laneBrainerVerdict(panesText, pane, expected)
 	if verdict == "ok" { // # MUTATION-ANCHOR: 844-R114
@@ -380,11 +432,16 @@ func (d *dsp) validateInvokerLane() {
 }
 
 // resolveInvokerContext is `_resolve_invoker_context`: the brainer's typed receiver address, from the pane that
-// invoked hw (HERDR_PANE_ID). Missing data leaves all three empty.
+// invoked hw. Missing data leaves all three empty — and on herdr-core all three stay empty: HERDR_PANE_ID names
+// somebody else's pane there (P12), and the hc reader of the typed address is the `channel-send` slice's, not this
+// one's.
 func (d *dsp) resolveInvokerContext() {
 	d.hwInvokerVendor, d.hwInvokerSession, d.hwInvokerEndpoint = "", "", ""
 	d.rtInvokerExported = false
-	pane := d.env("HERDR_PANE_ID")
+	pane := ""
+	if !d.onHC() {
+		pane = d.env("HERDR_PANE_ID")
+	}
 	if pane == "" {
 		return
 	}
@@ -560,7 +617,7 @@ func (d *dsp) rtChildEnv() []string {
 	// AGENT is a shell variable of the bash process, not an exported one, and `cmd_next` runs in that process: the
 	// preamble it builds reads HW_EXECUTOR_VENDOR, else AGENT (the codex rules are added for a pane whose
 	// run env records no vendor). A child process sees it only through the environment.
-	over := map[string]string{"HW_EXECUTOR_VENDOR": d.agent, "AGENT": d.agent} // # MUTATION-ANCHOR: 844-R83
+	over := map[string]string{"HW_EXECUTOR_VENDOR": d.agent, "AGENT": d.agent}
 	// The same goes for what the dispatch's own flags and brief decided and `_next_authorization` / the preamble read
 	// as shell variables: CHECK_HANDLES (--no-handle-check), REQUESTED_BY (--requested-by or the brief's) and
 	// TASK_KIND (declared or inferred). Without them the child re-reads the brief alone and can answer differently.

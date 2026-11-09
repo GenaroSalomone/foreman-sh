@@ -40,15 +40,19 @@ fi
 # subject passed every gate it went through and was found at the next full run. It reads setup/suite-data/test-budgets.json
 # and setup/suite-data/test-budget-ceilings.tsv, in about a second, and none of those paths is in SUITE_TRIGGER_PATTERN, so
 # the gate below would not even start for them: it is asked here, over the STAGED blobs (a private index is what
-# is committed, not the working tree), whenever the commit touches the budget, its ceilings or the gate itself.
+# is committed, not the working tree), whenever the commit touches the budget, its ceilings or the gate itself;
+# it also copies the retired list and the partition table, because the gate reads them beside the budgets file.
 tb_root="$(git rev-parse --show-toplevel)"
 if [ -f "$tb_root/setup/test-budget-gate" ] \
-   && printf '%s\n' "$staged" | grep -qE '^setup/(suite-data/test-budgets\.json|suite-data/test-budget-ceilings\.tsv|test-budget-gate)$' \
+   && printf '%s\n' "$staged" | grep -qE '^setup/(suite-data/test-budgets\.json|suite-data/test-budget-ceilings\.tsv|suite-data/retired-subjects\.txt|suite-data/go-test-partitions\.txt|test-budget-gate)$' \
    && git cat-file -e :setup/suite-data/test-budgets.json 2>/dev/null; then
   tb_dir="$(mktemp -d "${TMPDIR:-/tmp}/hw-precommit-budget.XXXXXX")"
   git show :setup/suite-data/test-budgets.json > "$tb_dir/test-budgets.json"
   : > "$tb_dir/ceilings.tsv"
   if git cat-file -e :setup/suite-data/test-budget-ceilings.tsv 2>/dev/null; then git show :setup/suite-data/test-budget-ceilings.tsv > "$tb_dir/ceilings.tsv"; fi
+  for tb_f in retired-subjects.txt go-test-partitions.txt; do
+    if git cat-file -e ":setup/suite-data/$tb_f" 2>/dev/null; then git show ":setup/suite-data/$tb_f" > "$tb_dir/$tb_f"; fi
+  done
   tb_rc=0
   tb_out="$(python3 "$tb_root/setup/test-budget-gate" "$tb_dir/test-budgets.json" "$tb_dir/ceilings.tsv" 2>&1)" || tb_rc=$?  # MUTATION-ANCHOR: 966-M01
   rm -rf "$tb_dir"
@@ -425,7 +429,9 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
         echo "Use the private-index/commit-tree recipe in setup/CLAUDE.md instead."
         echo "If you are certain: git commit --no-verify"
         # THE REDS AGAIN, AS THE LAST LINES, where the eye lands after the attribution block above has pushed them off the screen.
-        if printf '%s\n' "$out" | grep -qE '^not ok'; then  # MUTATION-ANCHOR: 108-M02
+        # not `printf | grep -q`: grep quits at its first match, printf gets SIGPIPE on an output over the pipe buffer (64 KB) and pipefail makes this false (as line 88's `head -1`)
+        case $'\n'"$out" in *$'\n''not ok'*) hook_has_red=1 ;; *) hook_has_red=0 ;; esac
+        if [ "$hook_has_red" = 1 ]; then  # MUTATION-ANCHOR: 108-M02
           echo
           echo "  the red lines of the gate, again:"
           printf '%s\n' "$out" | grep -E '^not ok' | sed 's/^/    /'

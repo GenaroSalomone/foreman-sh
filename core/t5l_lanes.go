@@ -80,6 +80,7 @@ func (l *lch) buildLane() {
 	if !readable(hook) { // # MUTATION-ANCHOR: 847-D1-02
 		l.die(l.proj + " builds through " + hook + " (its `build` in projects.json), and that file is not readable. Nothing was created.")
 	}
+	l.hcLaneGate(filepath.Base(hook))
 	if filepath.Base(filepath.Dir(hook)) == "lanes" { // # MUTATION-ANCHOR: 847-D1-03
 		switch filepath.Base(hook) {
 		case "git-worktree.sh":

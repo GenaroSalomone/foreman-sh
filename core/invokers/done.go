@@ -164,6 +164,9 @@ loop:
 		if c.has("HW_INVOKER_PANE") && c.get("HW_INVOKER_PANE") == "" { // 68-M01 68-M02
 			return die("HW_INVOKER_PANE is set and EMPTY, so this call has been told there is no brainer to reach. REFUSING before the run lock, any counter and any delivery: nothing was sent, no ask was spent and no marker was written. That is deliberate — an explicitly empty address is how a test or a smoke run makes the live channel unreachable, and honouring it is why a probe can no longer reach a real brainer by accident (2026-09-02). To report for real, UNSET it (`unset HW_INVOKER_PANE`) so the run's .hw/<run>/env can supply the address, or export the pane id you mean.")
 		}
+		if err := c.refuseNestedHeadless(); err != nil {
+			return err
+		}
 		c.adoptEnvFile()
 		if err := c.runLockAcquire(); err != nil { // 66-M06
 			return err
@@ -175,7 +178,7 @@ loop:
 		})
 	}
 	pane := c.get("HW_INVOKER_PANE")
-	herdrPane := c.get("HERDR_PANE_ID")
+	herdrPane := c.selfAddress()
 	if !checkOnly {
 		if pane == "" {
 			return die("no HW_INVOKER_PANE — this pane was not launched by hw with --here, so there is no brainer to notify. Report to %s in this pane instead.", c.operator())
@@ -295,6 +298,9 @@ loop:
 				return err
 			}
 			checksNote += note
+			if err := PluginEvidenceGate(skills, summary, artifacts); err != nil {
+				return err
+			}
 			unverified := ""
 			if proof == nil {
 				unverified = " (unverified: no transcript reachable, so the report must name each skill)"
@@ -386,8 +392,12 @@ loop:
 	rulingRun := c.runDir()
 	if text, held := c.ClaimRulings(rulingRun, "done-invoker"); held { // 203-M01
 		msg := "NOT REPORTED — RULING FROM YOUR BRAINER, queued with `hw ruling` while you were working. It changes the premise of your work, so your report was held and NOTHING was sent. Read it, act on it — and if it contradicts what you have already done, say so rather than quietly redoing it — then run done-invoker again.\n\n" + text
-		c.printf(c.Stdout, "%s\n", msg)
+		// First AND last line name where the text is kept: a read cut by `| tail` or `| head` still finds it.
+		ptr := "RULINGS HELD, full text kept in " + rulingRun + "/ruling-text.<n> — read every one before you act."
+		msg = ptr + "\n" + msg
+		c.printf(c.Stdout, "%s\n%s\n", msg, ptr)
 		c.errf("done-invoker: %s\n", msg)
+		c.exitTail = ptr // stderr ends with the exit-code guard, and a `2>&1 | tail -1` must still end on the pointer
 		return &Die{Code: exitHeldForRuling}
 	}
 

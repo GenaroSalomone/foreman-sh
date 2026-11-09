@@ -11,6 +11,25 @@ import (
 
 func trimNL(s string) string { return strings.TrimRight(s, "\n") }
 
+// effortShownAndMark is THE one naming of an effort level, in the same words on every vendor (setup/decisions.md
+// 2026-11-08, «las mismas palabras en el dry-run»): the value the dispatch will ask for, and where it came from.
+//
+//	chosen                 — the operator asked, with --effort
+//	default; <source>      — nothing was asked, and the level comes from hw: the lane's declared default for that vendor
+//	                         where one exists (pi's roster picks it by the brief's kind, the only vendor whose level hw
+//	                         declares), else `the vendor's own`, which is what runs when hw passes no level at all
+//
+// The value stays each vendor's own (`pi` keeps low) — what is one is the rule and the words a brainer reads.
+func (d *dsp) effortShownAndMark() (string, string) {
+	if d.effort == "" {
+		return "<agent default>", "default; the vendor's own"
+	}
+	if d.effortSrc != "" {
+		return d.effort, "default; " + d.effortSrc
+	}
+	return d.effort, "chosen" // # MUTATION-ANCHOR: 844-M26
+}
+
 // laneBase is `_lane_base`.
 func (d *dsp) laneBase() string { return d.c.t.get(d.proj, "base") }
 
@@ -279,17 +298,8 @@ func (d *dsp) dispatchManifest(dir string) {
 	if d.modelPinned != "" {
 		modelLine += "  — the lane pins the alias " + d.model + " to " + d.modelPinned + " (projects.json model_pins), so the CLI gets --model " + d.modelPinned
 	}
-	mark = "inherited"
-	if d.piEffortSrc != "" {
-		mark = d.piEffortSrc // pi's roster default says where it came from (bin/hw "PI_EFFORT_SRC")
-	} else if d.effort != "" {
-		mark = "chosen"
-	}
-	effortShown := d.effort
-	if effortShown == "" {
-		effortShown = "<agent default>"
-	}
-	effortLine := "effort=" + effortShown + "  (" + mark + ")" // # MUTATION-ANCHOR: 844-M26
+	effortShown, effortMark := d.effortShownAndMark()
+	effortLine := "effort=" + effortShown + "  (" + effortMark + ")"
 	if d.agent == "opencode" && d.effort != "" {
 		pa := d.opencodePrimaryAgent
 		if pa == "" {
@@ -330,6 +340,8 @@ func (d *dsp) dispatchManifest(dir string) {
 	switch {
 	case d.here:
 		placement = "here (splits the brainer pane)"
+	case d.onHC():
+		placement = "herdr-core terminal (`hc run --bg --no-parent`) labelled herdr.space=" + d.c.t.get(d.proj, "space") + " — no herdr workspace, tab or layout"
 	case d.tab:
 		placement = "own tab in space " + d.c.t.get(d.proj, "space") // # MUTATION-ANCHOR: 844-M28
 	default:

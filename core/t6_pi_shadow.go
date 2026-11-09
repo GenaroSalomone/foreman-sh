@@ -213,24 +213,33 @@ func (l *lch) piShadowDir(cwd string) string {
 	return art + "/pi-agent"
 }
 
-// piShadowSettings is the real settings.json with discovery removed: `packages` and `extensions` go, every other field
-// is carried through byte for byte (json.RawMessage), so the private directory differs from the real one by exactly
-// what discovery reads. An unreadable or unparsable file leaves "{}" — no packages is the point — and the reason.
+// piShadowSettings is the real settings.json with discovery removed and the startup listing off: `packages` and
+// `extensions` go, `quietStartup` is set, every other field is carried through byte for byte (json.RawMessage), so the
+// private directory differs from the real one by exactly what discovery reads. An unreadable or unparsable file leaves
+// no packages — the point — and the reason.
+//
+// THE LISTING, and why it is this setting. A launch with plugins loads every skill of every declared plugin (~68 of
+// thermo's, ponytail's and pstack's), and pi prints each of them plus the extensions under a `[Skills]`/`[Extensions]`
+// block unless `quietStartup` is true (interactive-mode.js `shouldShowStartupDetails`); the same launch without plugins
+// prints almost nothing, so the pane opened on an inventory instead of on the task. It is a settings field, not a flag:
+// pi has no `--quiet`. pi KEEPS ITS DIAGNOSTICS quiet (`showDiagnosticsWhenQuiet`, interactive-mode.js:1633), so a real
+// malformed skill or a conflicting command is still named on the first screen.
 func piShadowSettings(raw []byte) ([]byte, string, bool) {
-	if len(raw) == 0 {
-		return []byte("{}\n"), "", true
-	}
 	fields := map[string]json.RawMessage{}
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return []byte("{}\n"), err.Error(), false
+	why, ok := "", true
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			fields, why, ok = map[string]json.RawMessage{}, err.Error(), false
+		}
 	}
 	delete(fields, "packages")
 	delete(fields, "extensions")
+	fields["quietStartup"] = json.RawMessage("true")
 	out, err := json.MarshalIndent(fields, "", "  ")
 	if err != nil {
 		return []byte("{}\n"), err.Error(), false
 	}
-	return append(out, '\n'), "", true
+	return append(out, '\n'), why, ok
 }
 
 // piShadowPrepare creates (or refreshes) the private agent directory and reports what it did, "" on success; `usable`

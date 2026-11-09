@@ -818,6 +818,36 @@ export function modelErrorFallback(errorText: string, current: string, fallback:
   // model" and is not taken on a guess.
   return current.split("/")[0] === fallback.split("/")[0] ? fallback : null;  // # MUTATION-ANCHOR: 988-M04
 }
+// A spent quota ends the run with nobody told: the receipt row
+// is evidence, not a report, and the `outcome !== "completed"` return below skips executor-turn-end, so nothing reached
+// HW_INVOKER_PANE and the brainer found two dead panes by reading them. Claude's Stop hook reports; pi's adapter does it
+// here, once, through the same `done-invoker --blocked` an executor would run. The summary carries what the brainer needs
+// to judge the stop without opening the pane: the quota, the branch HEAD and the checks.md verdict counts.
+let quotaReported = false;
+function execText(file: string, args: string[], cwd: string | undefined): Promise<string> {
+  return new Promise((done) => execFile(file, args, { cwd, timeout: 120_000, env: process.env }, (_e, out) => done(String(out || "").trim())));
+}
+export function checksCounts(text: string): string {
+  const n: Record<string, number> = { pass: 0, fail: 0, unresolved: 0 };
+  for (const line of text.split("\n")) for (const cell of line.split("|")) if (cell.trim() in n) { n[cell.trim()]++; break; }
+  return `checks.md ${n.pass} pass / ${n.fail} fail / ${n.unresolved} unresolved`;
+}
+export async function quotaBlockedSummary(err: string): Promise<string> {
+  const wd = process.env.HW_WORKDIR;
+  const head = (await execText("git", ["rev-parse", "--short", "HEAD"], wd)) || "unknown";
+  const file = join(process.env.HW_ARTIFACTS || join(wd || ".", ".artifacts"), "checks.md");
+  const checks = existsSync(file) ? checksCounts(readFileSync(file, "utf8")) : "no checks.md";
+  return `Provider quota SPENT, run stopped by pi (${err.slice(0, 160)}). Branch HEAD ${head}; ${checks}. Resume after the quota resets or re-dispatch on another provider.`.slice(0, 900);
+}
+async function reportQuotaBlocked(err: string): Promise<void> {
+  if (quotaReported) return;
+  quotaReported = true;
+  const tool = join(BRAIN, "bin", "done-invoker");
+  if (!existsSync(tool)) { receiptRow("provider_quota_report", `NOT SENT — no ${tool}`, "hw-executor.ts agent_before_settle"); return; }
+  const out = await execText(tool, ["--blocked", await quotaBlockedSummary(err)], process.env.HW_WORKDIR);
+  receiptRow("provider_quota_report", `done-invoker --blocked ran: ${out.slice(0, 200) || "no output"}`, "hw-executor.ts agent_before_settle");
+}
+
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 // ── 5. engram through the proxy ─────────────────────────────────────────────
@@ -942,7 +972,12 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
   const out = { registered: [] as string[], skipped: [] as string[], dropped: [] as string[], runs: [] as string[], disposers: [] as Array<() => void> };
   const tiers = piSubagentTiers();
   const dirs = (process.env.HW_PI_CLAUDE_AGENT_DIRS || "").split(":").filter(Boolean);
-  if (!dirs.length || typeof pi.events?.emit !== "function") return out;
+  // THE DECLARED PLUGINS' OWN AGENTS, `<plugin>=<dir>` (HW_PI_PLUGIN_AGENT_DIRS): a Claude executor reads them from
+  // --plugin-dir as `plugin:name` (pstack:comment-sicko, which the review closing names), so that is the name registered.
+  const pluginDirs = (process.env.HW_PI_PLUGIN_AGENT_DIRS || "").split(":").filter(Boolean)
+    .map((spec) => { const eq = spec.indexOf("="); return eq > 0 ? { plugin: spec.slice(0, eq), dir: spec.slice(eq + 1) } : null; })
+    .filter((x): x is { plugin: string; dir: string } => x !== null);
+  if ((!dirs.length && !pluginDirs.length) || typeof pi.events?.emit !== "function") return out;
   const parse = await import(pathToFileURL(join(sub, "src", "agents", "frontmatter.js")).href);
   const webDir = join(dirname(sub), "pi-web-access");
   const webAccessDir = existsSync(join(webDir, "package.json")) ? webDir : undefined;
@@ -951,30 +986,38 @@ async function registerClaudeSpecialists(pi: any, sub: string): Promise<{ regist
     try { for (const f of readdirSync(d)) if (f.endsWith(".md")) own.add(f.slice(0, -3)); } catch { /* absent */ }
   }
   const seen = new Set<string>(); // the first directory wins, as the lane's agent shadows the account's in Claude
-  for (const d of dirs) {
-    let files: string[] = [];
-    try { files = readdirSync(d).filter((f) => f.endsWith(".md")).sort(); } catch { continue; }
-    for (const f of files) {
+  const filesIn = (d: string): string[] => { try { return readdirSync(d).filter((f) => f.endsWith(".md")).sort(); } catch { return []; } };
+  // One agent file -> one runtime registration. `plugin` is the only difference between a lane's directory and a
+  // declared plugin's: the name a Claude executor reads from --plugin-dir is `<plugin>:<file name>` (pstack's own pi
+  // extension resolves the same `pstack:<file name>`, setup/vendor/plugins/pstack/pi/config.ts), and hw's framework
+  // prefixes and `.pi/agents` copies are the LANE's rules, not a plugin declaration's.
+  const registerDir = (dir: string, plugin?: string): void => {
+    for (const f of filesIn(dir)) {
       const base = f.slice(0, -3);
-      if (NOT_SPECIALIST.test(base)) continue;
+      if (!plugin && NOT_SPECIALIST.test(base)) continue;
       try {
-        const def = claudeAgentDefinition(readFileSync(join(d, f), "utf8"), parse, webAccessDir, tiers);
-        if (!def) { out.skipped.push(`${base} (no name/description)`); continue; }
-        if (seen.has(def.name)) continue;
-        seen.add(def.name);
-        if (own.has(base)) { out.skipped.push(`${def.name} (a .pi/agents copy provides it)`); continue; }
-        const req: any = { version: 1, name: def.name, definition: def.definition };
+        const def = claudeAgentDefinition(readFileSync(join(dir, f), "utf8"), parse, webAccessDir, tiers);
+        if (!def) { out.skipped.push(`${plugin ? `${plugin}:${base}` : base} (no name/description)`); continue; }
+        // a lane's agent goes by its frontmatter name (Claude's rule); a plugin's by `plugin:<file name>`, the name
+        // hw's manifest prints and pstack's own pi extension resolves (setup/vendor/plugins/pstack/pi/config.ts)
+        const agent = plugin ? `${plugin}:${base}` : def.name;
+        if (seen.has(agent)) continue;
+        seen.add(agent);
+        if (!plugin && own.has(base)) { out.skipped.push(`${agent} (a .pi/agents copy provides it)`); continue; }
+        const req: any = { version: 1, name: agent, definition: def.definition };
         pi.events.emit("pi-subagents:runtime-agent-register:v1", req);
-        if (!req.result) { out.skipped.push(`${def.name} (pi-subagents did not answer)`); continue; }
-        if (!req.result.ok) { out.skipped.push(`${def.name} (${String(req.result.error?.message ?? req.result.error).slice(0, 80)})`); continue; }
-        out.registered.push(def.name);
+        if (!req.result) { out.skipped.push(`${agent} (pi-subagents did not answer)`); continue; }
+        if (!req.result.ok) { out.skipped.push(`${agent} (${String(req.result.error?.message ?? req.result.error).slice(0, 80)})`); continue; }
+        out.registered.push(agent);
         const t = def.resolved.tier;
-        out.runs.push(`${def.name}→${t.model ? t.model + (t.thinking ? "|" + t.thinking : "") : "the executor's model"} (${def.resolved.why})`);
+        out.runs.push(`${agent}→${t.model ? t.model + (t.thinking ? "|" + t.thinking : "") : "the executor's model"} (${def.resolved.why})`);
         out.disposers.push(() => req.result.registration?.dispose?.());
         for (const t of def.dropped) if (!out.dropped.includes(t)) out.dropped.push(t);
       } catch (e: any) { out.skipped.push(`${base} (${String(e?.message ?? e).slice(0, 80)})`); }
     }
-  }
+  };
+  for (const d of dirs) registerDir(d);
+  for (const { plugin, dir } of pluginDirs) registerDir(dir, plugin);
   return out;
 }
 
@@ -1644,7 +1687,7 @@ export default function (pi: any) {
     try {
       const sub = process.env.HW_PI_SUBAGENTS_DIR
         || join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "npm", "node_modules", "pi-subagents");
-      if (process.env.HW_PI_CLAUDE_AGENT_DIRS && G[Symbol.for("hw.pi.required-child")] && !G[SPECIALISTS_FLAG]) {
+      if ((process.env.HW_PI_CLAUDE_AGENT_DIRS || process.env.HW_PI_PLUGIN_AGENT_DIRS) && G[Symbol.for("hw.pi.required-child")] && !G[SPECIALISTS_FLAG]) {
         const r = await registerClaudeSpecialists(pi, sub);
         G[SPECIALISTS_FLAG] = r.disposers;
         receiptRow("pi_specialists", `registered ${r.registered.join(" ") || "none"}${r.runs.length ? `; runs ${r.runs.join(", ")}` : ""}${r.skipped.length ? `; skipped ${r.skipped.join(", ")}` : ""}${r.dropped.length ? `; tools with no pi counterpart dropped: ${r.dropped.join(" ")}` : ""}`, "hw-executor.ts session_start");
@@ -1668,6 +1711,7 @@ export default function (pi: any) {
   pi.on("input", (event: any, ctx: any) => {
     if (!ensureRoot(ctx)) return;
     inputSinceSettle = true;
+    quotaReported = false; // a new prompt (a re-task, a resume) is a new chance to be told
     const text = typeof event?.text === "string" ? event.text : "";
     try {
       mkdirSync(dir, { recursive: true });
@@ -1725,6 +1769,7 @@ export default function (pi: any) {
       if (QUOTA_ERROR.test(lastError.message)) {
         receiptRow("model_fallback", `NOT SWITCHED — ${current} hit a quota error and opencode-go's cap is shared dollars for the whole key, so another Go model draws from the same cupo: ${err}`, "hw-executor.ts agent_before_settle");
         receiptRow("provider_quota", `SPENT — report this task blocked (done-invoker --blocked): ${err.slice(0, 120)}`, "hw-executor.ts agent_before_settle");
+        await reportQuotaBlocked(err);
         lastError = null;
         return;
       }

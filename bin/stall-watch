@@ -30,7 +30,14 @@ reported() {  # `done` in the current task's dir (the run dir, or t<N> from task
   case "$n" in ""|0|1) ;; *) dir="$STATE/t$n" ;; esac
   [ -e "$dir/done" ] && [ ! -e "$dir/reopened" ]
 }
-pane_alive() { [ -z "${HERDR_PANE_ID:-}" ] || herdr agent get "$HERDR_PANE_ID" >/dev/null 2>&1; }
+# an executor in the herdr app has HC_TERMINAL_ID and no HERDR_PANE_ID: alive while `hc get` says live
+pane_alive() {
+  if [ -z "${HERDR_PANE_ID:-}" ] && [ -n "${HC_TERMINAL_ID:-}" ]; then
+    command -v hc >/dev/null 2>&1 || return 0  # no hc to ask is not "gone"
+    hc get "$HC_TERMINAL_ID" --json 2>/dev/null | grep -q '"state": *"live"'; return
+  fi
+  [ -z "${HERDR_PANE_ID:-}" ] || herdr agent get "$HERDR_PANE_ID" >/dev/null 2>&1
+}
 
 mkdir -p "$D" 2>/dev/null
 start="$(now)"
@@ -47,7 +54,7 @@ while :; do
   [ ! -e "$STATE/stalled" ] || [ "$(cut -d' ' -f2 "$STATE/stalled" 2>/dev/null)" = "$TURNS" ] || rm -f "$STATE/stalled"  # lint-shell: measured-elsewhere
   ( set -C; printf '%s %s\n' "$start" "$TURNS" > "$STATE/stalled" ) 2>/dev/null || exit 0   # this stall was alerted
   mins=$(( (t - start) / 60 ))
-  msg="stall: ${HW_PROJECT:-?}:${HW_TASK:-?} (pane ${HERDR_PANE_ID:-?}) ended its turn at $(hhmm "$start"), waiting on ${WHAT}, and has had no new turn for ${mins} min (HW_STALL_MIN=$((LIMIT / 60))). \`hw status\` shows it STALLED. It may be legitimate (a long heavy run, \`setup/heavy --status\`; an ask you have not answered) or stuck (an orphaned lock, a stopped holder): look at the pane, then rule it, or \`hw unstick\`/\`hw done\` it."
+  msg="stall: ${HW_PROJECT:-?}:${HW_TASK:-?} (pane ${HERDR_PANE_ID:-${HC_TERMINAL_ID:-?}}) ended its turn at $(hhmm "$start"), waiting on ${WHAT}, and has had no new turn for ${mins} min (HW_STALL_MIN=$((LIMIT / 60))). \`hw status\` shows it STALLED. It may be legitimate (a long heavy run, \`setup/heavy --status\`; an ask you have not answered) or stuck (an orphaned lock, a stopped holder): look at the pane, then rule it, or \`hw unstick\`/\`hw done\` it."
   printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$msg" >> "$ALERTS"
   [ -n "${HW_INVOKER_PANE:-}" ] || exit 0
   cs="${HW_STALL_CHANNEL_SEND:-$BIN/channel-send}"

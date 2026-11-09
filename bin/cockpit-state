@@ -216,6 +216,41 @@ def herdr_panes():
     return True, panes, None
 
 
+def hc_run(args):
+    """Parsed JSON of `hc <args> --json`, None when hc is absent, fails or answers something else."""
+    try:
+        r = subprocess.run([os.environ.get("HW_COCKPIT_HC", "hc")] + args + ["--json"], capture_output=True, text=True, timeout=5)
+        return json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def hc_panes():
+    """(answered, panes). The executors that run as herdr-core terminals (labelled hw_task), in the shape of a
+    `herdr pane list` entry: the address is the pane_id, the labels are the tokens (hw_turn_state is also
+    turn_state). `hc ls` carries no labels, so each terminal costs one `hc get`. shortcut: no statusline read
+    for them (that is `herdr agent read`), their ctx falls back to the transcript; upgrade to `hc read`."""
+    ls = hc_run(["ls", "--label", "hw_task"])
+    if not isinstance(ls, dict) or not isinstance(ls.get("terminals"), list):
+        return False, []
+    panes = []
+    for t in ls["terminals"]:
+        addr = t.get("address") if isinstance(t, dict) else None
+        got = hc_run(["get", addr]) if isinstance(addr, str) and addr else None
+        if not isinstance(got, dict) or got.get("state") != "live" or not isinstance(got.get("labels"), dict) \
+                or not isinstance(got.get("cwd"), str):
+            continue
+        labels = {k: v for k, v in got["labels"].items() if isinstance(v, str)}
+        tokens = dict(labels)
+        for k, v in labels.items():
+            if k.startswith("hw_"):
+                tokens.setdefault(k[3:], v)
+        state = (got.get("status") or {}).get("state") if isinstance(got.get("status"), dict) else None
+        panes.append({"pane_id": addr, "agent": "hc", "cwd": got.get("cwd"), "tokens": tokens,
+                      "agent_status": "working" if state == "working" else ("idle" if state in ("idle", "done") else "unknown")})
+    return True, panes
+
+
 # ── run directories ──────────────────────────────────────────────────────────
 
 def find_rundir(cwd, run):
@@ -554,6 +589,16 @@ def title_of(rundir):
     if not path or not os.path.isabs(path):
         return None
     return brief_title(read_text(path))
+
+
+def running_model(rundir):
+    """The model the run really runs, from the receipt's `model_running`. hw writes `none — <why it could not
+    be read>` (or `n/a — <no reader for the vendor>`) when it could not read one: that diagnostic stays in the receipt (`hw receipt`), and the card's
+    model is null, never the sentence."""
+    v = receipt_value(rundir, "model_running")
+    if not isinstance(v, str) or not v.strip() or v == "none" or v.startswith(("none \u2014 ", "n/a \u2014 ")):  # MUTATION-ANCHOR: 970-M06
+        return None
+    return v
 
 
 def base_of(rundir):
@@ -978,7 +1023,7 @@ def build_row(pane, invoker, mods, sl=None, suites=None):
     status = status if status in ("idle", "working", "unknown") else "unknown"
     turn_state = tokens.get("turn_state")
     if turn_state not in ("working", "ended_unreported", "ended_after_report", "ended_with_ruling", "ended_holding",
-                          "ended_human_boundary", "ended_awaiting_child", "handback_refused"):
+                          "ended_human_boundary", "ended_awaiting_child", "ended_api_error", "handback_refused"):
         turn_state = None
     turn_at = iso_ms(tokens.get("turn_ended_at"))
     children = tokens.get("children_running") or None
@@ -1049,7 +1094,7 @@ def build_row(pane, invoker, mods, sl=None, suites=None):
 
     return {
         "id": "%s:%s" % (project, task), "project": project, "task": task, "pane": pane_id, "run": run,
-        "task_n": task_seq(rundir), "title": title_of(rundir), "commits": commits, "gate": gate, "vendor": harness or "unknown", "model": receipt_value(rundir, "model_running") or None,
+        "task_n": task_seq(rundir), "title": title_of(rundir), "commits": commits, "gate": gate, "vendor": harness or "unknown", "model": running_model(rundir),
         "effort": effort_of(rundir),
         "agent_status": status, "turn_state": turn_state, "turn_ended_at": turn_at,
         "dispatched_at": dispatched, "turn_started_at": turn_started, "last_progress_at": progress,
@@ -1102,6 +1147,9 @@ def totals_of(rows, omitted):
 def build_state(invoker, seq, interval_s, rev, now=None):
     mods = {"runenv": _load("runenv"), "holdfacts": _load("holdfacts"), "actions": _load("hw-actions")}
     ok, panes, err = herdr_panes()
+    hc_ok, hc_found = hc_panes()
+    if hc_ok and hc_found:  # the herdr app's terminals count as an answer: an app-only machine has no herdr to ask
+        ok, err, panes = True, None, (panes if err is None else []) + hc_found
     rows = []
     if ok:
         seen = {}
@@ -1407,6 +1455,11 @@ def reexec_if_changed(booted_sig, lock):
             pass
 
 
+def hc_live(addr):
+    got = hc_run(["get", addr])
+    return isinstance(got, dict) and got.get("state") == "live"
+
+
 def loop(invoker, path, every, bind_pane):
     """The heartbeat. Two lifetimes, never both:
 
@@ -1432,7 +1485,7 @@ def loop(invoker, path, every, bind_pane):
     while True:
         if bind_pane:
             ok, panes, _ = herdr_panes()
-            if ok and not any(p.get("pane_id") == invoker for p in panes):  # MUTATION-ANCHOR: 797-M18
+            if ok and not any(p.get("pane_id") == invoker for p in panes) and not hc_live(invoker):  # MUTATION-ANCHOR: 797-M18
                 return 0  # the brainer's pane is gone: this writer dies with it
         try:
             write_once(invoker, path, every, rev)
@@ -1546,7 +1599,9 @@ def main(argv):
         # to it would draw a cockpit for a pane that is no brainer. Kick nothing, say so.
         note_skipped_kick(a)
         return 0 if (a.kick or a.kick_run) else 2
-    invoker = invoker or os.environ.get("HW_COCKPIT_INVOKER") or os.environ.get("HERDR_PANE_ID")
+    # an executor's own HERDR_PANE_ID is no brainer: inside a task the brainer is HW_INVOKER_PANE
+    own = os.environ.get("HW_INVOKER_PANE") if os.environ.get("HW_TASK") else os.environ.get("HERDR_PANE_ID")
+    invoker = invoker or os.environ.get("HW_COCKPIT_INVOKER") or own
     if not invoker:
         print("cockpit-state: no brainer pane (--invoker, $HW_COCKPIT_INVOKER or $HERDR_PANE_ID)", file=sys.stderr)
         return 2
@@ -1554,6 +1609,9 @@ def main(argv):
     if a.print_path:
         if not path:
             return 2
+        if not os.path.exists(path):  # a path that never exists is not an answer
+            print("cockpit-state: no state file for %s at %s" % (invoker, path), file=sys.stderr)
+            return 1
         print(path)
         return 0
     if a.kick:

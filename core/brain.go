@@ -123,6 +123,11 @@ func (b *brainRun) main(args []string) (rc int) {
 		return 0
 	}
 	if first == "relaunch" {
+		// relaunch speaks herdr panes only: from an app terminal it would list and
+		// relaunch TUI brainers, the cross-backend write the ruling rules out.
+		if b.hcBackend() {
+			return b.hcRefuse("relaunch")
+		}
 		return b.relaunch(args)
 	}
 

@@ -340,13 +340,7 @@ func (d *doneRun) verifyAtClose(rundir, workdir, vproj, vtask string) {
 	if secs == "" {
 		secs = "900"
 	}
-	var to []string
-	if _, err := exec.LookPath("timeout"); err == nil {
-		to = []string{"timeout", secs}
-	} else if _, err := exec.LookPath("gtimeout"); err == nil {
-		to = []string{"gtimeout", secs}
-	}
-	toS := strings.Join(to, " ")
+	toS := "timeout " + secs // the receipt's words; the ceiling is kept by doneRunGate, which kills the whole tree
 	vwait := doneBashArith(secs) * 1000
 	if w := a.getenv("HW_VERIFY_SUITE_WAIT_MS"); w != "" {
 		vwait = doneBashArith(w)
@@ -439,7 +433,7 @@ func (d *doneRun) verifyAtClose(rundir, workdir, vproj, vtask string) {
 			a.warn("this was also said at dispatch, where the brief could still be edited for free")
 		}
 		a.info("verifying: " + cmd)
-		out, rc := d.runPinned(verifydir, to, cmd, extraEnv)
+		out, rc := d.runPinned(verifydir, doneCeiling(secs), cmd, extraEnv)
 		os.WriteFile(log, []byte(out+"\n"), 0o666)
 		sum := sha256.Sum256([]byte(out))
 		d.receiptInto(rundir, "verify_run",
@@ -462,17 +456,9 @@ func (d *doneRun) verifyAtClose(rundir, workdir, vproj, vtask string) {
 	a.info("measured: hw receipt " + vproj + " " + vtask)
 }
 
-// runPinned is `out="$( cd "$verifydir" && $to bash -c "$cmd" 2>&1 )"`, with what hw exported for it.
-func (d *doneRun) runPinned(dir string, to []string, cmd string, extra map[string]string) (string, int) {
-	argv := append(append([]string{}, to...), "bash", "-c", cmd)
-	c := exec.Command(argv[0], argv[1:]...)
-	c.Dir = dir
-	c.Env = doneChildEnv(extra)
-	c.Stdin = os.Stdin
-	var buf strings.Builder
-	c.Stdout, c.Stderr = &buf, &buf
-	rc := doneExit(c.Run())
-	return bashSub(buf.String()), rc
+// runPinned is `out="$( cd "$verifydir" && timeout "$secs" bash -c "$cmd" 2>&1 )"`, with what hw exported for it.
+func (d *doneRun) runPinned(dir string, secs int64, cmd string, extra map[string]string) (string, int) {
+	return doneRunGate(dir, secs, cmd, doneChildEnv(extra))
 }
 
 // doneChildEnv is the environment bash hands a command: its own, without what only the shim exported for

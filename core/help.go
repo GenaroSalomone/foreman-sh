@@ -36,7 +36,7 @@ func (a *app) cmdHelp() {
 		a.usageEnvironment()
 	case "flags":
 		a.usageFlags()
-	case "commands":
+	case "commands", "next": // `hw next --help` already prints this page: the topic spells the same words
 		a.usageCommands()
 	case "exit-codes":
 		a.usageExits()

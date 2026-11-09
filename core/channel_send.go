@@ -338,6 +338,9 @@ parse:
 		c.die("usage: channel-send [--require admitted|processed] [--id logical-id] [--allow-turn-ended] [--report|--ruling] [--report-state absolute-directory] [--reply-hold absolute-file] <claude|opencode|opencode-tui|codex|herdr> <session-or-pane-or-directory> <endpoint|-> <message|-> (a lone '-' for the message reads it from stdin — the way for text with backticks, $, quotes or newlines that argv would mangle)")
 	}
 	c.vendor, c.tgt, c.endpoint = args[0], args[1], args[2]
+	if strings.HasPrefix(c.endpoint, "--") { // `channel-send herdr <pane> --report - m` took --report as the endpoint and waited 90 s (2026-11-09)
+		c.die("endpoint " + c.endpoint + " looks like an option: options go BEFORE the vendor (channel-send " + c.endpoint + " " + c.vendor + " <target> <endpoint> <message>); a herdr endpoint is -")
+	}
 	args = args[3:]
 	// MESSAGE VIA STDIN: a lone '-' in the message slot.
 	if args[0] == "-" { // # MUTATION-ANCHOR: 135-G01
@@ -510,6 +513,8 @@ func (c *chanSend) route() {
 		c.routeClaude()
 	case "herdr":
 		c.routeHerdr()
+	case "hc":
+		c.routeHC()
 	default:
 		c.die("unknown vendor: " + c.vendor)
 	}
@@ -522,7 +527,11 @@ func (c *chanSend) herdr() herdrClient { return herdrClient{getenv: c.getenv} }
 // csRun runs a program the way the bash ran it in the background and `wait`ed: its process is known to the
 // signal handler while it runs. stdout is kept when keep, otherwise dropped; stderr is dropped.
 func (c *chanSend) csRPCWait(pane string, ms int64) int {
-	cmd := exec.Command(c.binDir+"/herdr-rpc", "wait-agent", pane, "idle,done", "--timeout-ms", strconv.FormatInt(ms, 10))
+	return c.csChildWait(exec.Command(c.binDir+"/herdr-rpc", "wait-agent", pane, "idle,done", "--timeout-ms", strconv.FormatInt(ms, 10)))
+}
+
+// csChildWait runs cmd as a child the signal handler knows, and returns its status.
+func (c *chanSend) csChildWait(cmd *exec.Cmd) int {
 	cmd.Env = childEnv()
 	if err := cmd.Start(); err != nil {
 		return 127

@@ -1028,6 +1028,18 @@ if isinstance(st, dict):
             out["refuse"].append("%s already runs another brain's Stop hook (%s) — one user, one brain; remove it or install into that brain"
                                  % (settings, theirs[0]))
         out["stop_present"] = stop_cmd in cmds
+        fl = hooks.get("StopFailure", [])
+        if not isinstance(fl, list):
+            out["refuse"].append("%s: `hooks.StopFailure` is not a list — merge by hand: add a StopFailure hook running %s-failure" % (settings, stop_cmd))
+        else:
+            out["stopfail_present"] = (stop_cmd + "-failure") in [h.get("command", "") for g in fl if isinstance(g, dict)
+                                                                    for h in g.get("hooks", []) if isinstance(h, dict)]
+        pt = hooks.get("PostToolUse", [])
+        if not isinstance(pt, list):
+            out["refuse"].append("%s: `hooks.PostToolUse` is not a list — merge by hand: add a PostToolUse hook running %s" % (settings, stop_cmd.rsplit(" ", 1)[0] + " post-tool"))
+        else:
+            out["posttool_present"] = (stop_cmd.rsplit(" ", 1)[0] + " post-tool") in [h.get("command", "") for g in pt if isinstance(g, dict)
+                                                                                      for h in g.get("hooks", []) if isinstance(h, dict)]
 elif st is None:
     out["stop_present"] = False
 elif st is not BAD:
@@ -1576,8 +1588,8 @@ for l in "${LINKS[@]}"; do
 done
 case ":$PATH:" in *":$BIN_OUT:"*) ;; *) say "WARN  $BIN_OUT is not on your PATH — add it, then restart herdr so its panes inherit it" ;; esac
 
-if [ "$(jq -r '.stop_present' "$PLAN")" = true ]; then
-  ok "$CLAUDE_CFG/settings.json already runs this brain's Stop hook"
+if [ "$(jq -r '.stop_present' "$PLAN")" = true ] && [ "$(jq -r '.stopfail_present // false' "$PLAN")" = true ] && [ "$(jq -r '.posttool_present // false' "$PLAN")" = true ]; then
+  ok "$CLAUDE_CFG/settings.json already runs this brain's Stop, StopFailure and PostToolUse hooks"
 else
   mkdir -p "$CLAUDE_CFG"
   [ ! -f "$CLAUDE_CFG/settings.json" ] || cp -p "$CLAUDE_CFG/settings.json" "$CLAUDE_CFG/settings.json.bak-brain-install"
@@ -1585,15 +1597,26 @@ else
 import json, os, sys
 path, cmd = sys.argv[1:3]
 try:
-    st = json.load(open(path))
-except FileNotFoundError:
-    st = {}
-st.setdefault("hooks", {}).setdefault("Stop", []).append(
-    {"hooks": [{"type": "command", "command": cmd}]})
+    try:
+        st = json.load(open(path))
+    except FileNotFoundError:
+        st = {}
+    # Stop reports a turn that ended; StopFailure a turn that died on an API error (a spent quota), where Stop never fires
+    for event, c in (("Stop", cmd), ("StopFailure", cmd + "-failure")):
+        have = [h.get("command") for g in st.get("hooks", {}).get(event, []) for h in g.get("hooks", [])]
+        if c not in have:
+            st.setdefault("hooks", {}).setdefault(event, []).append({"hooks": [{"type": "command", "command": c}]})
+    # PostToolUse hands a queued ruling to a working executor between two tool calls (hw-stop-hook.sh post-tool)
+    c = cmd.rsplit(" ", 1)[0] + " post-tool"
+    have = [h.get("command") for g in st.get("hooks", {}).get("PostToolUse", []) for h in g.get("hooks", [])]
+    if c not in have:
+        st.setdefault("hooks", {}).setdefault("PostToolUse", []).append({"hooks": [{"type": "command", "command": c}]})
+except (ValueError, AttributeError, TypeError) as e:  # not JSON, or hooks/Stop/StopFailure not the shape Claude Code writes
+    sys.exit("install: %s is not a settings file this installer can merge a hook into (%s: %s) — fix it or move it aside, then rerun" % (path, type(e).__name__, e))
 tmp = path + ".tmp"
 open(tmp, "w").write(json.dumps(st, indent=2) + "\n"); os.replace(tmp, path)
 PY
-  chg "$CLAUDE_CFG/settings.json — Stop hook merged (previous file kept as settings.json.bak-brain-install)"
+  chg "$CLAUDE_CFG/settings.json — Stop, StopFailure and PostToolUse hooks merged (previous file kept as settings.json.bak-brain-install)"
 fi
 
 if [ "$WITH_JD" = 1 ]; then

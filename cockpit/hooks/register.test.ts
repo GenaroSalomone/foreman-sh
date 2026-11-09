@@ -373,9 +373,43 @@ test('a file without dispatched_at is dead, not a card with a hole in it', async
 
 // ── the context a card shows ──
 
-test('a card with a percent shows it, with the bar', async ($, on) => {
+test('a card with a percent shows it, with no glyph bar (the terminal font may not have it)', async ($, on) => {
   world(on, FIXTURES['no-progress.json']!, NOW)
-  expect(has(await texts(await drawPane($)), /ctx 41% ▰▰▱▱▱▱/)).toBe(true)
+  const lines = await texts(await drawPane($))
+  expect(has(lines, /ctx 41%( ·|$)/)).toBe(true)
+  expect(has(lines, /[▰▱✶✪]/)).toBe(false)
+})
+
+test('a card whose agent status is unknown does not say so after the context', async ($, on) => {
+  world(on, FIXTURES['subagents.json']!, NOW)
+  const lines = await texts(await drawPane($))
+  expect(has(lines, /ctx .*unknown$/)).toBe(false)
+  expect(has(lines, /· unknown/)).toBe(false)
+})
+
+test('a brief title that only repeats the task is left out', async ($, on) => {
+  const base = JSON.parse(FIXTURES['fresh.json']!)
+  base.rows[4].title = `Brief: ${base.rows[4].task}`
+  world(on, JSON.stringify(base), NOW)
+  const lines = await texts(await drawPane($))
+  expect(lines).toContain('task-05')
+  expect(has(lines, /Brief:/)).toBe(false)
+})
+
+test('a brief title loses its `Brief: ` prefix', async ($, on) => {
+  const base = JSON.parse(FIXTURES['fresh.json']!)
+  base.rows[4].title = 'Brief: Go T4'
+  world(on, JSON.stringify(base), NOW)
+  expect(await texts(await drawPane($))).toContain('task-05 · Go T4')
+})
+
+test('at a narrow width the title truncates on one line and the status never shrinks', async ($, on) => {
+  world(on, FIXTURES['fresh.json']!, NOW)
+  const ui = await drawPane($)
+  const titles = (await ui.findAll({ type: 'Text' })).filter((t: any) => /^task-0\d/.test(t.text))
+  expect(titles.length).toBeGreaterThan(0)
+  expect(titles.every((t: any) => t.props.wrap === 'truncate-end')).toBe(true)
+  expect((await ui.find({ type: 'Box', key: 'badgebox' })).props.flexShrink).toBe(0)
 })
 
 test('a card that knows the tokens and not the window shows the tokens alone', async ($, on) => {
@@ -477,7 +511,7 @@ test('an action hw refuses is not on the card, and neither is its reason', async
   const card = JSON.stringify(await ui.find({ type: 'Box', key: 'row:demo:task-05' }))
   expect(card).not.toContain('has NOT reported')
   expect(card).not.toContain('no report to verify')
-  expect((await ui.findAll({ type: 'Button' })).map((b: any) => b.key).filter((k: string) => k.endsWith(':demo:task-05'))).toEqual(['receipt:demo:task-05'])
+  expect((await ui.findAll({ type: 'Button' })).map((b: any) => b.key).filter((k: string) => k.endsWith(':demo:task-05'))).toEqual(['receipt:demo:task-05', 'compose:demo:task-05'])
   const lines = await texts(ui)
   expect(lines.some(l => /^\[(done|verify|receipt|ruling)\]/.test(l))).toBe(false)
 })

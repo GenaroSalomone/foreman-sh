@@ -122,7 +122,7 @@
         "effort": { "type": ["string", "null"], "description": "The run's resolved effort, from the `effort=` line of its dispatch file; null when the run has none (or only the agent's own default). The card shows it beside the model, nothing when null." },
         "agent_status": { "enum": ["idle", "working", "unknown"], "description": "herdr's own status for the pane." },
         "turn_state": {
-          "enum": ["working", "ended_unreported", "ended_after_report", "ended_with_ruling", "ended_holding", "ended_human_boundary", "ended_awaiting_child", "handback_refused", null],
+          "enum": ["working", "ended_unreported", "ended_after_report", "ended_with_ruling", "ended_holding", "ended_human_boundary", "ended_awaiting_child", "ended_api_error", "handback_refused", null],
           "description": "The `turn_state` token the executor's turn-end adapter published; null before its first turn ends or when the vendor publishes none."
         },
         "turn_ended_at": { "oneOf": [{ "$ref": "#/$defs/ms" }, { "type": "null" }] },

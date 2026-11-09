@@ -136,7 +136,7 @@ loop:
 		a.die("cannot find invoker-common.sh beside " + bin + " — this brain/bin is incomplete")
 	}
 
-	s.info = nextHerdrSub("agent", "get", s.pane)
+	s.info = a.nextAgentGet(s.pane)
 	if s.info == "" {
 		a.die(a.nextMissingPaneMessage(s.pane))
 	}
@@ -194,7 +194,15 @@ loop:
 		a.warn(s.pane + " was launched --sdd gentle, which is retired: its session still carries ODD, and hw adds nothing of it to this task.")
 	}
 	effective := a.nextValidateSDDVendor(s.vendor, s.nextSDD, s.wtdir, s.prior)
-	a.nextValidateSDDModel(nextDispatchModel(s.rundir), effective, "this pane was launched with that model; hw next cannot change it")
+	// The model check of `hw next`, and the same ONE effort check the dispatch runs (t5_vendor_agent.go
+	// modelEffortSuffixRefusal): a pane launched with a level inside its model id had that level dropped, and re-tasking
+	// it would carry the loss forward in silence. A dispatch no longer produces such a model, so this only ever speaks
+	// about a dispatch that predates the refusal — and it names the flag the level belongs in.
+	model := nextDispatchModel(s.rundir)
+	if msg := modelEffortSuffixRefusal(model, "the model this pane was launched with"); msg != "" {
+		a.die(msg)
+	}
+	a.nextValidateSDDModel(model, effective, "this pane was launched with that model; hw next cannot change it")
 
 	a.nextReportPaneContext(s.pane)
 
@@ -258,7 +266,7 @@ loop:
 		if a.nextClearQuestion(s.pane) == 0 {
 			a.info(s.pane + " was blocked on its own opencode question modal; dismissed it (the executor sees question.rejected) and the pane reached idle. Re-tasking now.")
 		} else {
-			busy := nextHerdrSub("agent", "get", s.pane)
+			busy := a.nextAgentGet(s.pane)
 			if nextFinishedStaleStuck(busy) {
 				a.info(s.pane + " reported while the gate was checking it; delivered completion tokens now prove blocked/stuck is stale. Re-tasking without --force.")
 				a.nextResolveRoute(s, "")

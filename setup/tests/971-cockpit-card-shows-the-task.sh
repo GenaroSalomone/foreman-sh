@@ -6,7 +6,7 @@
 # showed four of a card's seven lines given to refused buttons' reasons, with full paths):
 #
 #     task-05 · Go T4: verbos escritores           ● working 3h12m · turn 41m
-#     claude · claude-sonnet-5-5 · high · ctx 41% ▰▰▱▱▱▱
+#     claude · claude-sonnet-5-5 · high · ctx 41%
 #     2 commits · last 37m ago · gate running 12m
 #     ⚠ no progress 47m · 1 ruling queued 25m          (only when there is a reason)
 #                                        [ receipt ]  (only the actions hw would run)
@@ -43,7 +43,10 @@ a refused action is a button again @@ hooks/view.tsx @@ verbs.filter(([v]) => a[
 a refused action's reason is back on the card @@ hooks/view.tsx @@     if (buttons.length > 0) { @@     for (const [v] of verbs.filter(([v]) => !a[v])) lines.push(<Text key={`why:${v}`} dimColor>{cut(`[${v}] ${a.why_not?.[v] ?? ''}`, 200)}</Text>)\n    if (buttons.length > 0) { @@ an action hw refuses is not on the card
 the attention line is drawn with no reason @@ hooks/view.tsx @@ if (attention.length > 0) { @@ if (true as boolean) { @@ the attention line is there only with a reason
 the reasons are cut to the first @@ hooks/view.tsx @@ {`⚠ ${attention.join(' · ')}`} @@ {`⚠ ${attention[0]}`} @@ says both on one attention line
-the brief's title is not drawn @@ hooks/view.tsx @@ r.title === null ? slug : @@ true ? slug : @@ a card says the task and its brief
+the brief's title is not drawn @@ hooks/view.tsx @@ t === '' || t === r.task || t === slug ? slug : @@ true ? slug : @@ a card says the task and its brief
+the title repeats the task @@ hooks/view.tsx @@ t === '' || t === r.task || t === slug ? slug : @@ t === '' ? slug : @@ a brief title that only repeats the task
+the title may wrap onto a second line @@ hooks/view.tsx @@ <Text key="id" bold dimColor={dim} wrap="truncate-end"> @@ <Text key="id" bold dimColor={dim}> @@ at a narrow width the title truncates
+the glyph bar is back @@ hooks/view.tsx @@ `ctx ${Math.round(r.ctx.pct)}%` @@ `ctx ${Math.round(r.ctx.pct)}% ▰▰▱▱▱▱` @@ a card with a percent shows it, with no glyph bar
 the project is always named @@ hooks/view.tsx @@ slug: oneProject ? r.task : r.id @@ slug: r.id @@ a card says the task and its brief
 the gate is not said @@ hooks/view.tsx @@ if (r.gate !== null) parts.push( @@ if (false as boolean) parts.push( @@ a card says its commits, the last one
 the last commit's age is lost @@ hooks/view.tsx @@ if (r.commits.last_at !== null) parts.push( @@ if (false as boolean) parts.push( @@ a card says its commits, the last one

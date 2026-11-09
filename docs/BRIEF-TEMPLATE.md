@@ -12,6 +12,13 @@
 #   requested_by: "<who, date: the request, quoted>"  and  asked: investigate | build
 #              What was asked for. hw refuses a dispatch without it where the lane requires one and
 #              warns elsewhere; `investigate` does not implement.
+#   authorizes: <destination> :: <operation> :: <Keychain handle|none>
+#              A remote operation the operator authorized, one entry per `authorizes:` line (a `;` does
+#              not separate entries). The third field is a Keychain handle, or `none`; a Bitwarden
+#              item is not a handle: it goes in `secrets:`.
+#   secrets:   [<item>, …]
+#              Bitwarden items (folder `agents`) the task needs, by name, never a value; hw checks
+#              each is there before building. See `## Access`.
 #   placement: project-tab | legacy-space | here
 #   worktree:  new | none
 #   database:  own | main
@@ -87,7 +94,13 @@ Premisa: <claim> | <fuente> | medida o asumida
 ## Out of scope
 - <what stays untouched> — <why: who owns it, or what breaks if it moves>
 
+## Limits
+- The smallest change that meets Done when: delete or reuse before adding; no new flag, alias or switch unless a Done-when rule needs it; report the diff size per item; run the reviews after the scope is final.
+
 ## Done when
+<A build: first the RULES the behaviour must hold on real data, and what the feature is FOR — the judges and the executor judge against these, not only against the code. Example:>
+- [ ] Rule: a past route-day is judged by the plan that existed that day, never a later one. Purpose: the audit shows what dispatch actually ran.
+<A rule that can only break on real data also goes in `## Testing / Verification` as a check that runs on that data.>
 - [ ] <observable, checkable condition>
 - [ ] <A build with a UI change only: product-judge ACCEPT, at most 3 rounds; after the third, `done-invoker --blocked` naming what is still rejected.>
 
@@ -99,8 +112,17 @@ code and a hash of the output go to the receipt, and `hw receipt <project>
 <task>` shows them beside what was dispatched.>
 
 ```
-bash setup/test-hw
+git diff --name-only main > "$HW_ARTIFACTS/changed"; HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw --keep-going
 ```
+
+<Step one of two, and the only line the fence pins: the touched subjects and partitions (minutes),
+which `hw done` re-runs under its per-line timeout. Step two, the full fast gate
+`HW_TEST_GATE=fast bash setup/test-hw --keep-going`, is the BRAINER's, once, on the merge tree: the executor
+does not run it. It stays out of the fence because a two-line pin loses `hw done`'s cached-verdict shortcut
+and gives the hour-long gate the same 900 s ceiling. The wording and the why live in
+`setup/CLAUDE.md` ("A setup executor verifies…"). The gate reads a private snapshot of the tree taken when
+it starts, before its first test in every mode, so edits made after that do not touch its run: never wait
+for a gate before editing.>
 
 <Only a fenced block or a 4-space-indented block counts. Inline backticks are
 prose: in these briefs a `path` and half a sentence of `VAR=1 VAR=2` are spelled
@@ -127,30 +149,23 @@ partition it lists.
 The Go tests a change touches, spelled so it runs:
 
 ```
-git diff --name-only main > /tmp/changed
-bash setup/go-test-core.sh --affected /tmp/changed
+git diff --name-only main > "$HW_ARTIFACTS/changed"
+bash setup/go-test-core.sh --affected "$HW_ARTIFACTS/changed" --run
 ```
 
 `--affected` takes a FILE OF CHANGED PATHS, one per line — never a source file, and never a
 placeholder. Written `--affected <file>` it is not the interface: `<file>` names nothing on disk,
 and a shell reads the angle brackets as a redirect. Handed a real source file it refuses (exit 2);
-`setup/go-test-core.sh --help` carries the same two lines.
+`setup/go-test-core.sh --help` carries the same interface (its example still spells the changed file as `/tmp/changed`; use `$HW_ARTIFACTS/changed`).
 
-A gate's FIRST run is `HW_TEST_GATE=fast bash setup/test-hw --keep-going`: every red shows in one
-pass instead of one per run (half an hour measured, retros 2026-10-16).
+Verify with the touched subjects and partitions only; the full fast gate is the brainer's, once on the merge tree
+(`setup/CLAUDE.md`, "A setup executor verifies…"). Not repeated here.
 
-BEFORE you queue it, run the subjects YOUR DIFF names — they are seconds and the gate is an hour:
-
-```
-git diff --name-only main > /tmp/hw-changed
-. setup/hooks/suite-trigger-pattern.sh
-python3 setup/gate-select "$PWD" /tmp/hw-changed "$SUITE_TRIGGER_PATTERN" touched \
-  | awk '$1=="touched" {print $2}' | while read -r t; do bash "setup/tests/$t" || echo "RED: $t"; done
-```
-
-and `bash setup/test-budget-gate` — it answers a new subject's missing 1:1 budget entry in seconds,
+Before the gate, also run `bash setup/test-budget-gate` — it answers a new subject's missing 1:1 budget entry in seconds,
 where the gate would spend a heavy slot to say the same thing. When
 a commit's hook is the red, its full gate output is in `$(git rev-parse --git-common-dir)/hw-precommit-last.out`.
+Run `setup/export/check` before `setup/commit-tree`: it refuses an unclassified manifest entry or a private term in seconds, instead of at the commit.
+For an old/new proof, edit through `setup/mutation/safe-mutate <file> -- <cmd>` (restores the file byte for byte), not `git show HEAD:x > x` by hand.
 
 A brief about TIME (a budget, a wait, a speed-up) names a deterministic proxy first — a count of
 processes, calls or files — and a wall-clock number only as the second measure: seconds move with the
@@ -174,15 +189,21 @@ you commit in — a path under the brain root names the brainer's checkout, whic
 is not yours to edit.
 
 ORDER WHEN THE CLOSE HAS A JUDGMENT DAY: commit, then the judges, then the fix
-rounds, and only then the ONE fast gate — on the FINAL tree. A gate run before the
-fixes is a run about a tree nobody is going to merge.
+rounds, and only then the touched-subject verification — on the FINAL tree. (The full fast gate is the
+brainer's.)
+
+A NEW TOP-LEVEL PATH (a directory or file at the repo root) needs its `include`/`exclude` line in `setup/export/manifest` in the SAME commit: `setup/commit-tree` runs `setup/export/check` and refuses an unclassified path.
 
 Commit with `setup/commit-tree`: it takes the tree and the parent from the same ref, refuses a diff that
-touches a path you did not name, and never runs a hook. `setup/commit-tree -m "<msg>" <path>...` on your
+touches a path you did not name, and runs no hook (but it does ask `setup/export/check`, in seconds, over the tree it commits). `setup/commit-tree -m "<msg>" <path>...` on your
 branch; `--onto <base>` to commit onto a branch that is not HEAD; `-F <file>` for a long message. Never
 `git add -A`, never `git commit` in a shared tree, never `--no-verify`. The lane rules are `<lane>/CLAUDE.md`
 RELATIVE TO THE REPO ROOT — inside a setup worktree that is `setup/CLAUDE.md`; the brain root's own copy is the
-same file under its lane directory, and it does not exist in the worktree.>
+same file under its lane directory, and it does not exist in the worktree.
+
+A new `setup/tests/NNNN-*.sh` takes its number from `setup/next-test-number` (it reads main and the live `task/*`
+branches), and the file is named in your first commit. A collision still happening renumbers the subject THIS branch
+introduces, never someone else's.>
 
 ## QA
 <A browser or deployed-build check: QA is handed one string that only the new build carries (a commit sha, or a marker in the bundle) and FAILS if it is not there. A 200 alone does not prove the new build.>
@@ -220,12 +241,15 @@ If engram is set up, `mem_save` the findings (`<task> — findings (<date>)`,
 type `discovery`, `topic_key: <lane>/<task>/findings`) and, if any, the open
 questions (type `manual`, `topic_key: <lane>/<task>/open-questions`). No
 `findings.md`: engram is the one store, and `hw` has already pinned your label.
-Without engram, the report carries them. Then `done-invoker "<one paragraph:
+Without engram, the report carries them. An item the task drops is a `pass` row in checks.md with `dropped: <proof>` in its evidence column: done-invoker accepts only pass, fail or unresolved, and refuses a DROPPED verdict. Then `done-invoker "<one paragraph:
 what you established, and the observation ids>"` — **at most 900 characters**, counted as characters,
 with no code fences, and each observation named as `#<id>` (the number `mem_save` returned; a summary
 that names none is refused, and one whose ids are not under this lane's project is refused too). Run `done-invoker --check "<the same paragraph>"` first when the close is a
 build: it runs the same gates (the 900 limit, checks.md's verdicts, the design boundary, the plugin
 review proof) and delivers nothing, so a refusal costs no work. Once, last thing.
+
+## After merge (brainer)
+<Installs that point at the main checkout (a `~/.config` symlink to the brainer's checkout, `install-*.sh` run from it) cannot exist before the merge: list them here for the brainer to run after it. Never ask an executor to run them, and do not widen a guard for it.>
 
 ## If you get blocked
 Report it blocked. Do not find a way around it, and close with

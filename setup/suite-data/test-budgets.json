@@ -53,6 +53,10 @@
       "exit": 0,
       "seconds": 0.59
     },
+    "1272-herdr-cockpit-mod-reads-the-contract.sh": {
+      "exit": 0,
+      "seconds": 1.24
+    },
     "128-an-ancestors-verdict-can-cover-a-quieter-tip.sh": {
       "exit": 0,
       "seconds": 1.39
@@ -99,7 +103,7 @@
     },
     "187-un-instalador-de-un-comando.sh": {
       "exit": 0,
-      "seconds": 7.49
+      "seconds": 34.17
     },
     "189-la-suite-no-escribe-en-engram.sh": {
       "exit": 0,
@@ -343,9 +347,9 @@
     },
     "993-el-instalador-construye-hw-core.sh": {
       "exit": 0,
-      "seconds": 120.0
+      "seconds": 44.17
     }
   },
-  "measured_at": "2026-11-05T22:48:20Z",
+  "measured_at": "2026-11-09T20:44:01Z",
   "touched_budget_seconds": 90
 }

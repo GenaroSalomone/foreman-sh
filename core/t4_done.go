@@ -222,6 +222,10 @@ func (d *doneRun) run(proj, task string) int {
 
 	// capture first: the live pane is the only source for an old report
 	rundir := d.newestRundir(proj, task)
+	if d.alreadyClosed(rundir, wt) {
+		a.info(proj + ":" + task + " is already closed (its own done-invoker ran `hw done`; " + wt + " holds no checkout) — nothing to verify, nothing to merge")
+		return 0
+	}
 	if rundir != "" {
 		a.snapshotDoneReport(rundir)
 	}
@@ -243,7 +247,8 @@ func (d *doneRun) run(proj, task string) int {
 	d.recordRetro(proj, task, rundir)
 
 	tab := d.latestRunRecord(proj, task, "tab")
-	if tab == "" {
+	_, _, _, onHC := hcRunRecord(rundir)
+	if tab == "" && !onHC {
 		out, _ := doneTool("", nil, "herdr", "tab", "list")
 		tab = doneJqSelectFirst(out, "tabs", proj+":"+task, "tab_id")
 	}
@@ -254,7 +259,12 @@ func (d *doneRun) run(proj, task string) int {
 		a.info(note) // # MUTATION-ANCHOR: 861-G06
 	}
 	d.closeResult = ""
-	if tab != "" {
+	if onHC {
+		if !d.closeHC(proj, task) {
+			closeFailed = 1
+		}
+		d.outcome(proj, task, "terminal on herdr-core")
+	} else if tab != "" {
 		if !d.closeObject("tab", tab, "tab "+tab+" closed ("+proj+":"+task+")", "tab "+tab+" is already gone") {
 			closeFailed = 1
 		}
@@ -271,6 +281,9 @@ func (d *doneRun) run(proj, task string) int {
 			a.info("no open tab or space labelled " + proj + ":" + task)
 			d.outcome(proj, task, "")
 		}
+	}
+	if rundir != "" && closeFailed == 0 {
+		os.WriteFile(doneTaskDir(rundir)+"/closed-ok", nil, 0o666) // what alreadyClosed trusts: the pane close itself succeeded
 	}
 	if rundir != "" {
 		doneTool("", nil, d.binDir+"/cockpit-state", "--kick", "--rundir", rundir)
@@ -469,6 +482,27 @@ func (d *doneRun) took() {
 	if total >= 5 {
 		d.info(fmt.Sprintf("hw done took %ds: verification %ds, everything else %ds", total, d.verifySecs, total-d.verifySecs))
 	}
+}
+
+// alreadyClosed: the run reported (done marker), its own close SUCCEEDED (closed-ok, written after the pane close), it was not
+// reopened by `hw revive` (and no newer report followed the close), and its worktree is no checkout any more (no .git: a reaped worktree leaves `.hw/`). Then a second
+// `hw done` would verify and `git status` the PARENT repo (measured 2026-11-09). Any other state is closed the long way.
+func (d *doneRun) alreadyClosed(rundir, wt string) bool {
+	if rundir == "" || d.force || d.keepPreview || d.dropDB {
+		return false
+	}
+	dir := doneTaskDir(rundir)
+	if !isFile(doneMarker(rundir)) || !isFile(dir+"/closed-ok") || isFile(dir+"/reopened") {
+		return false
+	}
+	// a revived run that reported again wrote a NEWER done marker: the closed-ok of its first close is stale
+	dn, e1 := os.Stat(doneMarker(rundir))
+	ok, e2 := os.Stat(dir + "/closed-ok")
+	if e1 != nil || e2 != nil || ok.ModTime().Before(dn.ModTime()) {
+		return false
+	}
+	_, err := os.Lstat(wt + "/.git")
+	return err != nil
 }
 
 // markClosedByHand is _done_mark_closed_by_hand: written once, beside the task's done marker.

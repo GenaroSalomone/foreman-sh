@@ -1,0 +1,20 @@
+# Test numbers that two or more setup/tests files already share (the old ones). setup/test-hw fails on any OTHER repeated number:
+# take the next free one. A number leaves this list when its duplicates are renumbered; nothing joins it.
+70
+73
+99
+100
+608
+825
+840
+843
+844
+847
+848
+860
+870
+871
+1040
+1041
+1100
+1245

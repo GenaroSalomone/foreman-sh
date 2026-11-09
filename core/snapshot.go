@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"hwcore/internal/mux"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -370,7 +371,13 @@ func (a *app) paneContext(pane string) (state, tok, pct string) {
 		}
 		secs = n
 	}
-	out, ok := herdrOut(time.Duration(secs)*time.Second, "agent", "read", pane, "--source", "visible")
+	read := func() (string, bool) {
+		return herdrOut(time.Duration(secs)*time.Second, "agent", "read", pane, "--source", "visible")
+	}
+	if mux.IsHCAddress(a.getenv, pane) {
+		read = func() (string, bool) { return hcOut(time.Duration(secs)*time.Second, "read", pane, "--lines", "40") }
+	}
+	out, ok := read()
 	out = bashSub(out)
 	if !ok || out == "" { // # MUTATION-ANCHOR: 816-G31
 		return "unreadable", "", ""

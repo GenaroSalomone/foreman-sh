@@ -120,7 +120,7 @@ func (a *app) nextAuthorization(brief string) (requested string, entries []strin
 		op := nextAuthTrim(rest[:i])
 		handle := nextAuthTrim(rest[i+4:])
 		if strings.Contains(handle, " :: ") {
-			return refuse("the brief's authorizes: entry " + ns + " has more than three fields (" + val + "). NOTHING was built.")
+			return refuse("the brief's authorizes: entry " + ns + " has more than three fields (" + val + "). Use one authorizes: line per entry (\";\" does not separate entries). NOTHING was built.")
 		}
 		if dest == "" || op == "" || handle == "" {
 			return refuse("the brief's authorizes: entry " + ns + " has an empty field (" + val + "). Name the destination, the operation, and a handle or none. NOTHING was built.")
@@ -161,7 +161,7 @@ func (a *app) nextAuthorization(brief string) (requested string, entries []strin
 			if user == "" {
 				user = whoami()
 			}
-			return refuse("the authorization names Keychain handles that do not resolve:" + missing + ". NOTHING was built. Store each with security add-generic-password -s <handle> -a " + user + " -w '<value>' (check: hw handle <handle>), or pass --no-handle-check.")
+			return refuse("the authorization names Keychain handles that do not resolve:" + missing + ". NOTHING was built. The third field is a Keychain handle: a Bitwarden item belongs in secrets: [item], not here. Store each handle with security add-generic-password -s <handle> -a " + user + " -w '<value>' (check: hw handle <handle>), or pass --no-handle-check.")
 		}
 	} else if check == "1" {
 		a.warn("the authorization's handles were NOT checked: no keychain backend here")

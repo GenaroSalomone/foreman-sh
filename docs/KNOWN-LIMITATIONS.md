@@ -23,6 +23,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 - [L1. macOS and Linux only](#l1-platforms-macos-and-linux-only-windows-l1b)
 - [L1b. Windows is not supported](#l1b-windows-is-not-supported)
 - [L2. herdr is required](#l2-herdr-is-a-hard-requirement)
+- [L29. The herdr app (herdr-core) carries turn-end tokens, the brainer and the executor launch](#l29-the-herdr-app-herdr-core-carries-turn-end-tokens-the-brainer-and-the-executor-launch)
 - [L2b. Homebrew on macOS, a pipe elsewhere](#l2b-native-install-homebrew-on-macos-a-pipe-elsewhere)
 
 **The Go core**
@@ -128,6 +129,52 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   shipped): the installer exits 1 with nothing written. Like Claude's, it is
   the person's step: run OpenCode once so its config directory exists, then
   `herdr integration install opencode`.
+
+### L29. The herdr app (herdr-core) carries turn-end tokens, the brainer and the executor launch
+- **Scope:** an executor running in an herdr-core (`hc`) terminal, as the herdr app starts one, and `brain <lane>`
+  run from that terminal; a TUI brainer is unchanged.
+- **Impact:** this release publishes the executor's turn-end and invoker state as `hc` labels (`hw_turn_state`,
+  `hw_turns`, `hw_done_state`, …), proved by an `hc get --json` read-back, and chooses the backend by the nearest
+  `herdr`/`herdr-core` process ancestor, so an app terminal that inherited `HERDR_ENV`/`HERDR_PANE_ID` from whoever
+  launched the app never writes onto that pane. `brain <lane>` in an app terminal now opens the brainer there — an hc
+  terminal labelled `label=brain` in the lane's brain directory, opted into the window with `herdr.space` — and `hw`
+  resolves `HW_INVOKER_PANE` to it (`hc ls`/`hc get`, normalised into `herdr pane list`'s shape). `hw` run from an app
+  terminal now launches the executor there too: one `hc run --bg --no-parent --no-notify` terminal named for the task,
+  labelled `hw_project`/`hw_task`/`hw_run` and `herdr.space=<the lane's space>`, with the herdr variables unset and the
+  brief as claude's launch task (proved by `hc get`: `status=working` or a turn past 0); a second dispatch of the same
+  task finds it by `hc ls --label hw_project= --label hw_task=` and launches nothing. Only claude executors on the plain lanes (setup,
+  git-worktree, repoless) are launched; a lane with dev servers, another vendor, `--here` and the cheap explorer's
+  arming are refused or skipped by name, and the receipt records no session id on hc. `hw done` of that run kills and removes its terminals by label (`hc ls --label hw_project= --label hw_task=`, then `hc kill` and `hc rm`: a terminal with other labels is never touched; dispatch records the run as `.hw/<run>/hc`, and a run without that record makes no `hc` call), the in-use guard reads the terminal's status and report labels from `hc get`, and `hw reap`/`hw status`/the worktree occupancy count an hc run's live terminals as occupants of its worktree (an unreadable `hc ls` is "unobserved", never "free").
+  `channel-send hc <terminal> - <message>` delivers to an hc terminal (a brainer `brain <lane>` opened in the app, or an
+  executor): redirects wait for the receiver's `idle`/`done` status with `hc wait`, `--report` and a held `--ruling`
+  reply do not, `hc send` is never given `--if` (it refuses a finished Claude) or `--force` (it may answer a dialog), and
+  there is no raw-keystroke fallback for a blocked receiver (exit 1, a person's prompt). Delivery is proven from the
+  receiver — its status word, its `turn`, or the turn-end labels moved after the send — so a send nothing confirms inside
+  `HW_HC_PROOF_MS` (15 s) is exit 5, and a receiver whose turn ends in `error` is exit 4. `done-invoker` and
+  `ask-invoker` use it whenever `HW_INVOKER_PANE` is an hc address (no `:`) and they run on herdr-core; an executor on
+  the app with a TUI brainer keeps the herdr route. `ask-invoker` works on hc: its hold records route `hc` and the
+  terminal's own address, which turn-end and `holdfacts` check. `hw ruling <terminal>` reads an hc executor with `hc get`
+  and queues; the turn-end hook delivers, as on herdr. `hw next <terminal>` works on hc: the gate reads `hc get`
+  (idle/done opens it, blocked is a person's prompt, anything else waits with `hc wait` up to the budget), keys go through `hc keys`, and the
+  task is delivered with `channel-send hc`; there is no endpoint or screen witness for an app terminal, so the "settled, no
+  budget helps" refusal does not exist there. `hc wait`'s own exit code is not interpreted (its meanings are unmeasured): a failed wait backs off a
+  second and `hc get` decides. `hw outbox flush <lane> --to <terminal>` delivers with the `hc` vendor when the target is an hc address, and
+  `brain <lane>` in the app runs it once a started brainer has reported a status. On hc the brainer gets no cockpit writer, and `--reset`/`--resume`/`--self`/`--await-idle` and the `relaunch` verb are refused by name
+  (and `brain relaunch` in the TUI does not see a brainer living in the app). hc labels do
+  not expire (no TTL) and `clear` is not applied on hc. An `hc` terminal's own `PATH` is the core's: `brain` is not on
+  it, and neither is `hw`. The read side sees app executors: the cockpit state (`bin/cockpit-state`) and `hw status` list
+  the live `hc ls --label hw_task` terminals beside herdr's panes (status and turn from `hc get`), `state-witness` reads
+  `hc get`/`hc read` when herdr knows no such pane, and `stall-watch` asks `hc get` whether the terminal is live; `hw`
+  looks for and focuses no herdr tab or space on the app route. An app row has no statusline context (it falls back to the
+  transcript). `hw wait` and `hw unstick` still read herdr only.
+- **Evidence:** `measured` — `hc label`/`hc get` round-trip, the Stop hook firing in an hc terminal, the ancestry rule
+  (design 0b P5, P7, P9, P12, P14; setup test 1261, the cockpit mod 1272), and the live brainer in the app shown by `hc ls --label
+  label=brain`, `hc get` and `herdr-app ls`, with `hw … --dry-run` printing `invoker t1b (resolved by env; verified as
+  label=brain cwd=…)` (setup tests 1262 and 1263), the launch argv and the dry-run route (core `TestHCDispatch*`), and the `hc` route, the invokers' reports, the ask hold and `hw ruling`
+  against a fake `hc` that records argv (setup test 1264; core/invokers `TestHC*`), the read tools by a fake `hc` (core `TestHCRun*`, `TestHCDispatchNeverFocusesAHerdrSpace`, setup tests 1278 and 1266), and `hw next`, the outbox flush and the wait backoff the same way (setup tests 1279, 1262), and `hw done`/occupancy against a stateful fake `hc` (core `TestDoneRunEndsTheHCTerminal`, `TestHCOccupancy`; red on the old code). Against a live core only the
+  round trip recorded in the channel task's findings was run; the read tools, `hw next` and the flush against a live app are `unverified` (the operator, from an app terminal with a finished executor `tX`, `hw next tX --dry-run`, then without `--dry-run`; and `hw outbox flush <lane> --to <brainer terminal>`); a live `hw done` of a real app terminal and a live launch from an app terminal are `unverified`, as are the remaining slices (design §5 and §6b).
+- **Workaround:** keep dispatch and delivery in the TUI. Do not start the app from inside a herdr pane: the core gives
+  every terminal the launcher's environment until it restarts.
 
 ### L2b. Native install: Homebrew on macOS; a pipe elsewhere
 - **Scope:** `brew install GenaroSalomone/tap/foreman-sh` and
@@ -332,14 +379,24 @@ it leaves the brain directory, is unguarded even with the hook registered.
     `pi_global_rules` receipt row. A pi-subagents child does not get it.
   - **Plugin skills are read, not invoked.** pi has no Skill tool: the plugin
     package (`-e`) puts its skills in the executor's catalogue under their bare
-    names, and the model runs one by reading its `SKILL.md` (or `/skill:<name>`);
-    pstack's own pi extension supplies the `agent` tool for `pstack:comment-sicko`.
+    names, and the model runs one by reading its `SKILL.md` (or `/skill:<name>`).
+    The plugins' AGENTS are registered with pi-subagents under the name a Claude
+    executor reads from `--plugin-dir`: hw names each declared plugin's `agents/`
+    directory (`HW_PI_PLUGIN_AGENT_DIRS`, `<plugin>=<dir>`) and the adapter
+    registers every file in it as `<plugin>:<name>`, so `subagent` with
+    `pstack:comment-sicko` resolves instead of answering `Unknown agent`
+    (measured 2026-11-09; `setup/tests/1273`). pstack's own pi extension also
+    supplies an `agent` tool for the same names. Where pi-subagents is not
+    loaded, the dispatch says the declared agent piece cannot be launched
+    instead of dropping it.
     `done-invoker` proves a pi executor's review skills from its pi session
     (a `SKILL.md` read, an `agent`/`subagent` call), not from the report text.
-  - **In a product lane, pi is not at parity on skills.** Of the skills a Claude
-    executor loads, pi gets `judgment-day`, `agent-browser` when the brief says
-    `requires: browser`, and the checkout's `.claude/skills` (minus `speckit-*`)
-    as one directory; the user-level and plugin skills are not passed.
+  - **In a product lane, pi is not at parity on user-level skills.** Of the skills
+    a Claude executor loads, pi gets `judgment-day`, `agent-browser` when the brief
+    says `requires: browser`, and the checkout's `.claude/skills` (minus
+    `speckit-*`) as one directory; the user-level skills are not passed. The
+    plugins the brief declares ARE passed, as packages (`-e`, skills included),
+    exactly as in a repoless lane (`golden-t5/pi-plugins-one`).
   - **The bash guard in a product lane is string-level too.** It refuses a
     command that names the main checkout or a sibling worktree, and leaves the
     executor's own worktree open. A relative path that climbs out of the worktree
@@ -370,8 +427,8 @@ it leaves the brain directory, is unguarded even with the hook registered.
     `agent_session` through herdr; `--thinking off` runs `low` on
     `deepseek-v4.1-flash` (pi clamps it, and hw reports the divergence); the
     exact body the real opencode-go returns for a spent plan is `unverified`, and
-    there is no pre-dispatch usage gate (the cap is shared dollars: a spent plan
-    ends the run as `provider_quota`, and the fallback model is for model errors
+    there is no pre-dispatch usage gate, only a manifest warning (the cap is shared dollars: a spent plan
+    ends the run as `provider_quota`, reported blocked, and the fallback model is for model errors
     only).
   - **Optimisations: claude has one, pi's equivalent or why not (measured 2026-11-04).** Each row names the
     mechanism, where hw applies it, and what holds it. A row marked `pending` is another task's and says so.
@@ -1081,9 +1138,18 @@ it leaves the brain directory, is unguarded even with the hook registered.
   one `channel-send --report` per frozen stretch. A tree stopped by anything else (a debugger, `Ctrl-Z`) alerts the same
   way, and the text says "most likely" the guard. A run frozen under 20 minutes, an alert whose delivery fails
   (the failure is a line in `heavy-alerts.log`), and a `setup/heavy` that is itself stopped, raise nothing.
+  (3) A holder or a waiter whose hw run has REPORTED is reclaimed and its tree ended, but only a job that started
+  (owner file's epoch, or the queue ticket's mtime) at or before the run's `done` marker: a job that started after it
+  belongs to an executor reopened by a hand-written `channel-send`, and is left alone. The comparison is in whole
+  seconds, so a job started in the very second of the report is still reclaimed. (4) While a job runs it holds
+  `caffeinate -i -w <job pid>` (PreventUserIdleSystemSleep, a user process, no `pmset`); a machine without `caffeinate` does nothing. **No executor-level hold exists:** an executor outside a heavy
+  job relies on its vendor — Claude Code was measured holding its own `caffeinate -i -t 300`; pi, OpenCode and Codex are
+  `unestablished`. Closing the lid is not covered by `-i` (not measured here).
 - **Evidence:** `measured` with stubbed `memory_pressure`, `ps`, clock and `channel-send` by
   `setup/tests/1040-una-corrida-pesada-a-la-vez.sh` (F12-F16; mutants H09-H13). `unverified`: against the real guard
   freezing a real run (nothing was frozen for real), and `ps` state letters on Linux.
+- **Evidence:** also `setup/tests/1040-una-corrida-pesada-a-la-vez.sh` F28 (mutant H21) and F29 (mutant H22,
+  macOS: `pmset -g assertions`).
 - **Workaround:** `setup/heavy --status`; free memory (the guard resumes the run over its resume line).
 
 ### L28. `secret-unlock --auto` tells a wrong password from a broken tool by bw's words, and a broken bw is caught at the next hourly run, not at update time

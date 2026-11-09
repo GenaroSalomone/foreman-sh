@@ -2183,6 +2183,42 @@ def _unwrap_env(text, budget=None):
     return text
 
 
+# A MUTATOR DENIES FOR THE PATH IT WRITES, NOT FOR A PATH ANOTHER COMMAND READS.
+# Measured 2026-11-09 (batch-1109-pm): `mkdir -p .artifacts; cat <brain>/x`,
+# `rm -f .artifacts/x; rg foo <brain>/y` and `cp a b; ls <brain>` were refused
+# (6 blocks in 4 runs, each a retry) because a mutator ANYWHERE plus a protected
+# path ANYWHERE denied. Here the command is cut at `;`, `&&`, `||` and newlines
+# (a pipeline stays whole: `rg -l x <brain> | xargs rm` is one piece that names
+# the root AND mutates). The mutator pieces are cleared only when each is a
+# plain run of path-like words (no quote, `$`, backtick, glob, redirect, paren)
+# that names no root, lands in none, and no `cd` exists anywhere to move them.
+_SIMPLE_PIECE = re.compile(r"[\w@%+=:,./~ \t-]*")
+_CD_WORD = re.compile(r"(?<![\w-])(?:cd|pushd|popd)(?![\w-])")
+
+
+def _mutators_clear_of_protected(cfg, text, cwd):
+    if not (cwd and _is_abs(cwd)) or _CD_WORD.search(text):
+        return False
+    seen = False
+    for piece in re.split(r";|&&|\|\||\n", text):
+        mutates = any(_is_command_position(piece, m.start())
+                      for m in MUTATORS.finditer(piece)) or any(
+            _is_command_position(piece, m.start())
+            for m in FIND_WRITES.finditer(piece))
+        if not mutates:
+            continue
+        seen = True
+        variants = (piece, re.sub(r"\\(.)", r"\1", piece), _canon_text(piece))
+        # a symlink or `..` operand INSIDE the mutating piece may land in a root; one in a read-only piece beside it does not matter
+        if (not _SIMPLE_PIECE.fullmatch(piece)
+                or _resolves_protected(cfg, piece)
+                or any(root in v for root in cfg["roots"] for v in variants)
+                or any(_word_lands(cfg, v, cwd, bare=True)
+                       for w in piece.split() for v in (w, w.partition("=")[2]) if v)):
+            return False
+    return seen
+
+
 def decide(cfg, command, cwd):
     """None to allow, or (rule, reason) to refuse.
 
@@ -2436,6 +2472,9 @@ def _decide(cfg, command, cwd, unwrap):
         _is_command_position(masked, m.start())
         for m in FIND_WRITES.finditer(masked)
     )
+    if (mutator_invoked and not (stands_in_protected or cds_into_protected)
+            and _mutators_clear_of_protected(cfg, no_heredoc, cwd)):
+        mutator_invoked = False
     if mutator_invoked:
         if content_only:
             return ("mutator",

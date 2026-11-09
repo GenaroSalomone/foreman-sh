@@ -3,6 +3,8 @@ package invokers
 import (
 	"os"
 	"strings"
+
+	"hwcore/internal/mux"
 )
 
 // vendorHasNativeTransport is invoker_vendor_has_native_transport.
@@ -21,6 +23,9 @@ func (c *Ctx) route() string {
 		c.get("HW_INVOKER_SESSION") != "" && c.get("HW_INVOKER_ENDPOINT") != "" {
 		return v
 	}
+	if mux.IsHCAddress(c.get, c.get("HW_INVOKER_PANE")) {
+		return "hc"
+	}
 	return "herdr"
 }
 
@@ -31,11 +36,11 @@ func (c *Ctx) channelSend() string { return c.BinDir + "/channel-send" }
 func (c *Ctx) deliver(message, reportState string) int {
 	route := c.route()
 	o := runOpts{stdin: c.Stdin, stdout: c.Stdout, stderr: c.Stderr}
-	if route == "herdr" {
+	if route == "herdr" || route == "hc" {
 		if reportState != "" {
-			return c.run(o, c.channelSend(), "--report", "--report-state", reportState, "herdr", c.get("HW_INVOKER_PANE"), "-", message)
+			return c.run(o, c.channelSend(), "--report", "--report-state", reportState, route, c.get("HW_INVOKER_PANE"), "-", message)
 		}
-		return c.run(o, c.channelSend(), "--report", "herdr", c.get("HW_INVOKER_PANE"), "-", message)
+		return c.run(o, c.channelSend(), "--report", route, c.get("HW_INVOKER_PANE"), "-", message)
 	}
 	return c.run(o, c.channelSend(), route, c.get("HW_INVOKER_SESSION"), c.get("HW_INVOKER_ENDPOINT"), message)
 }
@@ -45,7 +50,7 @@ type sender struct{ vendor, session, endpoint string }
 // resolveSender is invoker_resolve_sender: the pane's own native address, live.
 func (c *Ctx) resolveSender(named string) sender {
 	pane := named
-	if pane == "" {
+	if pane == "" && mux.Backend(c.get) != mux.HC { // an app terminal's HERDR_PANE_ID is its launcher's pane, never its own
 		pane = c.get("HERDR_PANE_ID")
 	}
 	s := sender{}
@@ -176,6 +181,9 @@ func (c *Ctx) replyCommand(logicalID, intent, holdFile string) (string, error) {
 		route, target, endpoint = s.vendor, s.session, s.endpoint
 	} else {
 		route, target, endpoint = "herdr", c.get("HERDR_PANE_ID"), "-"
+		if mux.Backend(c.get) == mux.HC {
+			route, target = "hc", c.selfAddress()
+		}
 	}
 	if holdFile != "" {
 		if !strings.HasPrefix(holdFile, "/") {
@@ -183,7 +191,7 @@ func (c *Ctx) replyCommand(logicalID, intent, holdFile string) (string, error) {
 		}
 		body := "version=1\nstate=undelivered\nintent=" + intent + "\n" +
 			"route=" + route + "\ntarget=" + target + "\nlogical_id=" + logicalID + "\n" +
-			"pane=" + c.get("HERDR_PANE_ID") + "\nrun=" + c.or("HW_RUN", "norun") + "\n"
+			"pane=" + c.selfAddress() + "\nrun=" + c.or("HW_RUN", "norun") + "\n"
 		if err := os.WriteFile(holdFile, []byte(body), 0o600); err != nil {
 			return "", die("could not record pending reply fact at %s", holdFile)
 		}

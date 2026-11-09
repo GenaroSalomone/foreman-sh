@@ -4,6 +4,8 @@
 # turn-end facts an agent keeps forgetting to act on.
 #
 #   ~/.claude/settings.json  → hooks.Stop → bash '<this file>' stop
+#   ~/.claude/settings.json  → hooks.StopFailure → bash '<this file>' stop-failure   (a turn that died on an API error)
+#   ~/.claude/settings.json  → hooks.PostToolUse → bash '<this file>' post-tool   (a queued ruling, delivered between two tool calls)
 #   ~/.codex/hooks.json      → hooks.Stop → bash '<this file>' stop
 #
 # WHY THIS EXISTS
@@ -63,14 +65,24 @@ trap 'exit 0' EXIT
 # Mirrors ~/.claude/hooks/herdr-agent-state.sh, which takes its event as argv[1]
 # rather than trusting the payload. Anything else is not ours.
 case "${1:-}" in
-  stop) ;;
+  stop|stop-failure|post-tool) ;;
   *) exit 0 ;;
 esac
 
-# ── guard 2: are we inside a herdr pane at all ─────────────────────────────
-[ "${HERDR_ENV:-}" = "1" ]          || exit 0
-[ -n "${HERDR_SOCKET_PATH:-}" ]     || exit 0
-[ -n "${HERDR_PANE_ID:-}" ]         || exit 0
+# post-tool runs after EVERY tool call: with nothing queued, answer before the core lookup and its staleness scan.
+if [ "${1:-}" = post-tool ]; then
+  compgen -G "${HW_WORKDIR:-/nonexistent}/.hw/${HW_RUN:-none}/pending-ruling*" >/dev/null || exit 0
+fi
+
+# ── guard 2: are we inside a multiplexer pane at all ───────────────────────
+# An hc terminal (the herdr app) carries HC_TERMINAL_ID and no HERDR_*, and an
+# app terminal inherits the environment of whoever launched the app (P12), so
+# HERDR_ENV alone is not proof. hw-core's mux decides which backend publishes.
+if [ -z "${HC_TERMINAL_ID:-}" ]; then
+  [ "${HERDR_ENV:-}" = "1" ]        || exit 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ]   || exit 0
+  [ -n "${HERDR_PANE_ID:-}" ]       || exit 0
+fi
 
 # ── the Go implementation: hw-core stop-hook (core/stop_hook.go) ───────────
 # 0.7.0 removed the bash body: this file stays the registered hook (install.sh, ~/.claude/settings.json, ~/.codex/hooks.json) and

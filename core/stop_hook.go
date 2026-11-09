@@ -6,7 +6,7 @@ package main
 //
 // What it does, in the order of the bash it ported:
 //
-//	guards 1-3   the action is `stop`, the session is a herdr pane, the payload is not a subagent's (`"agent_id"`)
+//	guards 1-3   the action is `stop`, the session is a herdr or herdr-core pane, the payload is not a subagent's (`"agent_id"`)
 //	             -- anything else is inert, exit 0
 //	brainer      renew the brainer's engram session lease; then, when ENGRAM_PROJECT is `brain` and this is no hw run,
 //	             refuse a handback in the final paragraph (the Python heredoc of the bash, ported below)
@@ -50,11 +50,16 @@ type stopHook struct {
 }
 
 func (h *stopHook) run(args []string, stdin io.Reader) {
-	if len(args) == 0 || args[0] != "stop" { // guard 1: the action this file was wired for  # MUTATION-ANCHOR: 855-G01
+	apiError := len(args) > 0 && args[0] == "stop-failure"  // StopFailure: the turn died on an API error (a spent quota) and Stop never fires
+	postTool := len(args) > 0 && args[0] == "post-tool"     // PostToolUse: between two tool calls of one turn, the one clean boundary inside it
+	if len(args) == 0 || (args[0] != "stop" && !apiError && !postTool) { // guard 1: the action this file was wired for  # MUTATION-ANCHOR: 855-G01
 		return
 	}
 	g := h.getenv
-	if g("HERDR_ENV") != "1" || g("HERDR_SOCKET_PATH") == "" || g("HERDR_PANE_ID") == "" { // # MUTATION-ANCHOR: 855-G02
+	// guard 2: inside a pane at all. An hc terminal carries HC_TERMINAL_ID and
+	// no HERDR_*, and the app's terminals inherit the launcher's env (P12), so
+	// HERDR_ENV alone is not proof. mux decides which backend publishes.
+	if g("HC_TERMINAL_ID") == "" && (g("HERDR_ENV") != "1" || g("HERDR_SOCKET_PATH") == "" || g("HERDR_PANE_ID") == "") { // # MUTATION-ANCHOR: 855-G02
 		return
 	}
 	// guard 3: the completed turn, read once (`head -c 262144`; a command substitution drops NULs and trailing newlines)
@@ -64,6 +69,9 @@ func (h *stopHook) run(args []string, stdin io.Reader) {
 		return
 	}
 
+	if postTool && g("HW_RUN") == "" { // a brainer has no queue to drain between tool calls
+		return
+	}
 	if g("HW_RUN") == "" && g("BRAIN_ENGRAM_SESSION") != "" && g("ENGRAM_PROJECT") != "" { // # MUTATION-ANCHOR: 855-E01
 		h.renewBrainerLease()
 	}
@@ -98,7 +106,15 @@ func (h *stopHook) run(args []string, stdin io.Reader) {
 	if registered != "" && !strings.HasPrefix(registered, "none") && payload != "" && payload != registered { // # MUTATION-ANCHOR: 855-X03
 		return
 	}
-	h.turnEnd()
+	if postTool {
+		h.postTool(stateDir)
+		return
+	}
+	if apiError {
+		h.turnEnd("--api-error")
+		return
+	}
+	h.turnEnd("--hook-json")
 }
 
 // renewBrainerLease is the block of the bash that keeps a brainer's engram session selectable: POST /sessions carries a
@@ -109,9 +125,25 @@ func (h *stopHook) renewBrainerLease() {
 	t.engramLeasePost(h.getenv("BRAIN_ENGRAM_SESSION"), h.getenv("ENGRAM_PROJECT"), cwd)
 }
 
+// postTool hands a queued ruling to the model between two tool calls, as PostToolUse additionalContext, so a working
+// executor reads it now and not at a turn end that a long turn may never reach. Same claim as the turn end and
+// done-invoker: each ruling is taken by one rename, so exactly one route delivers it.
+func (h *stopHook) postTool(stateDir string) {
+	if len(t3QueuePending(stateDir)) == 0 { // every tool call of every executor pays this: one readdir when there is nothing
+		return
+	}
+	t := &t3{app: &app{getenv: h.getenv}, fs: newFsx(h.getenv)}
+	ruling, ok := t.queueClaimAll(stateDir, "post-tool")
+	if !ok {
+		return
+	}
+	msg := "RULING FROM YOUR BRAINER, queued with `hw ruling` while you were working and delivered now, between two tool calls, because it changes the premise of your work. Read it before your next step, and if it contradicts what you have already done, say so rather than quietly redoing it.\n\n" + ruling
+	io.WriteString(h.out, "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":"+t3PyJSONStr(msg)+"}}\n")
+}
+
 // turnEnd is `hw executor-turn-end --hook-json` with HW_TURN_END_PAYLOAD the hook's input: its stdout (the block JSON)
 // is the hook's; its stderr is not.
-func (h *stopHook) turnEnd() {
+func (h *stopHook) turnEnd(flag string) {
 	inner := h.getenv
 	getenv := func(k string) string {
 		if k == "HW_TURN_END_PAYLOAD" {
@@ -134,7 +166,7 @@ func (h *stopHook) turnEnd() {
 	if work == "" {
 		work = tab.work
 	}
-	a := &app{term: t, args: []string{"--hook-json"}, getenv: getenv, stdin: strings.NewReader("")}
+	a := &app{term: t, args: []string{flag}, getenv: getenv, stdin: strings.NewReader("")}
 	a.c = &ctx{t: tab, brain: brain, work: work, home: home, getenv: getenv}
 	func() {
 		defer func() {

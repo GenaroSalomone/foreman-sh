@@ -28,11 +28,13 @@ const S: {
   busy: boolean
   notes: Notes
   open: Open
+  composing: Open
   rule: Rule | null
 } = {
   loaded: null,
   notes: {},
   open: new Set(),
+  composing: new Set(),
   rule: null,
   sig: '',
   lastClass: '',
@@ -179,6 +181,8 @@ function acts($: any): Acts {
     ruling: async (r, text) => {
       if (text.trim() === '') return
       await runVerb($, 'ruling', r.id, namesOf(r), text)
+      S.composing.delete(r.id)
+      redraw($)
     },
     reply: async (r, text) => {
       if (text.trim() === '' || r.ask === null || typeof r.ask.pending_reply !== 'string') return
@@ -187,6 +191,11 @@ function acts($: any): Acts {
     subagents: r => {
       if (S.open.has(r.id)) S.open.delete(r.id)
       else S.open.add(r.id)
+      redraw($)
+    },
+    compose: r => {
+      if (S.composing.has(r.id)) S.composing.delete(r.id)
+      else S.composing.add(r.id)
       redraw($)
     },
     verify: async r => {
@@ -224,6 +233,7 @@ async function tick($: any): Promise<void> {
       const ids = new Set(m.state.rows.map(r => r.id))
       for (const id of Object.keys(S.notes)) if (!ids.has(id)) delete S.notes[id]
       for (const id of [...S.open]) if (!ids.has(id)) S.open.delete(id)
+      for (const id of [...S.composing]) if (!ids.has(id)) S.composing.delete(id)
     }
     const bucket = Math.floor(now / RELATIVE_TICK_MS)
     if (changed || m.cls !== S.lastClass || bucket !== S.lastBucket) {
@@ -244,6 +254,7 @@ export const register: Register = on => {
   S.busy = false
   S.notes = {}
   S.open = new Set()
+  S.composing = new Set()
   S.rule = null
 
   on('session.start', async ($, e, next) => {
@@ -286,6 +297,6 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { m, now } = await model($)
-    return pane($.ui.resolve(e), m, now, acts($), S.notes, S.open)
+    return pane($.ui.resolve(e), m, now, acts($), S.notes, S.open, S.composing)
   })
 }

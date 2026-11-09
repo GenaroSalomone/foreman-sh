@@ -22,6 +22,7 @@ Registered by the tracked `.claude/settings.json` (Claude, so a worktree executo
 `setup/pi/hw-executor.ts` (pi, which calls this file with the same payload). FAILS CLOSED: an import failure, a crash
 while deciding and an unreadable payload all deny, as the hook command ends in `|| exit 2`.
 """
+import ast
 import json
 import os
 import re
@@ -105,6 +106,96 @@ def cd_into(cfg, command, cwd):
     return None
 
 
+# A python heredoc that EDITS a file whose TEXT mentions brain (a note, a decisions entry, a doc) is not a write into brain,
+# but `decide` keeps an interpreter's heredoc as code and so refuses the root it names (n=491, retro herdr-app-premium-pass).
+# The body is parsed: a string that holds the root is TEXT only when it is an argument of a text method (replace, write,
+# format, …) that is not itself inside a path-taking call (open, Path, os.*, shutil.*, subprocess.*, exec, eval). Any other
+# use (a literal assigned, a call to open, an f-string, a body that does not parse) leaves the body in the scan: refused as before.
+# A text method whose RESULT is assigned and then handed to a path sink (`dst = s.replace(…); open(dst, 'w')`) is followed one
+# assignment deep; a result used inline as a path (`open('{}'.format(…))`) is refused by the sink walk above.
+# ONLY A QUOTED DELIMITER: an unquoted one lets the shell expand $(…) and backticks in the body before python runs.
+# Not a sandbox: a path built at run time (`'a' + 'b'`, a variable) is beyond this check, as for the other guards.
+_PY_HEREDOC = re.compile(r"^[^\n]*?(?<![\w-])python3?\s+-[^\n]*<<-?\s*(['\"])(\w+)\1[^\n]*\n(.*?)^\t*\2[ \t]*$", re.M | re.S)
+_TEXT_METHODS = {"replace", "write", "writelines", "format"}
+_FILE_MODULES = {"os", "shutil", "subprocess", "pathlib", "sys"}  # os.replace(a, b) moves a file: not text
+_PATH_SINKS = {"open", "Path", "PurePath", "exec", "eval", "compile", "__import__", "system", "popen", "run", "call",
+               "check_call", "check_output", "Popen", "rename", "replace_file", "remove", "unlink", "rmtree", "copy",
+               "copy2", "copyfile", "move", "write_text", "write_bytes", "mkdir", "makedirs", "chmod", "symlink", "link", "touch"}
+
+
+def _called_name(call):
+    f = call.func
+    if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in _FILE_MODULES:
+        return "os." + f.attr  # a file operation, never a text method
+    return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else ""
+
+
+def _body_mentions_brain_as_text_only(body, roots):
+    """True when `body` parses, and every string holding a root is text handed to a text method outside any path sink."""
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return False
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    tainted = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr) and any(r in ast.unparse(node) for r in roots):
+            return False
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and any(r in node.value for r in roots):
+            par = parents.get(node)
+            ok = False
+            while par is not None:
+                if isinstance(par, ast.Call):
+                    name = _called_name(par)
+                    if name.startswith("os.") or (name in _PATH_SINKS and name not in _TEXT_METHODS):
+                        return False
+                    if name in _TEXT_METHODS and node in par.args:
+                        ok = True
+                    elif not ok:
+                        return False
+                par = parents.get(par)
+            if not ok:
+                return False
+            stmt = parents.get(node)
+            while stmt is not None and not isinstance(stmt, ast.stmt):
+                stmt = parents.get(stmt)
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):  # `dst = s.replace(…)`: followed into a path sink below
+                tainted |= {n.id for t in (getattr(stmt, "targets", None) or [stmt.target]) for n in ast.walk(t) if isinstance(n, ast.Name)}
+
+    def sunk(call):  # a path-taking call; write_text/write_bytes take CONTENT, which is the legitimate use of an edited text
+        name = _called_name(call)
+        return name.startswith("os.") or (name in _PATH_SINKS and name not in ("write_text", "write_bytes"))
+    return not any(isinstance(c, ast.Call) and sunk(c) and any(isinstance(n, ast.Name) and n.id in tainted
+                   for a in [*c.args, *(k.value for k in c.keywords)] for n in ast.walk(a)) for c in ast.walk(tree))
+
+
+def without_text_only_heredocs(command, roots):
+    """`command` with the body of each python heredoc that only quotes brain as text removed."""
+    def cut(m):
+        return m.group(0)[: m.start(3) - m.start(0)] + m.group(0)[m.end(3) - m.start(0):] \
+            if _body_mentions_brain_as_text_only(m.group(3), roots) else m.group(0)
+    return _PY_HEREDOC.sub(cut, command)
+
+
+# brain's closing tools, run by path as the HEAD of a command (after a boundary, never as an operand). The docstring
+# allows them; but `decide` refuses any command that has an interpreter (`python3 - <<EOF`) AND names brain anywhere, so
+# `python3 - <<EOF … EOF` followed by `<brain>/bin/done-invoker` was denied.
+_TOOL_HEAD = r"(^|(?<![>\\])[;&|(\n]\s*)(?:%s)/bin/(?:done-invoker|ask-invoker)(?=\s|$)"
+
+
+def without_closing_tools(command):
+    """`command` with brain's done-invoker/ask-invoker, when run by path as a command, replaced by a bare word."""
+    home = drw._shell_home()
+    text = command.replace("$HOME", home).replace("${HOME}", home)
+    text = re.sub(r"(?<![\w~])~/", lambda _m: home + "/", text)
+    roots = {drw.BRAIN_ROOT, drw._real(drw.BRAIN_ROOT)}
+    text = without_text_only_heredocs(text, roots)
+    return re.sub(_TOOL_HEAD % "|".join(re.escape(r) for r in roots), r"\1done-tool", text)
+
+
 def main(stream=None):
     try:
         payload = json.load(stream or sys.stdin)
@@ -142,7 +233,7 @@ def main(stream=None):
                      "(setup/commit-tree, git restore, an editor). Stay in your worktree (%s); read brain by absolute "
                      "path or `git -C`, and run brain's bin/ tools by path."
                      % (standing, os.environ.get("HW_WORKDIR") or "$HW_WORKDIR"))
-            verdict = drw.decide(cfg, command, cwd)
+            verdict = drw.decide(cfg, without_closing_tools(command), cwd)
             if verdict:
                 deny(verdict[1])
         else:

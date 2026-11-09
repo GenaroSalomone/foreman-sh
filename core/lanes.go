@@ -32,6 +32,7 @@ type table struct {
 	work   string            // _LC_WORK_DEFAULT
 	// T2: operator and retention (the _LC_OPERATOR_DEFAULT and _LC_RETENTION_* values, as the strings jq tostring prints)
 	operator                         string
+	piRosterName                     string // projects.json `pi_roster`, "" when the key is absent (= go)
 	retArtifact, retBackup, retBuild string
 	survey                           []string // HW_LANES_SURVEY: survey_order first, then the other lanes in table order
 }
@@ -313,7 +314,7 @@ func loadTable(file, home string) (*table, []string) {
 	}
 	var top []string
 	for _, k := range sortedKeys(root) {
-		if !has([]string{"comment", "work", "operator", "metrics_direct", "survey_order", "retention", "lanes"}, k) {
+		if !has([]string{"comment", "work", "operator", "metrics_direct", "survey_order", "retention", "pi_roster", "lanes"}, k) {
 			top = append(top, k)
 		}
 	}
@@ -403,6 +404,12 @@ func loadTable(file, home string) (*table, []string) {
 		}
 	}
 	t.operator = orDefault(field(root, "operator"), "the operator")
+	if v := field(root, "pi_roster"); v != nil {
+		if v.kind != vStr || !has([]string{"go", "free"}, v.s) {
+			return bad("pi_roster is go (the paid opencode-go roster) or free (opencode's free models)")
+		}
+		t.piRosterName = v.s
+	}
 	t.retArtifact, t.retBackup, t.retBuild = "30", "60", "7"
 	if r := field(root, "retention"); r != nil {
 		t.retArtifact = orDefault(field(r, "artifact_retention_days"), "30")
@@ -573,3 +580,6 @@ func (c *ctx) lanePath(name, fieldName, task string) string {
 	s = strings.ReplaceAll(s, "{task}", task)
 	return c.expandBrain(s)
 }
+
+// piRoster is the pi roster projects.json's `pi_roster` selects: go (the paid one) when the key is absent.
+func (t *table) piRoster() piRoster { return piRosters[orDefaultStr(t.piRosterName, piRosterDefault)] }

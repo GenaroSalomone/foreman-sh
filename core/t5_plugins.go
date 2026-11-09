@@ -133,8 +133,12 @@ func (d *dsp) pluginsLines() string {
 	}
 	if d.agent == "pi" {
 		var flags []string
-		for _, n := range declared {
-			flags = append(flags, "-e "+d.pluginsDir()+"/"+n)
+		for _, pl := range d.piPluginLoads() {
+			why := ""
+			if len(pl.shadow) > 0 {
+				why = " (mirror: " + strings.Join(pl.shadow, ", ") + " already shipped by an earlier plugin, and pi prints a [Skill warnings] block for the second copy)"
+			}
+			flags = append(flags, "-e "+pl.dir+why)
 		}
 		return "\n  plugins     " + names + "  (brief plugins:; installed pinned copies) — " + strings.Join(flags, " ") + ": this run only (-ns stays); each is loaded as a pi package (its skills and, where it has one, its extension: pi has no Claude hooks, the extension is the equivalent), and what an extension writes goes to $HW_ARTIFACTS/plugin-state, never ~/.pi"
 	}

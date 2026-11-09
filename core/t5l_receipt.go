@@ -397,6 +397,9 @@ func (l *lch) receiptModel(pane string, drc int) int {
 	}
 	if l.agent == "pi" {
 		l.piReceiptThinking(piThinking)
+		if n := l.c.t.piRosterName; n != "" {
+			l.receipt("pi_roster", n, "projects.json pi_roster")
+		}
 	}
 	return 0
 }

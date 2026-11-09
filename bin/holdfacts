@@ -72,9 +72,9 @@ def problem(facts, run, pane, vendor):
     if not re.fullmatch(prefix + r":%s:[1-9][0-9]*:reply" % kind, facts["logical_id"]):
         return "logical_id does not name this run's %s reply" % kind
     route, target = facts["route"], facts["target"]
-    if route == "herdr":
+    if route in ("herdr", "hc"):
         if target != pane:
-            return "herdr route targets another pane"
+            return "%s route targets another pane" % route
     elif route in ("opencode", "codex"):
         if route != vendor or not target:
             return "route does not match the executor vendor, or has no target"

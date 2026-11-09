@@ -14,6 +14,7 @@ export type Acts = {
   ruling: (r: Row, text: string) => void
   reply: (r: Row, text: string) => void
   subagents: (r: Row) => void
+  compose: (r: Row) => void
 }
 // Which cards have their subagent list open, by row id. Absent = folded.
 export type Open = Set<string>
@@ -108,6 +109,12 @@ export function banner(m: Model): string | null {
   }
 }
 
+// The card's title line: the task, and the brief's title unless it only repeats the task (`Brief: <task>`).
+function heading(r: Row, slug: string): string {
+  const t = (r.title ?? '').replace(/^Brief:\s*/i, '').trim()
+  return t === '' || t === r.task || t === slug ? slug : `${slug} · ${t}`
+}
+
 function rowKey(r: Row): string {
   return `row:${r.id}`
 }
@@ -122,12 +129,6 @@ const BADGE: Record<string, { color: string | undefined; dim?: boolean }> = {
   gone: { color: undefined, dim: true },
 }
 
-// A six-cell bar of hw's own ctx percentage.
-function ctxBar(pct: number): string {
-  const n = Math.max(0, Math.min(6, Math.round((pct / 100) * 6)))
-  return '▰'.repeat(n) + '▱'.repeat(6 - n)
-}
-
 // Tokens the way the statusline writes them: 900, 237.5k, 1.2M.
 function tokensText(n: number): string {
   const f = (x: number, u: string) => `${x.toFixed(1).replace(/\.0$/, '')}${u}`
@@ -137,7 +138,7 @@ function tokensText(n: number): string {
 // A percent only when the window is known; the tokens alone when it is not; n/a when nothing is.
 function ctxMeta(r: Row): string {
   if (r.ctx.tokens === null) return 'ctx n/a'
-  return r.ctx.pct === null ? `ctx ${tokensText(r.ctx.tokens)}` : `ctx ${Math.round(r.ctx.pct)}% ${ctxBar(r.ctx.pct)}`
+  return r.ctx.pct === null ? `ctx ${tokensText(r.ctx.tokens)}` : `ctx ${Math.round(r.ctx.pct)}%`
 }
 
 // The one decision about a stalled card: a working row whose last progress is older than the
@@ -201,22 +202,24 @@ function attentionParts(r: Row, now: number, stalled: number | null): string[] {
 // The card, top to bottom: what the task is and how it stands; its model and context; how far it has come; what
 // needs the brainer (only when something does); the actions that would run. An action hw refuses is not drawn,
 // and neither is its reason: the reason stays in the state file and in `hw receipt`, never on the card.
-function RowCard({ els, r, now, dim, act, notes, open, thresholdMs, slug }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; open: Open; thresholdMs: number; slug: string }) {
+function RowCard({ els, r, now, dim, act, notes, open, composing, thresholdMs, slug }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; open: Open; composing: Open; thresholdMs: number; slug: string }) {
   const { Box, Text, Button, Input } = els
   const badge = BADGE[r.attention] ?? { color: undefined, dim: true }
   const stalled = noProgress(r, now, thresholdMs)
   const color = dim || badge.dim ? undefined : stalled !== null ? STALL_COLOR : badge.color
-  const meta = [cut(`${r.vendor || '—'} · ${r.model || '—'} · ${r.effort || '—'}`, 120), ctxMeta(r), r.agent_status === 'unknown' ? 'unknown' : null]
-    .filter(x => x !== null)
-    .join(' · ')
+  const meta = [cut(`${r.vendor || '—'} · ${r.model || '—'} · ${r.effort || '—'}`, 120), ctxMeta(r)].join(' · ')
   const lines: unknown[] = []
   lines.push(
     <Box key="head" justifyContent="space-between" columnGap={2}>
-      <Text key="id" bold dimColor={dim}>{cut(r.title === null ? slug : `${slug} · ${r.title}`, 160)}</Text>
-      <Text key="badge" bold={!dim && LOUD.has(r.attention)} dimColor={dim || badge.dim} color={color}>{statusText(r, now)}</Text>
+      <Box key="idbox" flexShrink={1}>
+        <Text key="id" bold dimColor={dim} wrap="truncate-end">{cut(heading(r, slug), 160)}</Text>
+      </Box>
+      <Box key="badgebox" flexShrink={0}>
+        <Text key="badge" bold={!dim && LOUD.has(r.attention)} dimColor={dim || badge.dim} color={color}>{statusText(r, now)}</Text>
+      </Box>
     </Box>,
   )
-  lines.push(<Text key="meta" dimColor>{meta}</Text>)
+  lines.push(<Text key="meta" dimColor wrap="truncate-end">{meta}</Text>)
   const progress = progressText(r, now)
   if (progress !== null) lines.push(<Text key="progress" dimColor={dim}>{progress}</Text>)
   if (r.report !== null && r.report.status !== 'blocked') {
@@ -269,8 +272,8 @@ function RowCard({ els, r, now, dim, act, notes, open, thresholdMs, slug }: { el
   // drawn, a false one is not. A stale state draws none.
   const a = r.actions
   if (!dim) {
-    const verbs: ['verify' | 'receipt' | 'done', (r: Row) => void][] = [['verify', act.verify], ['receipt', act.receipt], ['done', act.done]]
-    const buttons = verbs.filter(([v]) => a[v]).map(([v, run]) => <Button key={`${v}:${r.id}`} label={v} onPress={() => run(r)} />)
+    const verbs: ['verify' | 'receipt' | 'ruling' | 'done', string, (r: Row) => void][] = [['verify', 'verify', act.verify], ['receipt', 'receipt', act.receipt], ['ruling', 'compose', act.compose], ['done', 'done', act.done]]
+    const buttons = verbs.filter(([v]) => a[v]).map(([v, key, run]) => <Button key={`${key}:${r.id}`} label={v} onPress={() => run(r)} />)
     if (buttons.length > 0) {
       lines.push(
         <Box key={`buttons:${r.id}`} gap={1} justifyContent="flex-end">
@@ -279,7 +282,7 @@ function RowCard({ els, r, now, dim, act, notes, open, thresholdMs, slug }: { el
       )
     }
     lines.push(
-      a.ruling ? (
+      a.ruling && composing.has(r.id) ? (
         <Input key={`ruling:${r.id}`} label="ruling " placeholder="correction for this executor" submitLabel="queue" onSubmit={(text: string) => act.ruling(r, text)} />
       ) : null,
     )
@@ -330,7 +333,7 @@ export function band(els: Els, m: Model, now: number, open: () => void) {
   )
 }
 
-export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes, open: Open = new Set()) {
+export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes, open: Open = new Set(), composing: Open = new Set()) {
   const { Box, Text } = els
   const note = banner(m)
   // classify leaves `state` null for dead and herdr-down: there are no rows to draw.
@@ -374,7 +377,7 @@ export function pane(els: Els, m: Model, now: number, act: Acts, notes: Notes, o
       {m.cls === 'fresh' && rows.length === 0 ? <Text key="empty" dimColor>no executors</Text> : null}
       {rows.length > 0 ? (
         <Box key="cards" flexDirection="column">
-          {rows.map(r => RowCard({ els, r, now, dim, act, notes, open, thresholdMs: m.state?.rules.no_progress_after_ms ?? Infinity, slug: oneProject ? r.task : r.id }))}
+          {rows.map(r => RowCard({ els, r, now, dim, act, notes, open, composing, thresholdMs: m.state?.rules.no_progress_after_ms ?? Infinity, slug: oneProject ? r.task : r.id }))}
         </Box>
       ) : null}
     </Box>

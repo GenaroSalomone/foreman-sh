@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# next-test-number — the next free number for a new setup/tests/NNNN-*.sh subject.
+#
+#   setup/next-test-number [N]     prints the next free number (or N consecutive ones, one per line)
+#
+# WHY. Reading only your own checkout hands two executors the same number: on 2026-11-09 1261, 1262 and 1264 each had two
+# subjects on main, and renumbering one lane's subject conflicted in herdr-app/README.md. This reads main, HEAD, every live
+# local task/* branch and the working tree, and answers one more than the highest number any of them carries.
+# It reserves nothing: a branch not committed yet is invisible, so name the file in your first commit.
+# A collision that still happens renumbers the subject THIS branch introduces, never someone else's.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+n="${1:-1}"
+case "$n" in ''|*[!0-9]*|0) echo "usage: setup/next-test-number [N]" >&2; exit 2 ;; esac
+top="$({
+  for ref in main HEAD $(git for-each-ref --format='%(refname)' 'refs/heads/task/*'); do
+    git ls-tree --name-only "$ref" setup/tests/ 2>/dev/null || true
+  done
+  ls setup/tests 2>/dev/null || true
+} | sed 's|.*/||' | sed -n 's/^\([0-9][0-9]*\)-.*/\1/p' | sort -n | tail -n 1)"
+top="$((10#${top:-0}))"
+seq "$((top + 1))" "$((top + n))"

@@ -111,7 +111,8 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ($badsub | length) == 0 then . else error("subagent_model is inherit, a Claude alias (haiku, sonnet, opus, fable) or a claude-* id: \($badsub | join(", "))") end
     | if ($badpins | length) == 0 then . else error("model_pins maps an alias (haiku, sonnet, opus, fable) to a full claude-* id: \($badpins | join(", "))") end
     | if ($badfloor | length) == 0 then . else error("model_floor.tier is haiku, sonnet or opus, and accepts is a list of model ids: \($badfloor | join(", "))") end
-    | ((keys - ["comment","work","operator","metrics_direct","survey_order","retention","lanes"])) as $top
+    | if (.pi_roster == null) or (.pi_roster | IN("go","free")) then . else error("pi_roster is go (the paid opencode-go roster) or free (opencode'"'"'s free models)") end
+    | ((keys - ["comment","work","operator","metrics_direct","survey_order","retention","pi_roster","lanes"])) as $top
     | if ($top | length) == 0 then . else error("unknown top-level key(s): \($top | join(", "))") end
     | ((.retention // {}) as $r
        | if ($r | type == "object") and ((($r | keys_unsorted) - ["artifact_retention_days","backup_retention_days","build_output_days"]) | length) == 0
@@ -329,7 +330,7 @@ project_default_kind() {
 }
 
 # The provider a lane's own decision pins, for the vendor above. A product lane's
-# lane decision requires OpenCode direct `openai/gpt-5.6-sol`, and for a while
+# lane decision may require a provider (OpenCode direct `openai/gpt-5.6-sol`), and for a while
 # that decision lived only in memory and in whoever remembered to type it — so
 # an abbreviated command silently launched something else and the manifest
 # called it `(default)`. A default that matches the decision is the decision;

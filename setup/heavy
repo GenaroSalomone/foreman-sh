@@ -27,6 +27,23 @@
 # Every command setup/heavy runs sees HW_HEAVY_RUNNING=1, so a script that opts into the short lane on its own
 # (setup/build-core) does not queue a second time when it is already inside a slot or a short job.
 #
+# LANE PRIORITY.
+#   class     setup | product. HW_HEAVY_CLASS=setup|product is a caller's own declaration, cooperative and unverified; else
+#             HW_PROJECT decides (the lane hw exports to every executor: `setup` is setup, any other lane is product); else a
+#             shell standing in the setup lane's own tree (under HW_BRAIN_ROOT, which bin/brain exports to a brainer and hw
+#             replaces with HW_PROJECT for an executor); else the tag prefix (`setup-…`). Anything else, an unknown lane or no
+#             tag at all, is PRODUCT, so a missing tag starves nobody. The class is the ticket's fourth line and the lock's
+#             `class` file; `--status` prints it on every holder and queued job.
+#   order     a queued PRODUCT job is served before any queued SETUP job, whatever their arrival order; FIFO inside a class.
+#   reserve   while a product job holds a slot or waits, setup holders together hold at most HW_HEAVY_SETUP_MAX slots (default:
+#             slots - 1, minimum 1), so a slot is not all setup's; with no product job present and the variable unset, setup may
+#             take every slot. A setup waiter over the cap is not eligible and does not hold the queue head. (The reserve is checked
+#             under a short mutex, ~/.cache/hw/heavy.pick.) It bounds SETUP; it promises product no slot: the cap and the slot
+#             scan both use the CALLER's HW_HEAVY_SLOTS, so a caller asking for fewer slots cannot reach one setup leaves free,
+#             slot 2 needs HW_HEAVY_MIN_FREE memory free, and a product waiter takes whichever slot frees first.
+#   starve    a setup job queued longer than HW_HEAVY_SETUP_STARVE_MIN minutes (default 60; fractions allowed) is served
+#             ahead of product jobs, still inside the reserve.
+#
 # While it waits it says, once a minute on stderr, who holds each slot (tag, pid, elapsed) and your position.
 # It releases on exit and on INT/TERM and exits with the command's own code (128+N for a signal). It removes only a lock whose
 # owner file names its own pid. On INT/TERM the command's process group is TERMed and CONTinued (a TERM stays pending on a process the
@@ -70,7 +87,15 @@ REPORT="${HW_HEAVY_REPORT:-60}"
 RESUME_FREE="${HW_HEAVY_RESUME_FREE:-26}"        # the memory guard resumes over this; a mirror of its number, not a control of it
 WATCH="${HW_HEAVY_WATCH:-60}"
 FROZEN_MIN="${HW_HEAVY_FROZEN_ALERT_MIN:-20}"
+# A malformed bound falls back to its default rather than refusing a run.
+_n="$SLOTS"; case "$_n" in ''|*[!0-9]*|0) _n=2 ;; esac   # a bad HW_HEAVY_SLOTS is refused below; --status never gets there
+SETUP_MAX="${HW_HEAVY_SETUP_MAX:-$((_n - 1))}"
+case "$SETUP_MAX" in ''|*[!0-9]*) SETUP_MAX=$((_n - 1)) ;; esac
+[ "$SETUP_MAX" -ge 1 ] || SETUP_MAX=1
+STARVE_S="$(awk -v m="${HW_HEAVY_SETUP_STARVE_MIN:-60}" 'BEGIN { if (m !~ /^[0-9]+(\.[0-9]+)?$/) m = 60; printf "%d", m * 60 }')"
 ALERTS="$D/heavy-alerts.log"
+PICK="$D/heavy.pick"
+PICKED=0
 SQ="$D/heavy.short.queue"
 SL="$D/heavy.short.lock"
 SHORT_CAP=120
@@ -183,13 +208,18 @@ holder_text_at() {  # <lock dir> -> "tag pid N 4m02s" | "free" | "dead (tag pid 
 # second line and in the lock's `run` file (another process's environment cannot be read back on macOS). Once that run's current
 # task has reported (the done marker `done-invoker` writes, as bin/hw's _run_reported reads it: not reopened, not blocked-waiting)
 # nobody is left to read the result, so the run is reclaimed and its process tree ended instead of keeping the slot.
+# ONLY A JOB THAT STARTED BEFORE THE REPORT: a job taken or queued after the done marker was written belongs to an executor that
+# was reopened (a hand-written channel-send, no `hw revive` marker) and is working again, so the marker is not about it. Killing it
+# cost two gh-attach gates (exit 143, 2026-11-05/06). `since` is the job's start: the owner file's epoch, or the ticket's mtime.
 run_of_env() { [ -z "${HW_WORKDIR:-}" ] || [ -z "${HW_RUN:-}" ] || printf '%s/.hw/%s' "$HW_WORKDIR" "$HW_RUN"; }
-run_reported() {  # <run dir>
-  local rd="$1" seq b
+run_reported() {  # <run dir> <since: epoch the job started>
+  local rd="$1" since="${2:-0}" seq b
   [ -n "$rd" ] && [ -d "$rd" ] || return 1
   seq=""; [ ! -r "$rd/task" ] || seq="$(tr -dc '0-9' < "$rd/task")"
   case "$seq" in ''|0|1) b="$rd" ;; *) b="$rd/t$seq" ;; esac
-  [ -f "$b/done" ] && [ ! -f "$b/reopened" ] && [ ! -f "$b/blocked-waiting" ]  # MUTATION-ANCHOR: 1040-H17
+  [ -f "$b/done" ] && [ ! -f "$b/reopened" ] && [ ! -f "$b/blocked-waiting" ] || return 1  # MUTATION-ANCHOR: 1040-H17
+  case "$since" in ''|*[!0-9]*) return 0 ;; esac  # a start we cannot read keeps the old answer: the marker decides
+  [ "$(mtime "$b/done")" -ge "$since" ]  # MUTATION-ANCHOR: 1040-H21
 }
 end_tree() {  # <root pid>: TERM and CONT (a TERM stays pending on a stopped process), KILL what outlives the grace
   local p n=0 pids; pids="$(tree_pids "$1")"
@@ -197,9 +227,9 @@ end_tree() {  # <root pid>: TERM and CONT (a TERM stays pending on a stopped pro
   while [ "$n" -lt $((KILL_GRACE * 10)) ] && kill -0 "$1" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done
   for p in $pids; do kill -KILL "$p" 2>/dev/null || true; done
 }
-reap_reported() {  # <pid> <tag> <run dir>: end its tree and say so in heavy.log; never the caller itself or a caller of the same run
+reap_reported() {  # <pid> <tag> <run dir> <since>: end its tree and say so in heavy.log; never the caller itself or a caller of the same run
   [ "$1" != "$$" ] && [ "$3" != "$(run_of_env)" ] || return 1
-  run_reported "$3" || return 1
+  run_reported "$3" "${4:-0}" || return 1
   end_tree "$1"
   printf '%s %s 0 143 reclaimed:%s run %s had reported (pid %s)\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$(date +%Y-%m-%dT%H:%M:%S)" "$2" "$3" "$1" >> "$LOG"
   return 0
@@ -211,26 +241,125 @@ live_tickets() {  # [queue dir] live ticket names, oldest first; a ticket whose 
     [ -e "$f" ] || continue
     n="${f##*/}"
     tag=""; run=""; { IFS= read -r tag; IFS= read -r run; } < "$f" 2>/dev/null || true
-    if [ -n "$run" ] && alive "${n#*.}" && reap_reported "${n#*.}" "$tag" "$run"; then rm -f "$f"; continue; fi
+    if [ -n "$run" ] && alive "${n#*.}" && reap_reported "${n#*.}" "$tag" "$run" "$(mtime "$f")"; then rm -f "$f"; continue; fi
     if alive "${n#*.}"; then printf '%s\n' "$n"; else rm -f "$f"; fi  # MUTATION-ANCHOR: 1040-H06
   done
 }
 
+lane_class() {  # setup | product: the override, else the lane hw exports, else the setup lane's tree, else the tag prefix
+  local p r
+  case "${HW_HEAVY_CLASS:-}" in setup|product) printf '%s' "$HW_HEAVY_CLASS"; return ;; esac
+  if [ -n "${HW_PROJECT:-}" ]; then
+    [ "$HW_PROJECT" != setup ] || { printf setup; return; }
+    printf product; return
+  fi
+  # A BRAINER'S SHELL HAS NO HW_PROJECT (bin/brain exports HW_BRAIN_ROOT and nothing else): the brain root is the setup lane's
+  # own tree, and so is its `setup/` brain directory. Every other lane there keeps falling to the tag.
+  if [ -n "${HW_BRAIN_ROOT:-}" ]; then
+    p="$(pwd -P 2>/dev/null || printf '%s' "$PWD")"
+    r="$(cd "$HW_BRAIN_ROOT" 2>/dev/null && pwd -P)" || r="$HW_BRAIN_ROOT"   # bin/brain keeps the root's spelling; cwd is physical
+    case "$p" in "$r"|"$r"/setup|"$r"/setup/*) printf setup; return ;; esac
+  fi
+  case "$TAG" in setup|setup-*|setup_*|setup.*) printf setup ;; *) printf product ;; esac
+}
+class_of_lock() {  # <lock dir> -> setup | product (a lock with no class file is a hand-typed or older one: product)
+  local c=""
+  [ -r "$1/class" ] && read -r c < "$1/class" 2>/dev/null
+  [ "$c" = setup ] && printf setup || printf product
+}
+ticket_class() {  # <queue dir> <ticket name>
+  local a="" b="" c="" cl=""
+  { IFS= read -r a; IFS= read -r b; IFS= read -r c; IFS= read -r cl; } < "$1/$2" 2>/dev/null || true
+  [ "$cl" = setup ] && printf setup || printf product
+}
+ticket_starved() {  # <ticket name>: queued at least STARVE_S seconds (the name is `<epoch ns>.<pid>`)
+  local ts="${1%%.*}"
+  ts="${ts%?????????}"
+  case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+  [ $(($(now) - ts)) -ge "$STARVE_S" ]  # MUTATION-ANCHOR: 1040-H26
+}
+setup_held() {  # how many slots a live SETUP holder has (a dead owner does not count; one not written yet does)
+  local k L n=0
+  for k in $(slot_dirs); do
+    L="$(lockdir "$k")"
+    [ -d "$L" ] || continue
+    [ "$(class_of_lock "$L")" = setup ] || continue
+    read_owner "$L"
+    [ -z "$OPID" ] || alive "$OPID" || continue
+    n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+product_present() {  # a live PRODUCT holder, or a live PRODUCT ticket: the reserve is needed only then
+  local k L n
+  for k in $(slot_dirs); do
+    L="$(lockdir "$k")"
+    [ -d "$L" ] || continue
+    [ "$(class_of_lock "$L")" = setup ] && continue
+    read_owner "$L"
+    [ -z "$OPID" ] || alive "$OPID" || continue
+    return 0
+  done
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ "$(ticket_class "$Q" "$n")" = setup ] || return 0
+  done <<TICKETS
+$(live_tickets)
+TICKETS
+  return 1
+}
+setup_cap() {  # how many slots setup may hold now: every slot while no product job holds or waits, else the reserve
+  if [ -z "${HW_HEAVY_SETUP_MAX:-}" ] && ! product_present; then printf '%s' "$_n"; else printf '%s' "$SETUP_MAX"; fi
+}
+serve_order() {  # <live tickets, oldest first> -> the order they are served: starved setup, then product, then setup; FIFO in each
+  local n starved="" prod="" setup=""
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if [ "$(ticket_class "$Q" "$n")" != setup ]; then prod="$prod$n"$'\n'  # MUTATION-ANCHOR: 1040-H23
+    elif ticket_starved "$n"; then starved="$starved$n"$'\n'
+    else setup="$setup$n"$'\n'; fi
+  done <<ORDER
+$1
+ORDER
+  printf '%s%s%s' "$starved" "$prod" "$setup"
+}
+serve_head() {  # <live tickets> -> the first ticket in serve order that may take a slot (a setup one only under the reserve)
+  local n held ord cap
+  held="$(setup_held)"
+  cap="$(setup_cap)"
+  ord="$(serve_order "$1")"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if [ "$(ticket_class "$Q" "$n")" = setup ] && [ "$held" -ge "$cap" ]; then continue; fi  # MUTATION-ANCHOR: 1040-H24
+    printf '%s' "$n"; return 0
+  done <<HEADS
+$ord
+HEADS
+}
+pick_take() {  # the setup callers' short mutex: the reserve is counted and a slot taken as one step. A mutex older than 30 s is a dead one's.
+  if mkdir "$PICK" 2>/dev/null; then PICKED=1; return 0; fi
+  [ $(($(now) - $(mtime "$PICK"))) -le 30 ] || rm -rf "$PICK"
+  return 1
+}
+pick_drop() { [ "$PICKED" = 1 ] || return 0; rmdir "$PICK" 2>/dev/null || true; PICKED=0; }
+
 status_text() {  # <my ticket or ''>
-  local k pos=0 i=0 t total free
+  local k pos=0 i=0 t total free ord
   free="$(free_pct)"
   for k in $(slot_dirs); do
     printf 'heavy: slot %s: %s' "$k" "$(holder_text "$k")"
+    [ ! -d "$(lockdir "$k")" ] || printf '  [%s]' "$(class_of_lock "$(lockdir "$k")")"
     [ "$k" -ge 2 ] && printf '  (needs >= %s%% memory free; now %s%%)' "$MINFREE" "$free"
     printf '\n'
   done
+  ord="$(serve_order "$(live_tickets)")"
   total=0
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     total=$((total + 1))
     [ "$t" = "${1:-}" ] && pos="$total"
   done <<EOF
-$(live_tickets)
+$ord
 EOF
   if [ "$total" = 0 ]; then printf 'heavy: queue: empty\n'
   else
@@ -238,9 +367,10 @@ EOF
     while IFS= read -r t; do
       [ -n "$t" ] || continue
       i=$((i + 1))
-      printf 'heavy: queue %s: %s pid %s%s\n' "$i" "$(head -n 1 "$Q/$t" 2>/dev/null)" "${t#*.}" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
+      printf 'heavy: queue %s: %s pid %s  [%s%s]%s\n' "$i" "$(head -n 1 "$Q/$t" 2>/dev/null)" "${t#*.}" "$(ticket_class "$Q" "$t")" \
+        "$(ticket_starved "$t" && [ "$(ticket_class "$Q" "$t")" = setup ] && printf ', starved')" "$([ "$t" = "${1:-}" ] && printf '  <- you')"
     done <<EOF
-$(live_tickets)
+$ord
 EOF
   fi
   [ "$pos" = 0 ] || printf 'heavy: you are %s of %s\n' "$pos" "$total"
@@ -275,6 +405,7 @@ done
 [ $# -gt 0 ] || usage
 TAG="$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9._-' '_')"
 case "$SLOTS" in ''|*[!0-9]*|0) echo "setup/heavy: HW_HEAVY_SLOTS must be a positive number, not '$SLOTS'" >&2; exit 2 ;; esac
+CLASS="$(lane_class)"
 
 if [ "$SHORT" = 1 ]; then  # a short job is seconds: the environment's switch does not reach it, the flag is a misuse
   [ "$WI_FLAG" = 0 ] || { echo "setup/heavy: --when-idle does not apply to --short (a short job is seconds)" >&2; exit 2; }
@@ -285,13 +416,17 @@ if [ "$SHORT" = 1 ]; then
   MAX="${MAX:-$SHORT_CAP}"
   case "$MAX" in ''|*[!0-9]*|0) echo "setup/heavy: --max must be a positive number of seconds, not '$MAX'" >&2; exit 2 ;; esac
   if [ "$MAX" -gt "$SHORT_CAP" ]; then echo "setup/heavy: --max $MAX is over the short lane's cap: using $SHORT_CAP s (a longer job takes a slot)" >&2; MAX="$SHORT_CAP"; fi
+  # a bare `go test` of a package overran the cap (exit 124, ~5 min lost, retro-fixes-1109-pm): say so before it starts
+  case " $* " in
+    *" go test "*) case " $* " in *" -run "*|*" -run="*|*" -list"*) ;; *) echo "setup/heavy: warning: --short runs \`go test\` with no -run: a whole package can pass the ${MAX}s cap (exit 124). Cut it with -run, or use \`setup/go-test-core.sh --affected <file-of-changed-paths> --run\`" >&2 ;; esac ;;
+  esac
   MYQ="$SQ"
 else
   MYQ="$Q"
 fi
 mkdir -p "$MYQ" || exit 1
 
-HOLD=""; MYT=""; CPID=""; WPID=""; WD=""; CAPFILE=""; IPID=""
+HOLD=""; MYT=""; CPID=""; WPID=""; WD=""; CAPFILE=""; IPID=""; AWAKE=""
 
 # ── --when-idle: the console's idle time, the pause, and the clock the cut's cap does not count ──
 need_s() { awk -v m="$IDLE_MIN" 'BEGIN { printf "%d", m * 60 }'; }
@@ -374,8 +509,24 @@ stop_watch() {  # the watchdog's own process group, so its `sleep` goes with it
   wait "$WPID" 2>/dev/null; WPID=""
 }
 
+# THE MAC MUST NOT IDLE-SLEEP UNDER A RUNNING JOB. Maintenance Sleep came about every 17 min on 2026-11-06 (pmset log 04:43, 05:00,
+# 05:19, 05:35) and cut a gate and its executor's turns ("API Error: Your computer went to sleep mid-response"). `caffeinate -i -w
+# <command pid>` is a user process that holds PreventUserIdleSystemSleep for exactly the command's life: `-w` ends it when the pid is
+# gone, however heavy itself ends (even SIGKILL), and release() ends it at once. It changes no pmset or system setting, and it is not
+# held while a job only waits in the queue. Without `caffeinate` (Linux) nothing happens.
+keep_awake() {  # <command pid>
+  command -v caffeinate >/dev/null 2>&1 || return 0
+  caffeinate -i -w "$1" >/dev/null 2>&1 & AWAKE=$!  # MUTATION-ANCHOR: 1040-H22
+}
+stop_awake() {
+  [ -n "$AWAKE" ] || return 0
+  kill "$AWAKE" 2>/dev/null
+  wait "$AWAKE" 2>/dev/null; AWAKE=""
+}
+
 release() {  # only what this process took
-  stop_idle_watch; resume_now
+  pick_drop
+  stop_idle_watch; resume_now; stop_awake
   stop_watch
   [ -z "$MYT" ] || rm -f "$MYQ/$MYT"
   if [ -n "$HOLD" ]; then
@@ -411,7 +562,7 @@ set -m   # the command gets its own process group, so a signal reaches everythin
 stamp="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)"
 [ -n "$stamp" ] || stamp="$(now)000000000"
 MYT="$stamp.$$"
-{ printf '%s\n' "$TAG"; run_of_env; printf '\n'; printf '%s\n' "$SLOTS"; } > "$MYQ/$MYT"   # line 2 ends before line 3: run_of_env writes no newline
+{ printf '%s\n' "$TAG"; run_of_env; printf '\n'; printf '%s\n' "$SLOTS"; printf '%s\n' "$CLASS"; } > "$MYQ/$MYT"   # line 2 ends before line 3: run_of_env writes no newline; line 4 is the lane's class
 
 # A slot whose owner pid is dead is the head's to reclaim, and it says so. An owner file that never appeared is
 # given a minute: the lock is made with mkdir, and the owner written a moment later.
@@ -419,7 +570,7 @@ reclaim_if_stale() { reclaim_at "$(lockdir "$1")" "slot $1"; }
 reclaim_reported() {  # <lock dir> <what to call it>: a live holder (OTAG OPID read) keeps the slot, frozen or not, until its hw run has reported
   local run=""
   [ -r "$1/run" ] && read -r run < "$1/run" 2>/dev/null
-  [ -n "$run" ] && reap_reported "$OPID" "$OTAG" "$run" || return 0
+  [ -n "$run" ] && reap_reported "$OPID" "$OTAG" "$run" "$OSTART" || return 0
   echo "setup/heavy: $2 is held by $OTAG (pid $OPID), whose hw run has already reported — reclaimed it" >&2
   rm -rf "$1"
 }
@@ -443,11 +594,13 @@ while :; do
   # ONE READ, NEVER A PIPE INTO `head`. `live_tickets … | head -n 1` made the ticket printer write into a closed pipe once the
   # head left, and one gate log carried 394 `Broken pipe` lines for 6 filter calls (2026-11-04).
   live="$(live_tickets "$MYQ")"  # MUTATION-ANCHOR: 1040-H01
-  head="${live%%$'\n'*}"  # MUTATION-ANCHOR: 1040-H20
+  if [ "$SHORT" = 1 ]; then head="${live%%$'\n'*}"; else head="$(serve_head "$live")"; fi  # MUTATION-ANCHOR: 1040-H20
   if [ "$head" = "$MYT" ] && [ "$SHORT" = 1 ]; then
     reclaim_at "$SL" "the short lane"
     if mkdir "$SL" 2>/dev/null; then HOLD="$SL"; break; fi  # MUTATION-ANCHOR: 1040-H14
-  elif [ "$SHORT" = 0 ]; then  # MUTATION-ANCHOR: 1040-H18
+  elif [ "$SHORT" = 0 ] && { [ "$CLASS" != setup ] || { pick_take && [ "$(setup_held)" -lt "$(setup_cap)" ]; }; }; then  # MUTATION-ANCHOR: 1040-H18  # MUTATION-ANCHOR: 1040-H25
+    # A SETUP caller is here only under the reserve, counted inside the mutex that also takes the slot: two setup callers cannot
+    # both see one free place. A product caller needs neither.
     # THE HEAD KEEPS PRIORITY FOR EVERY SLOT IT MAY USE. A waiter behind a head that CANNOT use a free slot takes it: four
     # waiters sat behind a head launched without HW_HEAVY_SLOTS=2 while slot 2 was free at 38% memory (2026-11-04 15:40Z).
     k=1
@@ -456,10 +609,11 @@ while :; do
       L="$(lockdir "$k")"
       reclaim_if_stale "$k"
       if [ "$k" -ge 2 ] && [ "$(free_pct)" -lt "$MINFREE" ]; then k=$((k + 1)); continue; fi  # MUTATION-ANCHOR: 1040-H03
-      if mkdir "$L" 2>/dev/null; then HOLD="$L"; break 2; fi
+      if mkdir "$L" 2>/dev/null; then HOLD="$L"; printf '%s\n' "$CLASS" > "$L/class"; pick_drop; break 2; fi
       k=$((k + 1))
     done
   fi
+  pick_drop
   t="$(now)"
   if [ "$first" = 1 ] || [ $((t - last)) -ge "$REPORT" ]; then
     first=0; last="$t"
@@ -584,6 +738,7 @@ TREE0=""; [ "$SHORT" = 1 ] || TREE0="$(wt_tree)" || TREE0=""
 start="$(now)"; start_iso="$(date +%Y-%m-%dT%H:%M:%S)"
 "$@" <&0 &
 CPID=$!
+keep_awake "$CPID"
 watch_frozen "$CPID" "$HOLD" & WPID=$!
 if [ "$WHEN_IDLE" = 1 ]; then watch_idle "$CPID" "$HOLD" & IPID=$!; fi
 if [ "$SHORT" = 1 ]; then
@@ -597,7 +752,7 @@ wait "$CPID"; rc=$?
 # `wait` under `set -m` also returns when the command is only STOPPED (rc 128+SIGSTOP) on bash 4.4+ (Linux, brew), where 3.2 keeps waiting:
 # a frozen run is not an ended one, and the slot is its until it is gone (F22, measured red on Linux 2026-10-30).
 while kill -0 "$CPID" 2>/dev/null; do sleep 0.2; wait "$CPID"; rc=$?; done
-stop_idle_watch; resume_now
+stop_idle_watch; resume_now; stop_awake
 kill_group_leftovers "$CPID"
 if [ -n "$WD" ]; then
   kill -KILL -- "-$WD" 2>/dev/null || kill -KILL "$WD" 2>/dev/null

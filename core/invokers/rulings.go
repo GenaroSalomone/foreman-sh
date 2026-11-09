@@ -66,6 +66,7 @@ func (c *Ctx) ClaimRulings(d, via string) (string, bool) {
 			count++
 			if n != "legacy" {
 				os.WriteFile(d+"/ruling-delivered."+n, []byte("at="+at+"\nvia="+via+"\n"), 0o666)
+				os.WriteFile(d+"/ruling-text."+n, []byte(text+"\n"), 0o666) // the text outlives a truncated read of the delivery
 			}
 			c.transcriptAppend(d, "RULING-DELIVERED", "ruling:"+n+" via="+via, text)
 			if count == 1 {

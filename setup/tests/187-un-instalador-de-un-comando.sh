@@ -71,6 +71,10 @@ done
 # says /tmp/... under Git Bash, as for the links above).
 stop_dir="$(rg -o "bash '([^']+)/bin/hw-stop-hook\.sh' stop" -r '$1' "$HOME/.claude/settings.json" 2>/dev/null | head -1)"
 [ -n "$stop_dir" ] && [ "$stop_dir/bin/hw-stop-hook.sh" -ef "$B/bin/hw-stop-hook.sh" ] || fail "the Stop hook was not merged into ~/.claude/settings.json"
+jq -e '[.hooks.StopFailure[].hooks[].command | select(endswith("hw-stop-hook.sh'"'"' stop-failure"))] | length == 1' "$HOME/.claude/settings.json" >/dev/null \
+  || fail "the StopFailure hook (a turn that died on an API error) was not merged into ~/.claude/settings.json"
+jq -e '[.hooks.PostToolUse[].hooks[].command | select(endswith("hw-stop-hook.sh'"'"' post-tool"))] | length == 1' "$HOME/.claude/settings.json" >/dev/null \
+  || fail "the PostToolUse hook (a queued ruling, delivered between two tool calls) was not merged into ~/.claude/settings.json"
 export TMPDIR="$TMP"
 dry="$(cd "$B" && hw app probe --sdd none --no-report --no-brief --dry-run < /dev/null 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
 for want in "dispatch app:probe" "worktree    $(dirname "$B")/work/app/probe  (new, own branch off trunk)" "engram      app" "agent       claude  (lane default for app)"; do
@@ -132,6 +136,14 @@ CLAUDE_CONFIG_DIR="$C3" inst --brain ~/brain >/dev/null || fail "installing into
 jq -e '.model == "sonnet" and (.hooks.PreToolUse[0].hooks[0].command == "echo mine") and (.hooks.Stop | length == 1)' "$C3/settings.json" >/dev/null \
   || fail "the merge lost what was there: $(cat "$C3/settings.json")"
 pass "a user's settings.json keeps its keys and hooks and gains exactly one Stop hook"
+
+# a settings.json whose hooks are not the shape Claude Code writes fails with a message, not a traceback, and is left as it was
+C4="$TMP/cfg4"; mkdir -p "$C4"; printf '{"hooks":{"Stop":[1]}}\n' > "$C4/settings.json"
+o="$(CLAUDE_CONFIG_DIR="$C4" inst --brain ~/brain || true)"
+case "$o" in *"is not a settings file this installer can merge"*) ;; *) fail "a malformed hooks block was not refused clearly: $(printf '%s' "$o" | tail -3)" ;; esac
+case "$o" in *Traceback*) fail "a malformed hooks block gave a traceback" ;; esac
+[ "$(cat "$C4/settings.json")" = '{"hooks":{"Stop":[1]}}' ] || fail "a malformed settings.json was rewritten"
+pass "a malformed hooks block is refused with a message, and the file is left alone"
 
 # ── 6. collisions are refused before any write ──────────────────────────────
 t0="$(tree)"

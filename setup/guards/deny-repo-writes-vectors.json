@@ -237,5 +237,6 @@
   {"id": "git-C-stash-still-denied", "command": "git -C {{repo}} stash", "cwd": "{{outside}}", "expect": "deny", "category": "git", "trigger": "names"},
   {"id": "git-C-remote-add-still-denied", "command": "git -C {{repo}} remote add o u", "cwd": "{{outside}}", "expect": "deny", "category": "git", "trigger": "names"},
   {"id": "git-C-submodule-add-still-denied", "command": "git -C {{repo}} submodule add u p", "cwd": "{{outside}}", "expect": "deny", "category": "git", "trigger": "names"},
-  {"id": "git-C-log-then-commit-still-denied", "command": "git -C {{repo}} log && git -C {{repo}} commit -m x", "cwd": "{{outside}}", "expect": "deny", "category": "git", "trigger": "names"}
+  {"id": "git-C-log-then-commit-still-denied", "command": "git -C {{repo}} log && git -C {{repo}} commit -m x", "cwd": "{{outside}}", "expect": "deny", "category": "git", "trigger": "names"},
+  {"id": "mutator-on-protected-after-read", "command": "cat {{repo}}/x; rm -f {{repo}}/y", "cwd": "{{outside}}", "expect": "deny", "category": "mutator", "trigger": "names"}
 ]

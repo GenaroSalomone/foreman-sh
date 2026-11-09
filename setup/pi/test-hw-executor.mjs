@@ -17,8 +17,14 @@
 //   specialists       the lane's `.claude/agents` registered with pi-subagents (HW_PI_CLAUDE_AGENT_DIRS):
 //                     tools mapped, the lane profile's model/thinking resolved for each, a `.pi/agents` copy left alone
 //                     (needs HW_PI_SUBAGENTS_DIR to hold a stub src/agents/frontmatter.js)
+//   plugin-agents     the declared plugins' own agents registered as `plugin:name` (HW_PI_PLUGIN_AGENT_DIRS), the name a
+//                     Claude executor reads from --plugin-dir: `pstack:comment-sicko` was `Unknown agent` before
 import { resolve } from "node:path";
 const [adapter, mode] = process.argv.slice(2);
+if (!adapter || !mode) {
+  console.error("usage: node --experimental-strip-types test-hw-executor.mjs <adapter.ts> <mode>\n  modes: guard child-guard secret product-executor brain-guard turn-end runtime budget fallback specialists plugin-agents (see the header of this file)");
+  process.exit(2);
+}
 const mod = await import(adapter);
 // One fake ExtensionAPI per loaded instance: pi-subagents' child loads the extension again, so a
 // child is a SECOND factory run, with its own handlers, in the same process.
@@ -633,6 +639,11 @@ if (mode === "guard") {
   let rows = rowsOf();
   ok(/NOT SWITCHED.*shared dollars/.test(rows.find((x) => x.key === "model_fallback")?.value ?? ""), "...and the receipt says why it did not switch");
   ok(/^SPENT — report this task blocked/.test(rows.find((x) => x.key === "provider_quota")?.value ?? ""), "...and names the task blocked (provider_quota)");
+  // the stop is REPORTED: the brainer hears a blocked report naming the quota, the HEAD sha and the checks.md counts
+  const sent = readFileSync(process.env.STUB_DONE_LOG, "utf8").trim().split("\n");
+  ok(sent.length === 1 && /^--blocked Provider quota SPENT.*GoUsageLimitError/.test(sent[0]), "a spent quota runs done-invoker --blocked, once, naming the quota");
+  ok(/Branch HEAD [0-9a-f]{7,}; checks\.md 2 pass \/ 0 fail \/ 1 unresolved/.test(sent[0]), "...with the branch HEAD sha and the checks.md counts");
+  ok(/done-invoker --blocked ran/.test(rows.find((x) => x.key === "provider_quota_report")?.value ?? ""), "...and the receipt records that it ran");
   await call("agent_start", { type: "agent_start" }, ctx);
   await call("message_end", { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: boom, provider: "opencode-go", model: "deepseek-v4-pro" } }, ctx);
   r = await call("agent_before_settle", { type: "agent_before_settle", outcome: "error", entries: [], continue: false }, ctx);
@@ -698,6 +709,30 @@ if (mode === "guard") {
   ok(row && /collides \(Runtime agent collides\)/.test(row.value) && /copy \(a \.pi\/agents copy provides it\)/.test(row.value), "a refusal by pi-subagents and a skipped copy are in the row, not silent");
   await call("session_shutdown", { type: "session_shutdown" }, ctx);
   ok(disposed.includes("qa-tester") && disposed.includes("plain"), "the registrations are disposed with the session");
+} else if (mode === "plugin-agents") {
+  // THE DECLARED PLUGINS' AGENTS. A Claude executor reads them from --plugin-dir as `plugin:name`; hw names each directory
+  // (HW_PI_PLUGIN_AGENT_DIRS, `<plugin>=<dir>`) and this registers the same full name, which is what the review closing
+  // names and what pi-subagents answered `Unknown agent` for (measured 2026-11-09, three pi executors in a row).
+  const { readFileSync, existsSync } = await import("node:fs");
+  const regs = [], disposed = [];
+  pi.events = { emit(name, req) {
+    regs.push({ name, req });
+    req.result = { ok: true, registration: { dispose() { disposed.push(req.name); } } };
+  } };
+  const dir = `${process.env.HW_WORKDIR}/.hw/${process.env.HW_RUN}`;
+  const ctx = fakeCtx({ file: "/s/root.jsonl" });
+  await call("session_start", { type: "session_start", reason: "startup" }, ctx);
+  const by = Object.fromEntries(regs.map((r) => [r.req.name, r.req.definition]));
+  ok(by["pstack:comment-sicko"] !== undefined, "a plugin's agent is registered under the name a Claude executor uses: pstack:comment-sicko");
+  ok(by["pstack:comment-sicko"]?.systemPrompt.includes("I hate comments") && /deranged comment-hater/.test(by["pstack:comment-sicko"]?.description ?? ""), "...with its own body and description, read from the plugin's agents/ directory");
+  ok(by["pstack:review-x"] !== undefined && by["pstack:comment-sicko"]?.defaultAsync === false, "every .md of the plugin's agents/ is registered, foreground like the lane's specialists");
+  ok(!Object.keys(by).includes("comment-sicko"), "and not under the bare name: the plugin prefix is part of the name, as in Claude");
+  ok(by["pstack:review-x"] !== undefined, "a plugin agent whose name matches the framework prefixes (review-, sdd-) is registered: a plugin's agents are its declaration's, not hw's framework set");
+  ok(!regs.some((r) => r.req.name === "qa-tester"), "no plugin is declared: nothing of another plugin is registered");
+  const row = (existsSync(`${dir}/receipt.jsonl`) ? readFileSync(`${dir}/receipt.jsonl`, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((x) => x.key === "pi_specialists");
+  ok(row && /registered .*pstack:comment-sicko/.test(row.value), "the receipt row names the plugin agent it registered");
+  await call("session_shutdown", { type: "session_shutdown" }, ctx);
+  ok(disposed.includes("pstack:comment-sicko"), "the plugin agent's registration is disposed with the session");
 } else if (mode === "budget") {
   // THE EXPLORATION BUDGET (hw-executor.ts, "the exploration budget"): per request, past 3 lookups or 40 KB, ONE steer
   // to the explorer through pi's own sendMessage(deliverAs: "steer"). A child session, an error and a nested call are

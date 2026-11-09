@@ -63,6 +63,12 @@ OTHER COMMANDS
         under the pane's .hw. A revived run that reported takes task N+1 with its
         own done-invoker (no --retask); a reported run NOT revived is refused,
         naming `hw revive`. Without --run nothing changes.
+        RE-TASK OR REOPEN an executor with this verb and nothing else. Alive and
+        reported: `hw next <pane> "<task>"` (or --brief). Its tab closed: `hw revive
+        <project> <task>` first, then `hw next`. Typing into the pane, or a
+        hand-written `channel-send`, opens no task: the counter does not move, and
+        the executor's next report is refused ("already notified") until it runs
+        `done-invoker --retask`, which files the work as a duplicate.
         Flags may appear before or after the task text. Without --sdd the
         effective live worktree surface is measured and incompatible vendor/mode
         pairs are refused before task creation or delivery. The launch record is

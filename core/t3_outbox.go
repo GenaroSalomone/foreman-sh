@@ -6,6 +6,7 @@ package main
 // be in the brainer's session, and a second copy is the duplicate the exit exists to prevent.
 
 import (
+	"hwcore/internal/mux"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,7 +168,11 @@ func (t *t3) outboxFlush() int {
 			}
 		}
 		msg := "[redelivered from the outbox: the pane this report was first sent to was gone or unreachable]\n" + mkReadSub(key+".msg")
-		cmd := exec.Command(t.binDir()+"/channel-send", "--report", "herdr", to, "-", msg)
+		vendor := "herdr"
+		if mux.IsHCAddress(t.getenv, to) {
+			vendor = "hc"
+		}
+		cmd := exec.Command(t.binDir()+"/channel-send", "--report", vendor, to, "-", msg)
 		rc := exitStatus(cmd.Run())
 		switch rc {
 		case 0:

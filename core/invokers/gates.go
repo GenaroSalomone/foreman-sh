@@ -184,6 +184,54 @@ func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string
 	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each over your committed range under its full name (plugin:skill), "+how+" — or write a line  review-skip: <skill> — <why>  for a piece your vendor cannot run (no such agent registered, not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
 }
 
+// PluginEvidenceGate holds a done report to what each plugin review LEFT: a skill loaded and never applied still shows in
+// the transcript (MEASURED 2026-11-09, pi-quota-stop-reports-finish: "loaded; I reviewed own diff inline" passed). Each
+// named skill needs a row in <artifacts>/checks.md that names it (full name or its bare skill part, as a whole token),
+// with a verdict cell (pass, fail or unresolved) and a non-empty evidence cell: its findings, or "no findings". It does
+// not depend on how the skill was invoked. A `review-skip: <skill>` line releases that skill, as in PluginReviewGate.
+func PluginEvidenceGate(skills, summary, artifactsRoot string) error {
+	file := artifactsRoot + "/checks.md"
+	b, _ := os.ReadFile(file)
+	var rows [][]string
+	if utf8.Valid(b) {
+		for _, line := range strings.Split(string(b), "\n") {
+			l := strings.TrimSpace(line)
+			if strings.Contains(l, "|") && !isSeparatorRow(l) {
+				rows = append(rows, strings.Split(strings.TrimPrefix(l, "|"), "|"))
+			}
+		}
+	}
+	var missing []string
+	for _, sk := range strings.Split(skills, ",") {
+		if sk == "" || reviewSkipped(summary, sk) {
+			continue
+		}
+		bare := sk[strings.LastIndex(sk, ":")+1:]
+		found := false
+		for _, c := range rows {
+			if len(c) < 3 || strings.TrimSpace(c[2]) == "" {
+				continue
+			}
+			switch strings.Trim(strings.ToLower(strings.TrimSpace(c[1])), "` ") {
+			case "pass", "fail", "unresolved":
+			default:
+				continue
+			}
+			if mentionsToken(c[0], sk) || mentionsToken(c[0], bare) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, sk)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and %s has no row recording that %s ran on the diff. Loading a skill is not applying it: add one row per skill,  <skill> | pass|fail|unresolved | <its findings, or \"no findings\"> | <correction>  — or write a line  review-skip: <skill> — <why>.  NOTHING was sent or marked.", skills, file, strings.Join(missing, ", ")))
+}
+
 // JudgmentDayGate holds a done report to the Judgment Day its closing declared: one call to EACH judge the receipt
 // names, proved by the executor's own transcript. It exists because the two names in the prompt were not a proof: the
 // measured pi session in testdata/transcripts/pi_judges.jsonl runs the builtin `reviewer` in a judge's slot, so a
@@ -325,7 +373,7 @@ func ChecksGate(artifactsRoot string) (note string, err error) {
 				continue
 			}
 			l = strings.TrimPrefix(l, "|")
-			c := strings.Split(l, "|")
+			c := splitUnescapedPipes(l)
 			v := ""
 			if len(c) > 1 {
 				v = trimRightFn(trimLeftFn(awkLower(c[1]), awkSpaceMark), awkSpaceMark)
@@ -377,3 +425,19 @@ func ChecksGate(artifactsRoot string) (note string, err error) {
 }
 
 var _ = filepath.Join
+
+// splitUnescapedPipes splits a checks.md row on its cell separators only: a `\|` (inside a code span too) is cell text, not a
+// column. 2026-11-09: strings.Split on every pipe shifted the verdict column of a row quoting `a \| b`.
+func splitUnescapedPipes(l string) []string {
+	var cells []string
+	start := 0
+	for i := 0; i < len(l); i++ {
+		if l[i] == '\\' {
+			i++
+		} else if l[i] == '|' {
+			cells = append(cells, l[start:i])
+			start = i + 1
+		}
+	}
+	return append(cells, l[start:])
+}

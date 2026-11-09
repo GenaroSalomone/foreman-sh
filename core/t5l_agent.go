@@ -338,7 +338,7 @@ func (l *lch) explorerClaudeArm(pane string) string {
 // agentStart is `_agent_start "$pane" "$name" "$kind"`: true when the agent is up and ready (bash's status 0).
 // Retries while the pane comes up; every call here is inside an `if` in bash, so no status escapes under set -e.
 func (l *lch) agentStart(pane, name, kind string) bool {
-	if kind == "pi" && !l.piProjectSkillsPrepare() { // the project skills' one directory of links, before anything starts
+	if kind == "pi" && (!l.piProjectSkillsPrepare() || !l.piPluginMirrorsPrepare()) { // the project skills' one directory of links, and the plugins' -e mirrors, before anything starts
 		return false
 	}
 	if l.sandbox && l.sandboxArmed != pane { // # MUTATION-ANCHOR: 847-B2-09
@@ -561,8 +561,12 @@ func (l *lch) verifyOpencodeEffort() {
 // ── the step every build path ends with ─────────────────────────────────────────────────────────────────────
 
 // agentStep is `_agent_step`: start the agent in l.pAgent, record, deliver the brief — or die. Ends with the
-// workspace focused.
+// workspace focused (on herdr-core there is none: hcAgentStep returns first).
 func (l *lch) agentStep() {
+	if l.hcRoute() {
+		l.hcAgentStep()
+		return
+	}
 	if l.agentStart(l.pAgent, l.task, l.agent) { // # MUTATION-ANCHOR: 847-B2-21
 		l.info(l.agent + " registered in " + l.pAgent + "; vendor runtime readiness is unestablished")
 		// MEASURED AFTERWARDS, not inferred from the call returning 0.

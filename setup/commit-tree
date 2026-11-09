@@ -432,6 +432,43 @@ $(printf '%s\n' "$foreign" | sed 's/^/  /')
 Name each of them, or commit from a tree where they are unchanged."
 fi
 
+# ── the export check, in seconds, over the tree this commit would make ──────
+# commit-tree runs no hook, so pre-commit's `setup/export/check` never asked: test 606 found a manifest omission and an
+# operator name only after a 2.5 h gate (foreman-friction-1106, 2026-11-06). Same question, same script, the tracked list
+# being THE NEW TREE's (not the real index, which holds other agents' staged work); the bytes are the working tree's, which for
+# a named path are the ones just committed. A repo with no export (a fixture) has no check and no manifest, and is not asked.
+if [ -f "$root/setup/export/check" ] && [ -f "$root/setup/export/manifest" ]; then
+  tracked_json="$(git ls-tree -r --name-only -z "$tree" | python3 -I -c 'import json, sys; print(json.dumps({"tracked": [p for p in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0") if p]}))')" \
+    || ct_refuse "cannot list the new tree for the export check. The ref was not moved."
+  export_rc=0
+  export_out="$(python3 "$root/setup/export/check" --root "$root" --tracked <(printf '%s' "$tracked_json") 2>&1)" || export_rc=$?  # MUTATION-ANCHOR: 1233-M01
+  if [ "$export_rc" -ne 0 ]; then
+    ct_refuse "setup/export/check refuses this commit, in seconds, before a gate of hours (tests 280 and 606 would refuse it the same way). The ref was not moved.
+$(printf '%s\n' "$export_out" | sed 's/^/    /')
+Fix it and ask again. A NEW or DELETED file: edit setup/export/manifest (an include/exclude line for it) and name setup/export/manifest in this same commit-tree call. \`python3 setup/export/check\` alone says \"is not a tracked file\" until the file is committed; \`python3 setup/export/check --tracked FILE\` asks the question over a tracked-list FILE (one path per line) instead of the index."
+  fi
+fi
+
+# ── a test number another branch already owns is WARNED, never refused ─────────────────────────────
+# Same warning setup/hooks/pre-commit prints for `git commit`, which this tool never runs: three setup/tests/1262-* reached main
+# because parallel branches each saw the number free. A NEW named setup/tests/N-*.sh is compared with main and every local task/*
+# branch (the tree each one holds, not the working checkout); this branch's own ref is skipped.
+ct_number_warn() {
+  local p num ref clash
+  for p in "${paths[@]}"; do
+    case "$p" in setup/tests/[0-9]*-*.sh) ;; *) continue ;; esac
+    git cat-file -e "$old:$p" 2>/dev/null && continue
+    num="${p#setup/tests/}"; num="${num%%-*}"
+    for ref in refs/heads/main $(git for-each-ref --format='%(refname)' refs/heads/task/ 2>/dev/null); do
+      [ "$ref" = "$full" ] && continue
+      git rev-parse --verify -q "$ref^{tree}" >/dev/null 2>&1 || continue
+      clash="$(git ls-tree -r --name-only "$ref" -- setup/tests/ 2>/dev/null | grep -E "^setup/tests/${num}-[^/]*\.sh$" | grep -vxF "$p" | head -1 || true)"
+      [ -z "$clash" ] || printf 'commit-tree: WARNING: %s takes test number %s, and %s already has %s under that number. Two subjects with one number collide at the merge; take the next free one. (A warning, not a refusal.)\n' "$p" "$num" "${ref#refs/heads/}" "$clash" >&2
+    done
+  done
+}
+ct_number_warn  # MUTATION-ANCHOR: 1270-M01
+
 # ── the commit, then the guarded move of the ref ────────────────────────────
 if [ -n "$msgfile" ]; then
   commit="$(git commit-tree "$tree" -p "$old" -F "$msgfile")" || ct_refuse "git commit-tree failed"

@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"hwcore/internal/mux"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -28,6 +29,60 @@ func (a *app) nextRPC(args ...string) (string, int) {
 	cmd.Stdout = &out
 	rc := exitStatus(cmd.Run())
 	return out.String(), rc
+}
+
+// nextHC says the pane is an app terminal (herdr-core): its gate reads `hc get`, its keys are `hc keys`, and the herdr
+// socket is never touched for it.
+func (a *app) nextHC(pane string) bool { return mux.IsHCAddress(a.getenv, pane) }
+
+// nextAgentGet is `herdr agent get <pane>`, or `hc get` in the same shape for an app terminal ("" when it cannot answer).
+func (a *app) nextAgentGet(pane string) string {
+	if a.nextHC(pane) {
+		info, _ := hcAgentGetJSON(pane)
+		return info
+	}
+	return nextHerdrSub("agent", "get", pane)
+}
+
+// nextKeys sends keys to the pane: `pane.send_keys` on the TUI, `hc keys` on the app.
+func (a *app) nextKeys(pane string, keys ...string) bool {
+	if a.nextHC(pane) {
+		_, ok := hcOut(0, append([]string{"keys", pane}, keys...)...)
+		return ok
+	}
+	_, rc := a.nextRPC("call", "pane.send_keys", `{"pane_id":"`+pane+`","keys":["`+strings.Join(keys, `","`)+`"]}`)
+	return rc == 0
+}
+
+// nextWaitIdle waits for idle,done: 0 reached; on the TUI `herdr-rpc wait-agent`'s own codes, on the app hcWaitBoundary's
+// (2 budget spent, 3 terminal gone, 6 blocked).
+func (a *app) nextWaitIdle(pane string, ms int64) int {
+	if !a.nextHC(pane) {
+		_, rc := a.nextRPC("wait-agent", pane, "idle,done", "--timeout-ms", strconv.FormatInt(ms, 10))
+		return rc
+	}
+	return hcWaitBoundary(
+		func() (string, bool) {
+			info, ok := hcAgentGetJSON(pane)
+			return jqRawOr(info, "", "result", "agent", "agent_status"), ok
+		},
+		func(secs int64) int {
+			if _, ok := hcOut(0, "wait", pane, "--timeout", strconv.FormatInt(secs, 10)); ok {
+				return 0
+			}
+			return 1
+		},
+		func() { time.Sleep(time.Second) }, ms, "idle", "done")
+}
+
+// nextReadText is the visible text of the pane, `lines` rows (`pane.read` / `hc read`).
+func (a *app) nextReadText(pane, lines string) string {
+	if a.nextHC(pane) {
+		out, _ := hcOut(0, "read", pane, "--lines", lines)
+		return out
+	}
+	out, _ := a.nextRPC("call", "pane.read", `{"pane_id":"`+pane+`","source":"visible","lines":`+lines+`}`)
+	return jqRawOr(out, "", "read", "text")
 }
 
 // nextEnvInt is `: "${VAR:=def}"` read as a number.
@@ -127,6 +182,11 @@ func nextVendorNative(v string) bool { return v != "" && v != "claude" && v != "
 // the session its launch receipt bound to this pane. info is the snapshot the stale-stuck test reads, or ""
 // for the re-resolution after the gate (which tests the vendor alone, as the bash does there).
 func (a *app) nextResolveRoute(s *nextState, info string) {
+	if a.nextHC(s.pane) {
+		s.snd.vendor, s.snd.session, s.snd.endpoint = "hc", "", ""
+		s.route, s.target, s.endpoint = "hc", s.pane, "-"
+		return
+	}
 	v, ses, ep := a.nextResolveSender(s.pane)
 	cond := v == "opencode" && ses == "" && ep != ""
 	if info != "" {
@@ -330,18 +390,26 @@ func nextSettledMessage(pane string, waitMS int64, info string) string {
 // nextClearQuestion: 0 dismissed, 1 nothing of that shape (or the key did not move it), 2 a reason that
 // must not be auto-dismissed.
 func (a *app) nextClearQuestion(pane string) int {
-	info, _ := a.nextRPC("call", "agent.get", `{"target":"`+pane+`"}`)
-	info = bashSub(info)
+	// the same snapshot in either shape: herdr's `agent.get` answers {"agent":…}, hc's reader {"result":{"agent":…}}
+	root, info := []string{"agent"}, ""
+	if a.nextHC(pane) {
+		root = []string{"result", "agent"}
+		info = a.nextAgentGet(pane)
+	} else {
+		info, _ = a.nextRPC("call", "agent.get", `{"target":"`+pane+`"}`)
+		info = bashSub(info)
+	}
+	at := func(p ...string) string { return jqRawOr(info, "", append(append([]string{}, root...), p...)...) }
 	if info == "" {
 		return 1
 	}
-	state := jqRawOr(info, "", "agent", "agent_status")
-	agent := jqRawOr(info, "", "agent", "agent")
+	state := at("agent_status")
+	agent := at("agent")
 	if state != "blocked" || agent != "opencode" {
 		return 1
 	}
-	reason := jqRawOr(info, "", "agent", "tokens", "blocked_reason")
-	scope := jqRawOr(info, "", "agent", "tokens", "blocked_scope")
+	reason := at("tokens", "blocked_reason")
+	scope := at("tokens", "blocked_scope")
 	if scope == "" {
 		scope = "root"
 	}
@@ -353,20 +421,27 @@ func (a *app) nextClearQuestion(pane string) int {
 		return 1
 	}
 	if scope == "child" && reason == "question" {
-		if _, rc := a.nextRPC("call", "pane.send_keys", `{"pane_id":"`+pane+`","keys":["ctrl+x","down"]}`); rc != 0 {
+		if !a.nextKeys(pane, "ctrl+x", "down") {
 			return 1
 		}
 		nextSleep(a.nextEnvStr("INVOKER_SUBAGENT_VIEW_SETTLE_S", "2"))
 	}
-	out, _ := a.nextRPC("call", "pane.read", `{"pane_id":"`+pane+`","source":"visible","lines":`+a.nextEnvStr("INVOKER_MODAL_READ_LINES", "80")+`}`)
-	text := jqRawOr(out, "", "read", "text")
+	text := a.nextReadText(pane, a.nextEnvStr("INVOKER_MODAL_READ_LINES", "80"))
 	if !strings.Contains(text, "esc dismiss") { // # MUTATION-ANCHOR: 862-G12
 		return 1
 	}
-	if _, rc := a.nextRPC("call", "pane.send_keys", `{"pane_id":"`+pane+`","keys":["escape"]}`); rc != 0 {
+	if !a.nextKeys(pane, "escape") {
 		return 1
 	}
-	if _, rc := a.nextRPC("wait-agent", pane, "idle,done", "--timeout-ms", a.nextEnvStr("INVOKER_UNBLOCK_WAIT_MS", "15000")); rc != 0 {
+	unblock := a.nextEnvStr("INVOKER_UNBLOCK_WAIT_MS", "15000")
+	if !a.nextHC(pane) { // the TUI hands the operator's value to herdr-rpc verbatim, a bad one included
+		if _, rc := a.nextRPC("wait-agent", pane, "idle,done", "--timeout-ms", unblock); rc != 0 {
+			return 1
+		}
+		return 0
+	}
+	ms, _ := strconv.ParseInt(unblock, 10, 64)
+	if a.nextWaitIdle(pane, ms) != 0 {
 		return 1
 	}
 	return 0
@@ -555,8 +630,16 @@ func (a *app) nextWitnessWait(pane string, totalMS int64, w *nextWitness) int {
 	w.verdict, w.detail = "", ""
 	slice, _ := strconv.ParseInt(a.nextEnvStr("WITNESS_SLICE_MS", "20000"), 10, 64)
 	confirm, _ := strconv.Atoi(a.nextEnvStr("WITNESS_CONFIRMATIONS", "2"))
-	wait := func(ms int64) int {
-		_, rc := a.nextRPC("wait-agent", pane, "idle,done", "--timeout-ms", strconv.FormatInt(ms, 10))
+	wait := func(ms int64) int { return a.nextWaitIdle(pane, ms) }
+	if a.nextHC(pane) {
+		// no endpoint or screen witness for an app terminal: `hc get` is the only authority, and it says blocked or it does not
+		rc := wait(totalMS)
+		switch rc {
+		case 6:
+			w.detail = pane + " is blocked on a prompt (hc get reports status blocked). Nothing here can read it, so a person has to look at that terminal."
+		case 3:
+			w.detail = "hc knows no live terminal " + pane + " (or `hc get` could not answer)."
+		}
 		return rc
 	}
 	if totalMS <= slice {

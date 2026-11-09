@@ -414,6 +414,9 @@ export ENGRAM_DATA_DIR="$TMP/home/.engram"
 export ENGRAM_PORT=9
 # brain waits for a serve to start; port 9 never will, so no subject pays the timeout
 export HW_ENGRAM_WAIT=0
+# the serve at port 9 never answers, and an invoker's health probe waits HW_ENGRAM_HEALTH_TIMEOUT (default 10 s) on each of two tries
+# (bin/engram-serve.sh): 1264 took 36.5 s, 7.55 s with this. A subject that needs the default sets its own.
+export HW_ENGRAM_HEALTH_TIMEOUT=0.5
 # NO SUBJECT STARTS THE BRAINER'S HOUSEKEEPING (setup/guards/lane_housekeeping.py):
 # a SessionStart driven here would run `hw status` and detach a real
 # `hw reap --apply`. 640 turns it back on, against its own fixture.

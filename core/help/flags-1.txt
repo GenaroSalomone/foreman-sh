@@ -31,6 +31,9 @@ FLAGS
                        effort_applied. Levels: low|medium|high|xhigh|max, plus
                        ultra for codex and off|minimal for pi (pi never takes
                        ultra; with none given pi sets low, and off for explore).
+                       A level travels only here, in the same words on every
+                       vendor: a `:<level>` written inside a model id is
+                       refused, naming the --effort to use instead.
     --subagent-model <m> inherit | haiku|sonnet|opus|fable | claude-*. The model
                        a Claude executor's subagents run on when they name
                        none (CLAUDE_CODE_SUBAGENT_MODEL). Lane default:

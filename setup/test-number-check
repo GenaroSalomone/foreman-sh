@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# test-number-check — a setup/tests number belongs to one subject.
+#
+#   setup/test-number-check TESTS_DIR BASELINE
+#
+# Prints a line per number that two or more files share and BASELINE (the old ones, one number per line, '#' comments) does not
+# list, and exits 1; exits 0 when there is none. setup/test-hw runs it before anything starts.
+set -u
+dir="${1:?usage: test-number-check TESTS_DIR BASELINE}"; base="${2:?usage: test-number-check TESTS_DIR BASELINE}"
+bad=0
+for n in $(for f in "$dir"/[0-9][0-9]*-*.sh; do b="$(basename "$f")"; printf '%s\n' "${b%%-*}"; done | sort | uniq -d); do
+  grep -qx "$n" "$base" 2>/dev/null && continue
+  printf 'test number %s is used by more than one subject (%s) and is not in %s — renumber the new one to a free number (setup/commit-tree warns which are taken)\n' \
+    "$n" "$(cd "$dir" && printf '%s ' "$n"-*.sh)" "$base"
+  bad=1
+done
+exit "$bad"

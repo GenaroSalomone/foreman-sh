@@ -394,7 +394,8 @@ It is read-only and exits 0 whatever the level (a malformed call exits 1).
 A brief can ask for third-party code-quality plugins with `plugins: [thermo, ponytail, pstack]`
 in its frontmatter. `hw` loads them into **that executor only**: a Claude Code executor gets one
 `--plugin-dir` per plugin (that session; the plugins' hooks run natively in it), a pi executor one
-`-e <plugin dir>` per plugin (that run: skills and extension); opencode and codex are told `NOT APPLIED`
+`-e <plugin dir>` per plugin (that run: skills and extension; a plugin whose skill an earlier one already ships is handed
+as a per-run mirror of itself with that skill left out, since pi keeps the first copy and warns about the second); opencode and codex are told `NOT APPLIED`
 in the dry run. Nothing is installed globally; what a hook writes goes to `$HW_ARTIFACTS/plugin-state`,
 never to `~/.claude` or `~/.pi`; the receipt of the run records the field.
 

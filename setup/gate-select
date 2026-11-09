@@ -14,8 +14,8 @@ setup/hooks/pre-commit to read:
     deferred <name>        a changed SLOW subject: not in the fast gate, as today
 
 With `touched` as the fourth argument it answers instead which SLOW subjects
-name a changed path, cheapest and most direct first, cut at
-touched_budget_seconds:
+name a changed path — those that spell it whole first (narrowest path first), then bare-word, then closure; cheapest within —
+cut at touched_budget_seconds:
 
     touched <name> <path>                  run it beside the fast gate
     touched-skipped <name> <secs> <path>   over the budget: left to the full run
@@ -287,7 +287,7 @@ def when_hits(root, changed):
 
 
 def slow_hits(root, changed, trigger):
-    """-> ({slow subject: (rank, first changed path naming it)}, {slow: seconds}, {those declaring gate-reference})."""
+    """-> ({slow subject: (rank 0 spelled whole / 1 bare word / 2 closure, first changed path naming it, width)}, {slow: seconds}, {those declaring gate-reference})."""
     tests = os.path.join(root, "setup", "tests")
     budgets = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))
     threshold = budgets["fast_gate_threshold_seconds"]
@@ -298,35 +298,55 @@ def slow_hits(root, changed, trigger):
     stext = {n: subject_text(COMMENT.sub("", read(os.path.join(tests, n))), top, helpers)
              for n in slow}
     code = None
-    found = {}  # name -> (rank, path)
+    found = {}  # name -> (rank, path, width); width: see below
+    spell = {}  # changed path -> the subjects that spell it whole
     for path in changed:
         if SUBJECT.match(path):
             name = os.path.basename(path)
             if name in slow:
                 found[name] = (0, path)
+                spell.setdefault(path, []).append(name)
             continue
         if trigger is not None and trigger.search(path) is None:
             for n, t in stext.items():
-                if names(t, path) and n not in found:
-                    found[n] = (0, path)
+                if names(t, path):
+                    spell.setdefault(path, []).append(n)
+                    if found.get(n, (9,))[0] > 0:
+                        found[n] = (0, path)
             continue
         if code is None:
             code = universe(root)
         reach = closure(path, code)
         base = os.path.basename(path)
         for n, t in stext.items():
-            direct = path in t or names(t, base)
-            if direct and found.get(n, (9,))[0] > 0:
-                found[n] = (0, path)
+            # RANK: 0 the subject's text spells the changed path whole; 1 it only names its bare word (`heavy`, `hw`, and `out`
+            # for the 311 subjects that read a golden `out` file); 2 it reaches it through the closure. `touched` lists by rank.
+            rank = 0 if path in t else 1 if names(t, base) else None
+            if rank == 0:
+                spell.setdefault(path, []).append(n)
+            if rank is not None and found.get(n, (9,))[0] > rank:
+                found[n] = (rank, path)
                 continue
             if n in found:
                 continue
             if any(r in t or names(t, os.path.basename(r)) for r in reach):
-                found[n] = (1, path)
+                found[n] = (2, path)
+    # WIDTH: how many subjects spell the narrowest changed path this one spells. A path 31 subjects spell (test-budgets.json) says
+    # little about any one of them; one that 6 spell (setup/heavy) says a lot. A subject that is itself changed, or that a
+    # `gate-when` selects, is width 0. `touched` lists by (rank, width, seconds).
+    width = {}
+    for path, who in spell.items():
+        for n in who:
+            width[n] = min(width.get(n, len(who)), len(who))
+    for n in list(found):
+        found[n] = found[n] + (width.get(n, 10 ** 6),)
+    for n, (_r, path, _w) in list(found.items()):
+        if path in changed and SUBJECT.match(path):
+            found[n] = (0, path, 0)
     pinned = {n for n in found if header_declares(os.path.join(tests, n), "gate-reference")}
     for n, path in when_hits(root, changed).items():
         if n in slow:  # a fast one is taken by main(); a slow one runs beside the selection, never cut  # MUTATION-ANCHOR: 999-M01
-            found[n] = (0, path)
+            found[n] = (0, path, 0)
             pinned.add(n)
     return found, slow, pinned
 
@@ -355,7 +375,11 @@ def touched(root, changed, trigger):
             kept.add(n)
         else:
             cut.add(n)
-    for n in sorted(found, key=lambda n: (slow[n], n)):
+    # DIRECT FIRST. A subject whose own text spells a changed path whole (rank 0) comes before one that names only its bare word
+    # (1) and one reached only through the closure (2): on a 236-subject range, 1131 (the subject of the most-edited file) was #230 and 1014 #229, so a reader who cut
+    # the list at 60 ran neither, and both went red only in the one-hour gate (foreman-friction-1106, 2026-11-06). Within a
+    # rank, the NARROWEST path first (width), then cheapest. Only the ORDER changes: what is kept and what is cut is decided above.
+    for n in sorted(found, key=lambda n: (found[n][0], found[n][2], slow[n], n)):
         if n in cut:
             print("touched-skipped %s %s %s" % (n, slow[n], found[n][1]))
         else:

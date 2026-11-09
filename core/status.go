@@ -143,6 +143,10 @@ func (a *app) statusTable(project string, all bool) (int, []orphanLine) {
 		go func() { defer wg.Done(); exited = h.drainExited(600*time.Millisecond, 8*time.Second) }()
 		wg.Wait()
 	}
+	if hcAgents, hcPanes, _ := hcRunEntries(); len(hcAgents) > 0 {
+		d.herdrOK = true // the app's terminals are an answer: an app-only machine has no herdr to ask
+		agentsJSON, panesJSON = withHCRuns(agentsJSON, "agents", hcAgents), withHCRuns(panesJSON, "panes", hcPanes)
+	}
 	started := <-startedCh
 	rd := &statusReader{stderr: func(s string) { os.Stderr.WriteString(s) }, now: wallNow}
 	s := &statusRun{app: a, rd: rd, d: d, project: project, all: all}
@@ -393,6 +397,7 @@ func (s *statusRun) load(wsJSON, panesJSON, agentsJSON string, exited []jmap, se
 			d.panesByTask[key] = append(d.panesByTask[key], p)
 		}
 	}
+	d.addHCPanes()
 	d.engramByLane = map[string]string{}
 	for _, l := range s.c.t.names {
 		lab := s.c.t.get(l, "engram")

@@ -32,7 +32,7 @@ func (c *chanSend) waitBudgetFor(t string) string {
 	if v := c.getenv("HW_INVOKER_WAIT_MS"); v != "" {
 		return v
 	}
-	info, _ := c.herdr().stdout("agent", "get", t)
+	info, _ := c.agentGet(t)
 	task := jqRawOr(info, "", "result", "agent", "tokens", "hw_task")
 	ms := 90000
 	if task != "" {
@@ -45,7 +45,7 @@ func (c *chanSend) waitBudgetFor(t string) string {
 
 // turnHasEnded is _turn_has_ended: turn_state, when it says the turn ended.
 func (c *chanSend) turnHasEnded(t string) (string, bool) {
-	info, _ := c.herdr().stdout("agent", "get", t)
+	info, _ := c.agentGet(t)
 	state := jqRawOr(info, "", "result", "agent", "tokens", "turn_state")
 	if strings.HasPrefix(state, "ended") {
 		return state, true
@@ -55,7 +55,7 @@ func (c *chanSend) turnHasEnded(t string) (string, bool) {
 
 // awaitingChildWarning is _awaiting_child_warning: "<turn_state>\t<children_running>\t<turn_ended_at>", or not.
 func (c *chanSend) awaitingChildWarning(t string) (string, bool) {
-	info, _ := c.herdr().stdout("agent", "get", t)
+	info, _ := c.agentGet(t)
 	if info == "" {
 		return "", false
 	}
@@ -124,7 +124,7 @@ func (c *chanSend) rulingRefusal(target, state, pane string) {
 type csExecState struct{ verdict, status, state, children string }
 
 func (c *chanSend) executorState(pane string) csExecState {
-	info, _ := c.herdr().stdout("agent", "get", pane)
+	info, _ := c.agentGet(pane)
 	status := jqRawOr(info, "", "result", "agent", "agent_status")
 	if info == "" || status == "" {
 		return csExecState{verdict: "absent"}
@@ -551,7 +551,7 @@ func (c *chanSend) setBudgetText(s string) {
 // pipefail a failed herdr or a jq that could not read it adds "unknown" to whatever jq printed — and an EMPTY answer
 // that jq read fine prints nothing at all, which the caller then reports as `(got )`.
 func (c *chanSend) preStatus(t string) string {
-	info, ok := c.herdr().stdout("agent", "get", t)
+	info, ok := c.agentGet(t)
 	vals, perr := parseStream([]byte(info))
 	var outs []string
 	for _, v := range vals {

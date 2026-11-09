@@ -761,7 +761,7 @@ func (d *dsp) rtCmdNext(args []string) {
 	}
 	cmd := exec.Command(d.env("HW_CORE_BIN_DIR")+"/hw", append([]string{"next"}, args...)...)
 	cmd.Stdout, cmd.Stderr = d.out, d.err
-	cmd.Env = d.rtChildEnv()          // # MUTATION-ANCHOR: 844-R74
+	cmd.Env = d.rtChildEnv()
 	if err := cmd.Run(); err != nil { // # MUTATION-ANCHOR: 844-R73
 		panic(exitNow{exitStatus(err)})
 	}

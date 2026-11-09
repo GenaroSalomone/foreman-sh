@@ -123,6 +123,16 @@ _fg_judged() { # <subject file name> — 0 when it is a fast subject (or has no 
 # with their own $TMP, so nothing reads the order.
 shopt -s nullglob
 FILES=("$TESTS"/[0-9][0-9]*-*.sh)
+# A SUBJECT NUMBER IS ONE SUBJECT'S (retro pi-plugin-reviews): parallel branches each saw a number free and three
+# setup/tests/1262-* reached main. A repeated number that is not in setup/suite-data/test-number-dups.txt (the old ones) fails the run
+# before anything starts, naming the files. A tree with no list (a fixture runner) asks nothing.
+_ND_FILE="$HERE/suite-data/test-number-dups.txt"
+if [ -f "$_ND_FILE" ] && [ -x "$HERE/test-number-check" ]; then
+  _nd_out="$("$HERE/test-number-check" "$TESTS" "$_ND_FILE")" || {
+    printf '%s\n' "$_nd_out" | sed 's/^/not ok - runner: /' >&2
+    exit 1
+  }
+fi
 ALL=("$TESTS"/*.sh)
 shopt -u nullglob
 [ "${#FILES[@]}" -gt 0 ] || { printf 'not ok - runner: no subject files in %s\n' "$TESTS" >&2; exit 1; }
@@ -1523,8 +1533,11 @@ if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
     # ONE JOB AT A TIME BY DESIGN (the fast gate, or a nested fixture run; NOT a full gate the load rule cut to one job, which
     # queues them one by one, as slowly as the load asks): a subject's budget is judged on an unloaded machine, the partitions are the one parallel
     # work of such a run, so they go as a single job that runs them all at once (go-test-core.sh +a,b,c), alone, like any job of that gate.
-    JOB_ARG[${#JOB_PATH[@]}]="+$(printf '%s' "$_gt_pick" | tr '\n' ',' | sed 's/,$//')"
-    JOB_PATH+=("$HERE/go-test-core.sh"); JOB_KIND+=("go-test"); JOB_LANE+=("pool"); JOB_HINT+=("600")
+    # FIRST IN THE QUEUE, not after the subjects: jobs run and report in queue order and a red stops the run, so a Go test red behind
+    # the whole bash sweep was learned at 2065 s of 2081 s (misleading-messages, 2026-11-06); up front it is learned in seconds.
+    # JOB_ARG is empty here (only a go-test job has one), so the one-element array puts the argument at index 0, the job's.
+    JOB_ARG=("+$(printf '%s' "$_gt_pick" | tr '\n' ',' | sed 's/,$//')")
+    JOB_PATH=("$HERE/go-test-core.sh" ${JOB_PATH[@]+"${JOB_PATH[@]}"}); JOB_KIND=("go-test" ${JOB_KIND[@]+"${JOB_KIND[@]}"}); JOB_LANE=("pool" ${JOB_LANE[@]+"${JOB_LANE[@]}"}); JOB_HINT=("600" ${JOB_HINT[@]+"${JOB_HINT[@]}"})
   else
     for _gt_n in $_gt_pick; do
       _gt_h="$(printf '%s\n' "$_gt_all" | awk -F'\t' -v n="$_gt_n" '$1 == n { print $2 }')"

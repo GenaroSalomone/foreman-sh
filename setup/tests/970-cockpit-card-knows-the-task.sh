@@ -49,4 +49,5 @@ mutant_dir 970-M02; mutate_anchor 970-M02 "$MD/cockpit-state" 'count = min(len(s
 mutant_dir 970-M03; mutate_anchor 970-M03 "$MD/cockpit-state" 'if True:'; kill_mutant 970-M03 gate_from_slot "a slot of another task is not this one's gate"
 mutant_dir 970-M04; mutate_anchor 970-M04 "$MD/cockpit-state" 'if hit and 0 <= now - hit[0] < 3600 * 1000:'; kill_mutant 970-M04 commits_cache "a new commit is counted within the TTL"
 mutant_dir 970-M05; mutate_anchor 970-M05 "$MD/cockpit-state" 'if True:'; kill_mutant 970-M05 gate_from_process "a run in another tree is not this task's gate"
-pass "970: 5 mutants of the writer, each killed by the check that names its rule"
+mutant_dir 970-M06; mutate_anchor 970-M06 "$MD/cockpit-state" 'if not isinstance(v, str) or not v.strip():'; kill_mutant 970-M06 model_without_diagnostic "the diagnostic is not a model"
+pass "970: 6 mutants of the writer, each killed by the check that names its rule"

@@ -176,6 +176,16 @@ func (d *dsp) run(argv []string) {
 		d.model, d.modelSrc = "", "default" // # MUTATION-ANCHOR: 844-M09
 	}
 	d.applyModelDefault()
+	// A reasoning level has ONE door, --effort, on every vendor (t5_vendor_agent.go modelEffortSuffixRefusal). This is
+	// the dispatch door: the --model flag, the lane's default model, the pi roster's and the claude alias default all
+	// resolve into d.model above, and a level written inside any of them is refused here, before anything is built.
+	where := "from --model"
+	if d.modelSrc != "chosen" {
+		where = "from the lane's default model"
+	}
+	if msg := modelEffortSuffixRefusal(d.model, where); msg != "" {
+		d.die(msg)
+	}
 	d.checkModelFloor()
 	d.checkBriefMeasuredEvidence()
 	if !d.permissionsResolve(d.permissionsFlag) {

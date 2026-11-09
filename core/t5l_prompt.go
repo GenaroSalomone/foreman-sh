@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -289,13 +290,16 @@ Your brief is below, and on disk at ` + brief + ` if you lose it.
 The task is open until you run done-invoker.
 done-invoker and ask-invoker are shell commands in ` + f.binDir + `, not tools:
 
-    ` + f.binDir + `/done-invoker "<what you established; the engram #ids; 900 chars max>"
+    ` + f.binDir + `/done-invoker "<what you established; the engram #ids; 900 chars max>"   # rehearse: done-invoker --check
     ` + f.binDir + `/done-invoker --blocked "<what stopped you; what would unblock it>"   # you stay; a ruling resumes this task — never --retask it
     ` + f.binDir + `/ask-invoker "<one question, 600 chars max>"   # 3 per task; wait here for the reply
     ` + f.binDir + `/ask-invoker --challenge "<what the brief forbids> :: <your evidence against it>"   # own budget; hold until ruled
 
 No question tool reaches a person. A missing tool, capability or credential is a
---blocked report, never a silent stop.`
+--blocked report, never a silent stop.
+
+A friction (a tool, hook or doc that cost you time): mem_save with topic_key
+`+f.lane+`/`+f.task+`/friction, its #id in your done summary; never channel-send it.`
 }
 
 // tierText renders the lines that apply to THIS executor: reading goes to the explorer only when it runs a different model than
@@ -404,11 +408,30 @@ func closeJudgmentDayText(f *promptFacts) string {
 		rule = "Judgment Day is optional: if the skill is not among your available skills, it is not installed, there is nothing to judge with and nothing ESCALATED; say \"Judgment Day: not installed (optional)\" in the report and close normally. "
 		report = " (or \"not installed (optional)\")"
 	}
+	diffFile := reviewDiffFileClause // the plugin step already says it when the closing has one
+	if len(reviewSkillsOf(f.plugins)) > 0 {
+		diffFile = ""
+	}
 	return judgmentDayWithPlugins(head+"\n"+
-		"2. Run "+skill+" over `git diff \"$(hw review-range)\"..HEAD` (the branch point computed now, never a range of your own) "+judges+". At most two rounds. "+rule+
-		"If hw review-range fails: --blocked. An empty range is reported, not judged. After a rebase, run `hw review-delta <judged-base> <judged-head>` and do what it prints.\n"+
+		"2. Run "+skill+" over `git diff \"$(hw review-range)\"..HEAD` (the branch point computed now, never a range of your own) "+judges+"."+diffFile+" At most two rounds. "+rule+
+		"If hw review-range fails: --blocked. An empty range is reported, not judged. After a rebase, run `hw review-delta <judged-base> <judged-head>` and do what it prints."+judgeSpecText(f.briefText)+"\n"+
 		"3. The skill's fix-round question needs no answer here: this brief is the authorization. Apply the fixes both judges confirm; judges that contradict each other, or anything left after round two, is ESCALATED: report it, do not wait.\n"+
 		"4. The report carries the judged range (base SHA..head SHA), the verdict APPROVED or ESCALATED"+report+", and, separately, each severe finding only ONE judge raised (unconfirmed, so not fixed), with its file:line.", f.plugins)
+}
+
+var (
+	briefGoalHeading = regexp.MustCompile(`(?m)^## Goal[ \t]*$`)
+	briefDoneHeading = regexp.MustCompile(`(?m)^## Done when[ \t]*$`)
+)
+
+// judgeSpecText: a judge that sees only the diff cannot judge intent (a release passed four reviews and broke a rule no judge
+// was given, 2026-11-06). A brief with both `## Goal` and `## Done when` has its executor hand those two sections, verbatim,
+// to each judge, and the judges answer per rule; any other brief gets "" and the close is unchanged.
+func judgeSpecText(brief string) string {
+	if !briefGoalHeading.MatchString(brief) || !briefDoneHeading.MatchString(brief) {
+		return ""
+	}
+	return " Give each judge, beside the diff, the brief's `## Goal` and `## Done when` verbatim; each answers per Done-when rule: held / broken (file:line) / not judgeable from the diff. List every \"not judgeable\" rule in the report."
 }
 
 func designJudgmentText(f *promptFacts) string {
@@ -447,8 +470,8 @@ verdict is exactly pass, fail or unresolved; evidence is a command and its
 result, or a file:line. Fill it in as you go: done-invoker refuses a missing
 file, no rows, or an empty verdict.`
 
-// behaviourFixText is the red-test rule; the fast-gate clause only where the repo carries setup/test-hw, and it makes the run an
-// obligation that only the brief's Limits lift (a brief that excludes the gate wins; what done-invoker checks does not move).
+// behaviourFixText is the red-test rule; the fast-gate clause only where the repo carries setup/test-hw, and it says the full gate is
+// the brainer's (2026-11-09: executors kept running it and the brainer killed five). What done-invoker checks does not move.
 func behaviourFixText(f *promptFacts) string {
 	s := `A behaviour fix ships the test that fails on the old code. Prove it: revert
 the fix, watch that test go red, restore it, watch it go green, and say so in
@@ -458,8 +481,9 @@ changes no expectation, and a refactor that does has broken something.`
 	if f.fastGate {
 		s += `
 
-Fast gate (HW_TEST_GATE=fast bash setup/test-hw): run it before the close unless
-the Limits forbid it; a red is yours to fix.`
+Verify touched subjects only, in the background (a foreground call is cut at 600 s):
+git diff --name-only main > "$HW_ARTIFACTS/changed"; HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw --keep-going
+The full fast gate is the brainer's: do not run it.`
 	}
 	return s
 }

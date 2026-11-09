@@ -164,13 +164,16 @@ func reviewPiecesToInvoke(plugins []string, agents bool) string {
 func reviewSkillsToInvoke(plugins []string) string { return reviewPiecesToInvoke(plugins, false) }
 
 // reviewAgentsClause is the sentence that sends the agents (comment-sicko) through the Agent tool: empty when no declared
-// plugin carries one. The subagent_type a plugin agent records is its full name, `plugin:agent`.
+// plugin carries one. The subagent_type a plugin agent records is its full name, `plugin:agent`. FOREGROUND is said out
+// loud, on every vendor: done-invoker proves a review piece only from a call that ran and waited, and a background launch
+// proves the start alone (measured 2026-11-09: an executor launched pstack:comment-sicko with run_in_background, the proof
+// was refused, and it cost 8.5 min and two more cycles).
 func reviewAgentsClause(plugins []string) string {
 	ag := reviewPiecesToInvoke(plugins, true)
 	if ag == "" {
 		return ""
 	}
-	return " Launch the review agent " + ag + " with the Agent tool over the same range (its subagent_type is that full name)."
+	return " Launch the review agent " + ag + " with the Agent tool over the same range, in the foreground — no background launch (`run_in_background`, `async:true`); where the call takes an `async` field, pass `async:false`: a background call proves the launch, not the run. Its subagent_type is that full name."
 }
 
 // reviewGateOf is _review_gate over what the brief says: it dies (die is the caller's) on a value that is not
@@ -226,6 +229,10 @@ func pluginReviewSkillsNamed(mode string, baseRef string, build bool, plugins []
 	return nil
 }
 
+// reviewDiffFileClause hands every review child the diff as a file: some have no shell (pi-subagents' reviewer declares
+// read, grep, find, ls only) and cannot run git. Same text on every vendor.
+const reviewDiffFileClause = " Write that range's diff to `$HW_ARTIFACTS/review-range.diff` and give that path to every review subagent and judge: some have no shell (pi's reviewer reads files only) and cannot run git."
+
 // judgmentDayWithPlugins is the Judgment Day closing plus the step that names the plugin review skills: run over
 // the same committed range, before Judgment Day, and the report says each one ran or was skipped.
 func judgmentDayWithPlugins(note string, plugins []string) string {
@@ -237,7 +244,7 @@ func judgmentDayWithPlugins(note string, plugins []string) string {
 
 This brief also declares review plugins, so the closing has one more step, BEFORE
 the Judgment Day of step 2: run these review skills over the same committed range
-("$(hw review-range)"..HEAD), each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + ` Judgment Day does not replace them.
+("$(hw review-range)"..HEAD), each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + reviewDiffFileClause + ` Judgment Day does not replace them.
 A skill that is not among your available skills is not installed. The report names
 each skill you ran and what it left open; a skill you did not run gets a line
 "review-skip: <skill> — <why>". done-invoker reads your transcript for each
@@ -257,7 +264,7 @@ func reviewPluginsNote(plugins []string) string {
    messages — not one commit at the end. The review target is what you
    committed; uncommitted work is not reviewed and is not delivered.
 2. Before done-invoker, run these review skills over your committed diff, the
-   ones of the plugins this brief declares, each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + ` A skill that is not among your
+   ones of the plugins this brief declares, each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + reviewDiffFileClause + ` A skill that is not among your
    available skills is not installed: say so in the report and close normally.
    Do NOT run the judgment-day skill: this brief chose its review, and two
    verdicts on one candidate is the cost it removes.

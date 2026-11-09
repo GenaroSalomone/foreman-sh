@@ -175,15 +175,21 @@ test('the action file is rotated at 1 MiB', async ($, on) => {
 
 test('ruling takes its text on stdin, never in argv', async ($, on) => {
   const w = world(on, FIXTURES['fresh.json']!)
-  const ui = await drawPane($)
+  let ui = await drawPane($)
   const text = 'use `rg`, not $HOME grep\nsecond line; "quoted"'
+  await ui.press({ key: 'compose:demo:task-03' })
+  await ui.unmount()
+  ui = await drawPane($)
   await ui.input({ key: 'ruling:demo:task-03', text })
   expect(w.runs).toEqual([{ argv: ['hw', 'ruling', 'w1:p13', '-'], stdin: text }])
 })
 
 test('an empty ruling runs nothing', async ($, on) => {
   const w = world(on, FIXTURES['fresh.json']!)
-  const ui = await drawPane($)
+  let ui = await drawPane($)
+  await ui.press({ key: 'compose:demo:task-03' })
+  await ui.unmount()
+  ui = await drawPane($)
   await ui.input({ key: 'ruling:demo:task-03', text: '   ' })
   expect(w.runs.length).toBe(0)
 })
@@ -207,7 +213,33 @@ test('the mod never decides: a false action draws nothing, neither a button nor 
   const t = await texts(ui)
   expect(t.some(x => /^\[(done|verify|receipt|ruling)\]/.test(x))).toBe(false)
   expect(t.some(x => x.includes('task still working') || x.includes('pane is idle'))).toBe(false)
-  expect(await keys(ui, 'Input')).toEqual(['reply:demo:task-01', 'reply:demo:task-02', 'ruling:demo:task-03', 'ruling:demo:task-05'])
+  expect(await keys(ui, 'Input')).toEqual(['reply:demo:task-01', 'reply:demo:task-02'])
+})
+
+// The ruling input is on the card being acted on, not on every card: a press on `ruling` opens it, and a second closes it.
+test('the ruling input opens on a press of the card’s ruling button, and only on that card', async ($, on) => {
+  world(on, FIXTURES['fresh.json']!)
+  const ui = await drawPane($)
+  expect(await keys(ui, 'Button')).toEqual(expect.arrayContaining(['compose:demo:task-03', 'compose:demo:task-05']))
+  expect(await keys(ui, 'Input')).not.toContain('ruling:demo:task-03')
+  await ui.press({ key: 'compose:demo:task-03' })
+  await ui.unmount()
+  const open = await drawPane($)
+  expect((await keys(open, 'Input')).filter(k => k.startsWith('ruling:'))).toEqual(['ruling:demo:task-03'])
+  await open.press({ key: 'compose:demo:task-03' })
+  await open.unmount()
+  expect((await keys(await drawPane($), 'Input')).filter(k => k.startsWith('ruling:'))).toEqual([])
+})
+
+test('a queued ruling closes its input', async ($, on) => {
+  world(on, FIXTURES['fresh.json']!)
+  let ui = await drawPane($)
+  await ui.press({ key: 'compose:demo:task-03' })
+  await ui.unmount()
+  ui = await drawPane($)
+  await ui.input({ key: 'ruling:demo:task-03', text: 'go' })
+  await ui.unmount()
+  expect((await keys(await drawPane($), 'Input')).filter(k => k.startsWith('ruling:'))).toEqual([])
 })
 
 test('a stale state draws no buttons and no input', async ($, on) => {
@@ -255,9 +287,12 @@ test('no reply input where the row has no pending_reply', async ($, on) => {
 
 test('every process the mod starts is a verb of the contract', async ($, on) => {
   const w = world(on, FIXTURES['fresh.json']!)
-  const ui = await drawPane($)
+  let ui = await drawPane($)
   await ui.press({ key: 'receipt:demo:task-01' })
   await ui.press({ key: 'done:demo:task-04' })
+  await ui.press({ key: 'compose:demo:task-05' })
+  await ui.unmount()
+  ui = await drawPane($)
   await ui.input({ key: 'ruling:demo:task-05', text: 'x' })
   expect(w.runs.length).toBe(3)
   expect(allowed(w)).toBe(true)

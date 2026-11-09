@@ -30,10 +30,10 @@ type explorerRole struct {
 
 // explorerSrc is what the explorer functions read: the brain's root (bash's _brain_root) and the lane's pin of
 // haiku (model_pins, "" when none). Shared by the dispatch, the launch and the re-task, which hold different types.
-type explorerSrc struct{ root, haikuPin, piHome string } // piHome: pi's agent dir (PI_CODING_AGENT_DIR, else ~/.pi/agent)
+type explorerSrc struct{ root, haikuPin, piHome, piModel string } // piHome: pi's agent dir (PI_CODING_AGENT_DIR, else ~/.pi/agent)
 
 func (d *dsp) explorer() explorerSrc {
-	return explorerSrc{root: d.vdRoot(), haikuPin: d.modelPinFor(explorerModelClaude), piHome: d.piAgentDir()}
+	return explorerSrc{root: d.vdRoot(), haikuPin: d.modelPinFor(explorerModelClaude), piHome: d.piAgentDir(), piModel: d.c.t.piRoster().explorer}
 }
 
 func (x explorerSrc) roleFile() string { return x.root + "/_agents/" + explorerName + ".md" }
@@ -145,7 +145,7 @@ func (x explorerSrc) model(vendor string) string {
 	case "codex":
 		return explorerModelCodex
 	case "pi":
-		return piExplorerModel
+		return orDefaultStr(x.piModel, piExplorerModel)
 	}
 	return ""
 }
@@ -313,7 +313,7 @@ func (d *dsp) checkTopTierCeiling() {
 // explorerFor is the explorer's source for a re-task or a revive, which hold no dispatch state: the brain's root and
 // the lane's pin of haiku, read from the lane table the way lane_get reads model_pins ("" when the lane pins none).
 func (a *app) explorerFor(proj string) explorerSrc {
-	x := explorerSrc{root: a.reviveBrainRoot(), piHome: piAgentDirOf(a.getenv)}
+	x := explorerSrc{root: a.reviveBrainRoot(), piHome: piAgentDirOf(a.getenv), piModel: a.c.t.piRoster().explorer}
 	if proj == "" || !a.c.t.known(proj) {
 		return x
 	}

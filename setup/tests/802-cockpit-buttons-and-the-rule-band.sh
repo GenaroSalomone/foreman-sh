@@ -91,7 +91,7 @@ M = [
  ("the argv is one shell string", "hooks/register.tsx", "await $.process.run(argv, stdin", "await $.process.run(['sh', '-c', argv.join(' ')], stdin"),
  ("hw's answer is dropped", "hooks/register.tsx", "S.notes[id] = note", "void note"),
  ("the mod decides: every action is a button", "hooks/view.tsx", "verbs.filter(([v]) => a[v]).map(", "verbs.filter(([v]) => true).map("),
- ("the mod decides: ruling always has its input", "hooks/view.tsx", "a.ruling ? (", "true ? ("),
+ ("the mod decides: ruling always has its input", "hooks/view.tsx", "a.ruling && composing.has(r.id) ? (", "true ? ("),
  ("a stale state draws buttons", "hooks/view.tsx", "  if (!dim) {\n    const verbs", "  if (true as boolean) {\n    const verbs"),
  ("the band denies on a verdict", "hooks/register.tsx", "if (argv !== null) await checkDispatch($, argv)", "if (argv !== null) { await checkDispatch($, argv); if (S.rule !== null && S.rule.v !== 'unavailable' && S.rule.v.level !== 'ok') return { deny: 'rule' } }"),
  ("the band fails closed", "hooks/register.tsx", "if (argv !== null) await checkDispatch($, argv)", "if (argv !== null) { await checkDispatch($, argv); if (S.rule !== null && S.rule.v === 'unavailable') return { deny: 'no preflight' } }"),
@@ -101,7 +101,7 @@ M = [
  ("a button press is not recorded for the pilot", "hooks/register.tsx", "await recordAction($, names.pane ?? '', verb)", "void 0"),
  ("the action file is overwritten, not appended to", "hooks/register.tsx", "`${old}${JSON.stringify", "`${JSON.stringify"),
  ("preflight has no time limit", "hooks/register.tsx", "const PREFLIGHT_MS = 3000", "const PREFLIGHT_MS = 3000000"),
- ("a card that costs milliseconds makes the 40-row draw slow in all seven tries, not only on a loaded machine", "hooks/view.tsx", "function RowCard({ els, r, now, dim, act, notes, open, thresholdMs, slug }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; open: Open; thresholdMs: number; slug: string }) {", "function RowCard({ els, r, now, dim, act, notes, open, thresholdMs, slug }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; open: Open; thresholdMs: number; slug: string }) {\n  let burn = 0\n  for (let i = 0; i < 3000000; i++) burn += i % 7\n  if (burn < 0) throw new Error('unreachable')"),
+ ("a card that costs milliseconds makes the 40-row draw slow in all seven tries, not only on a loaded machine", "hooks/view.tsx", "function RowCard({ els, r, now, dim, act, notes, open, composing, thresholdMs, slug }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; open: Open; composing: Open; thresholdMs: number; slug: string }) {", "function RowCard({ els, r, now, dim, act, notes, open, composing, thresholdMs, slug }: { els: Els; r: Row; now: number; dim: boolean; act: Acts; notes: Notes; open: Open; composing: Open; thresholdMs: number; slug: string }) {\n  let burn = 0\n  for (let i = 0; i < 3000000; i++) burn += i % 7\n  if (burn < 0) throw new Error('unreachable')"),
 ]
 if sys.argv[1] == "count": print(len(M)); sys.exit(0)
 name, f, a, b = M[int(sys.argv[1])]

@@ -222,7 +222,21 @@ def gate_from_process():
     del away, p
 
 
-CHECKS = {f.__name__: f for f in (title_after_frontmatter, commits_over_base, commits_cache, gate_from_slot, gate_from_process)}
+def model_without_diagnostic():
+    """hw writes `none — <why>` (or `n/a — <no reader for the vendor>`) as `model_running` when it could not read the model: the card's model is null, never
+    that sentence; a model that was read comes through as written."""
+    w = cw.World(tmpdir())
+    w.executor(task="unread", model="none \u2014 no /x/projects/*/abc.jsonl \u2014 no assistant turn carried a model within 3s")
+    w.executor(task="noreader", model="n/a \u2014 hw has no model reader for vendor codex")
+    w.executor(task="read", model="claude-opus-5-5")
+    w.publish()
+    s = state(w)
+    assert row(s, "noreader")["model"] is None, "the diagnostic is not a model (n/a, no reader): %r" % row(s, "noreader")["model"]
+    assert row(s, "unread")["model"] is None, "the diagnostic is not a model: %r" % row(s, "unread")["model"]
+    assert row(s, "read")["model"] == "claude-opus-5-5", "a model that was read stands: %r" % row(s, "read")["model"]
+
+
+CHECKS = {f.__name__: f for f in (model_without_diagnostic, title_after_frontmatter, commits_over_base, commits_cache, gate_from_slot, gate_from_process)}
 
 if __name__ == "__main__":
     BIN = os.path.abspath(sys.argv[1])

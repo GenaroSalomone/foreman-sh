@@ -1,5 +1,7 @@
 package invokers
 
+import "hwcore/internal/mux"
+
 // A CALL THAT WRITES PANE TOKENS MUST BE THE RUN THAT OWNS THE PANE.
 //
 // MEASURED 2026-11-04 (retro of retro-fixes-rc2): a pi probe started inside an
@@ -17,6 +19,9 @@ package invokers
 // paneRunToken is the hw_run herdr records on this call's pane: "" when it
 // cannot be read (herdr unreachable, no such pane, no token).
 func (c *Ctx) paneRunToken() string {
+	if mux.Backend(c.get) == mux.HC {
+		return c.terminalRunLabel()
+	}
 	pane := c.get("HERDR_PANE_ID")
 	if pane == "" {
 		return ""
@@ -59,6 +64,25 @@ func (c *Ctx) paneRunToken() string {
 	return ""
 }
 
+// terminalRunLabel is the hw_run hc records on this call's terminal: "" when it
+// cannot be read. An inherited HERDR_PANE_ID is somebody else's pane on hc, so
+// the herdr socket is never asked.
+func (c *Ctx) terminalRunLabel() string {
+	id := c.get("HC_TERMINAL_ID")
+	out, rc := c.out("hc", "get", id, "--json")
+	if rc != 0 {
+		return ""
+	}
+	top, _ := func() (map[string]any, bool) {
+		d, ok := decodeDoc(out)
+		m, ok2 := d.(map[string]any)
+		return m, ok && ok2
+	}()
+	labels, _ := top["labels"].(map[string]any)
+	run, _ := labels["hw_run"].(string)
+	return run
+}
+
 // refuseForeignPaneRun is the check done-invoker and ask-invoker make before
 // publishing anything: the pane they are about to write is this run's pane.
 func (c *Ctx) refuseForeignPaneRun() error {
@@ -67,5 +91,5 @@ func (c *Ctx) refuseForeignPaneRun() error {
 	if got == "" || got == want {
 		return nil
 	}
-	return die("REFUSING before any pane token was written: this pane (%s) belongs to hw run %q, and this call's HW_RUN is %q. A nested process — a probe, a subagent shell, a test started inside another executor's pane — inherited HERDR_PANE_ID and would rewrite the RUNNING executor's hw_task/done_state/summary on its own pane. That is how a live executor came to read `done-NOT-delivered` while it was still working (measured 2026-11-04, retro-fixes-rc2). NOTHING was sent or marked. If this is your own probe, start it in a herdr workspace of its own with no HERDR_PANE_ID/HW_INVOKER_PANE from the parent pane (setup/CLAUDE.md, \"For a target that must look like a real executor\"), then report from there.", c.get("HERDR_PANE_ID"), got, want)
+	return die("REFUSING before any pane token was written: this pane (%s) belongs to hw run %q, and this call's HW_RUN is %q. A nested process — a probe, a subagent shell, a test started inside another executor's pane — inherited HERDR_PANE_ID and would rewrite the RUNNING executor's hw_task/done_state/summary on its own pane. That is how a live executor came to read `done-NOT-delivered` while it was still working (measured 2026-11-04, retro-fixes-rc2). NOTHING was sent or marked. If this is your own probe, start it in a herdr workspace of its own with no HERDR_PANE_ID/HW_INVOKER_PANE from the parent pane (setup/CLAUDE.md, \"For a target that must look like a real executor\"), then report from there.", c.selfAddress(), got, want)
 }

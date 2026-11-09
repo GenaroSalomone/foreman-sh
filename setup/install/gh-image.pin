@@ -1,16 +1,19 @@
-# gh-image — the ONE pinned build bin/gh-attach will run. Parsed as data (never sourced).
-#   version <tag>        the upstream tag, drogers0/gh-image (MIT)
-#   commit  <sha>        the commit that tag points at when it was audited (2026-11-05)
-#   url-base <https>     where the release binaries live; install-gh-image.sh refuses any other prefix
-#   sha256 <os-arch> <hex>  checksum of the release binary `<os>-<arch>` (the default, kooky, build — not hbd-*)
-# Changing a line here is a change of the security boundary: re-audit the new tag first
+# gh-image — the ONE build bin/gh-attach will run. Parsed as data (never sourced).
+#   version <tag>        the upstream tag, drogers0/gh-image (MIT); also the -X main.version the build stamps
+#   commit  <sha>        the commit that was audited (2026-11-05) and that setup/install/install-gh-image.sh BUILDS:
+#                        fetched by this full sha, never by a tag name or a release asset
+#   source  <https>      where install-gh-image.sh fetches it from; it refuses any other
+#   go      <toolchain>  the Go toolchain the hash below was measured with (go env GOVERSION); another one is refused
+#   sha256 <os-arch> <hex>  checksum of the binary THAT BUILD produces on <os-arch> (kooky, the default tags; not hbd)
+# The build: CGO_ENABLED=0 GOFLAGS=-mod=readonly (go.sum of the commit decides every module) GOTOOLCHAIN=local, `go build
+# -trimpath -buildvcs=false -ldflags "-s -w -X main.version=<version without v>"`, in an environment of its own.
+# Changing a line here is a change of the security boundary: re-audit the new commit first
 # (setup/briefs/gh-image-upload-tool.md, § Audit; docs/gh-attach.md).
-# darwin-arm64 was downloaded and hashed by hand on 2026-11-05 and equals the release's checksums.txt;
-# the other three rows are copied from that same checksums.txt (unverified by download).
+# A platform with no sha256 row is unsupported: build it there twice, check both hashes are equal, then add the row.
+# The release binary of v1.4.1 (sha256 f566ed6e…, the pin before 2026-11-06) is NOT what this build produces
+# (see docs/gh-attach.md): bin/gh-attach refuses it.
 version v1.4.1
 commit ca57d96dd4ac72bae5c8264a244116bd17f96ce8
-url-base https://github.com/drogers0/gh-image/releases/download/v1.4.1
-sha256 darwin-arm64 f566ed6ec8aa3a1bf8e51131557d3e1dfa1ece1cc458259119415b8e3e8f7f7f
-sha256 darwin-amd64 a18cef33f7d6d6761632689040f94384608c14b58e4e7d7c1af6bdfe5e13f082
-sha256 linux-amd64 bf23c9ca3d4e6e4a001f53701fcf4ef5fe0f95c92a3bb80b5894e5f5b467cedb
-sha256 linux-arm64 074fefe1a3781490e39333e2577a63e4ee702e71e6056719641b4447b084cb4f
+source https://github.com/drogers0/gh-image
+go go1.27.3
+sha256 darwin-arm64 d308dfe11a8e329fdd7fc3b7fb02f700f8708f27ccf6992b9784f00236caa5b0

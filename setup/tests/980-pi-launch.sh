@@ -4,6 +4,7 @@
 # setup/briefs/pi-vendor-v1.md, piece 1. OLD (main before this branch) dies
 # with "--agent must be claude, opencode or codex"; NEW reaches the manifest.
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+table_mutant "$TMP/pi-go-roster.json" 't["pi_roster"] = "go"' && export HW_PROJECTS_JSON="$TMP/pi-go-roster.json" # these subjects assert the go (paid) roster; projects.json now selects free
 
 SOURCE="${HW_SOURCE:-$ROOT/bin/hw}"
 launch() {  # <task> <extra args...>
@@ -60,3 +61,20 @@ out="$(launch pi-think-flag --sdd none --brief "$(brief explore)" --effort minim
 case "$out" in *"--thinking minimal"*) pass "--effort overrides the roster's thinking" ;; *) fail "--effort minimal did not reach pi: $out" ;; esac
 out="$(launch pi-think-bad --sdd none --no-brief --model opencode-go/glm-5.3 --effort ultra)"
 case "$out" in *"pi --effort must be one of: off minimal"*) pass "an effort pi does not know is refused" ;; *) fail "pi accepted --effort ultra: $out" ;; esac
+
+# ── the free roster (projects.json pi_roster = free): the free pair, the roster named, and the testing-only warning ──
+table_mutant "$TMP/pi-free-roster.json" 't["pi_roster"] = "free"'
+fout="$(HW_PROJECTS_JSON="$TMP/pi-free-roster.json" launch pi-freecheck --sdd none --brief "$(brief build)")"
+case "$fout" in *"model=opencode-go/crouton-alpha-free "*) pass "free roster: a build defaults to crouton-alpha-free" ;; *) fail "free roster build model: $fout" ;; esac
+case "$fout" in *"pi roster    free"*) pass "free roster: the dry run names the active roster" ;; *) fail "free roster not named: $fout" ;; esac
+case "$fout" in *"pi runs on opencode's free models for testing only"*) pass "free roster: a real dispatch is warned that pi is for testing only" ;; *) fail "no testing-only warning under free: $fout" ;; esac
+gout="$(HW_PROJECTS_JSON="$TMP/pi-go-roster.json" launch pi-gocheck --sdd none --brief "$(brief build)")"
+case "$gout" in *"for testing only"*) fail "go roster printed the testing-only warning: $gout" ;; *) pass "go roster: no testing-only warning" ;; esac
+
+# ── the shell reader of projects.json accepts pi_roster (go|free) and refuses any other word ──
+table_mutant "$TMP/pi-bad-roster.json" 't["pi_roster"] = "paid"'
+for pair in "free:$TMP/pi-free-roster.json:0" "go:$TMP/pi-go-roster.json:0" "paid:$TMP/pi-bad-roster.json:1"; do
+  nm="${pair%%:*}"; rest="${pair#*:}"; f="${rest%:*}"; want="${rest##*:}"
+  rc=0; ( . "$ROOT/bin/project-spaces.sh"; HW_PROJECTS_JSON="$f" lane_config_load "$HW_BRAIN_ROOT" >/dev/null 2>&1 ) || rc=1
+  [ "$rc" = "$want" ] && pass "lane_config_load: pi_roster=$nm -> rc $want" || fail "lane_config_load: pi_roster=$nm gave rc $rc, want $want"
+done

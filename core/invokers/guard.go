@@ -42,6 +42,9 @@ func (c *Ctx) exitGuard(rc int) {
 	c.errf("%s: ══ MY EXIT CODE IS %s: %s ══\n", c.Prog, n, c.exitMeaning(rc))
 	c.errf("%s: my stdout is NOT a terminal, so this number can be swallowed. If you piped me — `%s … | tail` — then `$?` is TAIL's status (0 whenever it reads a byte), NOT mine: run me unpiped — `%s … ; echo rc=$?` reads the real status in bash and zsh (`${PIPESTATUS[0]}` is bash-only: zsh spells it `${pipestatus[1]}` and prints nothing for the bash spelling). If you captured me with `$(…)` or `|| rc=$?` you already have it, and it is %s. Either way the %s fact is %s, not whatever the shell shows.\n",
 		c.Prog, c.Prog, c.Prog, n, guardNoun(c.Prog), n)
+	if c.exitTail != "" {
+		c.errf("%s: %s\n", c.Prog, c.exitTail)
+	}
 }
 
 func guardNoun(prog string) string {

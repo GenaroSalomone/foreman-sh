@@ -119,7 +119,15 @@ func (o *occupantsReader) of(dir string) occupancy {
 	if reply == nil {
 		return occupancy{why: why}
 	}
-	return occupancy{list: o.occupantsIn(reply, dir), observed: true}
+	list := o.occupantsIn(reply, dir)
+	hcList, hcObserved, hcWhy := hcOccupants(dir) // only a dir with an hc run recorded makes an hc call
+	if !hcObserved {
+		return occupancy{why: hcWhy}
+	}
+	if hcList != "" {
+		list = strings.TrimPrefix(list+"\n"+hcList, "\n")
+	}
+	return occupancy{list: list, observed: true}
 }
 
 // jqText is "\(x)": a string as itself, anything else as JSON.

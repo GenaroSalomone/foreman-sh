@@ -15,6 +15,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"hwcore/internal/mux"
 	"unicode/utf8"
 
 	"hwcore/internal/engramhealth"
@@ -196,6 +199,14 @@ func t3UniqueJoin(vs []*jval) (string, bool) {
 
 // ── a hold: _executor_pending_reply ──────────────────────────────────────────
 
+// paneAddress is this process's own pane: the herdr pane, or the hc terminal.
+func (t *t3) paneAddress() string {
+	if mux.Backend(t.getenv) == mux.HC {
+		return t.getenv("HC_TERMINAL_ID")
+	}
+	return t.getenv("HERDR_PANE_ID")
+}
+
 // pendingReply is the first valid `pending-reply-N` hold of the task dir whose
 // intent is answer or ruling: "<intent>\t<file>", or "".
 func (t *t3) pendingReply(dir string) string {
@@ -238,7 +249,7 @@ func (t *t3) pendingReply(dir string) string {
 
 // replyFactsValid is _executor_reply_facts_valid: bin/holdfacts check, exit 0 valid.
 func (t *t3) replyFactsValid(file string) bool {
-	cmd := exec.Command(t.binDir()+"/holdfacts", "check", file, "--run", t.getenv("HW_RUN"), "--pane", t.getenv("HERDR_PANE_ID"), "--vendor", t.getenv("HW_EXECUTOR_VENDOR"))
+	cmd := exec.Command(t.binDir()+"/holdfacts", "check", file, "--run", t.getenv("HW_RUN"), "--pane", t.paneAddress(), "--vendor", t.getenv("HW_EXECUTOR_VENDOR"))
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	rc := exitStatus(cmd.Run())
@@ -351,6 +362,26 @@ func t3HerdrCall(sock, method string, params any, timeout time.Duration) {
 	}
 }
 
+// t3HCLabel is `hc label <terminal> k=v...`, its answer ignored: one process,
+// and the label write the app's terminals expose instead of herdr's socket.
+func t3HCLabel(args []string, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "hc", args...)
+	cmd.WaitDelay = 100 * time.Millisecond
+	cmd.Run()
+}
+
+// t3DecodeJSONString is the value a token carries: the tokens above are built
+// with t3JSONStr, so the label gets the string back, not its JSON quotes.
+func t3DecodeJSONString(v string) string {
+	var s string
+	if json.Unmarshal([]byte(v), &s) == nil {
+		return s
+	}
+	return v
+}
+
 // t3JSONStr is jq's string encoding: raw UTF-8, only the quote, the backslash and the control characters escaped.
 func t3JSONStr(s string) string {
 	var b bytes.Buffer
@@ -375,7 +406,8 @@ func t3JSONObj(kv [][2]string) string {
 }
 
 func (t *t3) publish(state string, turns int64, extraName, extraValue string) {
-	if t.getenv("HERDR_ENV") != "1" || t.getenv("HERDR_PANE_ID") == "" || t.fs.readonly {
+	backend := mux.Backend(t.getenv)
+	if t.fs.readonly || (backend == mux.Herdr && (t.getenv("HERDR_ENV") != "1" || t.getenv("HERDR_PANE_ID") == "")) {
 		return
 	}
 	ctx := t.ctxJSON()
@@ -415,6 +447,15 @@ func (t *t3) publish(state string, turns int64, extraName, extraValue string) {
 			tokens = append(tokens, [2]string{"ctx_pct", t3JSONStr(pct.raw())})    // # MUTATION-ANCHOR: 841-U08
 			tokens = append(tokens, [2]string{"ctx_tokens", t3JSONStr(tok.raw())}) // # MUTATION-ANCHOR: 841-U09
 		}
+	}
+	if backend == mux.HC {
+		args := []string{"label", t.getenv("HC_TERMINAL_ID")}
+		for _, p := range tokens {
+			args = append(args, mux.LabelName(p[0])+"="+t3DecodeJSONString(p[1]))
+		}
+		t3HCLabel(args, 10*time.Second)
+		t.executorCockpitKick()
+		return
 	}
 	params := json.RawMessage(t3JSONObj([][2]string{
 		{"pane_id", t3JSONStr(t.getenv("HERDR_PANE_ID"))}, // # MUTATION-ANCHOR: 841-U10
@@ -557,13 +598,15 @@ func (t *t3) piTurnEndForeign(stateDir string) bool {
 }
 
 func (t *t3) executorTurnEnd() int {
-	hookJSON := false
+	hookJSON, apiError := false, false
 	args := t.args
 	if len(args) > 0 && args[0] == "--hook-json" {
 		hookJSON, args = true, args[1:]
+	} else if len(args) > 0 && args[0] == "--api-error" {
+		apiError, args = true, args[1:]
 	}
 	if len(args) != 0 {
-		t.die("usage: hw executor-turn-end [--hook-json]")
+		t.die("usage: hw executor-turn-end [--hook-json|--api-error]")
 	}
 	stateDir, ok := t.executorStateDir()
 	if t.getenv("HW_TASK") == "" || !ok {
@@ -574,6 +617,17 @@ func (t *t3) executorTurnEnd() int {
 	}
 	// A child session's turn end is not the executor's: no count, no handback, no ruling.
 	if t.piTurnEndForeign(stateDir) { // # MUTATION-ANCHOR: 986-T01
+		return 0
+	}
+	// A TURN THAT DIED ON AN API ERROR (a spent quota) fires StopFailure, never Stop: the pane keeps the turn_state and
+	// children_running of the turn before it, which read as "a child is still running" and made channel-send --ruling refuse
+	// and hw ruling queue with no delivery (28 min, 2026-11-09). Publish the true state, clear the stale children, count nothing.
+	if apiError {
+		var turns int64
+		if b, err := os.ReadFile(stateDir + "/turns"); err == nil {
+			turns = t3Atoi(t3Digits(string(b)))
+		}
+		t.publish("ended_api_error", turns, "children_running", "")
 		return 0
 	}
 	t.engramRenew(stateDir)

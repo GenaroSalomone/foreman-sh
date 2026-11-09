@@ -941,6 +941,32 @@ func (d *dsp) briefAffectedPlaceholderLine() string {
 	return ""
 }
 
+// checkBriefTestHwOrder WARNS — never refuses — when a SETUP brief's `## Done when` or Verification section orders a run of
+// setup/test-hw in ANY mode. The full fast gate is the brainer's, once, on the merge tree; an executor told to run it waits
+// tens of minutes (retro pi-plugins-startup-look, 2026-11-09). The touched form (HW_TEST_CHANGED) belongs in the fence that
+// `hw done` re-runs, so it is the one mention that is not a "run the gate" order: a line carrying HW_TEST_CHANGED passes.
+func (d *dsp) checkBriefTestHwOrder() {
+	if d.proj != "setup" || d.brief == "" || !brReadable(d.brief) {
+		return
+	}
+	b, err := os.ReadFile(d.brief)
+	if err != nil {
+		return
+	}
+	inSection := false
+	for n, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "#") {
+			h := strings.ToLower(line)
+			inSection = strings.HasPrefix(strings.TrimLeft(h, "# "), "done when") || strings.Contains(h, "verification")
+			continue
+		}
+		if inSection && strings.Contains(line, "setup/test-hw") && !strings.Contains(line, "HW_TEST_CHANGED") {
+			d.warn("line " + strconv.Itoa(n+1) + " of the brief orders a run of setup/test-hw in its Done when / Verification (" + strings.TrimSpace(line) + "). The full fast gate is the brainer's, once, on the merge tree: an executor that runs it waits tens of minutes. Name the touched subjects instead (HW_TEST_CHANGED=\"$HW_ARTIFACTS/changed\" HW_TEST_GATE=fast bash setup/test-hw --keep-going) and the Go partitions (setup/go-test-core.sh --affected).")
+			return
+		}
+	}
+}
+
 // checkBriefBrainLanePath WARNS — it never refuses — when a SETUP-lane brief names `brain/setup/CLAUDE.md`, the
 // brain root's spelling of the setup lane file. Inside a setup worktree that path does not exist; there the file is
 // `setup/CLAUDE.md`, repo-relative. 126 briefs carried the unopenable one (measured 2026-11-01);
@@ -1017,6 +1043,7 @@ func (d *dsp) checkBriefContract() {
 	d.checkBriefAffectedSourceRule()
 	d.checkBriefAffectedPlaceholder()
 	d.checkBriefBrainLanePath()
+	d.checkBriefTestHwOrder()
 	d.warnTaskOverlap() // two live tasks in one file: a warning, never a refusal (2026-11-04)
 	decls := d.loadBriefDecls()
 	inferred := brTaskKindFromName(d.task)
@@ -1130,6 +1157,11 @@ func (d *dsp) checkBriefContract() {
 		}
 		if key == "sdd" {
 			d.ensureSddEffectiveForContract()
+		}
+		if key == "model" { // the brief door of the ONE effort check: a level inside the id is refused, not compared away
+			if msg := modelEffortSuffixRefusal(val, "the brief's model:"); msg != "" {
+				d.die(msg)
+			}
 		}
 		actual := d.brDispatchActual(key)
 		if val != actual { // # MUTATION-ANCHOR: 844-A55
@@ -1276,7 +1308,7 @@ func (d *dsp) checkAuthorizes() {
 		op, handle, _ := strings.Cut(rest, " :: ")
 		op, handle = brAuthTrim(op), brAuthTrim(handle)
 		if strings.Contains(handle, " :: ") { // # MUTATION-ANCHOR: 844-A72
-			d.die("the brief's authorizes: entry " + ns + " has more than three fields (" + val + "). NOTHING was built.")
+			d.die("the brief's authorizes: entry " + ns + " has more than three fields (" + val + "). Use one authorizes: line per entry (\";\" does not separate entries). NOTHING was built.")
 		}
 		if dest == "" || op == "" || handle == "" { // # MUTATION-ANCHOR: 844-A73
 			d.die("the brief's authorizes: entry " + ns + " has an empty field (" + val + "). Name the destination, the operation, and a handle or none. NOTHING was built.")
@@ -1312,7 +1344,7 @@ func (d *dsp) checkAuthorizes() {
 			}
 		}
 		if missing != "" { // # MUTATION-ANCHOR: 844-A79
-			d.die("the authorization names Keychain handles that do not resolve:" + missing + ". NOTHING was built. Store each with security add-generic-password -s <handle> -a " + d.brUser() + " -w '<value>' (check: hw handle <handle>), or pass --no-handle-check.")
+			d.die("the authorization names Keychain handles that do not resolve:" + missing + ". NOTHING was built. The third field is a Keychain handle: a Bitwarden item belongs in secrets: [item], not here. Store each handle with security add-generic-password -s <handle> -a " + d.brUser() + " -w '<value>' (check: hw handle <handle>), or pass --no-handle-check.")
 		}
 	} else if d.checkHandles { // # MUTATION-ANCHOR: 844-A80
 		d.warn("the authorization's handles were NOT checked: no keychain backend here")

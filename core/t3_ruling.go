@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"hwcore/internal/mux"
 )
 
 const t3RulingQueueCap = 5
@@ -26,6 +28,7 @@ const t3RulingQueueCap = 5
 type execState struct {
 	verdict, status, rundir, seq, cwd string
 	vendor                            string // herdr's `agent` for the pane: claude, codex, opencode, pi
+	children, endedAt                 string // the pane's tokens children_running and turn_ended_at
 }
 
 // t3WitnessRunDir is witness_run_dir: the run directory at or above cwd, the pane's own run first.
@@ -101,8 +104,15 @@ func t3Squeeze(s string) string {
 	return sb.String()
 }
 
+func (t *t3) agentGet(pane string) (string, bool) {
+	if mux.IsHCAddress(t.getenv, pane) {
+		return hcAgentGetJSON(pane)
+	}
+	return herdrClient{getenv: t.getenv}.stdout("agent", "get", pane)
+}
+
 func (t *t3) executorState(pane string) execState {
-	info, _ := herdrClient{getenv: t.getenv}.stdout("agent", "get", pane)
+	info, _ := t.agentGet(pane)
 	status := jqRawOr(info, "", "result", "agent", "agent_status")
 	if info == "" || status == "" {
 		return execState{verdict: "absent"}
@@ -135,7 +145,8 @@ func (t *t3) executorState(pane string) execState {
 		verdict = "working"
 	}
 	return execState{verdict: verdict, status: status, rundir: rundir, seq: seq, cwd: cwd,
-		vendor: jqRawOr(info, "", "result", "agent", "agent")}
+		vendor:   jqRawOr(info, "", "result", "agent", "agent"),
+		children: children, endedAt: jqRawOr(info, "", "result", "agent", "tokens", "turn_ended_at")}
 }
 
 // t3RulingRefusal is hw-actions' ruling_refusal: the die() text for a verdict, "" when it would queue.
@@ -378,6 +389,7 @@ func (t *t3) queueClaimOnly(d, via string, only map[string]bool) (string, bool) 
 					"at="+at,   // # MUTATION-ANCHOR: 841-D01
 					"via="+via, // # MUTATION-ANCHOR: 841-D02
 				), 0o666)
+				t.fs.write(d+"/ruling-text."+n, []byte(text+"\n"), 0o666) // the text outlives a truncated read of the delivery
 			}
 			t.transcriptAppend(d, "RULING-DELIVERED", "ruling:"+n+" via="+via, text)
 			if count == 1 {
@@ -404,7 +416,7 @@ func (t *t3) queueClaimOnly(d, via string, only map[string]bool) (string, bool) 
 
 // ── the verb ─────────────────────────────────────────────────────────────────
 
-const t3RulingUsage = "usage: hw ruling <executor-pane> \"<the correction>\" [--dry-run] | hw ruling <executor-pane> - [--dry-run] (a lone '-' reads the correction from stdin — the way for text with backticks, $, quotes or newlines that argv would mangle; MEASURED 2026-09-11: a ruling with backticked identifiers reached its receiver with every one of them missing, because the SENDER's own shell expanded them before hw ever ran). Queues a correction, delivered at its next turn end in the order sent (up to 5 undelivered per executor). For a receiver that is already idle or done, use channel-send --ruling, which delivers now."
+const t3RulingUsage = "usage: hw ruling <executor-pane> \"<the correction>\" [--dry-run] | hw ruling <executor-pane> - [--dry-run] (a lone '-' reads the correction from stdin — the way for text with backticks, $, quotes or newlines that argv would mangle; MEASURED 2026-09-11: a ruling with backticked identifiers reached its receiver with every one of them missing, because the SENDER's own shell expanded them before hw ever ran). Queues a correction, delivered in the order sent (up to 5 undelivered per executor): to a claude executor between two tool calls (its PostToolUse hook) or at its next turn end, whichever comes first, and its text stays in the run dir as ruling-text.<n>. For a receiver that is already idle or done, use channel-send --ruling, which delivers now."
 
 func (t *t3) ruling() int {
 	args := t.args
@@ -482,6 +494,7 @@ loop:
 	if why := t3RulingRefusal(st.verdict, st.status, st.seq, pane); why != "" {
 		t.die(why)
 	}
+	t.warnStaleChild(pane, st)
 	rundir := st.rundir
 	steer := st.verdict == "working" && st.vendor == "pi" && !t.fs.readonly
 	if dry && steer {
@@ -518,9 +531,19 @@ loop:
 	num := entry[strings.LastIndexByte(entry, '.')+1:]
 	t.transcriptAppend(rundir, "RULING-QUEUED", "ruling:"+num+" task="+st.seq, text) // # MUTATION-ANCHOR: 841-Q01
 	if steer {
-		if t.steerPi(pane, rundir, st.seq, num) {
+		if t.steerPi(pane, rundir, st.seq, num, st.vendor) {
 			return 0
 		}
+	} else if st.vendor != "claude" && st.vendor != "opencode" {
+		// A pi pane that was NOT steered left no trace in the run dir (retro herdr-app-viewer: 4 rulings queued 40 min). claude and
+		// opencode keep the queue by design and are not logged; an unreadable vendor is, because it may be the pi pane.
+		why := "verdict=" + st.verdict + " is not working"
+		if st.vendor != "pi" {
+			why = "vendor=" + strconv.Quote(st.vendor) + " is not pi"
+		} else if t.fs.readonly {
+			why = "read-only run"
+		}
+		t.transcriptAppend(rundir, "RULING-STEER-SKIPPED", "ruling:"+num+" task="+st.seq+" vendor="+st.vendor+" exit=-", why)
 	}
 	t.ok("ruling queued for " + pane + " (" + st.verdict + ", task " + st.seq + "), number " + itoa(pos) + " in its queue — delivered at its next turn end, or by its done-invoker if it reports first; either way before the task can close, and after every ruling queued ahead of it. It is NOT delivered yet; " + rundir + "/ruling-delivered." + num + " records it once it lands.")
 	return 0
@@ -562,14 +585,16 @@ func queueBody(d string) (string, map[string]bool) {
 // (via=pi-steer) and removes the pending files THAT WERE SENT, so the turn end finds nothing to repeat and a ruling queued
 // after the read stays pending for it. The window where the turn end claims between the send and the claim can repeat
 // one delivery, never lose one. Returns whether it was delivered.
-func (t *t3) steerPi(pane, rundir, seq, num string) bool {
+func (t *t3) steerPi(pane, rundir, seq, num, vendor string) bool {
 	text, sent := queueBody(rundir)
 	if text == "" {
+		t.transcriptAppend(rundir, "RULING-STEER-SKIPPED", "ruling:"+num+" task="+seq+" vendor="+vendor+" exit=-", "the pending queue read back empty")
 		return false
 	}
 	msg := "RULING FROM YOUR BRAINER, delivered while you work because it changes the premise of your task. Read it before your next step, and if it contradicts what you have already done, say so rather than quietly redoing it.\n\n" + text
 	out, rc := herdrClient{getenv: t.getenv}.capture("agent", "prompt", pane, msg)
 	if rc != 0 {
+		t.transcriptAppend(rundir, "RULING-STEER-FAILED", "ruling:"+num+" task="+seq+" vendor="+vendor+" exit="+itoa(rc), "herdr agent prompt: "+strings.TrimSpace(bashSub(out)))
 		t.warn("pi steering did not reach " + pane + " (herdr agent prompt exit " + itoa(rc) + ": " + strings.TrimSpace(bashSub(out)) + "): the ruling stays queued and is delivered at its next turn end")
 		return false
 	}
@@ -614,9 +639,10 @@ func (t *t3) resumeBlocked(pane, rundir, seq, text string, dry bool) int {
 	if !brReadable(t.binDir() + "/invoker-common.sh") { // _next_load_invoker_lib: the lib is sourced in bash; here only its presence is the contract
 		t.die("cannot find invoker-common.sh beside " + t.binDir() + " — this brain/bin is incomplete")
 	}
-	vendor, session, endpoint := t.nextResolveSender(pane)
 	route, target, ep := "herdr", pane, "-"
-	if nextVendorNative(vendor) && session != "" && endpoint != "" {
+	if mux.IsHCAddress(t.getenv, pane) {
+		route = "hc"
+	} else if vendor, session, endpoint := t.nextResolveSender(pane); nextVendorNative(vendor) && session != "" && endpoint != "" {
 		route, target, ep = vendor, session, endpoint
 	}
 	msg := "RULING FROM YOUR BRAINER, answering your --blocked report on task " + seq + ". It RESUMES THE SAME TASK in this session: keep what you have, act on the ruling — and if it contradicts what you already did, say so rather than quietly redoing it — then report again with done-invoker (no --retask: the task counter did not move).\n\n" + text
@@ -663,4 +689,23 @@ func (t *t3) resumeBlocked(pane, rundir, seq, text string, dry bool) int {
 func t3Base(p string) string {
 	p = strings.TrimRight(p, "/")
 	return p[strings.LastIndexByte(p, '/')+1:]
+}
+
+// t3StaleChildAge is how long a pane may say "awaiting a child" before hw ruling doubts it.
+const t3StaleChildAge = 10 * time.Minute
+
+// warnStaleChild: a turn that died on an API error or a spent quota leaves turn_state=ended_awaiting_child and its
+// children_running behind (the StopFailure hook clears them from now on), so a ruling queued for "the next turn end" can wait
+// forever (28 min, 2026-11-09). The queue is kept; the warning names the send that delivers to an idle pane.
+func (t *t3) warnStaleChild(pane string, st execState) {
+	if st.verdict != "awaiting_child" || st.endedAt == "" {
+		return
+	}
+	at, err := time.Parse("2006-01-02T15:04:05Z", st.endedAt)
+	age := t3NowUTC().Sub(at)
+	if err != nil || age <= t3StaleChildAge {
+		return
+	}
+	t.printf("hw ruling: WARNING %s says awaiting_child (children_running=%s) but its turn_ended_at %s is %d min old — probablemente obsoleto: a turn that died on an API error or a spent quota leaves those tokens behind, and a queued ruling waits for a turn end that may never come. If the pane is idle, `channel-send <vendor> %s - -` with the text on stdin (a plain send, NOT --ruling) delivers to it now. The ruling is queued all the same.\n",
+		pane, st.children, st.endedAt, int(age.Minutes()), pane)
 }

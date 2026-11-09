@@ -51,6 +51,10 @@ func (a *app) reviewRange(print bool) (string, int) {
 		fmt.Fprintf(a.err, "hw review-range: HEAD and %s share no history in %s, so there is no merge-base\n", ref, wd)
 		return "", 1
 	}
+	if head, _ := gitRun(wd, nil, "rev-parse", "HEAD"); print && strings.TrimRight(string(head), "\n") == sha { // print: only the review-range command warns, review-delta's own stderr stays its own
+		// 2026-11-09: a `base: task/<x>` brief resolves the base to its own tip, so `base..HEAD` is empty and the judges got nothing.
+		fmt.Fprintf(a.err, "hw review-range: WARNING the range is EMPTY: HEAD is the merge-base with %s (%s). Nothing is committed past the base, or the base branch already holds your commits (a `base: task/<x>` brief): commit first, or review against the branch your work started from.\n", ref, sha)
+	}
 	if print {
 		fmt.Fprintf(a.out, "%s\n", sha)
 	}

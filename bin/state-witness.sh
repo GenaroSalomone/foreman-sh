@@ -110,6 +110,22 @@
 WITNESS_VERDICT=""
 WITNESS_DETAIL=""
 
+# witness_agent_get <pane>
+#
+# `herdr agent get <pane>`; when herdr knows no such pane, the same document from `hc get` for an executor that
+# runs in the herdr app (an address like t7): the labels are the tokens (hw_turn_state is also turn_state).
+# Prints nothing when neither knows it, which every caller already reads as absent/unreadable.
+witness_agent_get() {
+  local info
+  info="$(herdr agent get "$1" 2>/dev/null || true)"
+  if [ -z "$info" ] && command -v hc >/dev/null 2>&1; then
+    info="$(hc get "$1" --json 2>/dev/null | jq -c 'select(.state == "live") | .labels as $l
+      | {result: {agent: {agent_status: (.status.state // "unknown"), cwd: .cwd,
+          tokens: (($l // {}) + (($l // {}) | with_entries(select(.key | startswith("hw_")) | .key |= ltrimstr("hw_"))))}}}' 2>/dev/null || true)"
+  fi
+  printf '%s' "$info"
+}
+
 # witness_screen_hash <pane>
 #
 # One hash of the pane's visible screen. Exit 1 — never a hash, never an empty
@@ -121,7 +137,13 @@ witness_screen_hash() {
   local pane="$1" out
   out="$("$WITNESS_RPC" call pane.read \
     "$(printf '{"pane_id":"%s","source":"visible","lines":%s}' "$pane" "$WITNESS_READ_LINES")" \
-    2>/dev/null)" || return 1
+    2>/dev/null)" || out=""
+  if [ -z "$out" ] && command -v hc >/dev/null 2>&1; then  # an executor in the herdr app: its text, not herdr's
+    out="$(hc read "$pane" --lines "$WITNESS_READ_LINES" 2>/dev/null)" || return 1
+    [ -n "$out" ] || return 1  # an empty read is not a screen
+    printf '%s' "$out" | shasum -a 256 | cut -c1-16
+    return 0
+  fi
   [ -n "$out" ] || return 1
   printf '%s' "$out" | jq -e 'has("read") and (.read | has("text")) and (.read.text | type == "string")' \
     >/dev/null 2>&1 || return 1
@@ -199,7 +221,7 @@ witness_state() {
   local pane="$1" status screen screen_state screen_hash endpoint prompts qn pn
   local reason scope info
 
-  info="$(herdr agent get "$pane" 2>/dev/null || true)"
+  info="$(witness_agent_get "$pane")"
   status="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
   reason="$(printf '%s' "$info" | jq -r '.result.agent.tokens.blocked_reason // empty' 2>/dev/null || true)"
   scope="$(printf '%s' "$info" | jq -r '.result.agent.tokens.blocked_scope // empty' 2>/dev/null || true)"
@@ -521,7 +543,7 @@ witness_reporting_live() {  # <marker>
 
 witness_executor_state() {  # <pane>
   local pane="$1" info status state children cwd run rundir="" taskdir="" seq=1 verdict
-  info="$(herdr agent get "$pane" 2>/dev/null || true)"
+  info="$(witness_agent_get "$pane")"
   status="$(printf '%s' "$info" | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)"
   if [ -z "$info" ] || [ -z "$status" ]; then
     printf 'absent\037\037\037\037\037\037\n'; return 0
@@ -647,6 +669,7 @@ ruling_queue_claim_all() {  # <run_dir> <via>
     if [ -n "$text" ]; then
       count=$((count + 1))
       [ "$n" = legacy ] || printf 'at=%s\nvia=%s\n' "$at" "$via" > "$d/ruling-delivered.$n" 2>/dev/null || true
+      [ "$n" = legacy ] || printf '%s\n' "$text" > "$d/ruling-text.$n" 2>/dev/null || true  # the text outlives a truncated read
       transcript_append "$d" "RULING-DELIVERED" "ruling:$n via=$via" "$text"
       [ "$count" -gt 1 ] || first="$text"
       body="${body}── ruling ${count} ──

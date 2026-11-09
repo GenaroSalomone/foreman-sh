@@ -110,6 +110,61 @@ func vdValidEffort(e string) bool {
 	return false
 }
 
+// vdEffortAnyVendor is every level --effort takes on ANY vendor: vdValidEffort's five, codex's `ultra` (this file's
+// codex arm) and pi's `off`|`minimal` (t6_pi.go piBuildArgs). It exists for one reading: what may follow a `:` in a model
+// id. Anything else after the colon is the model's (`:batch`, `:free`, `:8b` — measured 2026-11-08 in projects.json and in
+// `pi --list-models`), and refusing it would be a false refusal.
+func vdEffortAnyVendor(e string) bool {
+	switch e {
+	case "ultra", "off", "minimal":
+		return true
+	}
+	return vdValidEffort(e)
+}
+
+// effortDeclaredDefault is the ONE rule that supplies a level nobody asked for, for every vendor: the level and the
+// source to name, ok=false when hw declares none and the vendor's own default is what runs. pi is the only vendor hw
+// declares one for — the roster's, by the brief's kind (pinned in setup/decisions.md, 2026-11-01) — and a lane that ever
+// declares its own belongs here, beside it, not in another arm. Both the level and the words travel: piBuildArgs
+// (t6_pi.go) takes the level, effortShownAndMark (t5_manifest.go) prints the source, so what runs and what the dry run
+// says are one decision.
+func (d *dsp) effortDeclaredDefault() (level, src string, ok bool) {
+	if d.agent != "pi" {
+		return "", "", false
+	}
+	kind := d.vdBriefKind()
+	if kind == "explore" {
+		return "off", "pi roster, kind explore", true
+	}
+	return "low", "pi roster, kind " + orDefaultStr(kind, "none"), true
+}
+
+// modelEffortSuffix reads a reasoning level written into a model id — `<model>:<level>`, pi's own CLI spelling
+// (provider/id:<level>). ok=false when the id carries no colon, or carries something after it that is not a level.
+func modelEffortSuffix(model string) (base, level string, ok bool) {
+	i := strings.LastIndexByte(model, ':')
+	if i <= 0 || i == len(model)-1 {
+		return "", "", false
+	}
+	if !vdEffortAnyVendor(model[i+1:]) {
+		return "", "", false
+	}
+	return model[:i], model[i+1:], true
+}
+
+// modelEffortSuffixRefusal is the ONE refusal of a level written into a model id, and "" when there is none to refuse.
+// Every door that fixes a model calls it — --model and the lane default (t5.go run), the brief's `model:` (t5_brief.go),
+// and the model `hw next` reads off the pane's dispatch (t4_next.go) — so the rule is one, not one per vendor. It names
+// the model, the level and the exact flag to use instead (setup/decisions.md 2026-11-08: an explicit request is never
+// lost, and a level written where only --effort may write one is refused, never dropped in silence).
+func modelEffortSuffixRefusal(model, where string) string {
+	base, level, ok := modelEffortSuffix(model)
+	if !ok {
+		return ""
+	}
+	return "model id " + model + " (" + where + ") carries the reasoning level " + level + " inside the id, but a level travels only through --effort — on every vendor, never inside a model. Pass the model without it and the level through the flag: --model " + base + " --effort " + level + ". Nothing was built or sent."
+}
+
 // buildAgentArgs is _build_agent_args: the vendor's command line, as one string of words.
 func (d *dsp) buildAgentArgs() {
 	d.agentArgs = ""

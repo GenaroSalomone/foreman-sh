@@ -160,6 +160,7 @@ func TestChannelSendRefusals(t *testing.T) {
 		{"id-empty", []string{"--id", "", "herdr", "p", "-", "m"}, "channel-send: --id must not be empty\n"},
 		{"report-ruling", []string{"--report", "--ruling", "herdr", "p", "-", "m"}, "channel-send: --report and --ruling are different delivery contracts and cannot be combined\n"},
 		{"turn-ended-ruling", []string{"--allow-turn-ended", "--ruling", "herdr", "p", "-", "m"}, "channel-send: --allow-turn-ended cannot make a ruling ordered; use --ruling alone\n"},
+		{"endpoint-is-an-option", []string{"herdr", "p", "--report", "-", "m"}, "channel-send: endpoint --report looks like an option: options go BEFORE the vendor"},
 		{"usage", []string{"herdr", "p", "-"}, "channel-send: usage: channel-send [--require admitted|processed]"},
 		{"empty-message", []string{"herdr", "p", "-", ""}, "channel-send: message is empty\n"},
 		{"unknown-vendor", []string{"nope", "p", "-", "m"}, "channel-send: unknown vendor: nope\n"},

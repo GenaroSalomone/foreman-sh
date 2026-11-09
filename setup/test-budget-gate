@@ -6,25 +6,61 @@
 Red (exit 1, naming the subject and the cheapest split) when, in setup/suite-data/test-budgets.json:
   (a) any single subject's measured seconds exceed JOB_MAX (600) — one job that long is the floor of the whole
       suite however many workers there are (860 alone was 6600 s of a 26854 s suite, 2026-10-14);
-  (b) the suite's estimated wall-clock exceeds WALL_MAX (45 min): max(longest job, total seconds / SLOTS).
-The estimate is the budgets' own sums over the default pool of 6 workers, not a run: a slow test turns red at the
-commit that records its measurement.
+  (b) the FULL gate's estimated wall-clock exceeds WALL_MAX (45 min): max(longest job, seconds / SLOTS), where the seconds are
+      the subjects that run (not the ones setup/suite-data/retired-subjects.txt retires) plus the Go partitions of
+      setup/suite-data/go-test-partitions.txt (its seconds column), over the pool of 6 workers;
+  (c) the FAST gate's worst-case wall (a diff that reaches core/: HW_TEST_NO_TOUCHED=1, every partition queued) exceeds its SUITE
+      ceiling: the fast subjects one at a time (seconds <= fast_gate_threshold_seconds), then the partitions as one batch,
+      longest first, GO_CAP at once (GO_CAP: the cap the seconds were measured at, 7, whatever the host).
+The estimates are the budgets' own sums, not a run: a slow test turns red at the commit that records its measurement.
+Until 2026-11-09 (b) summed every subject, the 60 retired ones too, and no partition: 2870 s for a fast gate that measured
+1797-3643 s with every partition queued (heavy.log 2026-11-06, 2026-11-09) and 193-359 s with none.
 
 An offender already there when this gate arrived is listed in setup/suite-data/test-budget-ceilings.tsv with a CEILING it may
-not grow past (`<subject>\t<ceiling seconds>\t<cheapest split>`); the line `SUITE\t<ceiling seconds>` does the same
-for (b). A ceiling is a debt with a number on it, and it only goes down: an entry whose subject is back under the
+not grow past (`<subject>\t<ceiling seconds>\t<cheapest split>`); the line `SUITE\t<ceiling seconds>` is (c)'s limit, and a
+SUITE line over WALL_MAX while (b) is under it is a debt paid: red until it is lowered. A ceiling is a debt with a number on it, and it only goes down: an entry whose subject is back under the
 limit is itself red ("remove it"), so the list shrinks as the splits land.
 """
+import fnmatch
+import heapq
 import json
+import os
 import sys
 
 JOB_MAX = 600.0
 WALL_MAX = 45 * 60.0
 SLOTS = 6
+GO_CAP = 7  # the partitions at once the seconds column was measured with: go-test-core.sh --plan on the 14-cpu reference machine (half the cpus); a host's own cap does not change what the recorded seconds mean
+
+
+def go_partitions(path):
+    """(name, seconds) of each partition of go-test-partitions.txt; none when the file is absent (a fixture)."""
+    out = []
+    for line in open(path, encoding="utf-8") if os.path.exists(path) else []:
+        f = [x.strip() for x in line.split(";")]
+        if len(f) >= 5 and not line.lstrip().startswith("#"):
+            out.append((f[0], float(f[3])))
+    return out
+
+
+def retired(path):
+    return [l.split()[0] for l in open(path, encoding="utf-8") if l.strip() and not l.startswith("#")] if os.path.exists(path) else []
+
+
+def batch_wall(seconds, cap):
+    """go-test-core.sh +a,b,...: `cap` partitions at once; the wall when each free slot takes the next longest."""
+    slots = [0.0] * cap
+    for s in sorted(seconds, reverse=True):
+        heapq.heappush(slots, heapq.heappop(slots) + s)
+    return max(slots)
 
 
 def main(budgets_path, ceilings_path):
-    files = json.load(open(budgets_path))["files"]
+    budgets = json.load(open(budgets_path))
+    data = os.path.dirname(os.path.abspath(budgets_path))
+    gone = retired(os.path.join(data, "retired-subjects.txt"))
+    files = {n: v for n, v in budgets["files"].items() if not any(fnmatch.fnmatch(n, g) for g in gone)}
+    parts = go_partitions(os.path.join(data, "go-test-partitions.txt"))
     ceil, suite_ceil, split = {}, None, {}
     for line in open(ceilings_path, encoding="utf-8") if ceilings_path else []:
         f = line.rstrip("\n").split("\t")
@@ -44,20 +80,29 @@ def main(budgets_path, ceilings_path):
     for name in sorted(ceil):
         if name not in files or float(files[name]["seconds"]) <= JOB_MAX:
             bad.append("%s is listed in %s but is not over %.0fs any more: remove the line" % (name, ceilings_path, JOB_MAX))
-    total = sum(float(v["seconds"]) for v in files.values())
-    longest = max(float(v["seconds"]) for v in files.values())
-    wall = max(longest, total / SLOTS)
-    wall_limit = max(WALL_MAX, suite_ceil) if suite_ceil is not None else WALL_MAX
-    if wall > wall_limit:
-        top = sorted(files, key=lambda n: -float(files[n]["seconds"]))[:3]
-        bad.append("estimated full-suite wall-clock %.0fs (%.0f budgeted seconds / %d workers) is over %.0fs%s; the largest: %s"
-                   % (wall, total, SLOTS, wall_limit, " (its ceiling)" if suite_ceil is not None else "", ", ".join(top)))
-    elif suite_ceil is not None and wall <= WALL_MAX:
-        bad.append("SUITE ceiling %.0fs is listed but the estimate (%.0fs) is under %.0fs: remove the line" % (suite_ceil, wall, WALL_MAX))
+    jobs = {n: float(v["seconds"]) for n, v in files.items()}
+    jobs.update(("go-test-core.sh " + n, s) for n, s in parts)
+    total = sum(jobs.values())
+    wall = max(max(jobs.values()), total / SLOTS)
+    if wall > WALL_MAX:
+        top = sorted(jobs, key=lambda n: -jobs[n])[:3]
+        bad.append("estimated full-suite wall-clock %.0fs (%.0f seconds of %d subjects and %d partitions / %d workers) is over %.0fs; the largest: %s"
+                   % (wall, total, len(files), len(parts), SLOTS, WALL_MAX, ", ".join(top)))
+    elif suite_ceil is not None and suite_ceil > WALL_MAX:
+        bad.append("SUITE ceiling %.0fs is over %.0fs and the full-suite estimate (%.0fs) is under it: lower or remove the line" % (suite_ceil, WALL_MAX, wall))
+    threshold = float(budgets.get("fast_gate_threshold_seconds", 0))
+    fast_s = sum(s for n, s in jobs.items() if n in files and s <= threshold)
+    cap = GO_CAP
+    fast = fast_s + batch_wall([s for _, s in parts], cap)
+    if suite_ceil is not None and fast > suite_ceil:
+        top = sorted(parts, key=lambda p: -p[1])[:3]
+        bad.append("estimated worst-case fast gate %.0fs (%.0f s of fast subjects, then %d partitions %d at once) is over %.0fs (its SUITE ceiling); the largest partitions: %s"
+                   % (fast, fast_s, len(parts), cap, suite_ceil, ", ".join("%s %.0fs" % p for p in top)))
     for b in bad:
         print("not ok - " + b)
     if not bad:
-        print("ok - %d subjects, none over %.0fs beyond its ceiling; estimated wall-clock %.0fs" % (len(files), JOB_MAX, wall))
+        print("ok - %d subjects, none over %.0fs beyond its ceiling; %d partitions; estimated full suite %.0fs, worst-case fast gate %.0fs"
+              % (len(files), JOB_MAX, len(parts), wall, fast))
     return 1 if bad else 0
 
 

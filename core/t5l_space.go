@@ -507,7 +507,7 @@ var layoutBaseEnvKeys = []string{"HW_PROJECT", "HW_TASK", "HW_WORKDIR", "HW_RUN"
 	// pi's guard halves and roster fallback (t6_pi_launch.go: exportHwEnv exports them)
 	"HW_PI_BRAIN_GUARD", "HW_PI_FALLBACK_MODEL", "HW_PI_FALLBACK_THINKING", "HW_PI_ASKED_MODEL", "HW_PI_SUBAGENTS_DIR",
 	"HW_PI_SUBAGENT_MODELS", "HW_PI_EXPLORE_AGENT",
-	"HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS",
+	"HW_PI_CLAUDE_AGENT_DIRS", "PI_SUBAGENT_EXTRA_AGENT_DIRS", "HW_PI_PLUGIN_AGENT_DIRS",
 	// and the private agent directory a session with plugins runs on (t6_pi_shadow.go)
 	"PI_CODING_AGENT_DIR", piRealAgentDirEnv}
 
@@ -848,9 +848,13 @@ func spPyNumber(lit string) string {
 // ── _build_space ────────────────────────────────────────────────────────────
 
 // buildSpace is `_build_space "$tpl"`: workspace (or the project's workspace and a tab), then the whole tab in
-// one call. Sets WS, HW_TAB, LAYOUT_OUT. `workspace create` gets no --env: layout.apply replaces the tab and
+// one call. Sets WS, HW_TAB, LAYOUT_OUT (herdr-core: only LAYOUT_OUT, see hcSpace). `workspace create` gets no --env: layout.apply replaces the tab and
 // whatever it put on the first pane is discarded; --cwd stays (it is the workspace's identity_cwd).
 func (l *lch) buildSpace(tpl string) {
+	if l.hcRoute() {
+		l.hcSpace()
+		return
+	}
 	var wsRaw string
 	if l.tab { // # MUTATION-ANCHOR: 847-B1-12
 		// ONE TAB PER AGENT, one workspace per project.
@@ -945,6 +949,9 @@ func spBaseName(p string) string {
 // runHere is `_run_here "$cwd"`: one pane beside this one, instead of a space. No dev servers; `hw done` cannot
 // clean it up (a pane rename is a display label only), so hw prints its id and closing it is the person's.
 func (l *lch) runHere(cwd string) {
+	if l.hcRoute() { // HERDR_PANE_ID may be the launcher's, not ours (P12): never split it
+		l.die("--here splits a herdr pane, and this shell runs under herdr-core (the herdr app): dispatch without --here, or from a herdr TUI pane")
+	}
 	herdrPane := l.env("HERDR_PANE_ID")
 	if herdrPane == "" { // # MUTATION-ANCHOR: 847-B1-17
 		l.die("--here needs to run inside a herdr pane (HERDR_PANE_ID is unset)")

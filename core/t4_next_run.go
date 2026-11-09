@@ -50,7 +50,11 @@ func (a *app) nextDryRun(s *nextState, nextSeq string, waitMS int64) int {
 		default:
 			a.info("herdr reports " + s.pane + " " + s.status + ", so the gate would wait (budget " + s.waitMS + "ms). Cross-checking whether that state can still change — this does not send, dismiss or wait:")
 			var w nextWitness
-			a.nextWitnessState(s.pane, &w)
+			if a.nextHC(s.pane) { // the endpoint and screen witness read herdr; an app terminal has only `hc get`
+				w.detail = "an app terminal has no endpoint or screen witness; `hc get` is the only reading."
+			} else {
+				a.nextWitnessState(s.pane, &w)
+			}
 			switch w.verdict {
 			case "live":
 				a.info("gate verdict: WOULD WAIT, and correctly. " + w.detail)
@@ -320,7 +324,7 @@ func (a *app) nextReportEvidence(pane, rundir string) string {
 	if isFile(nextDoneMarker(rundir)) {
 		return "marker"
 	}
-	info := nextHerdrSub("agent", "get", pane)
+	info := a.nextAgentGet(pane)
 	switch tok := jqRawOr(info, "", "result", "agent", "tokens", "done_status"); tok {
 	case "done", "blocked":
 		st := jqRawOr(info, "unknown", "result", "agent", "tokens", "done_state")
@@ -349,6 +353,9 @@ func (a *app) nextReportEvidenceExplain(pane, verdict, marker string) {
 
 // nextMissingPaneMessage is _next_missing_pane_message.
 func (a *app) nextMissingPaneMessage(pane string) string {
+	if a.nextHC(pane) {
+		return "hc knows no live terminal " + pane + " (or `hc get` could not answer), so hw cannot re-task it"
+	}
 	generic := "herdr does not know pane " + pane + " (or herdr is unreachable on $HERDR_SOCKET_PATH)"
 	panes, _ := herdrOut(0, "pane", "list")
 	vals, perrE := parseStream([]byte(panes))

@@ -26,7 +26,10 @@ import (
 
 // piState is what the pi arms keep of the dispatch (bash: PI_EFFORT_SRC).
 type piState struct {
-	piEffortSrc string // PI_EFFORT_SRC: where a defaulted --thinking came from; the manifest's effort line says it
+	// effortSrc is what supplied a level nobody asked for, and "" when --effort chose it (bash: PI_EFFORT_SRC). A
+	// field of the dispatch, not of pi: the manifest's effort line names it in the same words for every vendor
+	// (t5_manifest.go effortShownAndMark). pi is the only vendor hw declares a default level for.
+	effortSrc string
 	// piRunDone/piRun/piReal memoize piRunDirs: the env block and the pane split are one answer, whichever runs first
 	piRunDone     bool
 	piRun, piReal string
@@ -67,6 +70,37 @@ const (
 	piSubagentOpus   = "opencode-go/deepseek-v4-pro"
 )
 
+// THE TWO NAMED ROSTERS. `go` is the paid one above, unchanged; `free` is opencode's free pair (operator, 2026-11-09:
+// the paid quota is spent and pi is used only to test pi itself). projects.json's top-level `pi_roster` picks one, and
+// returning to the paid roster is changing that word, no code. MEASURED 2026-11-09, one `pi -p` per level: both free
+// models accept off/minimal/low/medium/high/xhigh and run a `read` tool call; what pi clamps each level to was NOT
+// measured on them. iceman-contributor-free is out (400: it trains on request data). The free pair back each other up.
+// A lane's own pi_subagent_models rows name paid models, so they apply to `go` only.
+type piRoster struct {
+	name                                 string
+	design, build, review, cheap         string
+	fallbackFlash, fallbackPro, explorer string
+	haiku, sonnet, opus                  string
+	agents                               map[string]piTier // per-agent rows that outrank the agent's file (free: the explorer's file pins a paid model)
+	fallbackSwap                         string            // used when the kind's fallback is the model that runs (free: the pair back each other up; go: none)
+	laneRows                             bool
+}
+
+const (
+	piFreeCrouton = "opencode-go/crouton-alpha-free"
+	piFreeBeam    = "opencode-go/beam-free"
+)
+
+var piRosters = map[string]piRoster{
+	"go": {"go", piModelDesign, piModelBuild, piModelReview, piModelCheap, piFallbackFlash, piFallbackPro, piExplorerModel,
+		piSubagentHaiku, piSubagentSonnet, piSubagentOpus, nil, "", true},
+	"free": {"free", piFreeCrouton, piFreeCrouton, piFreeBeam, piFreeCrouton, piFreeBeam, piFreeBeam, piFreeCrouton,
+		piFreeCrouton, piFreeBeam, piFreeCrouton, map[string]piTier{explorerName: {piFreeCrouton, "off"}}, piFreeCrouton, false},
+}
+
+// piRosterName is the roster projects.json's `pi_roster` names; absent means `go`, what hw did before the key existed.
+const piRosterDefault = "go"
+
 // piTier is what one alias resolves to: the pi model and the thinking level its child is started with ("inherit" =
 // pi's own default for that model).
 type piTier struct{ Model, Thinking string }
@@ -75,19 +109,27 @@ type piTier struct{ Model, Thinking string }
 // so in the receipt rather than guessed.
 var piTierNames = []string{"haiku", "sonnet", "opus"}
 
-func piDefaultTiers() map[string]piTier {
+func piDefaultTiers(r piRoster) map[string]piTier {
 	return map[string]piTier{
-		"haiku":  {piSubagentHaiku, "off"},
-		"sonnet": {piSubagentSonnet, "medium"},
-		"opus":   {piSubagentOpus, "high"},
+		"haiku":  {r.haiku, "off"},
+		"sonnet": {r.sonnet, "medium"},
+		"opus":   {r.opus, "high"},
 	}
 }
 
-// piSubagentProfile is the lane's `pi_subagent_models` over the defaults: `alias=model|thinking` pairs, keyed by
+// piSubagentProfile is the active roster's tiers, then (roster `go`) the lane's `pi_subagent_models` over them: `alias=model|thinking` pairs, keyed by
 // tier or by an agent's name (an agent entry outranks its file).
 func (d *dsp) piSubagentProfile() map[string]piTier {
-	prof := piDefaultTiers()
-	for _, pair := range vdIFSFields(d.c.t.get(d.proj, "pi_subagent_models")) {
+	r := d.c.t.piRoster()
+	prof := piDefaultTiers(r)
+	for k, v := range r.agents {
+		prof[k] = v
+	}
+	laneRows := ""
+	if r.laneRows {
+		laneRows = d.c.t.get(d.proj, "pi_subagent_models")
+	}
+	for _, pair := range vdIFSFields(laneRows) {
 		k, v, _ := strings.Cut(pair, "=")
 		if k == "" || v == "" {
 			continue
@@ -226,16 +268,17 @@ func piThinkingAboveRuling(level string) bool {
 // piApplyModelDefault is _apply_pi_model_default: no lane pins a pi model (a lane's own pin is its vendor's id, cleared
 // for an explicit --agent pi), so the roster decides by the brief's kind.
 func (d *dsp) piApplyModelDefault() {
+	r := d.c.t.piRoster()
 	kind := d.vdBriefKind()
 	switch kind {
 	case "design", "audit":
-		d.model = piModelDesign
+		d.model = r.design
 	case "review":
-		d.model = piModelReview
+		d.model = r.review
 	case "explore":
-		d.model = piModelCheap
+		d.model = r.cheap
 	default:
-		d.model = piModelBuild
+		d.model = r.build
 	}
 	d.modelSrc = "default; pi roster, kind " + orDefaultStr(kind, "none")
 }
@@ -243,15 +286,16 @@ func (d *dsp) piApplyModelDefault() {
 // piFallbackModel is _pi_fallback_model: the model a pi executor of this dispatch falls to on a MODEL error, "" when the
 // model already is the fallback. Decided by the KIND, also for an explicit --model.
 func (d *dsp) piFallbackModel() string {
-	fb := piFallbackFlash
+	r := d.c.t.piRoster()
+	fb := r.fallbackFlash
 	switch d.vdBriefKind() {
 	// the kinds on the flash default (2026-11-01) fall to the pro, a kindless brief being a build; review has always
 	// fallen to it; explore and mechanical keep the flash fallback they had.
 	case "", "build", "design", "audit", "review":
-		fb = piFallbackPro
+		fb = r.fallbackPro
 	}
 	if fb == d.model {
-		return ""
+		fb = r.fallbackSwap
 	}
 	return fb
 }
@@ -333,6 +377,39 @@ func (d *dsp) piClaudeAgentDirs(work string) string {
 	}
 	return strings.Join(dirs, ":")
 }
+
+// declaredPluginAgentDirs is every declared, installed plugin's agents/ directory, whatever pi-subagents' state: what hw
+// would name, and what says the review's agent piece has no door here when pi-subagents is not loaded.
+func (d *dsp) declaredPluginAgentDirs() []string {
+	var out []string
+	for _, n := range d.pluginsDeclaredInstalled() {
+		if dir := d.pluginsDir() + "/" + n + "/agents"; isDir(dir) {
+			out = append(out, n+"="+dir)
+		}
+	}
+	return out
+}
+
+// piPluginAgentDirs is HW_PI_PLUGIN_AGENT_DIRS: `<plugin>=<agents dir>` for every plugin the brief declares (`plugins:`, or
+// a `review:` list, which loads them too) that ships an agents/ directory. hw-executor.ts registers each file under
+// `<plugin>:<name>`, the name a Claude executor reads from --plugin-dir — pstack's comment-sicko was `Unknown agent` on pi
+// (2026-11-09). Empty when pi-subagents is not loaded (nothing to register with) or no declared plugin carries agents.
+func (d *dsp) piPluginAgentDirs() []string {
+	if !d.piSubagentsReady() {
+		return nil
+	}
+	var out []string
+	for _, one := range d.declaredPluginAgentDirs() {
+		if strings.ContainsAny(one, " \t\n\v\f\r:") {
+			continue
+		}
+		out = append(out, one)
+	}
+	return out
+}
+
+// piPluginAgentDirsEnv is piPluginAgentDirs as the child's environment carries it (`:` between entries); "" for none.
+func (d *dsp) piPluginAgentDirsEnv() string { return strings.Join(d.piPluginAgentDirs(), ":") }
 
 // piDir is _explorer_pi_dir; piAgentDirOK is _explorer_pi_agent_dir: the directory pi-subagents reads as an extra
 // user-scope agent dir, "" when the explorer's role is not there or the path cannot travel in a PATH-style list.
@@ -523,8 +600,74 @@ func (d *dsp) piProjectSkillDir() (string, bool) {
 	return root + "/pi-skills/" + hex.EncodeToString(sum[:])[:16], true
 }
 
+// piPluginSkills is what one installed plugin ships as skills: the entries of its `skills/` that hold a SKILL.md.
+func piPluginSkills(dir string) []string {
+	ents, err := os.ReadDir(dir + "/skills")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if isFile(dir + "/skills/" + e.Name() + "/SKILL.md") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// piPluginLoad is one declared plugin's `-e`: the directory pi is handed, the plugin it came from, and the skills a
+// MIRROR of it leaves out because an earlier declared plugin already ships them.
+type piPluginLoad struct {
+	dir, src string
+	shadow   []string
+}
+
+// piPluginLoads is the `-e` directory of every declared plugin. pi keeps the first copy of a skill NAME and prints a
+// `[Skill warnings]` block naming the one it skipped (interactive-mode.js showLoadedResources), so a launch declaring
+// thermo and pstack — both ship thermo-nuclear-code-quality-review — opens on a warning instead of on the task. A
+// colliding plugin is handed as a per-run mirror, one `skills/` entry short, so nothing vendored changes and the
+// plugin keeps its own copy for a launch that declares it alone. The mirror is named by the hash of its set AND its
+// path, like piProjectSkillDir, and piPluginMirrorsPrepare makes it at launch (never by a dry run): a plugin that gains
+// or loses a skill, or a checkout that moved, gets a new directory instead of a stale link.
+//
+// shortcut: the mirror leaves out an entry of `<plugin>/skills`, which is where the shipped three declare their skills
+// (`package.json` `pi.skills`); a plugin of the operator's own that declares another directory keeps its duplicate and
+// pi's warning stays. Read that field when a plugin of the operator's is seen colliding. The mirror lives under
+// $HOME/.local/share/hw and a REVIVE does not rebuild it (cmd_revive carries no brief, so it names no plugins:
+// t4_revive_start.go, `TestRevivePiNamesTheLanesSkillsAndNoPlugins`): a revive whose ~/.local/share/hw was wiped finds
+// no mirror, and the next dispatch makes it.
+func (d *dsp) piPluginLoads() []piPluginLoad {
+	root := orDefaultStr(d.env("HW_PI_SKILLS_ROOT"), d.env("HOME")+"/.local/share/hw") + "/pi-plugins"
+	seen := map[string]bool{}
+	var out []piPluginLoad
+	for _, n := range d.pluginsDeclaredInstalled() {
+		src := d.pluginsDir() + "/" + n
+		own := piPluginSkills(src)
+		load := piPluginLoad{dir: src, src: src}
+		var b strings.Builder
+		b.WriteString(n + "\n" + src + "\n")
+		for _, s := range own {
+			if seen[s] {
+				load.shadow = append(load.shadow, s)
+				b.WriteString("!" + s + "\n")
+				continue
+			}
+			b.WriteString(s + "\n")
+		}
+		for _, s := range own {
+			seen[s] = true
+		}
+		if len(load.shadow) > 0 {
+			sum := sha256.Sum256([]byte(b.String()))
+			load.dir = root + "/" + n + "-" + hex.EncodeToString(sum[:])[:16]
+		}
+		out = append(out, load)
+	}
+	return out
+}
+
 // piSkillArgs is _pi_skill_args: `-ns` (discovery off), each decided skill, the project skills' one directory, and each
-// installed plugin the brief declares as `-e <plugin dir>`.
+// installed plugin the brief declares as `-e <plugin dir>` (or the mirror of it, piPluginLoads).
 func (d *dsp) piSkillArgs() string {
 	out := ""
 	for _, s := range d.piDecidedSkills(true) {
@@ -533,8 +676,8 @@ func (d *dsp) piSkillArgs() string {
 	if dir, ok := d.piProjectSkillDir(); ok {
 		out += " --skill " + dir
 	}
-	for _, n := range d.pluginsDeclaredInstalled() {
-		out += " -e " + d.pluginsDir() + "/" + n
+	for _, pl := range d.piPluginLoads() {
+		out += " -e " + pl.dir
 	}
 	return "-ns" + out
 }
@@ -563,6 +706,15 @@ func (d *dsp) piPluginsLineCheck() {
 	}
 }
 
+// piTestingOnlyWarn: under the `free` roster pi is for testing pi itself (operator, 2026-11-09). A lane dispatch is
+// warned, never refused; a task with a test or probe word in its name (hyphen-delimited) is that testing, so it stays quiet.
+func (d *dsp) piTestingOnlyWarn() {
+	if d.c.t.piRoster().name != "free" || has(strings.Split(d.task, "-"), "test") || has(strings.Split(d.task, "-"), "probe") {
+		return
+	}
+	d.warn("pi runs on opencode's free models for testing only (roster free; the paid quota is spent): use it to test pi itself, not for real lane work")
+}
+
 // piBuildArgs is the `pi)` arm of _build_agent_args: the vendor's command line, as one string of words (with the leading
 // space bash leaves, which the caller strips).
 func (d *dsp) piBuildArgs(perm string) {
@@ -570,6 +722,7 @@ func (d *dsp) piBuildArgs(perm string) {
 	if perm != "skip" {
 		d.die("--permissions ask cannot be honoured on pi: pi has no permission prompts, only the tool_call veto hw's guard already uses. Drop --permissions ask, or use --agent claude.")
 	}
+	d.piTestingOnlyWarn()
 	if d.model != "" {
 		switch {
 		case strings.HasPrefix(d.model, "-") || strings.ContainsAny(d.model, " \t\n*?["):
@@ -582,13 +735,12 @@ func (d *dsp) piBuildArgs(perm string) {
 	}
 	// THINKING BY KIND when --effort is not given: explore off, everything else low; never high by default. A fresh launch
 	// only: a reused pane keeps its own, and a defaulted EFFORT would read as a requested one a live session cannot honour.
+	// The level and the words come from effortDeclaredDefault, the one rule (t5_vendor_agent.go): the manifest prints
+	// exactly what this chose.
 	if d.effort == "" && d.reusePane == "" {
-		kind := d.vdBriefKind()
-		d.effort = "low"
-		if kind == "explore" {
-			d.effort = "off"
+		if lvl, src, ok := d.effortDeclaredDefault(); ok {
+			d.effort, d.effortSrc = lvl, src
 		}
-		d.piEffortSrc = "default; pi roster, kind " + kind
 	}
 	switch d.effort {
 	case "":
@@ -810,6 +962,32 @@ func (d *dsp) piManifestLines(dir string) string {
 	} else {
 		spec += "; no ops-investigator procedure in this lane's brain directory, so none is injected"
 	}
+	// the declared plugins' own agents, by the names a Claude executor reads from --plugin-dir: `pstack:comment-sicko`
+	if dirs := d.piPluginAgentDirs(); len(dirs) > 0 {
+		var parts []string
+		for _, one := range dirs {
+			plugin, dir, _ := strings.Cut(one, "=")
+			var names []string
+			if ents, err := os.ReadDir(dir); err == nil { // what hw-executor.ts registers: every .md, no filter
+				for _, e := range ents {
+					if strings.HasSuffix(e.Name(), ".md") {
+						names = append(names, plugin+":"+strings.TrimSuffix(e.Name(), ".md"))
+					}
+				}
+			}
+			parts = append(parts, strings.Join(names, " ")+" (from "+dir+")")
+		}
+		spec += "; the declared plugins' agents, registered as <plugin>:<name> by hw-executor.ts at session start via HW_PI_PLUGIN_AGENT_DIRS: " + strings.Join(parts, "; ")
+	} else if declared := d.declaredPluginAgentDirs(); len(declared) > 0 {
+		// a declared agent with no door here is SAID, never dropped silently (the cross-vendor rule)
+		why := "pi-subagents is not loaded (see the pi subagents line)"
+		if d.piSubagentsReady() {
+			why = "its agents directory path has a space or ':', which cannot travel in HW_PI_PLUGIN_AGENT_DIRS"
+		}
+		if pieces := reviewPiecesToInvoke(d.pluginsDeclared(), true); pieces != "" {
+			spec += "; NOT LAUNCHABLE here: the review's agent " + pieces + " needs pi's subagent tool, and " + why
+		}
+	}
 	fbLine := "none (the model already is the roster fallback)"
 	if fb != "" {
 		fbLine = fb + "  (HW_PI_FALLBACK_MODEL, thinking " + piFallbackThinking + ": a terminal MODEL error switches to it by itself and writes the switch in the receipt; a spent QUOTA does not — the cap is shared dollars)"
@@ -819,5 +997,13 @@ func (d *dsp) piManifestLines(dir string) string {
 	if len(d.pluginsDeclaredInstalled()) > 0 {
 		agentDir = "PRIVATE (under $HW_ARTIFACTS/pi-agent): the ambient agent directory's files, symlinked, with a settings.json that declares no packages and no extensions — a plugin's children start pi with discovery ON (pstack's `agent`: setup/vendor/plugins/pstack/pi/agents.ts), and the ambient rpiv-ask-user-question package registers the same `ask_user_question` pstack's extension does. ~/.pi is not written"
 	}
-	return "\n  pi fallback  " + fbLine + "\n  pi skills    " + skills + "  (-ns: discovery off; only what hw decides, not ~/.pi/agent/skills)\n  pi agent dir " + agentDir + "\n  pi subagents " + sub + "\n  pi specialists " + spec
+	usage := ""
+	if u := d.piUsageManifest(); u != "" {
+		usage = "\n  pi usage     opencode-go " + u
+	}
+	roster := ""
+	if d.c.t.piRosterName != "" { // named only where projects.json sets it: a table without the key reads as before
+		roster = "\n  pi roster    " + d.c.t.piRosterName + "  (projects.json pi_roster: go = the paid opencode-go roster, free = opencode's free models; --model still overrides the primary)"
+	}
+	return roster + "\n  pi fallback  " + fbLine + usage + "\n  pi skills    " + skills + "  (-ns: discovery off; only what hw decides, not ~/.pi/agent/skills)\n  pi agent dir " + agentDir + "\n  pi subagents " + sub + "\n  pi specialists " + spec
 }

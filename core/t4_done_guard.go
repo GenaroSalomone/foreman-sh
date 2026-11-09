@@ -34,8 +34,7 @@ func (d *doneRun) reportEvidence(pane, rundir string) string {
 	if isFile(doneMarker(rundir)) {
 		return "marker"
 	}
-	info, _ := doneTool("", nil, "herdr", "agent", "get", pane)
-	info = bashSub(info)
+	info := d.paneInfo(pane, rundir)
 	tok := doneJqRawEmpty(info, "result", "agent", "tokens", "done_status")
 	if tok == "done" || tok == "blocked" {
 		state := doneJqRawOr(info, "unknown", "result", "agent", "tokens", "done_state")
@@ -124,6 +123,15 @@ func doneReasons(ev, status string, selfClose bool, post, seq, pane, marker stri
 	return strings.Join(reasons, "\n"), stranded
 }
 
+// paneInfo is `herdr agent get <pane>`, or the same facts from `hc get` when the run lives on herdr-core.
+func (d *doneRun) paneInfo(pane, rundir string) string {
+	if _, _, _, ok := hcRunRecord(rundir); ok {
+		return hcAgentInfo(pane)
+	}
+	out, _ := doneTool("", nil, "herdr", "agent", "get", pane)
+	return bashSub(out)
+}
+
 // inUseGuard is _done_in_use_guard: a pane has an owner, and hw done establishes it before closing.
 func (d *doneRun) inUseGuard(proj, task, rundir string) {
 	a := d.app
@@ -147,8 +155,7 @@ func (d *doneRun) inUseGuard(proj, task, rundir string) {
 	if hp := a.getenv("HERDR_PANE_ID"); hp != "" && pane == hp { // # MUTATION-ANCHOR: 861-G18
 		selfClose = true
 	}
-	info, _ := doneTool("", nil, "herdr", "agent", "get", pane)
-	info = bashSub(info)
+	info := d.paneInfo(pane, rundir)
 	if info == "" || !doneJqE(info, "result", "agent") {
 		a.warn("could NOT establish whether pane " + pane + " is free: herdr returned nothing usable for it. It may be long gone, or herdr may simply not have answered — this close cannot tell those apart, and is proceeding WITHOUT the check.")
 		return
@@ -189,8 +196,7 @@ func (d *doneRun) inUseGuard(proj, task, rundir string) {
 				panic(exitNow{1}) // `sleep .` fails, and set -e ends hw done there
 			}
 			time.Sleep(time.Duration(poll * float64(time.Second)))
-			ninfo, _ := doneTool("", nil, "herdr", "agent", "get", pane)
-			ninfo = bashSub(ninfo)
+			ninfo := d.paneInfo(pane, rundir)
 			if !doneJqE(ninfo, "result", "agent") {
 				a.warn("herdr stopped answering for " + pane + " while hw waited for its last turn — it may be gone; closing WITHOUT the rest of the check.")
 				return

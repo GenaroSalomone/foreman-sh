@@ -139,11 +139,15 @@ check_tool() {
 
 # the item: present in Bitwarden, folder agents (a presence check — no value is read)
 check_item() {
-  local rc=0
-  hw secret check "$ITEM" >/dev/null 2>&1 || rc=$?
+  local rc=0 out
+  out="$(hw secret check "$ITEM" 2>&1 </dev/null)" || rc=$?
   case "$rc" in
     0) ;;
-    1) die "the Bitwarden item $ITEM is missing (folder agents). A person stores it, from the cookie on the clipboard: pbpaste | hw secret put $ITEM" ;;
+    1) case "$out" in
+         *"hw-core is not built"*) die "hw cannot run, so the item was not checked (this is not a missing cookie): build hw-core first with setup/build-core --native (needs Go 1.22+), then retry" ;;
+         *"is not in the Bitwarden folder"*) die "the Bitwarden item $ITEM is missing (folder agents). A person stores it: type this command first, THEN copy the cookie (the cookie must be the last thing copied), then run it: pbpaste | hw secret put $ITEM" ;;
+         *) die "hw secret check $ITEM failed (exit 1) without saying whether the item exists: run it by hand to see why" ;;
+       esac ;;
     2) die "the Bitwarden vault is locked: a person runs secret-unlock in a terminal, then retry" ;;
     *) die "hw secret check $ITEM failed (exit $rc): run it by hand to see why" ;;
   esac

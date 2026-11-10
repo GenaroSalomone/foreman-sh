@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with pre-release labels.
 
+## [0.8.0] — 2026-11-10
+
+The release candidate 0.8.0-rc.2, promoted with no change.
+
 ## [0.8.0-rc.2] — 2026-11-10
 
 ### Added

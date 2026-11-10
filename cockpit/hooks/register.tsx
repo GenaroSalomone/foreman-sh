@@ -46,8 +46,12 @@ async function statePath($: any): Promise<string | null> {
   const direct = await $.env.get('HW_COCKPIT_STATE')
   if (direct) return direct
   const work = (await $.env.get('HW_COCKPIT_WORK')) || (await $.env.get('WORK'))
-  const paneId = await $.env.get('HERDR_PANE_ID')
-  return work && paneId ? `${work}/.cockpit/${paneId}.json` : null
+  // an hc brainer has no herdr pane: its writer names the file by the terminal address (cockpit-state --invoker)
+  const herdrPane = await $.env.get('HERDR_PANE_ID')
+  const paneId = herdrPane || (await $.env.get('HC_TERMINAL_ID'))
+  // an address (t7) is only unique inside one herdr-core: brain names the core in HW_COCKPIT_CORE and the writer's file is <core>.<address>.json
+  const core = herdrPane ? '' : await $.env.get('HW_COCKPIT_CORE')
+  return work && paneId ? `${work}/.cockpit/${core ? `${core}.` : ''}${paneId}.json` : null
 }
 
 // Reads the file only when its size or mtime moved. Returns whether what the

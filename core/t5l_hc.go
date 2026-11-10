@@ -76,6 +76,10 @@ func (l *lch) hcRecord(addr string) {
 	if wd, run := l.workdir(), l.hwRun; wd != "" && run != "" {
 		l.fs.mkdirAll(wd + "/.hw/" + run)
 		l.fs.write(wd+"/.hw/"+run+"/hc", []byte(l.proj+" "+l.task+" "+addr+"\n"), 0o666)
+		// the core this address means: t2 is only t2 inside one core (a QA instance, a restarted core), so the run says whose it is
+		if id := hcCoreID(l.env); id != "" {
+			l.fs.write(wd+"/.hw/"+run+"/hc-core", []byte(id+"\n"), 0o666)
+		}
 	}
 }
 
@@ -102,10 +106,21 @@ func (l *lch) hcRunArgs(cwd string) []string {
 		"--", "env",
 		"-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH",
 		"-u", "HERDR_TAB_ID", "-u", "HERDR_WORKSPACE_ID", "-u", "HW_INVOKER_PANE",
-		"-u", "CLAUDE_CODE_CHILD_SESSION",
-		"CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1", "CLAUDE_CODE_BASH_EDIT_DIFF=0"}
+		"-u", "CLAUDE_CODE_CHILD_SESSION"}
+	// the core's environment is the app's launcher's: with no account redirect an inherited CLAUDE_CONFIG_DIR must not reach claude
+	// (the TUI route clears it in exportHwEnv). env reads options only before its first NAME=VALUE word.
+	if !(l.accountApplies && l.accountConfigDir != "") {
+		args = append(args, "-u", "CLAUDE_CONFIG_DIR")
+	}
+	args = append(args, "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1", "CLAUDE_CODE_BASH_EDIT_DIFF=0")
 	args = append(args, l.hcEnvWords(cwd)...)
+	args = append(args, hcPathWord(l.binDir(), l.env("PATH")))
 	args = append(args, "claude")
+	if l.explorerArm { // an hc terminal has no shell to type a function into: the JSON is a word of the argv
+		if json := l.explorer().claudeJSON(); json != "" {
+			args = append(args, "--agents", json)
+		}
+	}
 	args = append(args, strings.Fields(l.agentArgs)...)
 	if l.briefText != "" { // the brief is the launch task: claude's first message, no keystrokes to race
 		// `--` ends the options: --mcp-config is variadic and would otherwise read the brief as one more config file
@@ -133,9 +148,14 @@ func (l *lch) hcAgentStep() {
 		l.receipt("brief_sha256", l.dlSha256(l.briefText), "shasum -a 256 of the "+nbytes+" bytes passed to `hc run` as the launch task")
 		l.receipt("brief_bytes", nbytes, "wc -c of BRIEF_TEXT at launch")
 	}
-	if l.explorerArm {
-		l.warn("the cheap explorer is NOT armed on herdr-core: its launch function is typed into a pane shell, and an hc terminal has none")
+	if l.explorerArm && l.explorer().claudeJSON() == "" {
+		l.warn("the cheap explorer could not be armed for " + l.label + " (the role is unreadable): this executor starts without it")
 	}
+	space := l.c.t.get(l.proj, "space")
+	app := func(a ...string) (string, int) {
+		return l.sh(cmdSpec{name: "herdr-app", args: a, mut: len(a) > 1, quiet: true, synth: `{"spaces":[]}`})
+	}
+	spaceNew := hcSpaceIsNew(app, space)
 	raw, rc := l.sh(cmdSpec{name: "hc", args: l.hcRunArgs(l.workdir()), mut: true, merge: true, synth: `{"address":"shadow:t1"}`})
 	v, _ := bjParse(brTrimNL(raw))
 	addr := ""
@@ -146,6 +166,9 @@ func (l *lch) hcAgentStep() {
 		l.receipt("agent_ready", "no — `hc run` did not start the executor", "hc run exit status")
 		l.receiptVerdict()
 		l.die("`hc run` did not start " + l.agent + " for " + l.label + " (exit " + strconv.Itoa(rc) + "): " + head3(raw) + " — NOTHING is running. The worktree is intact; dispatch again.")
+	}
+	if spaceNew {
+		hcNameSpace(app, lSleep, space)
 	}
 	l.info(l.agent + " started in " + addr + " (herdr-core); vendor runtime readiness is unestablished")
 	l.receipt("pane", addr, "hc run --json address")
@@ -159,11 +182,46 @@ func (l *lch) hcAgentStep() {
 		l.die("the brief was passed to " + addr + " as its launch task, but `hc get " + addr + "` shows neither status=working nor a turn after the wait: it may be holding a dialog. Read it with `hc read " + addr + "`. Do NOT re-send the brief.")
 	}
 	if l.brief != "" {
+		l.receipt("agent_ready", "yes", "hc get "+addr+" --json: status=working or a turn past 0 (the brief's turn)") // the terminal answered a turn: readiness is measured
 		l.receipt("brief_admitted", "yes — "+addr+" reports status=working or a turn past 0", "hc get "+addr+" --json")
 		l.ok("brief IN THE CONVERSATION on " + addr + " (" + strconv.Itoa(len(l.briefText)) + " bytes, from " + l.brief + ") — the launch task, proved by hc get")
 	}
+	l.hcSession(addr)
 	l.ledgerDispatch(addr, 0)
 	l.receiptVerdict()
+}
+
+// hcSession is receiptSession on herdr-core: herdr publishes no agent_session there, but claude writes
+// <config dir>/sessions/<pid>.json (pid, sessionId, cwd) and `hc get` names the terminal's pid, so the id `hw revive` needs
+// (session_resume) is read from it, accepted only when that file's cwd is the terminal's own.
+func (l *lch) hcSession(addr string) {
+	if l.wt == "" || l.hwRun == "" {
+		return
+	}
+	budget := lrcMillis(l.env("HW_SESSION_WAIT_MS"), 15000)
+	home := l.env("HOME")
+	sid := ""
+	var waited int64
+	for {
+		out, _ := l.sh(cmdSpec{name: "hc", args: []string{"get", addr, "--json"}, quiet: true, synth: `{"state":"live"}`})
+		if v, ok := bjParse(brTrimNL(out)); ok {
+			m, _ := v.(jmap)
+			sid = claudeSessionOf(bjRaw(m["pid"]), hcStr(m, "cwd"), l.accountConfigDir, l.env("CLAUDE_CONFIG_DIR"), home+"/.claude")
+		}
+		if sid != "" || waited >= budget {
+			break
+		}
+		l.lrcSleep()
+		waited += 1000
+	}
+	if sid == "" {
+		l.receipt("session_id", "none — claude wrote no sessions/<pid>.json for "+addr+" within "+strconv.FormatInt(budget/1000, 10)+"s", "hc get "+addr+" --json pid → <config>/sessions/<pid>.json")
+		l.warn("NO SESSION ID: this conversation is not addressable after the fact, and `hw revive` cannot resume it.")
+		return
+	}
+	l.receipt("session_id", sid, "<config>/sessions/<pid>.json of the pid `hc get "+addr+"` names, "+strconv.FormatInt(waited, 10)+"ms after the brief")
+	l.receipt("session_vendor", "claude", "hc run: the vendor is claude")
+	l.receiptResume(sid, "claude")
 }
 
 // dispatchPublishHC is dispatchPublish's twin: the labels `hc run` already set are the executor's identity on
@@ -191,4 +249,38 @@ func (l *lch) hcBriefProved(addr string) bool {
 		}
 		lSleep(time.Second)
 	}
+}
+
+// The app names a space it makes after the folder or the terminal that opened it ("brain", then "qa-d"), so every
+// Agents row read "qa-d · …". `herdr.space=<lane>` gives the space its ID only; a space is named by renaming it.
+//
+// hcSpaceIsNew asks BEFORE the `hc run` that may create the space; hcNameSpace renames it AFTER, and only a space this
+// run made — a name a person gave an existing space is theirs. app runs `herdr-app <args>`: (stdout, exit status).
+func hcSpaceIsNew(app func(args ...string) (string, int), space string) bool {
+	out, rc := app("ls")
+	v, ok := bjParse(brTrimNL(out))
+	spaces, isList := bjGet(v, "spaces").([]any)
+	if rc != 0 || !ok || !isList { // no answer is not "no such space": renaming on it would overwrite a person's name
+		return false
+	}
+	for _, s := range spaces {
+		if m, isMap := s.(jmap); isMap && hcStr(m, "id") == space {
+			return false
+		}
+	}
+	return true
+}
+
+// hcNameSpace retries for a few seconds: measured 2026-11-09, `space.rename` answers `no space "<id>"` for the first
+// moments after `hc run` returns. Best effort — a space left with the app's default name is cosmetic.
+func hcNameSpace(app func(args ...string) (string, int), sleep func(time.Duration), space string) bool {
+	for i := 0; i < 5; i++ {
+		if i > 0 {
+			sleep(time.Second)
+		}
+		if _, rc := app("do", "space.rename", "--id", space, "--name", space); rc == 0 {
+			return true
+		}
+	}
+	return false
 }

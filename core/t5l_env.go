@@ -664,6 +664,9 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		l.receiptInto(dir, "checks_required_t1", "required",
 			"kind build (declared or undeclared) at dispatch — done-invoker requires $HW_ARTIFACTS/checks.md")
 	}
+	if l.releaseJSON != "" {
+		l.receiptInto(dir, "release_t1", l.releaseJSON, "brief release: prod in "+l.brief+" at dispatch — done-invoker re-diffs the env, wants the screens, and the QA run reported")
+	}
 	l.pluginReviewReceipt(dir)
 	l.jdAgentsReceipt(dir)
 	if l.reportToChosen {

@@ -123,10 +123,10 @@ func (b *brainRun) main(args []string) (rc int) {
 		return 0
 	}
 	if first == "relaunch" {
-		// relaunch speaks herdr panes only: from an app terminal it would list and
-		// relaunch TUI brainers, the cross-backend write the ruling rules out.
+		// relaunch is per backend: from an app terminal it must not list and relaunch TUI brainers, the
+		// cross-backend write the ruling rules out.
 		if b.hcBackend() {
-			return b.hcRefuse("relaunch")
+			return b.relaunchHC(args)
 		}
 		return b.relaunch(args)
 	}
@@ -181,9 +181,9 @@ func (b *brainRun) laneAlias(word string) string {
 func (b *brainRun) laneKnown(name string) bool { return b.tab.known(name) }
 
 // relaunch is brain_relaunch: each open claude brainer relaunched in place, resuming its own conversation.
-func (b *brainRun) relaunch(args []string) int {
-	all, dry := false, false
-	var targets []string
+// relaunchArgs is relaunch's command line, shared by both backends: done is true when the call ends here with rc
+// (help, a usage error).
+func (b *brainRun) relaunchArgs(args []string) (all, dry bool, targets []string, rc int, done bool) {
 	for _, a := range args[1:] {
 		switch {
 		case a == "--all":
@@ -192,11 +192,11 @@ func (b *brainRun) relaunch(args []string) int {
 			dry = true
 		case a == "-h" || a == "--help":
 			b.outf("usage: brain relaunch [--all | <lane|pane>...] [--dry-run]   (brainers only; executors are not relaunched)\n")
-			return 0
+			return all, dry, targets, 0, true
 		case strings.HasPrefix(a, "-"):
 			b.errf("brain relaunch: unknown flag: %s  (try: --all, --dry-run)\n", a)
-			return 64
-		case matchPanePattern(a):
+			return all, dry, targets, 64, true
+		case matchPanePattern(a) || (b.hcBackend() && reHCAddr.MatchString(a)):
 			targets = append(targets, "pane:"+a)
 		default:
 			if b.laneKnown(a) {
@@ -205,17 +205,26 @@ func (b *brainRun) relaunch(args []string) int {
 				targets = append(targets, "lane:"+al)
 			} else {
 				b.errf("brain relaunch: neither a lane nor a pane id: %s\n", a)
-				return 64
+				return all, dry, targets, 64, true
 			}
 		}
 	}
 	if !all && len(targets) == 0 {
 		b.errf("brain relaunch: name lanes or panes, or pass --all\n")
-		return 64
+		return all, dry, targets, 64, true
 	}
 	if all && len(targets) > 0 {
 		b.errf("brain relaunch: --all and named targets do not combine\n")
-		return 64
+		return all, dry, targets, 64, true
+	}
+	return all, dry, targets, 0, false
+}
+
+// relaunch is brain_relaunch: each open claude brainer relaunched in place, resuming its own conversation.
+func (b *brainRun) relaunch(args []string) int {
+	all, dry, targets, rc, done := b.relaunchArgs(args)
+	if done {
+		return rc
 	}
 	// A FAILED LIST IS NOT AN EMPTY LIST: nothing is relaunched on a herdr that did not answer.
 	r := b.herdr(brainCmd{}, "pane", "list")

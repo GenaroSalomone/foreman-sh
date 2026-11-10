@@ -184,6 +184,11 @@ func (l *lch) receiptSession(pane string, drc int) {
 	}
 	l.receipt("session_id", sid, src+", "+strconv.FormatInt(waited, 10)+"ms after brief delivery")
 	l.receipt("session_vendor", lrcOr(vendor, "unknown"), "herdr agent get "+pane+" | jq -r .result.agent.agent_session.agent")
+	l.receiptResume(sid, vendor)
+}
+
+// receiptResume records the vendor's own resume for a session, and says the conversation stays addressable.
+func (l *lch) receiptResume(sid, vendor string) {
 	// The payoff, spelled out. The cwd matters: opencode resolves a session against the directory it ran in.
 	var resume string
 	switch vendor { // # MUTATION-ANCHOR: 847-A2-08

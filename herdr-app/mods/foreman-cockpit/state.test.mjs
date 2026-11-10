@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify, parseState, dur, laneOf, metaText, modelOf, scrub, terminalFor, titleOf } from "./state.js";
+import { classify, folderError, parseState, dur, laneOf, metaText, modelOf, scrub, terminalFor, titleOf } from "./state.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const fixtures = join(root, "cockpit/fixtures");
@@ -94,6 +94,15 @@ checks += 3;
 const held = [{ address: "t1b" }, { address: "t7" }];
 for (const [pane, want] of [["t7", "t7"], ["w1:p11", null], ["", null]]) {
   if (terminalFor(pane, held) !== want) fail(`terminalFor(${pane})`, terminalFor(pane, held), want);
+}
+
+// QA5 G3: the host's refusal names the app's home, so the person knows where the folder has to be.
+{
+  checks += 1;
+  const got = folderError(new TypeError("'/tmp/x/.cockpit' is outside every granted read root; add its directory to capabilities.fs.read"), "/tmp/h");
+  if (!got.includes("only under its own home (/tmp/h)")) fail("folderError names the app's home", got, "a message naming /tmp/h");
+  checks += 1;
+  if (folderError(new Error("boom"), "/tmp/h") !== "no state folder: Error: boom") fail("folderError leaves other errors alone", folderError(new Error("boom"), "/tmp/h"), "no state folder: Error: boom");
 }
 
 if (failed > 0) process.exit(1);

@@ -22,7 +22,7 @@
                               environment's pane, which in an executor is its own: a kick
                               writes nothing and leaves a line in <work>/.cockpit/skipped-kicks.log
              --state PATH     the file (default $HW_COCKPIT_STATE, else
-                              <work>/.cockpit/<invoker>.json)
+                              <work>/.cockpit/<invoker>.json, or <core id>.<invoker>.json for an hc address)
              --stdout         print instead of writing (nothing is created)
 
 WHAT IT READS: `herdr pane list` (one RPC, ~7 ms with 40 panes), each executor's run
@@ -178,13 +178,42 @@ def work_root():
     return os.path.expanduser(w) if w else None
 
 
-def state_path(invoker):
+def hc_core_id():
+    """The id of the herdr-core this process talks to (<state>/herdr-core/default/core.json), None when unreadable."""
+    root = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    try:
+        with open(os.path.join(root, "herdr-core", "default", "core.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("id") or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def core_of_rundir(rundir):
+    """The core that dispatched a run (`<run>/hc-core`, written by hw at dispatch), None for a run that records none."""
+    rundir = rundir.rstrip("/")
+    if re.fullmatch(r"t\d+", os.path.basename(rundir)):
+        rundir = os.path.dirname(rundir)
+    return (read_text(os.path.join(rundir, "hc-core")) or "").strip() or None
+
+
+def _core_ok(core):
+    """A core id names a file: hex/word characters only, never a path."""
+    return core if core and re.fullmatch(r"[A-Za-z0-9_-]+", core) else None
+
+
+def state_path(invoker, core=None):
     p = os.environ.get("HW_COCKPIT_STATE")
     if p:
         return p
     w = work_root()
     if not w or not invoker:
         return None
+    # An hc address (t2) is only unique inside one core: two cores (the app, a QA instance, a restart that recycles the
+    # numbers) shared one file per address. The core's id goes in the name; a herdr pane id (w1:p2) needs none.
+    if ":" not in invoker:
+        core = _core_ok(core) or _core_ok(os.environ.get("HW_COCKPIT_CORE")) or _core_ok(hc_core_id())
+        if core:
+            invoker = core + "." + invoker
     return os.path.join(w, ".cockpit", invoker + ".json")
 
 
@@ -225,12 +254,27 @@ def hc_run(args):
         return None
 
 
+def hc_gone(addr):
+    """True only when hc ANSWERS that this terminal is gone: not_found (exit 3) or finished. hc down, or an
+    herdr pane id (it carries a colon; an hc address never does), is not an answer. It is what ends a bound writer
+    when there is no herdr at all: `herdr pane list` then fails forever, and failing is "keep writing"."""
+    if not addr or ":" in addr:
+        return False
+    try:
+        r = subprocess.run([os.environ.get("HW_COCKPIT_HC", "hc"), "get", addr, "--json"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 3:
+            return True
+        return r.returncode == 0 and json.loads(r.stdout).get("state") != "live"
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return False
+
+
 def hc_panes():
     """(answered, panes). The executors that run as herdr-core terminals (labelled hw_task), in the shape of a
     `herdr pane list` entry: the address is the pane_id, the labels are the tokens (hw_turn_state is also
     turn_state). `hc ls` carries no labels, so each terminal costs one `hc get`. shortcut: no statusline read
     for them (that is `herdr agent read`), their ctx falls back to the transcript; upgrade to `hc read`."""
-    ls = hc_run(["ls", "--label", "hw_task"])
+    ls = hc_run(["ls"])
     if not isinstance(ls, dict) or not isinstance(ls.get("terminals"), list):
         return False, []
     panes = []
@@ -241,6 +285,8 @@ def hc_panes():
                 or not isinstance(got.get("cwd"), str):
             continue
         labels = {k: v for k, v in got["labels"].items() if isinstance(v, str)}
+        if not labels.get("hw_task"):
+            continue
         tokens = dict(labels)
         for k, v in labels.items():
             if k.startswith("hw_"):
@@ -1148,7 +1194,9 @@ def build_state(invoker, seq, interval_s, rev, now=None):
     mods = {"runenv": _load("runenv"), "holdfacts": _load("holdfacts"), "actions": _load("hw-actions")}
     ok, panes, err = herdr_panes()
     hc_ok, hc_found = hc_panes()
-    if hc_ok and hc_found:  # the herdr app's terminals count as an answer: an app-only machine has no herdr to ask
+    # the herdr app's terminals count as an answer: an app-only machine has no herdr to ask. An hc brainer (an address with no
+    # colon) with hc answering is that machine even when it runs no executor yet: "no herdr" is normal there, not an alarm.
+    if hc_ok and (hc_found or ":" not in (invoker or "")):
         ok, err, panes = True, None, (panes if err is None else []) + hc_found
     rows = []
     if ok:
@@ -1412,6 +1460,8 @@ def kick_run(invoker, path):
         os.rmdir(path + ".kick")  # release BEFORE reading, so an event during the write re-arms
     except OSError:
         pass
+    if hc_gone(invoker):  # a kick naming a brainer that has left must not redraw it (QA6 N4): its file goes
+        return _leave(path)
     return write_once(invoker, path, 5, hw_rev())
 
 
@@ -1460,6 +1510,56 @@ def hc_live(addr):
     return isinstance(got, dict) and got.get("state") == "live"
 
 
+def _leave(path):
+    """A writer that ends takes its file with it: a dead brainer's rows would otherwise sit in the cockpit (stale, then
+    dead) beside the live brainer that replaced it, which showed no executors (QA 2026-11-09, row 10)."""
+    for sfx in ("",) + SIDE_FILES:
+        try:
+            if path:
+                os.unlink(path + sfx)
+        except OSError:
+            pass
+    return 0
+
+
+DEAD_FILE_S = int(os.environ.get("HW_COCKPIT_DEAD_FILE_S", "3600"))  # 60x the mod's own "no state" age: nothing alive writes this rarely
+SIDE_FILES = (".cache", ".lock", ".loop.lock")  # what a state file keeps beside it
+
+
+def sweep_dead(path, now=None):
+    """The files of writers that did not leave (killed, app shut down), and the side files a leaving one forgot: a state file
+    nobody has written for DEAD_FILE_S and whose loop lock is free goes with its side files (QA5 G7)."""
+    d = os.path.dirname(path or "")
+    now = time.time() if now is None else now
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    bases = {n[:-len(sfx)] if n.endswith(sfx) else n for n in names for sfx in SIDE_FILES + ("",) if n.endswith(sfx)}
+    for b in sorted(b for b in bases if b.endswith(".json")):
+        f = os.path.join(d, b)
+        if f == path:
+            continue
+        try:
+            newest = max(os.stat(f + sfx).st_mtime for sfx in ("",) + SIDE_FILES if os.path.exists(f + sfx))
+            if now - newest < DEAD_FILE_S:  # MUTATION-ANCHOR: 797-M31
+                continue
+            lk = open(f + ".loop.lock", "a")
+        except (OSError, ValueError):
+            continue
+        try:
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            continue  # a live writer holds it
+        finally:
+            lk.close()
+        for sfx in ("",) + SIDE_FILES:
+            try:
+                os.unlink(f + sfx)
+            except OSError:
+                pass
+
+
 def loop(invoker, path, every, bind_pane):
     """The heartbeat. Two lifetimes, never both:
 
@@ -1485,14 +1585,16 @@ def loop(invoker, path, every, bind_pane):
     while True:
         if bind_pane:
             ok, panes, _ = herdr_panes()
-            if ok and not any(p.get("pane_id") == invoker for p in panes) and not hc_live(invoker):  # MUTATION-ANCHOR: 797-M18
-                return 0  # the brainer's pane is gone: this writer dies with it
+            if (ok and not any(p.get("pane_id") == invoker for p in panes) and not hc_live(invoker)) or hc_gone(invoker):  # MUTATION-ANCHOR: 797-M18
+                return _leave(path)  # the brainer's pane is gone: this writer dies with it
+        if bind_pane:
+            sweep_dead(path)
         try:
             write_once(invoker, path, every, rev)
         except Exception as e:  # MUTATION-ANCHOR: 797-M21  # one bad beat (a full disk, a herdr hiccup in a reader) must not end the heartbeat
             print("cockpit-state: write failed: %s" % (str(e) or type(e).__name__), file=sys.stderr)
         if not bind_pane and os.getppid() != ppid:  # MUTATION-ANCHOR: 797-M11
-            return 0  # the brainer's shell is gone: this writer dies with the pane
+            return _leave(path)  # the brainer's shell is gone: this writer dies with the pane
         time.sleep(every)
         reexec_if_changed(booted_sig, lock)
 
@@ -1605,7 +1707,7 @@ def main(argv):
     if not invoker:
         print("cockpit-state: no brainer pane (--invoker, $HW_COCKPIT_INVOKER or $HERDR_PANE_ID)", file=sys.stderr)
         return 2
-    path = a.state or state_path(invoker)
+    path = a.state or state_path(invoker, core_of_rundir(a.rundir) if a.rundir else None)
     if a.print_path:
         if not path:
             return 2

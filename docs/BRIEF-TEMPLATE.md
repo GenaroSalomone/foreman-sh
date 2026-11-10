@@ -10,6 +10,16 @@
 #   base:      the branch the worktree is built on — declare it on any task
 #              whose result is measured
 #   requested_by: "<who, date: the request, quoted>"  and  asked: investigate | build
+#   release: prod   a brief that writes prod data or deploys to prod. REQUIRES env-from: and env-to: (app uuids),
+#              env-diff: {NAME: needed|not-needed} (one ruling per name that differs, no more), screens: [<name>, …]
+#              (done needs $HW_ARTIFACTS/screens/<name>.png newer than the run start; sub-views are fine,
+#              e.g. route-detail/per-driver-stops) and qa: <brief> (hw dispatches it with the release; the close waits for
+#              it to report). And an authorizes: line that covers the read: the SSH host, the env list of each app and
+#              printenv in each backend container, both app uuids. hw diffs the two envs at dispatch and again at close;
+#              a name ruled needed that still differs refuses the close. Put the precheck that PRINTS the flags in the
+#              brief's `## Testing / Verification` (a template rule, unenforced). Dispatched, never `hw next`.
+#   rehearsal-of: <release brief> (+ its own env-from:) refused unless that env matches the release's env-to, or every
+#              difference is ruled not-needed there.
 #              What was asked for. hw refuses a dispatch without it where the lane requires one and
 #              warns elsewhere; `investigate` does not implement.
 #   authorizes: <destination> :: <operation> :: <Keychain handle|none>

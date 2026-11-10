@@ -3,7 +3,8 @@ package main
 // THE EXECUTORS THAT RUN IN THE HERDR APP, AS THE READ-SIDE TOOLS SEE THEM (herdr-app-read-tools, step 5).
 //
 // `hw status` reads herdr's `agent list` and `pane list`. An executor launched as an `hc run` terminal is in
-// neither, so it is invisible there. hcRunEntries reads `hc ls --label hw_task` + `hc get` and answers in herdr's
+// neither, so it is invisible there. hcRunEntries reads `hc ls` + `hc get` (hc 0.1.19 wants --label as K=V and `hc ls`
+// carries no labels, so the hw_task filter is applied on the `get`) and answers in herdr's
 // own shapes — the labels are the tokens, hw_turn_state is also turn_state — so the status program stays one
 // program. With no hc, or none running, it adds nothing and the TUI path is untouched.
 // shortcut: one `hc get` per terminal, serially; upgrade when a lane runs dozens.
@@ -20,7 +21,7 @@ const hcReadTimeout = 5 * time.Second
 // hcRunEntries is the live hc executors as herdr agent entries and pane entries; answered is false when
 // `hc ls` could not answer (absent or down), which is "unknown", never "none".
 func hcRunEntries() (agents, panes []any, answered bool) {
-	raw, ok := hcOut(hcReadTimeout, "ls", "--json", "--label", "hw_task")
+	raw, ok := hcOut(hcReadTimeout, "ls", "--json")
 	if !ok {
 		return nil, nil, false
 	}
@@ -38,6 +39,9 @@ func hcRunEntries() (agents, panes []any, answered bool) {
 		g, isGet := bjParseMap(one, got)
 		if !isGet || hcStr(g, "state") != "live" {
 			continue // a finished terminal is not a running executor
+		}
+		if labels, _ := g["labels"].(jmap); hcStr(labels, "hw_task") == "" {
+			continue // not an executor hw launched
 		}
 		tokens := jmap{}
 		if labels, isLabels := g["labels"].(jmap); isLabels {

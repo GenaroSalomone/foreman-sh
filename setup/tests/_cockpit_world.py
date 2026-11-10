@@ -194,6 +194,7 @@ class World:
 
     def env(self, **extra):
         e = dict(os.environ)
+        e["XDG_STATE_HOME"] = os.path.join(self.tmp, "xdg-state")  # the machine's own herdr-core (its core.json) must not name the files
         e.update({"HW_COCKPIT_HERDR": self.herdr, "HW_COCKPIT_WORK": self.work, "HW_COCKPIT_INVOKER": self.invoker})
         e.pop("HW_COCKPIT_STATE", None)
         e.update(extra)

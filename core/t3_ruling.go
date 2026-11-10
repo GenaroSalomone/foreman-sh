@@ -427,6 +427,9 @@ func (t *t3) ruling() int {
 	if pane == "" {
 		t.die(t3RulingUsage)
 	}
+	if why := mux.OutsideAppRefusal(t.getenv, pane); why != "" {
+		t.die(why)
+	}
 	text, dry, stdinDash, sawWord := "", false, false, false
 loop:
 	for len(args) > 0 {

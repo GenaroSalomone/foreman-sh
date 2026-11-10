@@ -192,7 +192,7 @@ func retaskOpenText(f *promptFacts) string {
 // askNote stays whole on every vendor: the measured gap is a pi executor that ignored a prohibition the brief itself wrote
 // (deepseek), and the challenge is the brainer's only instrument for a wrong one.
 const askNote = `ASK OR CHALLENGE, NEVER GUESS. Only your brainer decides what the brief does
-not; ask once, then wait in this pane. A brief that forbids what you measured is
+not; ask once, then end your turn: the reply arrives as your next prompt. A brief that forbids what you measured is
 a --challenge — evidence, not opinion, and it spends no ask — and you hold until
 the ruling arrives, then act on it in this same task. A workaround hides the gap
 from the only person who could close it.`
@@ -292,7 +292,7 @@ done-invoker and ask-invoker are shell commands in ` + f.binDir + `, not tools:
 
     ` + f.binDir + `/done-invoker "<what you established; the engram #ids; 900 chars max>"   # rehearse: done-invoker --check
     ` + f.binDir + `/done-invoker --blocked "<what stopped you; what would unblock it>"   # you stay; a ruling resumes this task — never --retask it
-    ` + f.binDir + `/ask-invoker "<one question, 600 chars max>"   # 3 per task; wait here for the reply
+    ` + f.binDir + `/ask-invoker "<one question, 600 chars max>"   # 3 per task; then END YOUR TURN: the reply arrives as your next prompt (never sleep or poll)
     ` + f.binDir + `/ask-invoker --challenge "<what the brief forbids> :: <your evidence against it>"   # own budget; hold until ruled
 
 No question tool reaches a person. A missing tool, capability or credential is a

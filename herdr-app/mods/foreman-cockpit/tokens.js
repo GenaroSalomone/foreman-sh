@@ -36,7 +36,7 @@ export const button = (id, label, t, active = false, look = lookOf(props())) =>
 // Something failed: a blocked-colored line, its detail under it, a hairline below.
 export const alarm = (title, detail, t) =>
   v_flex().w_full().min_w(0).flex_none().px(SPACE.md).py(SPACE.sm).gap(2).border_b(1).border_color(t.border)
-    .child(h_flex().w_full().min_w(0).gap(SPACE.sm).items_center().text_color(t.blocked).child(dot(t.blocked)).child(title))
+    .child(h_flex().w_full().min_w(0).gap(SPACE.sm).items_center().text_color(t.blocked).child(dot(t.blocked)).child(div().flex_1().min_w(0).child(title)))
     .when(Boolean(detail), (el) => el.child(div().pl(INDENT).text_size(TEXT.label).text_color(t.dim).child(detail)));
 
 // Each look's grammar, from its approved mockup (looks C, D and G in herdr-app/README.md): the

@@ -126,13 +126,63 @@ echo '{"frame.welcomed":"skipped"}' > $I/app/shared.json   # overlay.close does 
 # exec takes PATH from the login shell, not from this env, so prepend $I/bin there:
 printf 'source ~/.zshrc >/dev/null 2>&1\nexport PATH=%s/bin:$PATH\n' $I > $I/zdot/.zshrc
 printf 'export PATH=%s/bin:$PATH\n' $I > $I/zdot/.zlogin
-env ZDOTDIR=$I/zdot HERDR_APP_HOME=$I/app XDG_STATE_HOME=$I/state XDG_CONFIG_HOME=$I/config \
+# env -i: the app hands EVERY terminal it opens the environment it was started with, and from an hw executor's shell that is the
+# executor's HW_INVOKER_PANE, HW_RUN, HW_TASK (QA5 G2), plus herdr's own variables. A bare `env VAR=…` keeps all of it.
+env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" PATH="$HOME/.local/bin:$PATH" ZDOTDIR=$I/zdot HERDR_APP_HOME=$I/app XDG_STATE_HOME=$I/state XDG_CONFIG_HOME=$I/config \
   XDG_RUNTIME_DIR=$I/run HERDR_TELEMETRY=0 /Applications/Herdr.app/Contents/MacOS/Herdr &
 lsof -a -U -p $! | grep sock   # $I/app/herdr-app.sock, never ~/.config/herdr-app/herdr-app.sock
 ```
 
+### A live QA of foreman on the app is isolated all the way down
+
+The instance above isolates the window and the core. A QA that dispatches executors or opens `brain <lane>` ALSO needs its own tree:
+the live-cycle QA of 2026-11-09 ran `brain setup` against the real brain and work trees (not copies), flushed a stale `probe:probe` outbox entry into
+a real setup brainer, and that brainer wrote into the real `brain/setup/decisions.md` (herdr-app-final-gaps, G1). Nothing a probe does
+may reach the real brain tree, the real work root, `~/.claude*` or `~/.claude.json`:
+
+```sh
+I=/tmp/hfg                                   # short, as above
+mkdir -p $I/{h/work,bin,claude,mcp}
+# 1. its own brain: a copy of the tree under test, whose lane table points at ITS work root and at nothing of the real trees
+rsync -a --exclude .git --exclude node_modules ./ $I/brain/
+python3 - <<PY
+import json; p="$I/brain/projects.json"; d=json.load(open(p)); d["work"]="$I/h/work"; json.dump(d,open(p,"w"),indent=2)
+PY
+# build its hw-core from the same tree (setup/build-core); then every command of the QA runs with:
+REAL_HOME=$HOME                              # the app needs the REAL ~/.local/bin (step 3); HOME is about to change
+export HOME=$I/h HW_BRAIN_ROOT=$I/brain PATH=$I/bin:$I/brain/bin:$PATH
+export CLAUDE_CONFIG_DIR=$I/claude           # its own config dir: a trust entry lands under $I/h, never in the real ~/.claude.json
+export XDG_STATE_HOME=$I/state XDG_CONFIG_HOME=$I/config XDG_RUNTIME_DIR=$I/run HERDR_APP_HOME=$I/app   # as above
+# 2. its own MCP config ($I/mcp/*.json) wherever a brief or the lane names one: no engram proxy of the real machine
+# 3. the app, from a CLEAN environment — never from an executor's shell, and never `env VAR=… Herdr` (that keeps the caller's HW_*).
+#    Two variables a clean env must still carry (QA6 N1): USER (a real `claude` says "Not logged in" without it; LOGNAME rides with it) and the
+#    REAL ~/.local/bin on PATH (without it the app says "Herdr needs herdr-core"; $HOME is the isolated one by now, hence $REAL_HOME):
+env -i HOME=$I/h USER="$USER" LOGNAME="$USER" PATH=$I/bin:$I/brain/bin:$REAL_HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin XDG_STATE_HOME=$I/state XDG_CONFIG_HOME=$I/config \
+  XDG_RUNTIME_DIR=$I/run HERDR_APP_HOME=$I/app HW_BRAIN_ROOT=$I/brain HERDR_TELEMETRY=0 /Applications/Herdr.app/Contents/MacOS/Herdr &
+# 4. the cockpit mod reads ONLY under the app's own HOME, links resolved (`/tmp` is `/private/tmp`): the work root's .cockpit must
+#    sit under $I/h — a `work` of its own beside $I/h draws "no state folder". `capabilities.fs.read` in mod.json is NOT honoured (measured 2026-11-10: "outside every granted read root").
+#    (the layouts' props.dir is relative to ~, so under the isolated HOME it names $I/h/<the work root's path under the real ~>/.cockpit: make the
+#    work root of step 1 live at that path, or edit the copy's props.dir to $I/h/work/.cockpit)
+```
+In production the work root is under `~`, so the panel reads it as it is; a work root outside the app's home draws "no state folder: …
+only under its own home" in the panel.
+
+- **Auth.** A real `claude` cannot sign in under another config dir (its credentials are in the keychain; never read or copy them), so
+  the probes run a stand-in `claude` first on `PATH` (`$I/bin/claude`): it writes `<config>/sessions/<pid>.json`, logs its argv, reports
+  its state by OSC 7501 and, as an executor, calls `done-invoker`. Executors then find their session under `$HOME/.claude` (leave
+  `CLAUDE_CONFIG_DIR` unset in the terminal's env if the stand-in writes there).
+- **Prove it before the first dispatch.** `lsof -a -U -p <app pid>` for both sockets against the person's own inodes, `hc ls` through
+  the same env showing only your terminals, and `$I/brain/projects.json` naming no path of the real brain or work trees.
+- **Never** run a bare `hc`, `herdr-app` or `herdr` from the QA's shell: without the env they reach the person's running app.
+- Close every process by the pid you started (app, core, holder, stand-ins, cockpit writers).
+
 Drive it with the same env: `herdr-app do layout.select '{"stack":"right-body","child":"issues-body"}'`,
 `herdr-app do layout.resize '{"id":"cockpit","px":816}'`, `herdr-app shot out.png`.
+
+**The Agents list names every row after its space** (QA5 G6): the `agents` mod is the app's own (`~/.config/herdr-app/mods/agents/main.js`,
+shipped by the app, not by this repo), and its default **priority** view draws `a.space_name` on each row (`name = full ? a.space_name || label(a) : …`, line 344);
+only the **Grouped by space** sort shows the tab or terminal name. The sort menu (top of the list) switches it, and the app keeps the choice. A fix is
+the app's, not this tree's: our layouts only place the mod.
 
 What the mockups show and the app does **not** — function won each time:
 

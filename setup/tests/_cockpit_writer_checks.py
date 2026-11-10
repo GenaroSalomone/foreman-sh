@@ -489,6 +489,28 @@ def kick_names_its_brainer():
     assert not os.path.exists(own), "the kick of a resolved run also wrote the executor's own pane"
 
 
+def kick_of_a_gone_brainer_leaves_no_file():
+    """QA6 N4: a one-shot kick naming an hc brainer that has left must not redraw its file ("report undelivered" beside the
+    brainer that replaced it): hc says not_found (exit 3) and the file goes. A live one is still written."""
+    w = cw.World(tmpdir())
+    stub = os.path.join(tmpdir(), "hc")
+    path = os.path.join(w.work, ".cockpit", "core.t5.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    def kick_run(hc_script):
+        open(stub, "w").write(hc_script)
+        os.chmod(stub, 0o755)
+        open(path, "w").write("{}")
+        r = subprocess.run([os.path.join(BIN, "cockpit-state"), "--kick-run", "--invoker", "t5", "--state", path],
+                           env=w.env(HW_COCKPIT_HC=stub), capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+
+    kick_run("#!/bin/sh\nexit 3\n")
+    assert not os.path.exists(path), "a kick redrew the file of a brainer hc says is gone"                          # qa6-N4
+    kick_run("#!/bin/sh\n[ \"$1\" = get ] && echo '{\"state\":\"live\"}'\n")
+    assert json.load(open(path)).get("writer"), "a live brainer's kick wrote nothing"
+
+
 def _gone_within(pid, seconds):
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -557,6 +579,8 @@ def loop_binds_to_pane():
         w.panes[:] = [p for p in w.panes if p["pane_id"] != w.invoker]  # the brainer's pane closes
         w.publish()
         assert _gone_within(first, 8), "the writer outlived its brainer's pane"                             # 797-M18
+        d, b = os.path.split(w.state_path())
+        assert not [n for n in os.listdir(d) if n.startswith(b)], "a leaving writer kept its side files: %s" % sorted(os.listdir(d))   # qa5-G7
     finally:
         if _alive(first):
             os.kill(first, 9)
@@ -623,6 +647,46 @@ def loop_reloads_its_code():
     finally:
         proc.kill()
         proc.wait()
+
+
+def dead_writers_files_are_swept():
+    """QA5 G7: a bound writer removes the files of writers that did not leave — stale and with a free loop lock — and
+    nothing else: a fresh file, a stale one whose writer holds the lock, and the event logs stay."""
+    import fcntl
+    w = cw.World(tmpdir())
+    w.executor(task="a", status="working")
+    w.panes.append({"pane_id": w.invoker, "agent_status": "idle", "cwd": w.tmp})
+    w.publish()
+    d = os.path.dirname(w.state_path())
+    os.makedirs(d, exist_ok=True)
+    old = time.time() - 7200
+
+    def plant(name):
+        for suffix in ("", ".cache", ".lock"):
+            open(os.path.join(d, name + suffix), "w").write("{}")
+            os.utime(os.path.join(d, name + suffix), (old, old))
+
+    for n in ("dead.json", "held.json", "cockpit-events.jsonl"):
+        plant(n)
+    orphan = os.path.join(d, "gone.json.cache")  # a leaving writer removed its file and forgot the rest
+    open(orphan, "w").write("{}")
+    os.utime(orphan, (old, old))
+    open(os.path.join(d, "fresh.json"), "w").write("{}")
+    held = open(os.path.join(d, "held.json.loop.lock"), "a")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    proc = subprocess.Popen([os.path.join(BIN, "cockpit-state"), "--loop", "1", "--bind-pane", "--invoker", w.invoker],
+                            env=w.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        end = time.time() + 10
+        while time.time() < end and (os.path.exists(os.path.join(d, "dead.json")) or os.path.exists(orphan)):
+            time.sleep(0.2)
+        left = sorted(os.listdir(d))
+        assert not any(n.startswith(("dead.json", "gone.json")) for n in left), "a dead writer's files stay on disk: %s" % left   # qa5-G7
+        assert "held.json" in left and "fresh.json" in left and "cockpit-events.jsonl" in left, "the sweep took a live or foreign file: %s" % left
+    finally:
+        proc.kill()
+        proc.wait()
+        held.close()
 
 
 def ctx_from_transcript():
@@ -777,7 +841,7 @@ def timing_40():
 
 
 CHECKS = {f.__name__: f for f in (classes, done_tokens_outlive_the_task, row_order, private_files, killed_writer, loop_survives_a_failed_write, herdr_down, rows_cap, size_cap, summary_rejoin, effort_published, strings_are_clean, atomic, debounce,
-                                  loop_dies_with_parent, loop_binds_to_pane, loop_reloads_its_code, ctx_from_transcript, ctx_live, cut_rule, timing_40, kick_names_its_brainer)}
+                                  loop_dies_with_parent, loop_binds_to_pane, loop_reloads_its_code, dead_writers_files_are_swept, ctx_from_transcript, ctx_live, cut_rule, timing_40, kick_names_its_brainer, kick_of_a_gone_brainer_leaves_no_file)}
 
 if __name__ == "__main__":
     BIN = os.path.abspath(sys.argv[1])

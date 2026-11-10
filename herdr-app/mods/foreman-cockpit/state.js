@@ -20,6 +20,14 @@ const isStr = (x) => typeof x === "string";
 const orNull = (f) => (x) => x === null || f(x);
 const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 
+// Why the folder cannot be read, in the person's words. The app lets a mod read only under its own home, after symlinks
+// are resolved, and nothing in `mod.json` widens that (measured 2026-11-10: `capabilities.fs.read` there is ignored), so the
+// host's "outside every granted read root" says where to put the folder, not what the app allows.
+export const folderError = (e, home) =>
+  /outside every granted/.test(String(e))
+    ? `no state folder: the app reads files only under its own home (${home}), links resolved; put the work root's .cockpit there (${e})`
+    : `no state folder: ${e}`;
+
 // Text drawn by the panel goes through here: a control character or an escape
 // sequence (a report summary or a brief's title can carry one) makes the engine
 // refuse the whole tree.

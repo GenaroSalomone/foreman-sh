@@ -154,6 +154,36 @@ test('the state path comes from HW_COCKPIT_WORK and the pane id when no file is 
   expect(has(lines, /^task-0\d/)).toBe(true)
 })
 
+test('an hc brainer finds its state by the terminal address', async ($, on) => {
+  const file = '/work/.cockpit/t7.json'
+  mock.env(on, { HW_COCKPIT_WORK: '/work', HC_TERMINAL_ID: 't7' })
+  mock.clock(on, { now: NOW })
+  on('fs.stat', async (_$: any, e: any) =>
+    e.path === file ? { value: { kind: 'file', size: FIXTURES['fresh.json']!.length, mtimeMs: 1, isLink: false } } : { deny: 'ENOENT' })
+  on('fs.read', async (_$: any, e: any) => (e.path === file ? { value: FIXTURES['fresh.json']! } : { deny: 'ENOENT' }))
+  on('ui.invalidate', async () => ({ value: undefined }))
+  on('command.register', async () => ({ value: {} }))
+  on('session.start', async (_$: any, e: any) => ({ cwd: e.cwd }))
+  const lines = await texts(await drawPane($))
+  expect(has(lines, /no state path|writer down/i)).toBe(false)
+  expect(has(lines, /^task-0\d/)).toBe(true)
+})
+
+test('an hc brainer of a named core reads <core>.<address>.json (the writer keys the file by core)', async ($, on) => {
+  const file = '/work/.cockpit/c0re.t7.json'
+  mock.env(on, { HW_COCKPIT_WORK: '/work', HC_TERMINAL_ID: 't7', HW_COCKPIT_CORE: 'c0re' })
+  mock.clock(on, { now: NOW })
+  on('fs.stat', async (_$: any, e: any) =>
+    e.path === file ? { value: { kind: 'file', size: FIXTURES['fresh.json']!.length, mtimeMs: 1, isLink: false } } : { deny: 'ENOENT' })
+  on('fs.read', async (_$: any, e: any) => (e.path === file ? { value: FIXTURES['fresh.json']! } : { deny: 'ENOENT' }))
+  on('ui.invalidate', async () => ({ value: undefined }))
+  on('command.register', async () => ({ value: {} }))
+  on('session.start', async (_$: any, e: any) => ({ cwd: e.cwd }))
+  const lines = await texts(await drawPane($))
+  expect(has(lines, /no state path|writer down/i)).toBe(false)
+  expect(has(lines, /^task-0\d/)).toBe(true)
+})
+
 test('no reply without the field', async ($, on) => {
   const base = JSON.parse(FIXTURES['fresh.json']!)
   for (const r of base.rows) if (r.ask !== null) r.ask.pending_reply = null

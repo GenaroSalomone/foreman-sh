@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -98,4 +99,17 @@ func processOf(pid int) (int, string, bool) {
 // do (`t7`, `machine/t7`).
 func IsHCAddress(getenv func(string) string, addr string) bool {
 	return addr != "" && !strings.Contains(addr, ":") && Backend(getenv) == HC
+}
+
+var hcShaped = regexp.MustCompile(`^([^/:]+/)?t[0-9]+$`)
+
+// OutsideAppRefusal is the refusal for an hc address named from a process that is not an app terminal.
+// An hc address is `t3` or `machine/t3` (herdr pane ids carry a colon, and its agent names are words), so it can only be
+// an app terminal; without HC_TERMINAL_ID the caller names no app, and falling through to herdr would ask the person's
+// own server about it (QA6 N2). "" when addr is fine for this process.
+func OutsideAppRefusal(getenv func(string) string, addr string) string {
+	if !hcShaped.MatchString(addr) || Backend(getenv) == HC {
+		return ""
+	}
+	return addr + " is an app terminal (the shape `t3`), but this process is not running as a terminal of an app (HC_TERMINAL_ID is unset, or a herdr TUI is its ancestor), so it names no app and hw will not guess which herdr server to ask. Run it from a terminal of that app, or with that app's HC_TERMINAL_ID, HERDR_APP_HOME and XDG_RUNTIME_DIR in the environment. Nothing was sent."
 }

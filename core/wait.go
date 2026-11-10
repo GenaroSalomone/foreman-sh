@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"hwcore/internal/mux"
 )
 
 // the exit contract of the wait family (bin/hw cmd_wait_one): one code per fact. 3 and 4 are herdr-rpc's own
@@ -72,6 +74,9 @@ func (a *app) envInt(name string, def int64) int64 {
 
 // agentGet is `herdr agent get <pane> 2>/dev/null || true`.
 func (a *app) agentGet(pane string) string {
+	if a.nextHC(pane) { // an executor in the herdr app: hc get in herdr's shape, never the herdr socket
+		return a.nextAgentGet(pane)
+	}
 	out, _ := herdrOut(0, "agent", "get", pane)
 	return bashSub(out)
 }
@@ -145,6 +150,14 @@ func (a *app) newWitness() *witness {
 
 // screenHash is witness_screen_hash: one hash of the pane's visible screen, or false when the read did not succeed.
 func (w *witness) screenHash(pane string) (string, bool) {
+	if w.a.nextHC(pane) { // hc read: an empty read is not a screen
+		text := w.a.nextReadText(pane, orStr(w.a.getenv("WITNESS_READ_LINES"), "40"))
+		if text == "" {
+			return "", false
+		}
+		sum := sha256.Sum256([]byte(text))
+		return hex.EncodeToString(sum[:])[:16], true
+	}
 	params := fmt.Sprintf(`{"pane_id":"%s","source":"visible","lines":%s}`, pane, orStr(w.a.getenv("WITNESS_READ_LINES"), "40"))
 	cmd := exec.Command(w.rpc, "call", "pane.read", params)
 	outb, err := cmd.Output()
@@ -224,6 +237,9 @@ func (w *witness) screen(pane string) (string, string, bool) {
 
 // endpoint is witness_endpoint: the pane's own OpenCode HTTP address, from its argv; false when there is none to ask.
 func (w *witness) endpoint(pane string) (string, bool) {
+	if w.a.nextHC(pane) { // an app terminal exposes no process-info: whether a prompt is outstanding stays unestablished
+		return "", false
+	}
 	out, _ := herdrOut(0, "pane", "process-info", "--pane", pane)
 	info := bashSub(out)
 	if info == "" {
@@ -363,6 +379,9 @@ func (w *witness) state(pane string) {
 func (w *witness) rpcWait(pane string, ms int64) int {
 	if w.rpcFn != nil {
 		return w.rpcFn(pane, ms)
+	}
+	if w.a.nextHC(pane) { // hc wait at the turn boundary: 0 reached, 2 budget spent, 3 gone, 6 blocked on a person
+		return w.a.nextWaitIdle(pane, ms)
 	}
 	cmd := exec.Command(w.rpc, "wait-agent", pane, "idle,done", "--timeout-ms", strconv.FormatInt(ms, 10))
 	return exitStatus(cmd.Run())
@@ -645,7 +664,20 @@ func (a *app) cmdWaitMonitor() int {
 		}
 	}
 	a.printf("Monitor complete: every target reached a verdict. Close this tab when you have read it.\n")
+	a.removeOwnHCTerminal()
 	return rc
+}
+
+// removeOwnHCTerminal ends a monitor started by waitMonitorHC once its verdicts have been on screen for HW_WAIT_MONITOR_KEEP_S
+// seconds (the brainer reads them with `hc read`): nobody else removes a finished app terminal (QA5 G5). Unset, it does nothing.
+func (a *app) removeOwnHCTerminal() {
+	keep, err := strconv.Atoi(a.getenv("HW_WAIT_MONITOR_KEEP_S"))
+	id := a.getenv("HC_TERMINAL_ID")
+	if err != nil || keep < 0 || id == "" {
+		return
+	}
+	time.Sleep(time.Duration(keep) * time.Second)
+	hcOut(10*time.Second, "rm", id)
 }
 
 // ── hw wait ─────────────────────────────────────────────────────────────────
@@ -710,6 +742,9 @@ func (a *app) cmdWait() int {
 		}
 		return rc
 	}
+	if mux.Backend(a.getenv) == mux.HC { // the app has no monitor tab: its monitor is a terminal of its own
+		return a.waitMonitorHC(panes, waitMS)
+	}
 	ws := a.getenv("HERDR_WORKSPACE_ID")
 	if a.getenv("HERDR_ENV") != "1" || ws == "" {
 		a.die("a non-blocking wait needs a Herdr-managed caller so hw can create a separate monitor tab. Run from the brainer pane, or use --dry-run for a synchronous one-shot verdict.")
@@ -743,6 +778,38 @@ func (a *app) cmdWait() int {
 	a.ok("monitoring " + itoa(len(panes)) + " executor(s) in tab " + tab + " (pane " + monitor + "); this brainer is NOT waiting and remains reachable")
 	a.info("targets: " + strings.Join(panes, " "))
 	a.info("the monitor prints each witness explanation once, then short heartbeats")
+	return 0
+}
+
+// waitMonitorHC is the non-blocking wait on herdr-core: `hw wait-monitor` in a terminal of its own (`hc run --bg
+// --no-parent`: its screen stays readable after it exits, and the caller stays reachable). The set is validated first,
+// as on herdr: a typo must not leave a monitor watching N-1 targets.
+func (a *app) waitMonitorHC(panes []string, waitMS string) int {
+	for _, p := range panes {
+		if !jqE(a.agentGet(p), "result", "agent") {
+			a.die(p + " is not a live app terminal hc can read. No monitor was started; fix the set and retry.")
+		}
+	}
+	cwd, _ := os.Getwd()
+	keepS := a.getenv("HW_WAIT_MONITOR_KEEP_S")
+	if keepS == "" {
+		keepS = "300"
+	}
+	args := []string{"run", "--bg", "--json", "--no-parent", "--no-notify",
+		"--name", "wait-" + itoa(os.Getpid()), "--cwd", cwd, "--label", "hw_wait=1", "--",
+		"env", "-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH", "-u", "HERDR_TAB_ID", "-u", "HERDR_WORKSPACE_ID", "-u", "HW_INVOKER_PANE",
+		"HW_WAIT_MONITOR_KEEP_S=" + keepS,
+		hcPathWord(a.binDir(), a.getenv("PATH")), a.hwBin(), "wait-monitor", "--timeout-ms", waitMS}
+	raw, ok := hcOut(10*time.Second, append(args, panes...)...)
+	v, _ := bjParse(brTrimNL(raw))
+	m, _ := v.(jmap)
+	addr := hcStr(m, "address")
+	if !ok || addr == "" {
+		a.die("could not start the wait monitor on herdr-core (`hc run`): " + head3(raw) + " — no wait was started")
+	}
+	a.ok("monitoring " + itoa(len(panes)) + " executor(s) in terminal " + addr + "; this brainer is NOT waiting and remains reachable")
+	a.info("targets: " + strings.Join(panes, " "))
+	a.info("read its verdicts with `hc read " + addr + "` (also once it has finished); it removes itself " + keepS + "s after its last verdict (HW_WAIT_MONITOR_KEEP_S), or `hc rm " + addr + "` now")
 	return 0
 }
 

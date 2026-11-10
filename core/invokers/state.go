@@ -181,6 +181,12 @@ func (c *Ctx) outboxPut(envelope, message, status string) error {
 	return c.outboxWriteMeta(envelope, state, status)
 }
 
+// outboxHoldsDone: a done report waits in the outbox under this envelope.
+func (c *Ctx) outboxHoldsDone(envelope string) bool {
+	b, err := os.ReadFile(c.outboxDir() + "/" + outboxKey(envelope) + ".meta")
+	return err == nil && strings.Contains(string(b), "\nstatus=done\n")
+}
+
 // outboxSettle: admitted, nothing left to redeliver.
 func (c *Ctx) outboxSettle(envelope string) {
 	d := c.outboxDir()

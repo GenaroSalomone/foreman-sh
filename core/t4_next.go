@@ -13,6 +13,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"hwcore/internal/mux"
 )
 
 // nextState is cmd_next's locals, and the globals its helpers set.
@@ -46,6 +48,9 @@ func (a *app) cmdNext() int {
 	}
 	if s.pane == "" {
 		a.die("usage: hw next <executor-pane> [--run <revived-run-id>] [--sdd <mode>] [--force] [--dry-run] \"<next task>\" | --brief <path>  (flags may appear before or after the task text). Exit 0 means DELIVERED and the counter advanced; every refusal — a gate that would not open, an unknown pane, a task that has not reported — exits 1 and moves nothing.")
+	}
+	if why := mux.OutsideAppRefusal(a.getenv, s.pane); why != "" {
+		a.die(why)
 	}
 	needVal := func() string {
 		if len(args) < 2 {
@@ -110,6 +115,9 @@ loop:
 	}
 	if s.text == "" {
 		a.die("the next task is empty — there is nothing to send")
+	}
+	if s.brief != "" && (nextFmValue("release", s.brief) != "" || nextFmValue("rehearsal-of", s.brief) != "") {
+		a.die("a release: prod / rehearsal-of brief is dispatched, not re-tasked: its env diff, screens and QA are pinned by the dispatch (t5_release.go). NOTHING was sent.")
 	}
 	requested, entries, ok := a.nextAuthorization(s.brief)
 	if !ok {

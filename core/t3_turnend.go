@@ -644,7 +644,7 @@ func (t *t3) executorTurnEnd() int {
 
 	// `done` beside `reopened` is a run `hw revive` brought back: its old report stands, and this
 	// session owes a new one, so the turn is judged like any unreported run's.
-	if isFile(taskDir+"/done") && !isFile(taskDir+"/reopened") { // # MUTATION-ANCHOR: 841-T03
+	if (isFile(taskDir+"/done") && !isFile(taskDir+"/reopened")) || isFile(taskDir+"/queued") { // a QUEUED report is a report: it waits in the outbox on disk // # MUTATION-ANCHOR: 841-T03
 		t.fs.remove(stateDir + "/handback-refused") // # MUTATION-ANCHOR: 841-B05
 		curSeq := mkTaskSeq(stateDir)
 		postSeq, post := "", int64(0)
@@ -668,10 +668,14 @@ func (t *t3) executorTurnEnd() int {
 			post = 0
 		}
 		blocked := taskDir + "/blocked-waiting"
+		queued := taskDir + "/queued"
+		stamp := []byte("report_turn_ended=" + strconv.FormatInt(time.Now().Unix(), 10) + "\n")
 		switch {
 		case t.getenv("HW_TURN_HAD_INPUT") == "0": // # MUTATION-ANCHOR: 841-T12
+		case isFile(queued) && !isFile(blocked) && !t3HasLinePrefix(queued, "report_turn_ended="):
+			t.fs.appendTo(queued, stamp, 0o666) // the turn that queued the report is the report's own, as for a delivered blocked
 		case isFile(blocked) && !t3HasLinePrefix(blocked, "report_turn_ended="):
-			t.fs.appendTo(blocked, []byte("report_turn_ended="+strconv.FormatInt(time.Now().Unix(), 10)+"\n"), 0o666) // # MUTATION-ANCHOR: 841-T05
+			t.fs.appendTo(blocked, stamp, 0o666) // # MUTATION-ANCHOR: 841-T05
 		default:
 			post++ // # MUTATION-ANCHOR: 841-T04
 		}

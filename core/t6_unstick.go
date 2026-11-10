@@ -17,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"hwcore/internal/mux"
 )
 
 // unstickSleep is `sleep <seconds>`; a variable so a test does not spend the settle and the process wait.
@@ -250,8 +252,20 @@ func (a *app) cmdUnstick() int {
 	if pane == "" {
 		a.die("usage: hw unstick <executor-pane>")
 	}
+	if why := mux.OutsideAppRefusal(a.getenv, pane); why != "" {
+		a.die(why)
+	}
 
-	info := unstickGet(pane)
+	hc := a.nextHC(pane) // an executor or brainer in the herdr app: its state is `hc get`, in herdr's shape
+	var info string
+	if hc {
+		info = a.nextAgentGet(pane)
+	} else {
+		info = unstickGet(pane)
+	}
+	if info == "" && hc {
+		a.die("hc does not know terminal " + pane + " (or it is not live, or hc is unreachable)")
+	}
 	if info == "" {
 		a.die("herdr does not know pane " + pane + " (or herdr is unreachable on $HERDR_SOCKET_PATH)")
 	}
@@ -267,6 +281,10 @@ func (a *app) cmdUnstick() int {
 	}
 	if scope != "root" && scope != "child" {
 		a.die(pane + " is blocked_reason=stuck but blocked_scope=" + orStr(scope, "absent") + "; required scope metadata is missing or invalid, so hw unstick refuses")
+	}
+
+	if hc {
+		a.die(pane + " carries blocked_reason=stuck, but it is an app terminal (herdr-core): hw unstick restarts OpenCode in place with herdr's `agent start --pane` and its process-info, which hc has no equivalent of, so no cross-check can corroborate it and no restart can be made (UNESTABLISHED: restarting a program inside a kept hc terminal). Nothing was sent and nothing was restarted. End it with `hc kill " + pane + "` and open it again with `brain <lane> --resume <session>`.")
 	}
 
 	// The token signature is necessary, not sufficient: a healthy pane can publish it (measured 2026-08-27). An

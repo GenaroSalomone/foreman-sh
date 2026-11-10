@@ -57,6 +57,8 @@ exit 0
 exit "${STUB_RPC_RC:-0}"
 `)
 	script("holdfacts", `printf 'holdfacts %s\n' "$*" >> "$STUB_DIR/calls"
+n=$(cat "$STUB_DIR/hold-undelivered" 2>/dev/null || echo 0)
+[ "$n" -le 0 ] || { echo $((n-1)) > "$STUB_DIR/hold-undelivered"; echo "holdfacts: x/pending-reply-1: state=undelivered, expected delivered"; exit 1; }
 [ -z "$STUB_HOLD_ERR" ] || { echo "$STUB_HOLD_ERR"; exit 1; }
 exit 0
 `)
@@ -1306,5 +1308,33 @@ func TestChannelSendExitMeanings(t *testing.T) {
 		if strings.Contains(got, "a failure, not a delivery") {
 			t.Errorf("channel-send exit %d fell through to the fallback meaning: %q", c.rc, got)
 		}
+	}
+}
+
+// herdr-app-reopen-gaps (QA row 4, gap C): a reply sent while ask-invoker's hold was still state=undelivered was refused;
+// the retry a second later worked. The hold is waited for up to HW_HC_PROOF_MS.
+func TestReplyHoldWaitsForTheAskToProveDelivery(t *testing.T) {
+	w := newCSWorld(t)
+	w.agent("idle", nil)
+	hold := w.stub + "/pending-reply-1"
+	os.WriteFile(w.stub+"/hold-undelivered", []byte("2\n"), 0o644)
+	w.set("HW_HC_PROOF_MS", "10000")
+	ok := w.cs("--report", "--reply-hold", hold, "hc", "t7", "-", "x")
+	if strings.Contains(ok.err+ok.out, "REFUSED") {
+		t.Fatalf("a hold that turned delivered inside the bound was refused: %s", ok.out)
+	}
+	os.WriteFile(w.stub+"/hold-undelivered", []byte("1000\n"), 0o644)
+	w.set("HW_HC_PROOF_MS", "1000")
+	bad := w.cs("--report", "--reply-hold", hold, "hc", "t7", "-", "x")
+	bad.rcIs(t, 1)
+	bad.has(t, "--reply-hold REFUSED before delivery: holdfacts: x/pending-reply-1: state=undelivered, expected delivered. NOTHING was sent.")
+	// herdr is byte-identical: refused at once, no wait
+	os.WriteFile(w.stub+"/hold-undelivered", []byte("1\n"), 0o644)
+	w.set("HW_HC_PROOF_MS", "60000")
+	start := time.Now()
+	h := w.cs("--report", "--reply-hold", hold, "herdr", "wH:p1", "-", "x")
+	h.rcIs(t, 1)
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("a herdr hold waited: %v", time.Since(start))
 	}
 }

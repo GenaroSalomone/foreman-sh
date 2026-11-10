@@ -97,6 +97,12 @@ func (d *doneRun) closeHC(proj, task string) bool {
 	return true
 }
 
+// hcRecorded is whether an hc run is recorded under dir.
+func hcRecorded(dir string) bool {
+	recs, _ := filepath.Glob(dir + "/.hw/*/hc")
+	return len(recs) > 0
+}
+
 // hcOwnedIn is the live terminals of the hc runs recorded under dir. observed=false when an hc run is
 // recorded and `hc ls` could not say.
 func hcOwnedIn(dir string) (addrs []string, observed bool, why string) {

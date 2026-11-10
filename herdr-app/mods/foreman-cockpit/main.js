@@ -4,7 +4,7 @@ import { focused, home, layout, props, readTextFile, run, setShared, shared, ter
 import * as fs from "fs/promises";
 import {
   attentionParts, classify, cut, dur, laneOf, metaText, noProgressAfterMs, parseState, progressText,
-  modelOf, statusText, subagentLine, subagentsSummary, terminalFor,
+  folderError, modelOf, statusText, subagentLine, subagentsSummary, terminalFor,
 } from "./state.js";
 import { activeChild, LOOK_LAYOUTS, shownLook, switchOf } from "./switcher.js";
 import { alarm, kindOf, colorOf, lookOf, mark, SPACE, TEXT } from "./tokens.js";
@@ -67,7 +67,7 @@ export default class Cockpit extends View {
         if (this.cockpitDir === null) this.cockpitDir = this.folder();
         await this.read();
       } catch (e) {
-        this.error = `no state folder: ${e}`;
+        this.error = folderError(e, home());
       }
       this.publish();
       cx.notify();

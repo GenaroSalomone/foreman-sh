@@ -103,6 +103,7 @@ func (c *Ctx) ask(args []string) error {
 		return err
 	}
 	c.adoptEnvFile()
+	c.followBrainer()
 	if err := c.runLockAcquire(); err != nil {
 		return err
 	}
@@ -242,7 +243,7 @@ func (c *Ctx) ask(args []string) error {
 		c.cockpitKick()
 		os.WriteFile(stateDir+"/delivery-uncertain",
 			[]byte("envelope="+envelope+"\nroute="+route+"\nat="+c.stamp()+"\nchannel_send_exit=5\n"), 0o666)
-		return &Die{Code: 5, Msg: "delivery UNCERTAIN via " + route + " (channel-send exit 5): envelope " + envelope + " was admitted but its landing is unconfirmed, so the question MAY already be with the brainer. Do NOT re-ask — wait in this pane for the reply, or read the brainer's pane " + pane + ". No ask was spent. " + pubNote}
+		return &Die{Code: 5, Msg: "delivery UNCERTAIN via " + route + " (channel-send exit 5): envelope " + envelope + " was admitted but its landing is unconfirmed, so the question MAY already be with the brainer. Do NOT re-ask; end your turn, a reply arrives as your next prompt (the brainer's pane is " + pane + "). No ask was spent. " + pubNote}
 	}
 	if rc != 0 && route != "herdr" {
 		logAsk(route + "-failed")
@@ -280,12 +281,15 @@ func (c *Ctx) ask(args []string) error {
 	publishAsk("delivered")
 	c.cockpitKick()
 	if route == "herdr" {
-		c.printf(c.Stdout, "asked the brainer (%s) via %s. The receiver ADMITTED envelope %s (admission only, not proof it was read); wait for the reply in this pane.\n", label, route, envelope)
+		c.printf(c.Stdout, "asked the brainer (%s) via %s. The receiver ADMITTED envelope %s (admission only, not proof it was read); %s\n", label, route, envelope, askEndTurn)
 	} else {
-		c.printf(c.Stdout, "asked the brainer (%s) via %s. The receiver proved delivery of envelope %s; wait for the reply in this pane.\n", label, route, envelope)
+		c.printf(c.Stdout, "asked the brainer (%s) via %s. The receiver proved delivery of envelope %s; %s\n", label, route, envelope, askEndTurn)
 	}
 	return nil
 }
+
+// askEndTurn is what a delivered ask tells the executor: the sleep-poll guard refuses a wait (QA6 N3).
+const askEndTurn = "END YOUR TURN now: a delivered ask is a legal turn end, and the reply arrives in this pane as your next prompt. Do not sleep or poll for it (the sleep-poll guard refuses that), and do not report --blocked for it."
 
 // activatePendingReply is the python of ask-invoker: the one `state=undelivered`
 // row becomes `state=delivered`, through a temporary file and a rename.

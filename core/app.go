@@ -10,6 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+
+	"hwcore/internal/mux"
 )
 
 type app struct {
@@ -180,6 +183,7 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 		return 0
 	}
 	a.executorGate(gateArgv(verb, a.args))
+	a.outsideAppGate(verb)
 	switch verb {
 	case "receipt":
 		a.cmdReceiptArgs()
@@ -240,3 +244,35 @@ func runWith(args []string, stdout, stderr io.Writer, color bool, getenv func(st
 }
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+
+// outsideAppGate refuses, before the verb runs, an app terminal address (`t3`, `machine/t3`) named from a process that is
+// not an app terminal. Without HC_TERMINAL_ID the caller names no app, and every herdr call of the verb would land on the
+// person's own server (QA6 N2). It lists, per verb, only the arguments that ARE addresses, so a task named `t3` is not one.
+// The verbs that read their address themselves (next, unstick, ruling) keep their own refusal; revive has its own, in reviveCmd.
+func (a *app) outsideAppGate(verb string) {
+	var addrs []string
+	args := a.args
+	switch verb {
+	case "wait", "wait-one":
+		for i := 0; i < len(args); i++ {
+			switch {
+			case args[i] == "--timeout-ms":
+				i++
+			case strings.HasPrefix(args[i], "-"):
+			default:
+				addrs = append(addrs, args[i])
+			}
+		}
+	case "outbox-flush", "outbox":
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--to" {
+				addrs = append(addrs, args[i+1])
+			}
+		}
+	}
+	for _, addr := range addrs {
+		if why := mux.OutsideAppRefusal(a.getenv, addr); why != "" {
+			a.die(why)
+		}
+	}
+}

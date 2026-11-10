@@ -202,6 +202,7 @@ func (d *dsp) run(argv []string) {
 	d.checkSandbox()
 	d.checkRequested()
 	d.checkAuthorizes()
+	d.checkRelease()
 	d.checkSecrets()
 	d.checkBriefAssets()
 	d.checkTask(d.task)
@@ -230,6 +231,7 @@ func (d *dsp) run(argv []string) {
 	if !d.dispatchDry {
 		d.launch()
 	}
+	d.dispatchQA()
 }
 
 func orDefaultStr(v, def string) string {

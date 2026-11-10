@@ -11,7 +11,7 @@ func (c *Ctx) exitMeaning(rc int) string {
 		case 4:
 			return "DELIVERED and provably in the brainer session, but its TURN failed — do NOT re-ask"
 		case 5:
-			return "DELIVERY UNCERTAIN — the question MAY already be with the brainer; do NOT re-ask, wait for the reply or read its pane"
+			return "DELIVERY UNCERTAIN — the question MAY already be with the brainer; do NOT re-ask; end your turn, a reply arrives as your next prompt"
 		}
 		return "a failure, not a delivery"
 	}

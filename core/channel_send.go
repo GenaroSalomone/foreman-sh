@@ -395,10 +395,25 @@ func (c *chanSend) checkHold() {
 	if c.deliveryKey != "" {
 		hargs = append(hargs, "--logical-id", c.deliveryKey)
 	}
-	r := extRun(extCall{Name: c.binDir + "/holdfacts", Args: hargs, Env: childEnv(), Merge: true})
-	herr := bashSub(r.Out)
-	if r.RC > 1 {
-		herr = fmt.Sprintf("holdfacts did not run (exit %d): %s", r.RC, herr)
+	probe := func() (string, int) {
+		r := extRun(extCall{Name: c.binDir + "/holdfacts", Args: hargs, Env: childEnv(), Merge: true})
+		return bashSub(r.Out), r.RC
+	}
+	herr, rc := probe()
+	// The brainer can answer while ask-invoker's own delivery proof is still running (the hold turns delivered only
+	// after it): wait out that bound, as the ask itself would, before calling the hold unproven.
+	if c.vendor == "hc" && rc == 1 && strings.Contains(herr, "state=undelivered") { // herdr keeps its immediate refusal
+		bound := int64(15000)
+		if n, ok := csMS(c.env("HW_HC_PROOF_MS", "15000")); ok {
+			bound = n
+		}
+		for deadline := nextEpoch()*1000 + bound; nextEpoch()*1000 < deadline && rc == 1 && strings.Contains(herr, "state=undelivered"); {
+			c.sleep(0.5)
+			herr, rc = probe()
+		}
+	}
+	if rc > 1 {
+		herr = fmt.Sprintf("holdfacts did not run (exit %d): %s", rc, herr)
 	}
 	if herr != "" {
 		c.die("--reply-hold REFUSED before delivery: " + herr + ". NOTHING was sent.")

@@ -158,6 +158,7 @@ loop:
 
 	// --check validates and delivers nothing: it takes no run lock, and it does not need a brainer address.
 	var reportingMarker string
+	brainerGone := false // the hc brainer this report is for is closed: it is queued, not failed
 	if checkOnly {
 		c.adoptEnvFile()
 	} else {
@@ -168,6 +169,7 @@ loop:
 			return err
 		}
 		c.adoptEnvFile()
+		brainerGone = c.followBrainer()
 		if err := c.runLockAcquire(); err != nil { // 66-M06
 			return err
 		}
@@ -285,6 +287,17 @@ loop:
 			preflight = append(preflight, "checks.md: "+strings.TrimPrefix(strings.TrimSpace(n), "checks.md:")+" (it has rows and every verdict is one of pass, fail, unresolved)")
 		} else {
 			preflight = append(preflight, "checks.md: not owed by this task's brief")
+		}
+	}
+
+	// -- a release: prod closes on a fresh env diff, its screens and its QA run
+	if status == "done" {
+		if raw := receiptValue(receipt, "release_t"+c.taskSeq()); raw != "" {
+			note, err := c.ReleaseGate(raw, artifacts)
+			if err != nil {
+				return err
+			}
+			preflight = append(preflight, note)
 		}
 	}
 
@@ -504,8 +517,24 @@ loop:
 	pubNote := publicationNote(pubRC)
 
 	route := c.route()
+	if status == "blocked" && isRegular(stateDir+"/queued") && c.outboxHoldsDone(envelope) { // only a done QUEUED for a closed brainer
+		return die("your done report is QUEUED in %s for the brainer's reopen (same envelope %s). A --blocked now would replace it and the brainer would read finished work as blocked. Nothing was sent.", c.outboxDir(), envelope)
+	}
 	if err := c.outboxPut(envelope, msg, status); err != nil {
 		c.errf("done-invoker: warning: could not write the outbox copy under %s; the report is only in the message and the tokens.\n", c.outboxDir())
+	}
+	if brainerGone {
+		// The brainer is CLOSED, which is not a failed delivery: the report stays what it is (done or blocked), pending in the outbox, and
+		// `brain <lane>` hands it over when the brainer reopens. The pane is kept (the outbox lives in this run's worktree).
+		if err := os.WriteFile(stateDir+"/queued", []byte("envelope="+envelope+"\nstatus="+status+"\nat="+c.stamp()+"\n"), 0o666); err != nil {
+			return die("the brainer %s is closed and the report could not be marked queued (%v). Nothing was reported; retry.", pane, err)
+		}
+		if status == "blocked" {
+			c.printf(c.Stdout, "QUEUED, not delivered: the brainer at %s is closed. Your blocked report is held in %s and `brain %s` delivers it when the brainer reopens; then `hw ruling` resumes this task. Do NOT re-run done-invoker. Wait in this pane.\n", pane, c.outboxDir(), project)
+			return nil
+		}
+		c.printf(c.Stdout, "QUEUED, not delivered: the brainer at %s is closed. Your %s report is held in %s and `brain %s` delivers it when the brainer reopens. Do NOT re-run done-invoker and do NOT send --blocked: the report is a %s. This pane is kept; the brainer closes it with `hw done %s %s`.\n", pane, status, c.outboxDir(), project, status, project, task)
+		return nil
 	}
 	rc := c.deliver(msg, stateDir)
 	if rc == 4 && route != "herdr" {
@@ -544,6 +573,7 @@ loop:
 	c.outboxSettle(envelope)
 	os.Remove(stateDir + "/delivery-uncertain")
 	os.Remove(stateDir + "/reopened")
+	os.Remove(stateDir + "/queued") // a direct delivery after the reopen supersedes the queued one
 	c.transcriptAppend(stateDir, "REPORT", envelope, summary)
 	publishDone("delivered")
 

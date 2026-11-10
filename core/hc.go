@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -175,4 +176,42 @@ func hcWaitBoundary(state func() (string, bool), wait func(secs int64) int, paus
 			pause()
 		}
 	}
+}
+
+// hcRunIdentity is the environment an executor carries to say WHICH run it is. An app started from an executor's shell hands it to
+// every terminal it opens (QA5 G2: HW_INVOKER_PANE, HW_RUN, HW_TASK in a plain app terminal), so a brainer started there
+// would read itself as that executor. A brainer starts without it.
+var hcRunIdentity = []string{"HW_RUN", "HW_TASK", "HW_PROJECT", "HW_WORKDIR", "HW_ARTIFACTS", "HW_EXECUTOR_VENDOR",
+	"HW_PORT_WEB", "HW_PORT_API", "HW_AGENT_ENDPOINT", "HW_AGENT_PORT", "HW_INVOKER_SESSION", "HW_INVOKER_VENDOR", "HW_INVOKER_ENDPOINT"}
+
+// hcPathWord is the `PATH=` word that puts brain/bin first in an hc terminal. The core runs a program with ITS
+// environment, which lacks hw and brain (MEASURED 2026-11-09, herdr-app live-cycle QA: a brainer and an executor
+// in the app could dispatch only by absolute path, and a plain shell was refused as an invoker); the caller's PATH
+// is the nearest thing to the one its own shell resolves claude, node and gh with.
+func hcPathWord(binDir, path string) string {
+	if path == "" {
+		return "PATH=" + binDir
+	}
+	return "PATH=" + binDir + ":" + path
+}
+
+// hcCoreID is the id of the herdr-core this process talks to ("" when unreadable): `<state>/herdr-core/default/core.json`, with the
+// state root the core itself uses ($XDG_STATE_HOME, else ~/.local/state). An address (t2) is only unique inside one core, so
+// the files and runs hw keys on one carry this beside it. shortcut: only the `default` core is read, when a second named core exists.
+func hcCoreID(getenv func(string) string) string {
+	root := getenv("XDG_STATE_HOME")
+	if root == "" {
+		root = getenv("HOME") + "/.local/state"
+	}
+	raw, err := os.ReadFile(root + "/herdr-core/default/core.json")
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(raw, &c) != nil {
+		return ""
+	}
+	return c.ID
 }

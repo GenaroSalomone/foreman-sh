@@ -2,6 +2,7 @@ package invokers
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"hwcore/internal/mux"
@@ -216,4 +217,90 @@ func (c *Ctx) replyCommand(logicalID, intent, holdFile string) (string, error) {
 		return cs + " --report --reply-hold " + bashQ(holdFile) + " " + bashQ(route) + " " + bashQ(target) + " " + bashQ(endpoint) + ` "<your answer>"`, nil
 	}
 	return cs + " --report " + bashQ(route) + " " + bashQ(target) + " " + bashQ(endpoint) + ` "<your answer>"`, nil
+}
+
+// hcLiveTerminals is `hc ls --json` (live terminals only): address -> cwd. false when hc cannot answer, which is not
+// evidence that a terminal is gone.
+func (c *Ctx) hcLiveTerminals() (map[string]string, bool) {
+	out, rc := c.out("hc", "ls", "--json", "--label", "label=brain")
+	if rc != 0 {
+		return nil, false
+	}
+	doc, ok := decodeDoc(out)
+	v, _ := jqPath(doc, "terminals")
+	list, isList := v.([]any)
+	if !ok || !isList {
+		return nil, false
+	}
+	live := map[string]string{}
+	for _, e := range list {
+		m, _ := e.(map[string]any)
+		addr, _ := m["address"].(string)
+		cwd, _ := m["cwd"].(string)
+		live[addr] = cwd
+	}
+	return live, true
+}
+
+// followBrainer re-points an hc invoker whose terminal is gone at the lane's CURRENT brainer: `brain <lane>` reopened
+// it as a new terminal (t6 -> t9), and the address baked into the executor's environment still names the old one.
+// Gone is what `hc get` says of the recorded pane (not live, or unknown): a live invoker is never re-pointed, whatever
+// its labels (the resolver accepts an explicit HW_INVOKER_PANE without label=brain). The replacement is the live
+// label=brain terminal whose cwd is brain/<project>; none (it is closed) leaves the address alone, so the report is
+// queued for the reopen instead. It returns whether the old address is gone and no brainer replaced it.
+func (c *Ctx) followBrainer() (gone bool) {
+	pane := c.get("HW_INVOKER_PANE")
+	if !mux.IsHCAddress(c.get, pane) || c.get("HW_PROJECT") == "" { // no project, no brainer directory to match
+		return false
+	}
+	if c.hcTerminalLive(pane) {
+		return false
+	}
+	live, ok := c.hcLiveTerminals()
+	if !ok {
+		return false
+	}
+	want, _ := filepath.EvalSymlinks(filepath.Join(filepath.Dir(c.BinDir), c.get("HW_PROJECT")))
+	for addr, cwd := range live {
+		if got, _ := filepath.EvalSymlinks(cwd); got != "" && got == want {
+			c.Env["HW_INVOKER_PANE"] = addr
+			c.repointRunEnv(pane, addr)
+			return false
+		}
+	}
+	return true
+}
+
+// repointRunEnv rewrites the run's env file row for the closed brainer: channel-send's --report-state proof compares the
+// file's HW_INVOKER_PANE with the resolved receiver and refused the re-pointed report ("t2, expected t7"). Best effort:
+// without the file the proof refuses on its own, as before.
+func (c *Ctx) repointRunEnv(old, addr string) {
+	path := c.runDir() + "/env"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	row := "HW_INVOKER_PANE='" + old + "'"
+	if !strings.Contains(string(b), row+"\n") {
+		return
+	}
+	tmp := path + ".repoint"
+	if os.WriteFile(tmp, []byte(strings.Replace(string(b), row+"\n", "HW_INVOKER_PANE='"+addr+"'\n", 1)), 0o600) != nil {
+		return
+	}
+	if os.Rename(tmp, path) != nil {
+		os.Remove(tmp)
+	}
+}
+
+// hcTerminalLive is `hc get <id>` saying the terminal is live. A failed `hc get` reads as "not live", which is only
+// the first half of "gone": followBrainer asks `hc ls` next and keeps the address when hc cannot answer that either.
+func (c *Ctx) hcTerminalLive(id string) bool {
+	out, rc := c.out("hc", "get", id, "--json")
+	if rc != 0 {
+		return false
+	}
+	doc, _ := decodeDoc(out)
+	v, _ := jqPath(doc, "state")
+	return v == "live"
 }

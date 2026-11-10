@@ -116,10 +116,16 @@ func (o *occupantsReader) occupantsIn(reply jmap, dir string) string {
 // moving it: an agent that arrived since the previous stray was read must hold this one.
 func (o *occupantsReader) of(dir string) occupancy {
 	reply, why := o.agentList()
-	if reply == nil {
+	list := ""
+	switch {
+	case reply != nil:
+		list = o.occupantsIn(reply, dir)
+	case hcRecorded(dir) && strings.Contains(why, `"server_not_running"`):
+		// herdr says there is no server, so it holds no pane; the run lives in the app's core, which hc reads below.
+		// A dir with no hc record keeps the refusal: nothing else could have told us nobody works in it.
+	default:
 		return occupancy{why: why}
 	}
-	list := o.occupantsIn(reply, dir)
 	hcList, hcObserved, hcWhy := hcOccupants(dir) // only a dir with an hc run recorded makes an hc call
 	if !hcObserved {
 		return occupancy{why: hcWhy}

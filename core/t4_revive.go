@@ -11,6 +11,7 @@ package main
 // Every top-level name of the verb starts with `revive` (the packages of the four writers of train T4 merge).
 
 import (
+	"hwcore/internal/mux"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +56,9 @@ func (a *app) reviveDie(msg string) {
 func (a *app) cmdRevive() int {
 	// bin/hw runs `need herdr; need git; need jq` before anything
 	for _, c := range []string{"herdr", "git", "jq"} {
+		if c == "herdr" && mux.Backend(a.getenv) == mux.HC { // an app run needs hc, not herdr; a TUI run on this machine finds out below
+			continue
+		}
 		if _, err := exec.LookPath(c); err != nil {
 			a.die("missing required command: " + c)
 		}
@@ -304,6 +308,13 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 		return
 	}
 
+	if isFile(rundir + "/hc") { // a run of the herdr app: its terminal is an `hc run`, not a tab
+		if mux.Backend(a.getenv) != mux.HC { // outside an app the caller names no core: `hc` would answer from the default one
+			a.reviveDie("this run lives in the herdr app, but this process is not running as a terminal of an app (HC_TERMINAL_ID is unset, or a herdr TUI is its ancestor), so it names no app and hw will not guess which core to ask. Run hw revive from a terminal of that app. Nothing was started.")
+		}
+		a.reviveOnHC(st, sid, vendor, cmdArgs, envShown, marker)
+		return
+	}
 	// One directory, one agent. AND AN UNREAD LIST IS NOT AN EMPTY ONE: `_wt_occupants` answers with three values.
 	occ := (&occupantsReader{h: herdrClient{getenv: a.getenv}, win: windowsPaths(a.getenv)}).of(cwd)
 	if !occ.observed {
@@ -323,12 +334,7 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 	}
 
 	// A run launched in the sandbox comes back in it. FAIL CLOSED: anything but a clean "never armed" revives it armed.
-	sbxRC := 0
-	{
-		cmd := exec.Command(a.reviveBinDir()+"/hw-sandbox", "armed", proj, task)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		sbxRC = exitStatus(cmd.Run())
-	}
+	sbxRC := exitStatus(a.reviveSandboxArmed(proj, task))
 	if sbxRC != 1 { // # MUTATION-ANCHOR: 863-G07
 		st.sandbox, st.sandboxRun = true, rundir
 	}
@@ -380,18 +386,7 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 		a.receiptInto(rundir, "revived_session", got, "herdr agent get "+pane+" | jq .result.agent.agent_session.value")
 	}
 
-	if isFile(marker) { // # MUTATION-ANCHOR: 863-G09
-		if f, err := os.Create(reviveReopenedMarker(rundir)); err == nil {
-			f.Close()
-		}
-		// THE DONE MARKER GOES WITH THE REOPEN. channel-send's --report-state refuses EVERY report while it stands ("task
-		// state already has a done marker", not even the blocked-pane bypass), so a reopened run could not report at all
-		// and the executor moved the marker by hand (2026-11-04). The earlier report stays on record — it is in the
-		// receipt and in the ledger — and the reopened marker is what says this task is open again.
-		os.Remove(marker)
-		a.receiptInto(rundir, "reopened", "yes", "the run had "+filepath.Base(marker)+" and hw revive gave it a live pane; its done marker was cleared so the next done-invoker can deliver (the earlier report stays in the receipt and the ledger)")
-		a.ok("run marked reopened — its earlier report stands, a new done-invoker is expected (no --retask), and hw status shows it as reopened")
-	}
+	a.reviveReopen(rundir, marker)
 	a.ok("revived " + proj + ":" + task + " in tab " + tab + ", pane " + pane + " — " + vendor + " " + st.agentArgs + " in " + cwd)
 	a.info("nothing was rebuilt: worktree, ports and database are whatever the directory still holds")
 }
@@ -471,4 +466,11 @@ func reviveOr(v *jval, def string) string {
 		return def
 	}
 	return reviveText(v)
+}
+
+// reviveSandboxArmed is `hw-sandbox armed <proj> <task>`: its error, nil when armed (status 0); 1 is "never armed".
+func (a *app) reviveSandboxArmed(proj, task string) error {
+	cmd := exec.Command(a.reviveBinDir()+"/hw-sandbox", "armed", proj, task)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
 }

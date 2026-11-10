@@ -23,6 +23,8 @@ type dsp struct {
 	rtState
 	piState // t6_pi.go: what --agent pi keeps of the dispatch
 
+	releaseJSON  string    // t5_release.go: the release: prod spec pinned in the receipt
+	releaseQA    [2]string // its QA brief: lane, task
 	readonly     bool // HW_CORE_READONLY=1: shadow's first leg writes nothing
 	backendKnown bool // core/internal/mux asked once: the ancestor walk is a `ps`
 	backendIsHC  bool

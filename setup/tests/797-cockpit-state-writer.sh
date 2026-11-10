@@ -29,6 +29,7 @@
 #   · loop_reloads_its_code  --loop re-executes in place (same pid, lock kept) when its own file changes; a half-written file or an unchanged one does not
 #   · loop_binds_to_pane  the detached writer `bin/brain` starts: one per brainer, survives its
 #                  launching shell and a herdr outage, leaves when the brainer's pane does
+#   · dead_writers_files_are_swept  a bound writer removes the stale files (and .cache/.lock) of writers that did not leave, never a fresh one, a held one or the event logs
 #   · ctx_from_transcript  44424 tokens (probe P5), the percent only when the model id names its window (`[1m]`), sidechains skipped
 #   · ctx_live     a working claude card shows the ctx of its transcript (receipt session_id +
 #                  CLAUDE_CONFIG_DIR) before any turn has ended; a turn-end value newer than the
@@ -37,6 +38,7 @@
 #   · cut_rule     a live `release cut` slot says so; a dead holder or a reused pid does not
 #   · kick_names_its_brainer  a kick whose brainer does not resolve writes nothing (never the executor's
 #                  own pane) and logs it; a resolved one still kicks its brainer
+#   · kick_of_a_gone_brainer_leaves_no_file  a one-shot kick naming an hc brainer that hc says is gone removes its file instead of redrawing it (QA6 N4); a live one is written
 #   · timing_40    --once under 300 ms for 40 executors (best of 7; the numbers are printed); the limit is 300 x load_scale
 #                  (1-3, _common.sh) like 798's: 80-130 ms alone, 331 inside the full suite on a loaded machine
 #
@@ -82,6 +84,7 @@ mutant_dir 797-M18; mutate_anchor 797-M18 "$MD/cockpit-state" 'if False:'; kill_
 mutant_dir 797-M19; mutate_anchor 797-M19 "$MD/cockpit-state" 'pass'; kill_mutant 797-M19 loop_binds_to_pane "second writer"
 mutant_dir 797-M29; mutate_anchor 797-M29 "$MD/cockpit-state" 'if sig is None:'; kill_mutant 797-M29 loop_reloads_its_code "unchanged file was re-executed"
 mutant_dir 797-M30; mutate_anchor 797-M30 "$MD/cockpit-state" 'raise OSError("no exec")'; kill_mutant 797-M30 loop_reloads_its_code "still publishes the old code"
+mutant_dir 797-M31; mutate_anchor 797-M31 "$MD/cockpit-state" 'if True:'; kill_mutant 797-M31 dead_writers_files_are_swept "dead writer's files stay"
 mutant_dir 797-M20; mutate_anchor 797-M20 "$MD/cockpit-state" 'with open(tmp, "w", encoding="utf-8") as fh:'; kill_mutant 797-M20 private_files "is mode 644"
 mutant_dir 797-M21; mutate_anchor 797-M21 "$MD/cockpit-state" 'except ZeroDivisionError as e:'; kill_mutant 797-M21 loop_survives_a_failed_write "died with its first failed write"
 mutant_dir 797-M22; mutate_anchor 797-M22 "$MD/cockpit-state" 'pass'; kill_mutant 797-M22 killed_writer "tmp files of killed writers survive"

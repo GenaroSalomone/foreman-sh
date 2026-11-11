@@ -53,7 +53,7 @@ SUITE_TRIGGER_PATTERN='^(bin/|lib/|setup/test-hw|setup/gate-select|setup/suite-d
 docs_only_init() { # <toplevel>
   local lanes
   lanes="$(jq -r '.lanes | keys_unsorted[]' "$1/projects.json" 2>/dev/null || true)"
-  if [ -z "$lanes" ] || printf '%s\n' "$lanes" | grep -vqE '^[a-z][a-z0-9-]*$'; then
+  if [ -z "$lanes" ] || grep -vqE '^[a-z][a-z0-9-]*$' <<<"$lanes"; then
     DOCS_ONLY_PATTERN='^/'   # no lane: no pushed path starts with /
   else
     DOCS_ONLY_PATTERN="^($(printf '%s\n' "$lanes" | paste -sd'|' -))/(briefs/.+|decisions\.md|decisions/.+)\$"
@@ -63,8 +63,8 @@ docs_only_path() { # <path> → 0 when the path is lane documentation the suite 
   case "$1" in
     setup/decisions.md|setup/decisions/*) return 1 ;;
   esac
-  printf '%s\n' "$1" | grep -qE "$SUITE_TRIGGER_PATTERN" && return 1
-  printf '%s\n' "$1" | grep -qE "$DOCS_ONLY_PATTERN"
+  grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$1" && return 1
+  grep -qE "$DOCS_ONLY_PATTERN" <<<"$1"
 }
 decisions_header() { # <tree> <path> → the header, or fails if the blob is unreadable
   local blob

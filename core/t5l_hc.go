@@ -8,10 +8,9 @@ package main
 // brief) — and no new flag: the environment already says where the process runs. A TUI dispatch takes the
 // path it always took, byte for byte: `hcRoute` is false with no HC_TERMINAL_ID.
 //
-// shortcut: claude executors on the plain two-pane lanes (setup, git-worktree, repoless) only. A lane with
-// dev servers needs `hc run` terminals of its own, and another vendor needs its own argv; both die by name
-// here instead of launching half a task. `hw done`/reap on hc and `channel-send` to an hc brainer are the
-// next slices.
+// shortcut: claude executors only (another vendor needs its own argv, and --sandbox arms a herdr pane this route does
+// not have): hcRefusal says so, once, for the dry run and for the launch. A lane's dev servers are `hc run` terminals of
+// their own (hcDevStart), carrying the task's labels so `hw done` and reap end them with the executor.
 
 import (
 	"strconv"
@@ -25,23 +24,29 @@ func (l *lch) hcRoute() bool { return l.onHC() }
 // hcLayoutDoc stands where `layout.apply` answered: the launch asks it for the labelled agent and shell panes.
 const hcLayoutDoc = `{"layout":{"panes":[{"type":"pane","label":"agent","pane_id":"hc"},{"type":"pane","label":"shell","pane_id":"hc"}]}}`
 
-// hcLaneGate refuses, BEFORE anything is built, what this step does not launch: a lane that provisions dev
-// servers or a database (they need `hc run` terminals of their own), and any vendor but claude. A refusal at
-// buildSpace would come after the worktree and the database exist.
-func (l *lch) hcLaneGate(build string) {
-	if !l.hcRoute() {
-		return
+// hcRefusal is what the herdr-core route does not launch, "" when it launches the dispatch. It is ONE function, asked by
+// the dry run (before the manifest's ✓) and again by the launch (hcLaneGate), so the dry run prints every refusal the real
+// dispatch would make — a refusal only the launch knew was a ✓ that died (a brainer in the app, 2026-11-11).
+func (d *dsp) hcRefusal() string {
+	if !d.onHC() {
+		return ""
 	}
-	switch build {
-	case "setup.sh", "git-worktree.sh", "repoless":
-	default:
-		l.die("this dispatch runs under herdr-core (the herdr app), and " + l.proj + " builds through " + build + ": dev servers and databases need `hc run` terminals of their own, which this step does not launch. NOTHING was built. Dispatch from a herdr TUI pane.")
+	switch {
+	case d.sandbox:
+		return "this dispatch runs under herdr-core (the herdr app), and the sandbox is armed on a herdr pane this route does not have: the executor would run UNCONFINED. NOTHING was built. Dispatch from a herdr TUI pane, or without --sandbox."
+	case d.agent != "claude":
+		return "this dispatch runs under herdr-core (the herdr app), and its executors are claude only in this step (this one is " + d.agent + "). NOTHING was built. Dispatch from a herdr TUI pane."
+	case d.here:
+		return "--here splits a herdr pane, and this shell runs under herdr-core (the herdr app): dispatch without --here, or from a herdr TUI pane. NOTHING was built."
 	}
-	if l.sandbox {
-		l.die("this dispatch runs under herdr-core (the herdr app), and the sandbox is armed on a herdr pane this route does not have: the executor would run UNCONFINED. NOTHING was built. Dispatch from a herdr TUI pane, or without --sandbox.")
-	}
-	if l.agent != "claude" {
-		l.die("this dispatch runs under herdr-core (the herdr app), and its executors are claude only in this step (this one is " + l.agent + "). NOTHING was built. Dispatch from a herdr TUI pane.")
+	return ""
+}
+
+// hcLaneGate is the launch's second ask of hcRefusal, BEFORE anything is built: a refusal at buildSpace would come after the
+// worktree and the database exist.
+func (l *lch) hcLaneGate() {
+	if msg := l.hcRefusal(); msg != "" {
+		l.die(msg)
 	}
 }
 
@@ -55,7 +60,8 @@ func (l *lch) hcSpace() {
 
 // hcLive is the address of the live terminal that already carries this task, "" when none. It keys on
 // hw_project+hw_task, which are stable: hw_run is new on every invocation, so a second `hw` never matched it.
-// A failed `hc ls` is not "none": reading it so launches a duplicate.
+// A failed `hc ls` is not "none": reading it so launches a duplicate. The task's dev-server terminals carry the same
+// two labels (so `hw done` ends them) and are not its executor: hcNotDev leaves them out.
 func (l *lch) hcLive() (addr string, ok bool) {
 	raw, rc := l.sh(cmdSpec{name: "hc", args: []string{"ls", "--json", "--label", "hw_project=" + l.proj, "--label", "hw_task=" + l.task}, quiet: true, synth: `{"terminals":[]}`})
 	v, parsed := bjParse(raw)
@@ -63,12 +69,20 @@ func (l *lch) hcLive() (addr string, ok bool) {
 	if rc != 0 || !parsed || !isList {
 		return "", false
 	}
+	var addrs []string
 	for _, e := range list {
 		if m, isMap := e.(jmap); isMap && hcStr(m, "address") != "" {
-			return hcStr(m, "address"), true
+			addrs = append(addrs, hcStr(m, "address"))
 		}
 	}
-	return "", true
+	agents, ok := hcNotDev(addrs, func(a string) (string, bool) {
+		out, rc := l.sh(cmdSpec{name: "hc", args: []string{"get", a, "--json"}, quiet: true, synth: `{"labels":{}}`})
+		return out, rc == 0
+	})
+	if !ok || len(agents) == 0 {
+		return "", ok
+	}
+	return agents[0], true
 }
 
 // hcRecord is the run's mark as an hc run, <rundir>/hc: what `hw done`, reap and status key their hc calls on.
@@ -133,7 +147,7 @@ func (l *lch) hcRunArgs(cwd string) []string {
 // prove the brief arrived by the terminal's own `status`/`turn`.
 func (l *lch) hcAgentStep() {
 	if addr, ok := l.hcLive(); !ok {
-		l.die("`hc ls` could not answer, so whether " + l.proj + ":" + l.task + " is already live is UNKNOWN — launching now could start a second executor. NOTHING was launched; the worktree is intact. Dispatch again when `hc ls` answers.")
+		l.die("`hc ls` could not answer, so whether " + l.proj + ":" + l.task + " is already live is UNKNOWN — launching now could start a second executor. NO executor was launched" + hcDevLeft(l.hcDevAddrs, l.proj, l.task) + "; the worktree is intact. Dispatch again when `hc ls` answers.")
 	} else if addr != "" {
 		l.hcRecord(addr)                                                      // the newest run is the one `hw done` reads
 		l.receipt("pane", addr, "hc ls --label hw_project= --label hw_task=") // the in-use guard reads the pane from it
@@ -152,9 +166,7 @@ func (l *lch) hcAgentStep() {
 		l.warn("the cheap explorer could not be armed for " + l.label + " (the role is unreadable): this executor starts without it")
 	}
 	space := l.c.t.get(l.proj, "space")
-	app := func(a ...string) (string, int) {
-		return l.sh(cmdSpec{name: "herdr-app", args: a, mut: len(a) > 1, quiet: true, synth: `{"spaces":[]}`})
-	}
+	app := l.hcApp()
 	spaceNew := hcSpaceIsNew(app, space)
 	raw, rc := l.sh(cmdSpec{name: "hc", args: l.hcRunArgs(l.workdir()), mut: true, merge: true, synth: `{"address":"shadow:t1"}`})
 	v, _ := bjParse(brTrimNL(raw))
@@ -165,7 +177,11 @@ func (l *lch) hcAgentStep() {
 	if rc != 0 || addr == "" {
 		l.receipt("agent_ready", "no — `hc run` did not start the executor", "hc run exit status")
 		l.receiptVerdict()
-		l.die("`hc run` did not start " + l.agent + " for " + l.label + " (exit " + strconv.Itoa(rc) + "): " + head3(raw) + " — NOTHING is running. The worktree is intact; dispatch again.")
+		running := "NOTHING is running."
+		if len(l.hcDevAddrs) > 0 {
+			running = "NO executor is running, but the dev-server terminal(s) " + strings.Join(l.hcDevAddrs, " ") + " are: `hw done " + l.proj + " " + l.task + "` ends them."
+		}
+		l.die("`hc run` did not start " + l.agent + " for " + l.label + " (exit " + strconv.Itoa(rc) + "): " + head3(raw) + " — " + running + " The worktree is intact; dispatch again.")
 	}
 	if spaceNew {
 		hcNameSpace(app, lSleep, space)
@@ -189,6 +205,13 @@ func (l *lch) hcAgentStep() {
 	l.hcSession(addr)
 	l.ledgerDispatch(addr, 0)
 	l.receiptVerdict()
+}
+
+// hcApp runs `herdr-app <args>`: (stdout, exit status).
+func (l *lch) hcApp() func(args ...string) (string, int) {
+	return func(a ...string) (string, int) {
+		return l.sh(cmdSpec{name: "herdr-app", args: a, mut: len(a) > 1, quiet: true, synth: `{"spaces":[]}`})
+	}
 }
 
 // hcSession is receiptSession on herdr-core: herdr publishes no agent_session there, but claude writes
@@ -283,4 +306,114 @@ func hcNameSpace(app func(args ...string) (string, int), sleep func(time.Duratio
 		}
 	}
 	return false
+}
+
+// hcNotDev is the terminals of a task that are its executor: those whose own labels (`hc ls` carries none, `hc get` does)
+// name no hw_role. A terminal `hc get` cannot read is not "no role": ok=false, as for an unreadable list.
+func hcNotDev(addrs []string, get func(addr string) (string, bool)) (agents []string, ok bool) {
+	for _, a := range addrs {
+		raw, got := get(a)
+		v, parsed := bjParse(brTrimNL(raw))
+		m, isMap := v.(jmap)
+		if !got || !parsed || !isMap {
+			return nil, false
+		}
+		if labels, _ := m["labels"].(jmap); hcStr(labels, "hw_role") == "" {
+			agents = append(agents, a)
+		}
+	}
+	return agents, true
+}
+
+// hcDevName is the terminal's name: 1-32 of a-z 0-9 - _, unique among live terminals, so the task is cut to leave room for the role.
+func hcDevName(task, role string) string {
+	if room := 32 - 1 - len(role); len(task) > room {
+		task = task[:room]
+	}
+	return task + "-" + role
+}
+
+// hcDevStart is `herdr pane run <pane> <cmd>` on herdr-core: a lane's dev server as an `hc run` terminal of its own. The
+// pane the layout names by <role> is its spec — cwd and env, rendered as herdr would have rendered them (PORT, CORS_ORIGINS,
+// the executor's HW_*) — so the TUI route and this one run the server with the same ground. The terminal carries the task's
+// hw_project/hw_task (`hw done` and reap end every terminal of the task by them) and hw_role=<role>, which keeps it from being
+// taken for the executor. A terminal of this role already live for the task is kept, never doubled.
+func (l *lch) hcDevStart(tpl, role, cmd string) {
+	if l.env("HW_TAB") == "" { // the layout names ${HW_TAB}; there is no tab here, and a placeholder with no value is an error
+		l.setEnv("HW_TAB", "")
+	}
+	doc, rc := l.renderLayout(tpl)
+	if rc != 0 {
+		l.die("cannot render " + tpl + " to find the " + role + " terminal's directory and environment")
+	}
+	var cwd string
+	var env []string
+	vals, _ := parseStream([]byte(doc))
+	for _, v := range vals {
+		if p := spFirstPane(v, role); p != nil {
+			if c, _ := p.get("cwd"); c.kind == vStr {
+				cwd = c.s
+			}
+			if e, _ := p.get("env"); e.kind == vObj {
+				for _, m := range e.obj {
+					if m.v.kind == vStr {
+						env = append(env, m.k+"="+m.v.s)
+					}
+				}
+			}
+		}
+	}
+	if cwd == "" {
+		l.die("layout " + tpl + " names no " + role + " pane with a cwd: nothing to start the " + role + " terminal in")
+	}
+	labels := []string{"--label", "hw_project=" + l.proj, "--label", "hw_task=" + l.task, "--label", "hw_role=" + role}
+	raw, rc := l.sh(cmdSpec{name: "hc", args: append([]string{"ls", "--json"}, labels...), quiet: true, synth: `{"terminals":[]}`})
+	v, parsed := bjParse(raw)
+	list, isList := bjGet(v, "terminals").([]any)
+	if rc != 0 || !parsed || !isList {
+		l.die("`hc ls` could not answer, so whether the " + role + " terminal of " + l.label + " is already live is UNKNOWN — starting it now could double it. Dispatch again when `hc ls` answers.")
+	}
+	for _, e := range list {
+		if m, isMap := e.(jmap); isMap && hcStr(m, "address") != "" {
+			l.hcDevAddrs = append(l.hcDevAddrs, hcStr(m, "address"))
+			l.ok(role + " terminal already live as " + hcStr(m, "address") + " — kept, not started again")
+			l.warn("the " + role + " server keeps the port it was started with: the port this run picked above is NOT the one it listens on — read it from `hc read " + hcStr(m, "address") + "`")
+			return
+		}
+	}
+	args := []string{"run", "--bg", "--json", "--no-parent", "--no-notify",
+		"--name", hcDevName(l.task, role), "--cwd", cwd,
+		"--label", "hw_project=" + l.proj, "--label", "hw_task=" + l.task, "--label", "hw_run=" + l.hwRun, "--label", "hw_role=" + role,
+		"--label", "herdr.space=" + l.c.t.get(l.proj, "space"),
+		"--", "env",
+		"-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH",
+		"-u", "HERDR_TAB_ID", "-u", "HERDR_WORKSPACE_ID", "-u", "HW_INVOKER_PANE", "-u", "CLAUDE_CODE_CHILD_SESSION"}
+	args = append(args, env...)
+	args = append(args, hcPathWord(l.binDir(), l.env("PATH")), "sh", "-c", cmd)
+	space := l.c.t.get(l.proj, "space")
+	app := l.hcApp()
+	spaceNew := hcSpaceIsNew(app, space) // the dev terminal may be the first of the lane: it is then what makes the space, and what names it
+	out, rc := l.sh(cmdSpec{name: "hc", args: args, mut: true, merge: true, synth: `{"address":"shadow:d1"}`})
+	rv, _ := bjParse(brTrimNL(out))
+	addr := ""
+	if m, isMap := rv.(jmap); isMap {
+		addr = hcStr(m, "address")
+	}
+	if rc != 0 || addr == "" {
+		l.die("`hc run` did not start the " + role + " terminal for " + l.label + " (exit " + strconv.Itoa(rc) + "): " + head3(out) + " — the worktree is intact" + hcDevLeft(l.hcDevAddrs, l.proj, l.task) + "; dispatch again.")
+	}
+	if spaceNew {
+		hcNameSpace(app, lSleep, space)
+	}
+	l.hcDevAddrs = append(l.hcDevAddrs, addr)
+	l.hcRecord(addr) // the run is an hc run from here: `hw done` finds the task's terminals by it even if the executor never starts
+	l.ok(role + " terminal " + addr + " (herdr-core): " + cmd)
+}
+
+// hcDevLeft names the dev terminals a failed launch leaves running, for the die's last words.
+func hcDevLeft(addrs []string, proj, task string) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	return ", but the terminal(s) " + strings.Join(addrs, " ") + " are running: `hw done " + proj + " " + task + "` ends them"
 }

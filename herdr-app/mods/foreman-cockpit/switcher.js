@@ -26,3 +26,9 @@ export function switchOf(p) {
 export const LOOK_LAYOUTS = [{ label: "C", name: "foreman" }, { label: "D", name: "foreman-d" }, { label: "G", name: "foreman-g" }];
 // The look the shown layout draws (`shared("layout")`), or null when it is none of them.
 export const shownLook = (layoutName) => LOOK_LAYOUTS.find((l) => l.name === layoutName)?.name ?? null;
+
+// The right column's switch bar is two rows: the labels (`SWITCH_ROW1`, each look's own height) and the live count with the look
+// switcher (`SWITCH_ROW2`). The layouts' `right-tabs` block must be their sum; switcher.test.mjs holds it.
+export const SWITCH_ROW1 = { foreman: 36, "foreman-d": 44, "foreman-g": 32 };
+export const SWITCH_ROW2 = 26;
+export const switchBarPx = (layoutName) => SWITCH_ROW1[layoutName] + SWITCH_ROW2;

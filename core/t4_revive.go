@@ -253,6 +253,9 @@ func (a *app) reviveCmd(proj, task string, dry bool, wantRun string) {
 	var envShown []string
 	var envArgs []string
 	for _, kv := range envKVs {
+		if !reviveEnvAllowed(kv.Key) {
+			a.reviveDie(rundir + "/env carries " + kv.Key + ", a name hw's run env writer never writes: the run dir is the executor's to write, so nothing is revived from this file")
+		}
 		rec := kv.Key + "=" + kv.Value
 		envArgs = append(envArgs, "--env", rec)
 		envShown = append(envShown, rec)

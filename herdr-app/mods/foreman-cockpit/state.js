@@ -52,6 +52,11 @@ export const terminalFor = (pane, terminals) => terminals.find((x) => x.address 
 // so a brainer that dispatched across lanes is named by all of them.
 export const laneOf = (rows) => [...new Set(rows.map((r) => r.project))].sort().join(", ");
 
+// The name of a brainer's section: the lane the writer was opened for (`lane`, which `bin/brain`
+// hands it), else the lanes of its rows (a file from a writer older than the field), else its pane id.
+export const brainerLane = (state) =>
+  (isStr(state.lane) && state.lane.trim() !== "" ? state.lane.trim() : "") || laneOf(state.rows) || state.invoker_pane;
+
 // A duration the way a person reads it: `41m`, `3h12m`, `2d4h`; under a minute, seconds.
 export function dur(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -112,6 +117,7 @@ export function parseState(text) {
   }
   if (!isObj(s) || s.schema !== 1) return null;
   if (!isMs(s.generated_at) || !isStr(s.invoker_pane)) return null;
+  if (!(s.lane === undefined || orNull(isStr)(s.lane))) return null;
   if (!isObj(s.herdr) || typeof s.herdr.ok !== "boolean") return null;
   const t = s.totals;
   if (!isObj(t)) return null;
@@ -215,4 +221,39 @@ export function subagentsSummary(subs) {
 export function subagentLine(x, now) {
   const when = x.state === "running" ? dur(now - x.started_ms) : x.state === "done" ? "done" : `stale ${dur(now - x.last_ms)}`;
   return cut(`↳ ${x.type} · ${modelOf(x) ?? "—"} · ${x.description} · ${when}`, 200);
+}
+
+// ---- the attention queue, the context meter and the state filter ----
+
+const WAITS = new Set(["challenge", "ask", "blocked", "report"]);
+
+// Since when a row has held its state; null when nothing says.
+export const heldSince = (r) => (r.attention === "working" ? r.dispatched_at : r.report?.at ?? r.attention_since ?? r.dispatched_at);
+
+// What needs the person, across brainers, oldest first (ties by task so the order never jumps).
+// `rows`: [{ row, ... }] or plain rows; returns the same items sorted.
+export function waitingQueue(items, rowOf = (x) => x) {
+  return items.filter((x) => WAITS.has(rowOf(x).attention))
+    .sort((a, b) => (heldSince(rowOf(a)) ?? Infinity) - (heldSince(rowOf(b)) ?? Infinity) || rowOf(a).task.localeCompare(rowOf(b).task));
+}
+
+// The meter's band for a context percent: null when unknown, then quiet < 60 <= mid < 80 <= warn < 90 <= alarm.
+export const CTX_WARN = 80;
+export const CTX_ALARM = 90;
+export const CTX_QUIET = 60;
+export function ctxLevel(pct) {
+  if (typeof pct !== "number" || !Number.isFinite(pct)) return null;
+  return pct >= CTX_ALARM ? "alarm" : pct >= CTX_WARN ? "warn" : pct >= CTX_QUIET ? "mid" : "quiet";
+}
+
+// The filter's choices and what each keeps. `done`: a report that finished (a blocked one needs you).
+export const FILTERS = [{ id: "all", label: "all" }, { id: "needs", label: "needs you" }, { id: "working", label: "working" }, { id: "done", label: "done" }];
+export const filterId = (x) => (FILTERS.some((f) => f.id === x) ? x : "all");
+export function keeps(filter, r) {
+  switch (filterId(filter)) {
+    case "needs": return WAITS.has(r.attention);
+    case "working": return r.attention === "working";
+    case "done": return r.attention === "report" && r.report?.status !== "blocked";
+    default: return true;
+  }
 }

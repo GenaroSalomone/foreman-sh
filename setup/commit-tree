@@ -207,6 +207,13 @@ fi
 declare -a paths=()
 seen=$'\n'
 for a in "${args[@]}"; do
+  # ONE ARGUMENT, SEVERAL PATHS. zsh does not word-split an unquoted `$VAR`, so `setup/commit-tree -m x c $LIST` hands over
+  # `a<LF>b` as ONE argument: no such file exists, it read as an already-gone path, and the run exited 0 with only `c`
+  # committed (measured 2026-11-10, retro). A name holding a newline is almost never a file and is almost
+  # always that mistake, so it is refused before anything is read or written.
+  case "$a" in
+    *$'\n'*) ct_refuse "a path argument holds a newline ($(printf '%s' "$a" | head -n 1 | cut -c1-60)…): several paths in ONE argument are not split here (an unquoted \$VAR in zsh is not word-split). Name each path as its own argument. Nothing was written. The ref was not moved." ;;  # MUTATION-ANCHOR: 1233-M02
+  esac
   case "$a" in
     /*) ct_refuse "absolute path not accepted: $a (give a repo-relative path)" ;;
   esac
@@ -364,7 +371,7 @@ GIT_INDEX_FILE="$tmpidx" git read-tree "$old" || ct_refuse "cannot read $full's 
 
 # ONE `hash-object` AND ONE `update-index --index-info` FOR THE WHOLE SET. Per path this cost ~25 ms of git twice —
 # 30 s of process spawns for a commit naming 635 paths, 619 of them unchanged goldens (2026-11-04). A path holding a tab
-# or a newline cannot be expressed in --index-info's line format, so it keeps the per-path path.
+# or a backslash cannot be expressed in --index-info's line format, so it keeps the per-path path.
 files_list="$(mktemp "${TMPDIR:-/tmp}/commit-tree-files.XXXXXX")" || ct_refuse "cannot create a temporary index input"
 shas_file="$(mktemp "${TMPDIR:-/tmp}/commit-tree-shas.XXXXXX")" || { rm -f "$files_list"; ct_refuse "cannot create a temporary index input"; }
 modes_file="$(mktemp "${TMPDIR:-/tmp}/commit-tree-modes.XXXXXX")" || { rm -f "$files_list" "$shas_file"; ct_refuse "cannot create a temporary index input"; }
@@ -447,6 +454,60 @@ if [ -f "$root/setup/export/check" ] && [ -f "$root/setup/export/manifest" ]; th
 $(printf '%s\n' "$export_out" | sed 's/^/    /')
 Fix it and ask again. A NEW or DELETED file: edit setup/export/manifest (an include/exclude line for it) and name setup/export/manifest in this same commit-tree call. \`python3 setup/export/check\` alone says \"is not a tracked file\" until the file is committed; \`python3 setup/export/check --tracked FILE\` asks the question over a tracked-list FILE (one path per line) instead of the index."
   fi
+fi
+
+# ── a NEW core/*.go with no line in go-test-deps.txt is refused, naming the line to add ─────────────
+# Test 1014 P03 wants a line for every core/*.go that is not a test, and commit-tree runs no hook, so the check ran only in the batch
+# gate: it went red on main in 0.6.2, at 09b27a907, and with gate_status.go and wrappers_stall_watch.go (retro-fixes-1110). Same loop
+# as 1014's P03 (a `case`, not `printf | grep -q`: under this file's pipefail grep -q leaves at its first match, printf dies of SIGPIPE and a line that IS there read as missing on the real 9810-line file); the file read is the NEW TREE's, so a commit that adds the file AND its line passes. A repo with no deps file is not asked.
+ct_deps_check() {
+  local p missing=() deps
+  deps="$(git cat-file -p "$tree:setup/suite-data/go-test-deps.txt" 2>/dev/null)" || return 0
+  for p in "${paths[@]}"; do
+    case "$p" in core/*/*|*_test.go) continue ;; core/*.go) ;; *) continue ;; esac
+    git cat-file -e "$tree:$p" 2>/dev/null || continue   # a deletion
+    git cat-file -e "$old:$p" 2>/dev/null && continue    # not new
+    case $'\n'"$deps" in *$'\n'"$p"$'\t'*) ;; *) missing+=("$p") ;; esac  # MUTATION-ANCHOR: 1320-M01
+  done
+  [ "${#missing[@]}" -eq 0 ] || ct_refuse "a new core source file has no line in setup/suite-data/go-test-deps.txt (test 1014 P03 goes red on main for it, after a batch gate). The ref was not moved.
+$(printf '    %s\n' "${missing[@]}")
+Add, to setup/suite-data/go-test-deps.txt, one line per file — the conservative one, which moves every partition (safe, slower):
+$(for p in "${missing[@]}"; do printf '    %s<TAB>*\n' "$p"; done)
+and name setup/suite-data/go-test-deps.txt in this same commit-tree call. (python3 -I setup/measure/go-test-deps.py regenerates the measured lines, ~10 min.)"
+}
+ct_deps_check
+
+# ── a NEW setup/tests/*.sh with no entry in test-budgets.json is refused, naming the entry to add ───────────────────────────
+# The runner refuses to start a gate when the budgets file does not match setup/tests 1:1 ("does not match … 1:1"), and commit-tree runs no
+# hook, so the first signal was a gate refusing before it ran anything: three gate cycles (retro-fixes-1110, 2026-11-10). Same shape as the
+# deps check above: a `case`, not a pipe; the file read is the NEW TREE's, so a commit that adds the subject AND its entry passes.
+ct_budget_check() {
+  local p n missing=() budgets
+  budgets="$(git cat-file -p "$tree:setup/suite-data/test-budgets.json" 2>/dev/null)" || return 0
+  for p in "${paths[@]}"; do
+    case "$p" in setup/tests/*/*) continue ;; setup/tests/[0-9]*-*.sh) ;; *) continue ;; esac
+    git cat-file -e "$tree:$p" 2>/dev/null || continue   # a deletion
+    git cat-file -e "$old:$p" 2>/dev/null && continue    # not new
+    n="${p#setup/tests/}"
+    case "$budgets" in *'"'"$n"'":'*) ;; *) missing+=("$n") ;; esac  # MUTATION-ANCHOR: 1233-M03
+  done
+  [ "${#missing[@]}" -eq 0 ] || ct_refuse "a new setup/tests subject has no entry in setup/suite-data/test-budgets.json (the gate refuses to start without it: \"does not match … 1:1\"). The ref was not moved.
+$(printf '    %s\n' "${missing[@]}")
+Add, inside \"files\" of setup/suite-data/test-budgets.json, one entry per subject (measure it: bash setup/measure-tests.sh <subject>):
+$(for n in "${missing[@]}"; do printf '    "%s": { "exit": 0, "seconds": <measured seconds> },\n' "$n"; done)
+and name setup/suite-data/test-budgets.json in this same commit-tree call."
+}
+ct_budget_check
+
+# ── the two shell checks `bash -n` cannot make: an unbalanced quote it accepts, and `printf | grep -q` under pipefail ──────
+# setup/shell-lint reads the NEW TREE's blobs against the parent's, so only what this commit adds is judged; the same helper is
+# pre-commit's. A repo with no setup/shell-lint (a fixture) is not asked.
+if [ -x "$root/setup/shell-lint" ]; then
+  lint_rc=0; lint_out="$("$root/setup/shell-lint" "$old" "$tree" "${paths[@]}" 2>&1)" || lint_rc=$?  # MUTATION-ANCHOR: 1233-M04
+  [ "$lint_rc" = 0 ] || ct_refuse "setup/shell-lint refuses this commit. The ref was not moved.
+$(printf '%s\n' "$lint_out" | sed 's/^/    /')"
+  # a clean run still speaks when a check did not run (no shellcheck): shown on every commit, never only on a refusal
+  [ -z "$lint_out" ] || printf '%s\n' "$lint_out" >&2  # MUTATION-ANCHOR: 1233-M06
 fi
 
 # ── a test number another branch already owns is WARNED, never refused ─────────────────────────────

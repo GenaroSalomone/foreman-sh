@@ -136,9 +136,10 @@ func (b *brainRun) launch(args []string) int {
 	if b.engramLabel == "" {
 		b.engramLabel = "brain"
 	}
-	b.engramRegister()
+	// The session is registered where the launch is certain (withEngramSession), never here: a refusal that says "Nothing was
+	// sent and nothing was restarted" has posted nothing to engram either.
 
-	b.space = b.tab.get(proj, "space")
+	b.space = b.tab.get(proj, "space") // # MUTATION-ANCHOR: go-1340-M01
 	b.tabLabel = "brainer"
 	if b.kind == "opencode" {
 		b.tabLabel = "brainer:oc"
@@ -321,6 +322,7 @@ func (b *brainRun) launch(args []string) int {
 					return 3
 				}
 				// # MUTATION-ANCHOR-END: go-137-M05
+				b.engramRegister() // a focus is no refusal and keeps its renewal of the session (after the wrong-lane refusal above)
 				b.cockpitWriter(b.kind, pane)
 				b.flushOutbox(proj, pane) // # MUTATION-ANCHOR: go-243-M01
 				return 0
@@ -343,6 +345,8 @@ func (b *brainRun) launch(args []string) int {
 	if !planOK {
 		return 1
 	}
+	// THE LAST REFUSAL IS BEHIND US: from here the launch acts, so the engram session is registered now.
+	plan = b.withEngramSession(plan)
 	accountFlag, acctDir := plan.accountFlag, plan.acctDir
 	var workspaceEnv []string
 	for _, kv := range plan.pairs {

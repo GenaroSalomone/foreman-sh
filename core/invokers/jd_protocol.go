@@ -19,7 +19,8 @@ import (
 //     which a re-judgment may not add unless the judge marks it `"causal_disposition":"fix-caused"`. A round that launched ONE
 //     judge is a coverage relaunch of the first judgment (its missing paths): it extends the ledger and is not a round.
 //
-// A finding is read off the judges' own results: the `"location"` of a findings object. The judges number their rows from JD-001
+// A finding is read off the judges' own results: the `"location"` of a findings object, or the path in a markdown ledger row
+// (`| JD-001 | core/a.go:10 | CRITICAL | open | … |`, the shape ~/.claude/agents/jd-judge-*.md asks for and judges answer in). The judges number their rows from JD-001
 // each and the orchestrator renumbers when it merges them, so an id is NOT compared (it would refuse a legitimate re-judgment).
 // Results with no location are not judged by this gate (it says so in its note): it refuses what it can read, never what it cannot.
 //
@@ -32,6 +33,9 @@ const (
 
 var (
 	jdLocationRe  = regexp.MustCompile(`"location"\s*:\s*"([^"]+)"`)
+	jdMdRowRe     = regexp.MustCompile(`(?m)^[ \t]*\|.*\bJD-\d+\b.*$`) // a row of the markdown ledger the judge contract asks for: | JD-001 | path:line | SEVERITY | status | evidence |
+	jdIDCellRe    = regexp.MustCompile("^[ \t*`]*JD-\\d+[ \t*`]*$")
+	jdFixCausedRe = regexp.MustCompile("(?i)\\|[ \t*`]*fix-caused[ \t*`]*(?:\\||$)|causal_disposition[\"'`*]*[ \t]*[:=][ \t]*[\"'`*]*fix-caused")
 	jdEscalatedRe = regexp.MustCompile(`\bESCALATED\b`)
 	jdApprovedRe  = regexp.MustCompile(`\bAPPROVED\b`)
 	jdNegatedRe   = regexp.MustCompile(`(?i)\b(?:not|no|none|nothing|never|without)\s+ESCALATED\b`)
@@ -64,7 +68,7 @@ type jdFinding struct {
 // jdFindingsOf is what one round's text reports: each findings object's file, and whether the object marks it fix-caused
 // (anywhere in the object: the fields come in any order and `evidence` can be long).
 func jdFindingsOf(text string) []jdFinding {
-	var out []jdFinding
+	out := jdMarkdownFindingsOf(text)
 	locs := jdLocationRe.FindAllStringSubmatchIndex(text, -1)
 	for i, m := range locs {
 		start, end := strings.LastIndex(text[:m[0]], "{"), len(text)
@@ -81,6 +85,30 @@ func jdFindingsOf(text string) []jdFinding {
 			end = locs[i+1][0]
 		}
 		out = append(out, jdFinding{key: jdFindingKey(text[m[2]:m[3]]), fixCaused: strings.Contains(text[start:end], "fix-caused")})
+	}
+	return out
+}
+
+// jdMarkdownFindingsOf reads the ledger rows a judge answers in markdown: a table row holding a JD-NNN id, whose location is the
+// CELL right after the id, keyed like a JSON location (the whole token, so an extensionless `bin/hw:20` is read). A cell with no
+// `/`, `.` or `:` in it is not a location (a column in another order is never guessed at: the row is skipped). A row is one line;
+// it is fix-caused when a cell IS `fix-caused` or says `causal_disposition: fix-caused` (the word inside free prose, "not
+// fix-caused", marks nothing).
+func jdMarkdownFindingsOf(text string) []jdFinding {
+	var out []jdFinding
+	for _, row := range jdMdRowRe.FindAllString(text, -1) { // # MUTATION-ANCHOR: 1250-G03
+		cells := strings.Split(row, "|")
+		for i, c := range cells {
+			if !jdIDCellRe.MatchString(c) {
+				continue
+			}
+			if i+1 < len(cells) {
+				if tok := strings.Fields(strings.Trim(cells[i+1], " \t*`")); len(tok) > 0 && strings.ContainsAny(tok[0], "/.:") {
+					out = append(out, jdFinding{key: jdFindingKey(strings.Trim(tok[0], "*`")), fixCaused: jdFixCausedRe.MatchString(row)})
+				}
+			}
+			break
+		}
 	}
 	return out
 }
@@ -149,7 +177,7 @@ func JudgmentDayProtocolGate(proof *TranscriptProof, summary string) (note strin
 		}
 	}
 	if !read {
-		return "\njudgment day protocol: not checked — the judges' results carry no readable findings (no \"location\" fields); only the call budget was held", nil
+		return "\njudgment day protocol: not checked — the judges' results carry no readable findings (no \"location\" fields, no markdown ledger rows); only the call budget was held", nil
 	}
 	return "", nil
 }

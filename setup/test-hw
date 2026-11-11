@@ -2,6 +2,8 @@
 #
 # test-hw — the negative cases this toolchain keeps needing and kept losing.
 #
+# WALL-CLOCK WORK: the first exec of a NEW executable inode costs macOS ~0.28 s, serialized machine-wide — read setup/evidence/pool-3x/README.md (rows 8-9) before re-deriving it.
+#
 # THIS IS THE ENTRY POINT AND THE RUNNER. The pre-commit hook, everyone's
 # muscle memory and every brief call it by this name; the tests themselves live
 # one directory down, one file per subject, in setup/tests/. Why they were
@@ -324,6 +326,7 @@ FAST_TOTAL="${#FILES[@]}"
 # accepts `<tree>.fast` (any push, and the release cut), and that file has to mean all 104.
 # Full runs ignore HW_TEST_CHANGED; the floor at push does not move.
 GATE_SELECTED=0; GATE_GUARDS=0; GATE_CHANGED=""
+GO_TALLY=""   # "go partitions Q of N" once the in-process suite is queued (the job table); empty where there is none
 # the changed paths of this gate, one per line, when it knows them: what narrows the in-process partitions (the job table below)
 GATE_PATHS_FILE=""
 if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
@@ -345,6 +348,17 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
       _gs_why="$_gs_all"
     fi
   fi
+  # THE TOUCHED FORM OF AN EXECUTOR NEVER BECOMES THE WHOLE FAST GATE. `setup/CLAUDE.md` gives an hw executor the form
+  # `HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw`; for `bin/stall-watch`, which no fast subject names, the selector
+  # answers `all` and that form ran 142 jobs, the brainer's gate (setup:bash-justify-or-port, 2026-11-10). The paths file under
+  # $HW_ARTIFACTS is how the form is told apart from pre-commit's (a mktemp file, which keeps its whole-gate fallback: a commit has no other gate).
+  if [ -n "$_gs_why" ] && [ -n "${HW_TASK:-}" ] && [ -n "${HW_ARTIFACTS:-}" ] \
+     && [ "$(cd -P "$(dirname "$HW_TEST_CHANGED")" 2>/dev/null && pwd)" = "$(cd -P "$HW_ARTIFACTS" 2>/dev/null && pwd)" ]; then  # MUTATION-ANCHOR: 1294-M01
+    printf 'not ok - runner: the touched form would run the WHOLE fast gate — %s. That gate is the brainer'"'"'s, once per batch on the merge tree (setup/CLAUDE.md), so an executor gets exit 75 here and nothing ran. Run what the change reaches, one at a time: the subjects that name it (`rg -l <path> setup/tests`), each as `bash setup/tests/<n>.sh` (`setup/heavy --short --` when longer than seconds); the Go partitions with `bash setup/go-test-core.sh --affected %s --run`. A slow subject gate-select names runs by hand too:\n' \
+      "$_gs_why" "$HW_TEST_CHANGED" >&2
+    printf '%s\n' "${_gs_out:-}" | sed -n 's/^reference \([^ ]*\) \(.*\)/    reference  bash setup\/tests\/\1  <- \2/p' >&2
+    exit 75
+  fi
   if [ -n "$_gs_why" ]; then
     printf 'runner: the WHOLE fast gate — %s\n' "$_gs_why" >&2
     # A SLOW SUBJECT THE `all` ANSWER WOULD STILL MISS (L18): `all` is the whole FAST gate, so a slow subject
@@ -358,11 +372,11 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
     GATE_SELECTED=1
     GATE_CHANGED="$HW_TEST_CHANGED"
     GATE_PATHS_FILE="$HW_TEST_CHANGED"
-    printf '%s\n' "$_gs_out" | grep -q '^guards ' && GATE_GUARDS=1
+    grep -q '^guards ' <<<"$_gs_out" && GATE_GUARDS=1
     _narrowed=()
     for f in "${FILES[@]}"; do
       bn="$(basename "$f")"
-      if printf '%s\n' "$_gs_out" | grep -qE "^(core|subject) $(printf '%s' "$bn" | sed 's/[.[\*^$]/\\&/g')( |\$)"; then
+      if grep -qE "^(core|subject) $(printf '%s' "$bn" | sed 's/[.[\*^$]/\\&/g')( |\$)" <<<"$_gs_out"; then
         _narrowed+=("$f")
       fi
     done
@@ -446,7 +460,15 @@ if [ "$HW_TEST_GATE" = fast ] && [ -z "${HW_TEST_CHANGED:-}" ] && [ -z "${TEST_H
     fi
     _tc_rc=0
     _tc_out="$(python3 "$HERE/gate-select" "$SOURCE_ROOT" "$_tc_file" "$_tc_pat" touched 2>&1)" || _tc_rc=$?
-    GATE_PATHS_FILE="$_tc_file"   # removed once the in-process partitions are picked (the job table below)
+    # AN EMPTY DIFF NAMES NO PATH, AND NO PATH IS NOT "NOTHING CHANGED": a gate run on main itself (the brainer's batch gate, after the
+    # merge) diffs against main's own commit, so every path set it knew was empty and the in-process suite queued 0 of N partitions:
+    # b2b6f7514's fast gate went green ("879 tests passed", 5 min after the merge) while 83 Go brain tests were red on it. With no
+    # path to narrow by the suite queues every partition, as the table's header says it does when it knows no paths.
+    if [ -s "$_tc_file" ]; then
+      GATE_PATHS_FILE="$_tc_file"   # removed once the in-process partitions are picked (the job table below)
+    else
+      printf 'runner: no path differs from %s (HEAD is main) — the in-process suite queues every partition, not none\n' "$(printf '%s' "$_tc_base" | cut -c1-9)" >&2  # MUTATION-ANCHOR: 1014-M16
+    fi
     if [ "$_tc_rc" -ne 0 ]; then
       printf 'runner: setup/gate-select touched failed (exit %s) — no touched slow subject runs: %s\n' "$_tc_rc" "$(printf '%s' "$_tc_out" | tail -1)" >&2
     else
@@ -499,7 +521,7 @@ _fast_verdict_prepare() {
   if ! dirty="$(git -C "$live" diff --name-only HEAD 2>/dev/null)"; then
     FAST_VERDICT_TREE=""; FAST_VERDICT_WHY="could not compute which tracked paths are dirty"; return 0
   fi
-  if printf '%s\n' "$dirty" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+  if grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$dirty"; then
     # THE BYTES UNDER TEST ARE NOT HEAD'S, SO THE VERDICT IS KEYED BY THEIR OWN TREE.
     # It used to cache nothing here, and that is why the commit that follows paid
     # the gate a second time: pre-commit has no verdict to find for the tree it is
@@ -810,14 +832,17 @@ _pool_write_owner() { # <dir> <job>
   printf '%s\n' "$2"                  > "$1/owner.job"   2>/dev/null || true
 }
 _pool_holder_line() { # <dir>
-  local owner at root job age=""
+  local owner at root job age="" run=""
   owner="$(cat "$1/owner.pid" 2>/dev/null || true)"
   at="$(cat "$1/owner.at" 2>/dev/null || true)"
   root="$(cat "$1/owner.root" 2>/dev/null || true)"
   job="$(cat "$1/owner.job" 2>/dev/null || true)"
   case "$at" in ''|*[!0-9]*) : ;; *) age="$(( $(date +%s) - at ))s" ;; esac
-  printf 'pid %s, worktree %s%s%s' "${owner:-<none recorded>}" "${root:-<not recorded>}" \
-    "${job:+, running $job}" "${age:+, for $age}"
+  # THE SUBJECT'S AGE IS NOT THE QUEUE'S. "for 108s" was the holder's subject; the suite around it had run an hour (setup:bash-justify-or-port,
+  # 2026-11-10), so an executor polled 17 minutes for a minute's wait. The owner process is the runner: its elapsed time is the whole run.
+  case "$owner" in ''|*[!0-9]*) : ;; *) run="$(ps -o etime= -p "$owner" 2>/dev/null | tr -d ' ' || true)" ;; esac  # MUTATION-ANCHOR: 1295-M02
+  printf 'pid %s, worktree %s%s%s%s' "${owner:-<none recorded>}" "${root:-<not recorded>}" \
+    "${job:+, running $job}" "${age:+, for $age}" "${run:+, its whole run $run old (ps etime)}"
 }
 # A waiter is ONE FILE, written aside and renamed in, so it is never read half
 # written: its name carries the pid, its content the process start time.
@@ -829,9 +854,12 @@ _pool_waiter_alive() { # <file>
   [ -n "$start" ] || return 0
   [ "$(_pool_proc_start "$pid")" = "$start" ]
 }
-_pool_say() { # <signature> <message> — once per change of who is being waited for
-  [ "$1" != "$POOL_SAID" ] || return 0
-  POOL_SAID="$1"
+# A wait is said once per change of who is waited for, and AGAIN every POOL_SAY_EVERY seconds with the age the message carries NOW: the
+# line printed once froze its numbers, and a wait of an hour read as a minute.
+POOL_SAY_EVERY=300; POOL_SAID_AT=0
+_pool_say() { # <signature> <message>
+  [ "$1" != "$POOL_SAID" ] || [ $((SECONDS - POOL_SAID_AT)) -ge "$POOL_SAY_EVERY" ] || return 0  # MUTATION-ANCHOR: 1295-M01
+  POOL_SAID="$1"; POOL_SAID_AT=$SECONDS
   printf 'runner: %s\n' "$2" >&2
 }
 # ── FAST GATES FIRST (2026-10-14) ────────────────────────────────────────────
@@ -1501,10 +1529,19 @@ if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
     fi
     [ "$_gt_aff_err" = /dev/null ] || rm -f "$_gt_aff_err"
     _gt_cut=0
-    for _gt_n in $_gt_pick; do printf '%s\n' "$_gt_aff" | grep -qx -- "$_gt_n" || _gt_cut=$((_gt_cut + 1)); done
+    for _gt_n in $_gt_pick; do grep -qx -- "$_gt_n" <<<"$_gt_aff" || _gt_cut=$((_gt_cut + 1)); done
     printf 'runner: the in-process suite queues %s of %s partitions — the changed paths reach: %s\n' \
       "$(printf '%s\n' "$_gt_aff" | grep -c .)" "$(printf '%s\n' "$_gt_pick" | grep -c .)" "$(printf '%s' "$_gt_aff" | tr '\n' ' ' | sed 's/ $//; s/^$/nothing/')" >&2
     _gt_pick="$_gt_aff"  # MUTATION-ANCHOR: 1014-M04
+    # A FLOOR UNDER THE NARROWING: 0 partitions is a legitimate answer for a document, never for core/ or this runner. `--affected` read a
+    # path of core/ as reaching nothing (a stale deps row, an empty answer with rc 0) and the gate went green with 83 Go brain tests
+    # red (brain-refuse-before-engram, 2026-11-10). When the paths name core/ or setup/go-test*, an empty queue is a red gate, not a verdict.
+    if [ -z "$_gt_aff" ] && grep -qE '^(core/|setup/go-test)' "$GATE_PATHS_FILE"; then  # MUTATION-ANCHOR: 1014-M17
+      [ -z "${_tc_file:-}" ] || rm -f "$_tc_file"
+      printf 'not ok - runner: the fast gate queues 0 of %s Go partitions although the changed paths name core/ or setup/go-test* (%s): a gate that runs zero of the Go tests is not green. Run it whole, or fix the map: setup/suite-data/go-test-deps.txt (regenerate: setup/measure/go-test-deps.py)\n' \
+        "$(printf '%s\n' "$_gt_all" | grep -c .)" "$(grep -E '^(core/|setup/go-test)' "$GATE_PATHS_FILE" | head -3 | tr '\n' ' ' | sed 's/ $//')" >&2
+      exit 1
+    fi
   fi
   # THE INCREMENTAL VERDICT NAMES THE PARTITIONS ITS DIFF REACHES. setup/verdict-incremental writes, beside the job names of
   # HW_TEST_ONLY, one `go-test-core.sh:<partition>` line per partition the diff since the recorded run can have moved (the fast
@@ -1528,6 +1565,8 @@ if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
       "$(printf '%s' "$_gt_keep" | grep -c . || true)" "$(printf '%s\n' "$_gt_pick" | grep -c . || true)" "${_gt_say:-none}" >&2
     _gt_pick="${_gt_keep%$'\n'}"  # MUTATION-ANCHOR: 1090-M02
   fi
+  # THE GO TALLY TRAVELS WITH THE VERDICT: "879 tests passed" counts bash subjects and says nothing of Go, so a 0-of-N queue read as green.
+  GO_TALLY="go partitions $(printf '%s\n' "$_gt_pick" | grep -c . || true) of $(printf '%s\n' "$_gt_all" | grep -c .)"  # MUTATION-ANCHOR: 1014-M20
   # MUTATION-ANCHOR: 1013-M03
   if [ "$JOBS" = 1 ] && [ -n "$_gt_pick" ] && { [ "$HW_TEST_GATE" = fast ] || [ -n "$_RUNNER_STARTED_NESTED" ]; }; then  # MUTATION-ANCHOR: 1014-M06
     # ONE JOB AT A TIME BY DESIGN (the fast gate, or a nested fixture run; NOT a full gate the load rule cut to one job, which
@@ -1965,7 +2004,9 @@ _run_job() {
     # A GO-TEST JOB IS TIMED LIKE A SUBJECT (user+sys of its process tree): a partition whose run_s is far above its cpu_s is WAITING, and that
     # decides whether more jobs help (suite-en-minutos-0-medir). The other jobs (guards) stay as they were: wall only.
     if [ "$kind" = go-test ]; then
-      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" "${_JOB_RUNNER[@]}" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"}
+      # `env -u HW_TASK`: the executor budget of go-test-core.sh (exit 75 over touched_budget_seconds, for what an executor NAMES by hand) is not for the
+      # partitions this runner queues itself from the changed paths; they ran under the executor's environment and went red (Judgment Day, 2026-11-10).
+      fg_time_cmd "$JOBDIR/$idx.out" "$JOBDIR/$idx.err" env -u HW_TASK "${_JOB_RUNNER[@]}" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"}  # MUTATION-ANCHOR: 1316-M01
       rc=$?; wall_ms="$FG_WALL_MS"; cpu_ms="$FG_CPU_MS"
     else
       "${_JOB_RUNNER[@]}" "$f" ${JOB_ARG[$idx]:+"${JOB_ARG[$idx]}"} > "$JOBDIR/$idx.out" 2> "$JOBDIR/$idx.err" < /dev/null
@@ -2748,6 +2789,7 @@ _results_write
 #   FLAKY          it fails alone, then passes on a second lone run
 #   STALE-AT-BASE  it fails alone AND at the merge base (its own branch is not what broke it)
 #   REAL           it fails alone and passes at the merge base: this branch broke it
+#   BUDGET-STALE   its red line is the fast-gate time budget (not re-run: a lone run is not timed, so it would pass and read as ENV-ONLY)
 # BOUNDED, and the bound is said out loud: HW_TEST_LABEL_MAX (6) subjects and HW_TEST_LABEL_BUDGET (600) seconds in total,
 # never a subject the runner cannot re-run alone (a go-test partition, the witness). Past the bound the label is
 # UNLABELLED — never guessed. HW_TEST_NO_LABEL=1 skips the pass.
@@ -2795,6 +2837,13 @@ red_label_pass() {
     case "$f" in */setup/tests/*.sh) ;; *) continue ;; esac   # only a subject file can be re-run alone
     if [ "$n" -ge "$max" ] || [ "$spent" -ge "$budget" ]; then
       printf '%s\t%s\n' "$idx" "UNLABELLED (the label pass stopped at its bound: HW_TEST_LABEL_MAX=$max, HW_TEST_LABEL_BUDGET=${budget}s)" >>"$LABEL_FILE"
+      continue
+    fi
+    # A RED THAT IS ITS TIME BUDGET passes alone, because a lone run here is not timed: it was labelled ENV-ONLY, which blamed the environment for a
+    # budget that had gone stale (88: 9.78 s recorded, 75.41 s measured, 2026-11-10). Said as what it is, and not re-run: its lone run proves nothing.
+    _bre='over its fast-gate budget \(([0-9]+)ms > ([0-9]+)ms\)'
+    if [[ "${JOB_REDLINE[$idx]:-}" =~ $_bre ]]; then  # MUTATION-ANCHOR: 1314-M01
+      printf '%s\t%s\t%s\n' "$idx" "BUDGET-STALE (it read ${BASH_REMATCH[1]}ms against a ${BASH_REMATCH[2]}ms budget: the red is its time budget, not the environment; if it is really this slow, re-measure it with setup/measure-tests.sh)" "" >>"$LABEL_FILE"
       continue
     fi
     rel="${f#*/setup/}"
@@ -2928,11 +2977,11 @@ if [ -n "$UNKNOWN_NAMES" ]; then
   printf '  Run the suite inside the git work tree to get a number that means something.\n'
 else
   if [ "$GATE_SELECTED" = 1 ]; then
-    printf '\nFAST GATE (SELECTED): %s tests passed  (TRACKED only — %s of the %s fast subject files, chosen from the changed paths; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
-      "$TRACKED_OK" "${#FILES[@]}" "$FAST_TOTAL"
+    printf '\nFAST GATE (SELECTED): %s tests passed%s  (TRACKED only — %s of the %s fast subject files, chosen from the changed paths; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
+      "$TRACKED_OK" "${GO_TALLY:+; $GO_TALLY}" "${#FILES[@]}" "$FAST_TOTAL"
   elif [ "$HW_TEST_GATE" = fast ]; then
-    printf '\nFAST GATE: %s tests passed  (TRACKED only — %s of %s subject files, %s of them slow subjects that name what this branch changed; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
-      "$TRACKED_OK" "${#FILES[@]}" "$(printf '%s\n' "$TESTS"/[0-9][0-9]*-*.sh | grep -c .)" "$TOUCHED_RUN"
+    printf '\nFAST GATE: %s tests passed%s  (TRACKED only — %s of %s subject files, %s of them slow subjects that name what this branch changed; the rest are deferred to the mandatory full run at pre-push, NOT skipped)\n' \
+      "$TRACKED_OK" "${GO_TALLY:+; $GO_TALLY}" "${#FILES[@]}" "$(printf '%s\n' "$TESTS"/[0-9][0-9]*-*.sh | grep -c .)" "$TOUCHED_RUN"
   elif [ -n "${HW_TEST_ONLY:-}" ]; then
     printf '\nINCREMENTAL: %s tests passed  (TRACKED only — %s jobs named by HW_TEST_ONLY, NOT the whole suite)\n' "$TRACKED_OK" "$JOB_TOTAL"
   else
@@ -2958,9 +3007,14 @@ else
   if [ "$RETIRED_N" -gt 0 ]; then
     printf '  RETIRED: %s subject(s) of setup/suite-data/retired-subjects.txt did not run in this gate; go test ./core/... ran in their place — a retired corpus with no in-process port yet is UNCOVERED\n' "$RETIRED_N"
   fi
+  # THE MOST A FIRST-EXEC FIX CAN GIVE, counted before anyone writes it: macOS checks each new executable inode once, ~0.28 s, one at a time
+  # (setup/evidence/pool-3x/README.md rows 8-9). Machine-wide count since this run began; nothing where the machine cannot say.
+  if [ "$HW_TEST_GATE" = fast ] && [ -z "$_RUNNER_STARTED_NESTED" ] && [ -x "$HERE/first-exec-count" ]; then
+    "$HERE/first-exec-count" "$RUN_T0" || true  # MUTATION-ANCHOR: 1339-M01
+  fi
   if [ "$GATE_SELECTED" = 1 ]; then
     printf 'runner: no fast-gate verdict cached — a SELECTED run is not the whole fast gate\n' >&2
   elif [ "$HW_TEST_GATE" = fast ]; then
-    _fast_verdict_write "FAST GATE: $TRACKED_OK tests passed"
+    _fast_verdict_write "FAST GATE: $TRACKED_OK tests passed${GO_TALLY:+; $GO_TALLY}"  # MUTATION-ANCHOR: 1014-M21
   fi
 fi

@@ -245,10 +245,12 @@ func judgmentDayWithPlugins(note string, plugins []string) string {
 This brief also declares review plugins, so the closing has one more step, BEFORE
 the Judgment Day of step 2: run these review skills over the same committed range
 ("$(hw review-range)"..HEAD), each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + reviewDiffFileClause + ` Judgment Day does not replace them.
-A skill that is not among your available skills is not installed. The report names
-each skill you ran and what it left open; a skill you did not run gets a line
-"review-skip: <skill> — <why>". done-invoker reads your transcript for each
-Skill call and refuses a done report that has neither.`)
+A skill that is not among your available skills means this pane was launched without
+its plugin: close with done-invoker --blocked naming it, never as "not installed". The
+report names each skill you ran and what it left open. done-invoker reads your
+transcript for each Skill call and refuses a done report without one; a plugin vendored
+in setup/vendor/plugins is never skipped, and a line "review-skip: <skill> — <why>" is
+accepted only for a piece no vendored plugin ships.`)
 }
 
 // reviewReceiptSource is the receipt's third column.
@@ -265,7 +267,8 @@ func reviewPluginsNote(plugins []string) string {
    committed; uncommitted work is not reviewed and is not delivered.
 2. Before done-invoker, run these review skills over your committed diff, the
    ones of the plugins this brief declares, each with the Skill tool under its full name: ` + reviewSkillsToInvoke(plugins) + `.` + reviewAgentsClause(plugins) + reviewDiffFileClause + ` A skill that is not among your
-   available skills is not installed: say so in the report and close normally.
+   available skills means this pane was launched without its plugin: close with
+   done-invoker --blocked naming it; a vendored plugin is never skipped.
    Do NOT run the judgment-day skill: this brief chose its review, and two
    verdicts on one candidate is the cost it removes.
 3. The done-invoker report names each review skill you ran and what it left

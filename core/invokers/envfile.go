@@ -30,43 +30,13 @@ func (c *Ctx) brainRoot() string {
 	return filepath.Dir(c.BinDir)
 }
 
-// loadRoots is the top of invoker-common.sh: INVOKER_ENV_ROOTS, derived from
-// project-spaces.sh (its lane_config_load and all_lane_worktree_roots), else
-// read straight from the lane table.
+// loadRoots is the top of invoker-common.sh: INVOKER_ENV_ROOTS and the operator's name, read from the lane table (lanetable.go),
+// else (a table that does not parse, or has no lanes or no work) from rootsFromTable, which says why on stderr.
 func (c *Ctx) loadRoots() {
 	c.envRoots = ""
-	if st, err := os.Stat(c.BinDir + "/project-spaces.sh"); err == nil && !st.IsDir() {
-		const script = `set -euo pipefail
-INVOKER_BIN_DIR="$1"
-. "$INVOKER_BIN_DIR/project-spaces.sh" \
-  || printf 'invoker-common: %s/project-spaces.sh did not load (exit %s); the lane roots fall back to reading the lane table directly\n' "$INVOKER_BIN_DIR" "$?" >&2
-if command -v lane_config_load >/dev/null 2>&1 \
-   && lane_config_load "${HW_BRAIN_ROOT:-$(dirname "$INVOKER_BIN_DIR")}" 2>/dev/null \
-   && command -v all_lane_worktree_roots >/dev/null 2>&1; then
-  _derived_roots="$(all_lane_worktree_roots 2>/dev/null || true)"
-  printf '%s\0' "${HW_OPERATOR:-}" >&3
-  if [ -n "$_derived_roots" ]; then
-    printf '%s\n%s' "$WORK" "$_derived_roots" >&3
-  fi
-fi`
-		r, w, err := os.Pipe()
-		if err == nil {
-			done := make(chan string)
-			go func() {
-				var b bytes.Buffer
-				b.ReadFrom(r)
-				done <- b.String()
-			}()
-			c.run(runOpts{stdout: c.Stdout, stderr: c.Stderr, extra: []*os.File{w}}, "bash", "-c", script, "_", c.BinDir)
-			w.Close()
-			got := <-done
-			r.Close()
-			if i := strings.IndexByte(got, 0); i >= 0 {
-				c.operatorDefault = got[:i]
-				got = got[i+1:]
-			}
-			c.envRoots = got
-		}
+	if doc := c.laneTableDoc(); doc != nil {
+		c.operatorDefault = tableOperator(doc)
+		c.envRoots = c.derivedRoots(doc)
 	}
 	if c.envRoots == "" {
 		c.envRoots = c.rootsFromTable() + "\n"

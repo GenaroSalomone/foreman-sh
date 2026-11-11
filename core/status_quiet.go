@@ -39,16 +39,14 @@ func (a *app) releaseQuiet() int {
 // ── _gate_quiet ─────────────────────────────────────────────────────────────
 
 // gateQuiet: ONE LINE, the heavy-run slots in use and who waits (bin/suite-gate's sg_status_line). A brain without the
-// library prints nothing, as the bash did when `declare -F sg_status_line` found nothing.
+// library prints nothing, as the bash did when `declare -F sg_status_line` found nothing. The line is read in Go (gate_status.go).
 func (a *app) gateQuiet() int {
 	lib := filepath.Join(a.binDir(), "suite-gate")
 	if !readable(lib) {
 		return 0
 	}
-	env := append(os.Environ(), "SG_WORK="+a.c.work, "WORK="+a.c.work)
-	r := extRun(extCall{Name: "bash", Args: []string{lib, "status"}, Env: env, KeepErr: true})
-	a.errf("%s", r.Err) // what sg_slots says of a bad HW_SUITE_SLOTS comes before the line, as it did in the held job
-	a.info(subst(r.Out))
+	g := &doneGate{d: &doneRun{app: a}}
+	a.info(g.statusLine(a.c.work)) // what sg_slots says of a bad HW_SUITE_SLOTS comes first, on stderr, as it did in the held job
 	return 0
 }
 

@@ -40,8 +40,8 @@ func hcRunEntries() (agents, panes []any, answered bool) {
 		if !isGet || hcStr(g, "state") != "live" {
 			continue // a finished terminal is not a running executor
 		}
-		if labels, _ := g["labels"].(jmap); hcStr(labels, "hw_task") == "" {
-			continue // not an executor hw launched
+		if labels, _ := g["labels"].(jmap); hcStr(labels, "hw_task") == "" || hcStr(labels, "hw_role") != "" {
+			continue // not an executor hw launched (a lane's dev server carries the task's labels and an hw_role)
 		}
 		tokens := jmap{}
 		if labels, isLabels := g["labels"].(jmap); isLabels {

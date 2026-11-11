@@ -6,7 +6,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"os"
 	"path"
@@ -18,7 +17,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"hwcore/internal/engramhealth"
 )
 
 var reUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
@@ -502,24 +500,10 @@ func (b *brainRun) paneConfigDir(pane string) (string, bool) {
 
 // ── engram ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-func (b *brainRun) engramURL() string {
-	if u := b.getenv("HW_ENGRAM_URL"); u != "" {
-		return u
-	}
-	port := b.getenv("ENGRAM_PORT")
-	if port == "" {
-		port = "7437"
-	}
-	return "http://127.0.0.1:" + port
-}
+func (b *brainRun) engramSrv() engramServe { return engramServe{getenv: b.getenv, home: b.home} }
 
-func (b *brainRun) engramStoreDir() string {
-	d := b.getenv("ENGRAM_DATA_DIR")
-	if strings.TrimSpace(d) != "" {
-		return d
-	}
-	return b.home + "/.engram"
-}
+func (b *brainRun) engramURL() string      { return b.engramSrv().url() }
+func (b *brainRun) engramStoreDir() string { return b.engramSrv().storeDir() }
 
 func (b *brainRun) httpGet(u string, timeout time.Duration) (string, bool) {
 	cl := &http.Client{Timeout: timeout}
@@ -555,70 +539,20 @@ func (b *brainRun) engramServeWait(u string) bool {
 }
 
 // engramServeVerdict is engram_serve_verdict: the line it prints and the status (0 this store, 2 foreign, 3 unknown).
-func (b *brainRun) engramServeVerdict(u string) (string, int) {
-	dir := b.engramStoreDir()
-	want := ""
-	if data, err := os.ReadFile(dir + "/.instance-id"); err == nil {
-		want = strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f' {
-				return -1
-			}
-			return r
-		}, string(data))
-	}
-	probe := engramhealth.Get(u+"/health", engramhealth.Budget(b.getenv("HW_ENGRAM_HEALTH_TIMEOUT")))
-	if !probe.OK {
-		return engramhealth.Refusal(u, probe), 3
-	}
-	got := bjRawOr(probe.Body, "instance_id")
-	if want == "" {
-		return "cannot prove the serve at " + u + " is this store: " + dir + "/.instance-id is missing", 3
-	}
-	if got == "" {
-		return "cannot prove the serve at " + u + " is this store: its /health names no instance_id", 3
-	}
-	if got != want {
-		return "FOREIGN engram serve at " + u + ": instance " + got + ", but this store (" + dir + ") is instance " + want + " — a serve started under another HOME or ENGRAM_DATA_DIR holds the port", 2
-	}
-	return "engram serve at " + u + " is this store (" + dir + ", instance " + got + ")", 0
-}
+func (b *brainRun) engramServeVerdict(u string) (string, int) { return b.engramSrv().verdict(u) }
 
-// engramSessionPost is engram_session_post: 0 only when engram echoes the id.
+// engramSessionPost is engram_session_post: true only when engram echoes the id.
 func (b *brainRun) engramSessionPost(id, project, dir, u string) bool {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.Encode(struct {
-		ID        string `json:"id"`
-		Project   string `json:"project"`
-		Directory string `json:"directory"`
-	}{id, project, dir})
-	body := strings.TrimRight(buf.String(), "\n")
-	cl := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest("POST", u+"/sessions", strings.NewReader(body))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := cl.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	var out bytes.Buffer
-	out.ReadFrom(resp.Body)
-	if resp.StatusCode >= 400 {
-		return false
-	}
-	return bjTestEq(out.String(), id, "id")
+	_, ok := b.engramSrv().sessionPost(id, project, dir, u)
+	return ok
 }
 
 // engramRegister is brain_engram_register: the brainer gets an engram session of its own, on a proven serve.
 func (b *brainRun) engramRegister() {
-	id := "brainer-" + b.engramLabel
-	if !isReadable(b.binDir + "/engram-serve.sh") {
+	if b.noEngram {
 		return
 	}
+	id := "brainer-" + b.engramLabel
 	u := b.engramURL()
 	b.engramServeWait(u) // # MUTATION-ANCHOR: go-401-M01
 	verdict, rc := b.engramServeVerdict(u)
@@ -643,7 +577,7 @@ func (b *brainRun) cockpitWriter(kind, pane string) {
 	if b.noCockpit || b.getenv("FOREMAN_COCKPIT") == "0" { // # MUTATION-ANCHOR: go-804-M02
 		return
 	}
-	b.spawn(b.binDir+"/cockpit-state", []string{"cockpit-state", "--loop", "5", "--bind-pane", "--invoker", pane}, b.env)
+	b.spawn(b.binDir+"/cockpit-state", []string{"cockpit-state", "--loop", "5", "--bind-pane", "--invoker", pane, "--lane", b.proj}, b.env)
 }
 
 func isExecutable(p string) bool {

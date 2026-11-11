@@ -497,13 +497,6 @@ func (l *lch) receiptVerdict() {
 
 // ── the engram session ──────────────────────────────────────────────────────
 
-// lrcEngramLib runs one function of bin/engram-serve.sh in a bash of its own (the lib is sourced there, as bash
-// sourced it here; it stays the owner of its three small verbs).
-func (l *lch) lrcEngramLib(lib string, mut bool, synth string, fn string, args ...string) (string, int) {
-	argv := append([]string{"-c", `. "$1"; shift; "$@"`, "hw", lib, fn}, args...)
-	return l.sh(cmdSpec{name: "bash", args: argv, mut: mut, synth: synth})
-}
-
 // engramRegisterSession is _engram_register_session. BEST EFFORT, AND SAID SO: engram down is a receipt line and
 // a warning, never a failed launch; and never into a store that is not the executor's (the serve is identified
 // first). Always returns.
@@ -523,36 +516,22 @@ func (l *lch) engramRegisterSession() {
 		return
 	}
 	id := "hw-" + l.hwRun
-	binDir := l.env("HW_BIN_DIR")
-	if binDir == "" {
-		binDir = l.binDir()
-	}
-	lib := binDir + "/engram-serve.sh"
-	// A `[ -r ]` and not `. … || return`: bash exits outright on a `.` whose file is missing.
-	if fh, err := os.Open(lib); err != nil {
-		l.receipt("engram_session", "none — "+lib+" is missing, so the serve could not be identified", "[ -r "+lib+" ]")
-		l.warn("engram session NOT registered: " + lib + " is missing (incomplete bin/)")
-		return
-	} else {
-		fh.Close()
-	}
-	url, _ := l.lrcEngramLib(lib, false, "", "engram_serve_url")
-	url = bashSub(url)
-	verdict, rc := l.lrcEngramLib(lib, false, "", "engram_serve_verdict", url)
-	verdict = bashSub(verdict)
+	srv := engramServe{getenv: l.env, home: l.env("HOME")}
+	url := srv.url()
+	verdict, rc := srv.verdict(url)
 	if rc == 2 { // # MUTATION-ANCHOR: 847-A2-19
-		store, _ := l.lrcEngramLib(lib, false, "", "engram_store_dir")
-		l.receipt("engram_session", "none — "+verdict, "GET "+url+"/health vs "+bashSub(store)+"/.instance-id")
+		l.receipt("engram_session", "none — "+verdict, "GET "+url+"/health vs "+srv.storeDir()+"/.instance-id")
 		l.warn("engram session NOT registered: " + verdict + ". Nothing was written to it. Stop that serve and start the real one (HOME=" + l.env("HOME") + " engram serve); until then an executor's mem_save has no session of its own and may fall into manual-save-" + project)
 		return
 	}
 	posted := false
 	var out string
 	if rc == 0 {
-		var prc int
-		out, prc = l.lrcEngramLib(lib, true, `{"id":"`+id+`"}`, "engram_session_post", id, project, dir, url)
-		out = bashSub(out)
-		posted = prc == 0
+		if l.readonly { // a dry run asks, it does not write: the session the launch would have registered
+			posted = true
+		} else {
+			out, posted = srv.sessionPost(id, project, dir, url)
+		}
 	}
 	if posted { // # MUTATION-ANCHOR: 847-A2-20
 		l.hwEngramSession = id
@@ -563,7 +542,7 @@ func (l *lch) engramRegisterSession() {
 	if rc != 0 {
 		out = verdict
 	}
-	l.receipt("engram_session", "none — POST "+url+"/sessions failed: "+lrcOr(out, "no answer"), "curl -sf -m 5 POST "+url+"/sessions")
+	l.receipt("engram_session", "none — POST "+url+"/sessions failed: "+lrcOr(out, "no answer"), "POST "+url+"/sessions, 5 s")
 	l.warn("engram session NOT registered (" + url + " unreachable or refused): an unlabelled mem_save may still fall into manual-save-" + project)
 }
 

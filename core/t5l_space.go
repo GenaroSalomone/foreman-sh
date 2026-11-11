@@ -950,7 +950,7 @@ func spBaseName(p string) string {
 // clean it up (a pane rename is a display label only), so hw prints its id and closing it is the person's.
 func (l *lch) runHere(cwd string) {
 	if l.hcRoute() { // HERDR_PANE_ID may be the launcher's, not ours (P12): never split it
-		l.die("--here splits a herdr pane, and this shell runs under herdr-core (the herdr app): dispatch without --here, or from a herdr TUI pane")
+		l.die(l.hcRefusal())
 	}
 	herdrPane := l.env("HERDR_PANE_ID")
 	if herdrPane == "" { // # MUTATION-ANCHOR: 847-B1-17

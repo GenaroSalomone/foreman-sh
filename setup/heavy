@@ -16,7 +16,11 @@
 #            head that CANNOT use a free slot (its ticket's third line names how many slots its run may use) takes
 #            that slot itself: a free slot 2 behind a head launched with one slot is capacity nobody can reach.
 #            A ticket whose pid is dead is dropped.
-#   log      ~/.cache/hw/heavy.log      `start end wall rc tag cmd` per run: the measured durations a report quotes
+#   log      ~/.cache/hw/heavy.log      `start end wall rc load1=<at start>/<at end> tag cmd` per run: the measured durations a report quotes,
+#            and the machine's 1-minute load average (`-` when it cannot be read) around them: a timing taken at load1 37 is not one
+#            taken at 3 (retro suite-under-15, 2026-11-11). The reading is `uptime`'s.
+#   quiet    `--quiet <max-load1>` (not with --short): holding its slot, the job does not start until load1 reads at or under <max-load1>;
+#            it says once a minute what it reads. For a timing run: start at a known-quiet machine, run the control in the same hour.
 #
 # THE SHORT LANE (`--short [--max S]`, default and cap 120 s) runs BESIDE a holder of slot 1, never behind the slot queue:
 # build-core takes 11 s and once waited ~6100 s behind a 14104 s release run . One short job at a time
@@ -110,9 +114,10 @@ PAUSE_FILE="${HW_HEAVY_PAUSE_FILE:-}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: setup/heavy [--tag T] [--when-idle] -- <cmd…>
+usage: setup/heavy [--tag T] [--when-idle] [--quiet MAX_LOAD1] -- <cmd…>
                                           run <cmd> in a heavy slot (FIFO), keep its exit code; --when-idle starts it only after
-                                          the console has been idle HW_HEAVY_IDLE_MIN (15) minutes and pauses it while the Mac is in use
+                                          the console has been idle HW_HEAVY_IDLE_MIN (15) minutes and pauses it while the Mac is in use;
+                                          --quiet starts it only once load1 is under MAX_LOAD1 (a timing run)
        setup/heavy --short [--max S] [--tag T] -- <cmd…>
                                           run <cmd> in the short lane beside the slot holder: one short job at a
                                           time, killed at S seconds (default and cap 120) with exit 124
@@ -173,6 +178,13 @@ free_reading() {  # percent free, or nothing when this machine cannot say
 }
 free_pct() { local v; v="$(free_reading)"; printf '%s' "${v:-0}"; }
 
+load1_reading() {  # the 1-minute load average from `uptime` (a subject stubs it on PATH); LC_ALL=C because a comma-decimal locale prints `3,49`, or `-` when this machine cannot say
+  local v
+  v="$(LC_ALL=C uptime 2>/dev/null | sed -n 's/.*load averages*: *\([0-9][0-9.]*\).*/\1/p')"
+  case "$v" in ''|*.*.*) v="-" ;; esac
+  printf '%s' "$v"
+}
+
 # The watchdog's "now" is a file when a subject stubs the clock, the real clock otherwise.
 wnow() {
   local v
@@ -231,7 +243,7 @@ reap_reported() {  # <pid> <tag> <run dir> <since>: end its tree and say so in h
   [ "$1" != "$$" ] && [ "$3" != "$(run_of_env)" ] || return 1
   run_reported "$3" "${4:-0}" || return 1
   end_tree "$1"
-  printf '%s %s 0 143 reclaimed:%s run %s had reported (pid %s)\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$(date +%Y-%m-%dT%H:%M:%S)" "$2" "$3" "$1" >> "$LOG"
+  printf '%s %s 0 143 load1=-/- reclaimed:%s run %s had reported (pid %s)\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$(date +%Y-%m-%dT%H:%M:%S)" "$2" "$3" "$1" >> "$LOG"
   return 0
 }
 
@@ -387,12 +399,14 @@ EOF
 
 # ── --status ────────────────────────────────────────────────────────────────
 TAG="${HW_TASK:-$(basename "$PWD")}"
-SHORT=0; MAX=""; WI_FLAG=0
+SHORT=0; MAX=""; WI_FLAG=0; QUIET=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --status) mkdir -p "$Q" "$SQ"; status_text ""; exit 0 ;;  # MUTATION-ANCHOR: 1040-H07
     --short) SHORT=1; shift ;;
     --when-idle) WHEN_IDLE=1; WI_FLAG=1; shift ;;
+    --quiet) [ $# -ge 2 ] && [ -n "$2" ] || usage; QUIET="$2"; shift 2 ;;
+    --quiet=?*) QUIET="${1#--quiet=}"; shift ;;
     --max) [ $# -ge 2 ] || usage; MAX="$2"; shift 2 ;;
     --max=*) MAX="${1#--max=}"; shift ;;
     --tag) [ $# -ge 2 ] || usage; TAG="$2"; shift 2 ;;
@@ -412,6 +426,10 @@ if [ "$SHORT" = 1 ]; then  # a short job is seconds: the environment's switch do
   WHEN_IDLE=0
 fi
 if [ -n "$MAX" ] && [ "$SHORT" = 0 ]; then echo "setup/heavy: --max belongs to --short" >&2; exit 2; fi
+if [ -n "$QUIET" ]; then
+  case "$QUIET" in ''|*[!0-9.]*|.|*.*.*) echo "setup/heavy: --quiet needs a load1 bound (a number), not '$QUIET'" >&2; exit 2 ;; esac
+  [ "$SHORT" = 0 ] || { echo "setup/heavy: --quiet does not apply to --short (a short job is seconds)" >&2; exit 2; }
+fi
 if [ "$SHORT" = 1 ]; then
   MAX="${MAX:-$SHORT_CAP}"
   case "$MAX" in ''|*[!0-9]*|0) echo "setup/heavy: --max must be a positive number of seconds, not '$MAX'" >&2; exit 2 ;; esac
@@ -423,6 +441,28 @@ if [ "$SHORT" = 1 ]; then
   MYQ="$SQ"
 else
   MYQ="$Q"
+fi
+# ONE HEAVY JOB PER EXECUTOR RUN (2026-11-10: the caps above count setup jobs in aggregate, so one hw run held or queued three at once, one of them
+# a whole `./invokers` package, and four runs froze both slots for 20 min). Inside an executor (HW_TASK, with the run's own HW_WORKDIR/HW_RUN) a
+# second slot job while the same run holds or queues one is refused, exit 75. The short lane is its own lane, and a job started by a heavy job
+# (HW_HEAVY_RUNNING) is that job's own.
+if [ "$SHORT" = 0 ] && [ -n "${HW_TASK:-}" ] && [ "${HW_HEAVY_RUNNING:-}" != 1 ] && [ -n "$(run_of_env)" ]; then
+  _mine="$(run_of_env)"; _other=""
+  for _k in $(slot_dirs); do  # held
+    _l="$(lockdir "$_k")"; read_owner "$_l"; _r=""; [ -r "$_l/run" ] && read -r _r < "$_l/run" 2>/dev/null
+    [ "$_r" = "$_mine" ] && alive "$OPID" && { _other="slot $_k: $OTAG (pid $OPID)"; break; }  # MUTATION-ANCHOR: 1311-M02
+  done
+  if [ -z "$_other" ]; then  # queued
+    for _f in "$Q"/*; do
+      [ -e "$_f" ] || continue
+      _t=""; _r=""; { IFS= read -r _t; IFS= read -r _r; } < "$_f" 2>/dev/null || true
+      [ "$_r" = "$_mine" ] && alive "${_f##*.}" && { _other="queued: $_t (pid ${_f##*.})"; break; }  # MUTATION-ANCHOR: 1311-M01
+    done
+  fi
+  if [ -n "$_other" ]; then
+    printf 'setup/heavy: refused (exit 75): this hw run already has a heavy job (%s). An executor holds or queues ONE at a time: wait for its notification, then start the next. For one test, not a package: setup/heavy --short -- sh -c '"'"'cd core && go test -count=1 -run <T> .'"'"'\n' "$_other" >&2
+    exit 75
+  fi
 fi
 mkdir -p "$MYQ" || exit 1
 
@@ -455,6 +495,24 @@ wait_idle() {  # block until the console has been idle long enough; says so once
       echo "setup/heavy: $TAG waits for the console to be idle ${IDLE_MIN} min (idle now ${s:-?}s) — heavy work does not run while the Mac is in use" >&2
     fi
     sleep "$IDLE_POLL" & wait $!
+  done
+  acct_end
+}
+quiet_now() {  # 0 when load1 reads at or under the bound (or cannot be read: a machine that cannot say is not held)
+  local l; l="$(load1_reading)"
+  [ "$l" = "-" ] || awk -v l="$l" -v m="$QUIET" 'BEGIN { exit !(l + 0 <= m + 0) }'
+}
+wait_quiet() {  # hold the slot until load1 is under the bound; says so once a minute
+  local last=0 t
+  [ -n "$QUIET" ] || return 0
+  quiet_now && return 0  # MUTATION-ANCHOR: 1040-H27
+  acct_begin
+  until quiet_now; do
+    t="$(now)"
+    if [ $((t - last)) -ge "$REPORT" ]; then
+      last="$t"; echo "setup/heavy: $TAG waits for load1 <= $QUIET (now $(load1_reading)) before it starts" >&2
+    fi
+    sleep "$POLL" & wait $!
   done
   acct_end
 }
@@ -687,7 +745,10 @@ watch_frozen() {  # <command pid> <lock dir>
     # a pause this made itself is not the guard's freeze. The marker is read AFTER the sample, not before it: `ps` of the whole machine takes
     # seconds on a loaded one, and a pause that began inside it (the marker is written BEFORE the stop) is seen as a stopped tree; checked
     # only before, a zero-minute threshold alerted at once (1131, 2026-11-05). A pause in progress falls to the clearing branch below.
-    if tree_frozen "$1" && [ ! -e "$2/paused" ]; then  # MUTATION-ANCHOR: 1131-H04
+    # ... and BEFORE it too: a pause that ENDS inside the sample (do_resume continues the tree, then removes the marker) is seen as a stopped
+    # tree whose marker is already gone (1131 I3, 2026-11-10: a zero-minute threshold alerted on heavy's own resume). A marker present at either
+    # end of the sample means the stop may be heavy's own.
+    if [ ! -e "$2/paused" ] && tree_frozen "$1" && [ ! -e "$2/paused" ]; then  # MUTATION-ANCHOR: 1131-H04
       t="$(wnow)"
       if [ -z "$since" ]; then since="$t"; alerted=0; printf '%s\n' "$since" > "$2/frozen.$$" && mv -f "$2/frozen.$$" "$2/frozen"; fi
       if [ "$alerted" = 0 ] && [ $((t - since)) -ge $((FROZEN_MIN * 60)) ]; then  # MUTATION-ANCHOR: 1040-H11  # MUTATION-ANCHOR: 1040-H13
@@ -701,6 +762,7 @@ watch_frozen() {  # <command pid> <lock dir>
 HEAVY_BIN="$(cd -P "$(dirname "$0")/../bin" 2>/dev/null && pwd)"
 
 [ "$WHEN_IDLE" = 0 ] || wait_idle   # the slot may have taken a while: the Mac may be in use again
+wait_quiet
 
 preflight
 
@@ -735,6 +797,7 @@ record_verdict() {  # <tree before> <the command as one line>
   return 0
 }
 TREE0=""; [ "$SHORT" = 1 ] || TREE0="$(wt_tree)" || TREE0=""
+LOAD0="$(load1_reading)"  # MUTATION-ANCHOR: 1040-H28
 start="$(now)"; start_iso="$(date +%Y-%m-%dT%H:%M:%S)"
 "$@" <&0 &
 CPID=$!
@@ -768,7 +831,7 @@ CPID=""
 stop_watch
 end="$(now)"; end_iso="$(date +%Y-%m-%dT%H:%M:%S)"
 LOGTAG="$TAG"; [ "$SHORT" = 0 ] || LOGTAG="short:$TAG"
-printf '%s %s %s %s %s %s\n' "$start_iso" "$end_iso" $((end - start)) "$rc" "$LOGTAG" "$*" >> "$LOG"  # MUTATION-ANCHOR: 1040-H08
+printf '%s %s %s %s load1=%s/%s %s %s\n' "$start_iso" "$end_iso" $((end - start)) "$rc" "$LOAD0" "$(load1_reading)" "$LOGTAG" "$*" >> "$LOG"  # MUTATION-ANCHOR: 1040-H08
 [ "$rc" != 0 ] || record_verdict "$TREE0" "$*"
 release
 exit "$rc"  # MUTATION-ANCHOR: 1040-H04

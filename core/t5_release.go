@@ -145,16 +145,10 @@ func (d *dsp) dispatchQA() {
 		return
 	}
 	if d.dispatchDry {
-		d.ok("QA " + lane + ":" + task + " would be dispatched with this release")
+		d.ok("QA " + lane + ":" + task + " would be dispatched with this release (hw " + strings.Join(d.qaArgs(lane, task), " ") + ")")
 		return
 	}
-	args := []string{lane, task}
-	if d.here {
-		args = append(args, "--here")
-	}
-	if d.requestedBy != "" {
-		args = append(args, "--requested-by", d.requestedBy)
-	}
+	args := d.qaArgs(lane, task)
 	cmd := exec.Command(d.c.brain+"/bin/hw", args...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -162,4 +156,50 @@ func (d *dsp) dispatchQA() {
 		return
 	}
 	d.ok("QA " + lane + ":" + task + " dispatched with this release")
+}
+
+// The release's flags its QA carries: what a person launching that QA brief by hand with them would type. Each takes a value
+// except --fresh and --no-reuse-check. The rest are the release's own (placement, worktree, database, report, lease, reasons).
+var qaCarriedValue = map[string]string{"--account": "", "--base": "base", "--sdd": "sdd", "--model": "model", "--effort": "effort", "--agent": "agent"} // flag → the brief key that declares it
+var qaCarriedBool = map[string]bool{"--fresh": true, "--no-reuse-check": true}
+
+// noteQACarry is called by parseFlags at every flag position: it remembers a carried flag and its value.
+func (d *dsp) noteQACarry(rest []string) {
+	if _, ok := qaCarriedValue[rest[0]]; ok && len(rest) > 1 {
+		d.qaCarry = append(d.qaCarry, [2]string{rest[0], rest[1]})
+	} else if qaCarriedBool[rest[0]] {
+		d.qaCarry = append(d.qaCarry, [2]string{rest[0], ""})
+	}
+}
+
+// qaArgs is the argument list of the QA's `hw`: lane, task, the release's carried flags, then --here and --requested-by as before.
+// A flag whose key the QA brief declares with a different value is not carried: that declaration is the QA's own, and its
+// contract check holds it. Without this the QA of a release run with --base main resolved the lane's base and was refused
+// by the brief's own `base: main` (measured 2026-11-10).
+func (d *dsp) qaArgs(lane, task string) []string {
+	args := []string{lane, task}
+	declared := map[string]string{}
+	for _, l := range strings.Split(brBriefDeclares(d.c.brain+"/"+lane+"/briefs/"+task+".md"), "\n") {
+		if k, v := brReadKV(l); k != "" {
+			declared[k] = v
+		}
+	}
+	for _, f := range d.qaCarry {
+		if key := qaCarriedValue[f[0]]; key != "" {
+			if v, ok := declared[key]; ok && v != f[1] {
+				continue
+			}
+		}
+		args = append(args, f[0])
+		if !qaCarriedBool[f[0]] {
+			args = append(args, f[1])
+		}
+	}
+	if d.here {
+		args = append(args, "--here")
+	}
+	if d.requestedBy != "" {
+		args = append(args, "--requested-by", d.requestedBy)
+	}
+	return args
 }

@@ -504,7 +504,7 @@ func (d *dsp) checkTaskKind(kind, how string) {
 
 // ── the frontmatter ─────────────────────────────────────────────────────────
 
-var brKnownDecl = map[string]bool{"agent": true, "model": true, "sdd": true, "placement": true, "worktree": true, "database": true,
+var brKnownDecl = map[string]bool{"agent": true, "model": true, "effort": true, "sdd": true, "placement": true, "worktree": true, "database": true,
 	"invoker": true, "requires": true, "requires-agents": true, "kind": true, "base": true, "decision": true, "delivery": true,
 	"boundary": true, "deployed_check": true, "sandbox": true, "review": true, "plugins": true, "requested_by": true, "asked": true, "authorizes": true, "secrets": true,
 	"top_tier_why": true, "after": true,
@@ -618,6 +618,18 @@ func brBriefDeclares(path string) string {
 	return strings.Join(out, "\n")
 }
 
+// warnBriefNamesNoModelNorEffort is the one line a brief that holds its dispatch to neither a model nor a level gets: a
+// warning, never a refusal, naming both keys and what this dispatch resolves, so the brainer sees what was left to chance.
+// Only a brief is named: a dispatch with no brief has nothing to declare in.
+func (d *dsp) warnBriefNamesNoModelNorEffort(decls string) {
+	if d.brief == "" || brHasKey(decls, "model") || brHasKey(decls, "effort") {
+		return
+	}
+	d.warn("brief declares neither model: nor effort:, so nothing holds this dispatch to either (it resolves model=" +
+		orDefaultStr(d.model, "<agent default>") + " effort=" + orDefaultStr(d.effort, "<agent default>") +
+		"). Declare both in the frontmatter; they are checks, never a source — the flags still choose.")
+}
+
 // loadBriefDecls is _load_brief_decls: the frontmatter read once, BRIEF_DECLS returned (no trailing newline).
 // Area C reads it for `sdd` (the sdd model gate).
 func (d *dsp) loadBriefDecls() string {
@@ -653,13 +665,35 @@ func brReadKV(line string) (string, string) {
 	return key, strings.TrimRight(strings.TrimLeft(rest, "\t"), "\t")
 }
 
+// briefVendor is the vendor whose levels the brief's `effort:` is judged by: the one that will RUN it. A fresh dispatch runs the
+// resolved --agent; a REUSED pane runs its own, which the lane's default does not name (a codex pane takes `ultra`, a claude
+// lane does not), so it is measured live through herdr — the same read the manifest prints. Unmeasured, the resolved agent.
+func (d *dsp) briefVendor() string {
+	if d.reusePane == "" {
+		return d.agent
+	}
+	if d.reuseVendor == "" {
+		hv, _ := herdrClient{getenv: d.getenv, env: d.environ()}.stdout("agent", "get", d.reusePane)
+		d.reuseVendor = jqRawOr(hv, "", "result", "agent", "agent")
+	}
+	return orDefaultStr(d.reuseVendor, d.agent)
+}
+
 // brDispatchActual is _dispatch_actual: the resolved value of one declared key.
 func (d *dsp) brDispatchActual(key string) string {
 	switch key {
 	case "agent":
 		return d.agent // # MUTATION-ANCHOR: 844-A32
-	case "model":
+	case "model": // what runs: --model, else the lane's default, else the vendor's own
+		if d.reusePane != "" { // a REUSED session keeps the model of ITS launch: the brief is held to the one it measured
+			return orDefaultStr(d.nextDispatchModel(d.reuseRundir), "<unmeasured>")
+		}
 		return orDefaultStr(d.model, "<agent default>")
+	case "effort": // what runs: --effort, else the lane's declared default (pi's roster), else the vendor's own
+		if d.reusePane != "" { // a REUSED session keeps the level of ITS launch: the brief is held to the one it measured
+			return orDefaultStr(d.nextDispatchEffort(d.reuseRundir), "<unmeasured>")
+		}
+		return orDefaultStr(d.effort, "<agent default>")
 	case "sdd":
 		if d.brSddIsSet() {
 			return orDefaultStr(d.sddEffectiveMode, "none")
@@ -897,7 +931,7 @@ func (d *dsp) checkBriefAffectedSourceRule() {
 	if line == "" {
 		return
 	}
-	d.die("the brief's Verification hands `--affected` a source file (" + line + "). It takes a FILE OF CHANGED PATHS, one per line — given a source file it reads its lines as paths, matches nothing, prints nothing and exits 0, which reads as \"my change reaches no partition\" (measured 2026-11-01). NOTHING was built. Write the paths first (`git diff --name-only main > /tmp/changed`) and pass that file.")
+	d.die("the brief's Verification hands `--affected` a source file (" + line + "). It takes a FILE OF CHANGED PATHS, one per line — given a source file it reads its lines as paths, matches nothing, prints nothing and exits 0, which reads as \"my change reaches no partition\" (measured 2026-11-01). NOTHING was built. Write the paths first (`git diff --name-only \"$(git merge-base HEAD main)\" > /tmp/changed`) and pass that file.")
 }
 
 // checkBriefAffectedPlaceholder WARNS — it never refuses — when the brief spells `--affected` with a PLACEHOLDER
@@ -915,7 +949,7 @@ func (d *dsp) checkBriefAffectedPlaceholder() {
 	if len(line) > 200 {
 		line = line[:200] + "…"
 	}
-	d.warn("the brief hands `--affected` a placeholder (" + line + ") as if it took a source file. It takes a FILE OF CHANGED PATHS, one per line: `--affected <file>` names nothing on disk and a shell reads `<file>` as a redirect, so the line does not run. Spell the two that do: `git diff --name-only main > /tmp/changed` then `bash setup/go-test-core.sh --affected /tmp/changed` (the same pair setup/go-test-core.sh --help prints).")
+	d.warn("the brief hands `--affected` a placeholder (" + line + ") as if it took a source file. It takes a FILE OF CHANGED PATHS, one per line: `--affected <file>` names nothing on disk and a shell reads `<file>` as a redirect, so the line does not run. Spell the two that do: `git diff --name-only \"$(git merge-base HEAD main)\" > /tmp/changed` then `bash setup/go-test-core.sh --affected /tmp/changed` (the same pair setup/go-test-core.sh --help prints).")
 }
 
 // brAffectedPlaceholderRe matches an `--affected` argument that is a placeholder: `<` where a path would start.
@@ -1050,6 +1084,7 @@ func (d *dsp) checkBriefContract() {
 	inferred := brTaskKindFromName(d.task)
 	if decls == "" {
 		d.briefDeclared = "none"
+		d.warnBriefNamesNoModelNorEffort(decls)
 		if inferred != "" { // # MUTATION-ANCHOR: 844-A39
 			d.checkTaskKind(inferred, "inferred")
 		}
@@ -1164,6 +1199,11 @@ func (d *dsp) checkBriefContract() {
 				d.die(msg)
 			}
 		}
+		if key == "effort" { // the brief door of the same ONE check: --effort's own levels and words, per vendor
+			if msg := effortRefusal(d.briefVendor(), val); msg != "" {
+				d.die(msg)
+			}
+		}
 		actual := d.brDispatchActual(key)
 		if val != actual { // # MUTATION-ANCHOR: 844-A55
 			d.warn("brief declares " + key + "=" + val + " but this dispatch resolves " + key + "=" + actual)
@@ -1172,6 +1212,7 @@ func (d *dsp) checkBriefContract() {
 			d.brAppendDeclared(key)
 		}
 	}
+	d.warnBriefNamesNoModelNorEffort(decls)
 	if bad { // # MUTATION-ANCHOR: 844-A57
 		if requiredAgentBad { // # MUTATION-ANCHOR: 844-A56
 			d.die("the brief requires a named agent this " + d.agent + " runtime cannot invoke (see above). NOTHING was built — no worktree, no database, no pane. Choose a vendor that defines that agent, or change the brief if the mechanism requirement is wrong.")

@@ -78,6 +78,28 @@ func (a *app) reviveResolvePermissions(st *reviveRunState) {
 	a.reviveDie("permissions must be ask or skip (got: '" + v + "', from " + src + ")")
 }
 
+// reviveEnvAllowed reports whether `hw revive` may replay a name from the run env. The file sits in the
+// executor-writable workdir, and the replay starts the pane's shell BEFORE the sandbox shim is armed (lead #19), so
+// only the names _write_run_env writes (core/t5l_env.go) pass, by exact name: BASH_ENV, ZDOTDIR, ENV, PATH, DYLD_*,
+// HW_CORE and every other HW_*/ENGRAM_* name hw never wrote are refused.
+var reviveEnvAllowedNames = map[string]bool{}
+
+func init() {
+	for _, k := range strings.Fields(`HW_PROJECT HW_TASK HW_WORKDIR HW_RUN HW_ARTIFACTS TMPDIR HW_LOCK_DIR ENGRAM_PROJECT
+		HW_EXECUTOR_VENDOR HW_INVOKER_VENDOR HW_INVOKER_SESSION HW_INVOKER_ENDPOINT HW_AGENT_PORT HW_AGENT_ENDPOINT
+		HW_PORT_WEB HW_PORT_API AGENT_BROWSER_NAMESPACE HW_BROWSER_PROFILE HW_REVIEW_BASE_REF HW_REVIEW_BASE_BRANCH
+		CLAUDE_CONFIG_DIR CLAUDE_CODE_DISABLE_AUTO_MEMORY CLAUDE_CODE_SUBAGENT_MODEL OPENCODE_CONFIG_DIR OPENCODE_CONFIG
+		HW_NEXT_WAIT_MS OPENCODE_CONFIG_CONTENT HW_OPENCODE_EFFORT HW_OPENCODE_EFFORT_AGENT HW_PI_BRAIN_GUARD
+		HW_PI_FALLBACK_MODEL HW_PI_FALLBACK_THINKING HW_PI_ASKED_MODEL HW_PI_SUBAGENTS_DIR HW_PI_SUBAGENT_MODELS
+		HW_PI_EXPLORE_AGENT HW_PI_CLAUDE_AGENT_DIRS HW_PI_PLUGIN_AGENT_DIRS PI_SUBAGENT_EXTRA_AGENT_DIRS HW_INVOKER_PANE
+		HW_NO_REPORT HW_CHAINING_ENABLED HW_CHAINING_LEASE_SECONDS HW_CHAINING_LEASE_REASON HW_CHAINING_LEASE_HOLDER
+		HW_LAUNCH_MODE`) {
+		reviveEnvAllowedNames[k] = true
+	}
+}
+
+func reviveEnvAllowed(key string) bool { return reviveEnvAllowedNames[key] }
+
 // reviveEnvRecords is `runenv dump --nul` (strict): the run's env as KEY=value records, or the diagnostic
 // runenv prints for a file outside the grammar.
 func (a *app) reviveEnvRecords(file string) ([]KV, string) {

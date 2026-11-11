@@ -363,7 +363,7 @@ reconcile_count="$(printf '%s\n' "$bin_lint_out" | grep -c "^$ROOT/bin/hw-reconc
 # | wc -l …)"` was one of the accepted debts, and the fix that made a FAILED
 # `git status` produce `undetermined` instead of `safe` removed the whole
 # re-read. Paying a debt down must not read as a regression; ADDING one must.
-[ "$brain_archive_count:$hw_count:$reconcile_count" = "0:1:11" ] \
+[ "$brain_archive_count:$hw_count:$reconcile_count" = "0:1:0" ] \
   || fail "lint-shell: full-bin finding distribution changed (brain-archive:hw:hw-reconcile=$brain_archive_count:$hw_count:$reconcile_count)"
 # THE SUMMARY LINE IS NOT A FINDING, and hashing it made this ratchet fire on
 # things that are not findings. `lint-shell` now ends with "N finding(s) in M
@@ -393,8 +393,11 @@ actual_hash="$(printf '%s\n' "$normalized" | shasum -a 256 | cut -d ' ' -f1)"
 #   reproduces fd2bbf67… with this very pipeline, so the move of the hash is the removed bash and nothing else.
 #   0.7.0: brain-archive lost its bash body (91bc2e367) and its one finding (`HEAD_SHA="$(git -C "$BRAIN" rev-parse HEAD)"`) left with it:
 #   13 -> 12, distribution 1:1:11 -> 0:1:11. Triage: the old normalized set is the new one plus exactly that line, and hashes 09d84dd2…
+#   bash-port-rest: bin/hw-reconcile lost its bash body (the detector is core/wrappers_reconcile.go; the file is a shim that sets `-euo pipefail`
+#   over a launcher with no consumer of a failing command): 12 -> 1 findings, distribution 0:1:11 -> 0:1:0. Triage: the old normalized set minus
+#   its eleven bin/hw-reconcile lines is the new one, and nothing was added; the one left is the hw shim's `shift 2`.
 #   2026-10-18: `sort` became `LC_ALL=C sort` — Linux sorted the same 21 findings in another order and hashed
 #   d4273575…; the set did not change, only the collation that orders it. 14cb75e5… was macOS UTF-8 order.
-[ "$actual_hash" = 42c86a203eb7338a241c04c20982f5a10815fec577347eedffe5838b2cbadfdd ] \
+[ "$actual_hash" = 751c610f54f0273ee84684b5edcebe9d2676d91d0c4aec7291901c8186517a8b ] \
   || fail "lint-shell: full-bin semantic finding set changed (sha256=$actual_hash) and needs fresh triage: $bin_lint_out"
-pass "lint-shell: full bin/* scan is automatic and its 12 active-errexit consumer findings are exact, not an untriaged dump"
+pass "lint-shell: full bin/* scan is automatic and its 1 active-errexit consumer finding is exact, not an untriaged dump"

@@ -84,6 +84,7 @@ type dsp struct {
 	checkReuse                                bool
 	freshSource                               string
 	baseOverride, baseSrc                     string
+	qaCarry                                   [][2]string // the release's own flags its QA carries (t5_release.go qaArgs), in the order typed
 	requestedBy, requestedBySrc               string
 	reportToChosen                            bool
 

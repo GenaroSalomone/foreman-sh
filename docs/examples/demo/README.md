@@ -9,7 +9,7 @@ executor to read the README.
 git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
 git -C ~/code/toy add README.md && git -C ~/code/toy commit -m init
 ./install.sh --brain ~/brain --lane demo --repo ~/code/toy
-cp examples/demo/briefs/hello.md ~/brain/demo/briefs/
+cp docs/examples/demo/briefs/hello.md ~/brain/demo/briefs/
 brain demo                                   # then, from the brainer's pane:
 hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none --no-report --dry-run
 hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none

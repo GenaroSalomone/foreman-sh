@@ -225,6 +225,9 @@ func (d *dsp) run(argv []string) {
 		d.reuseRoute()
 		return
 	}
+	if msg := d.hcRefusal(); msg != "" { // the launch asks again (hcLaneGate): what it would refuse, the dry run prints
+		d.die(msg)
+	}
 	d.credentialPreflight()
 	d.hwRun = time.Now().Format("20060102-150405") + "-" + fmt.Sprint(os.Getpid())
 	d.dispatchManifest(d.intendedWorkdir())
@@ -244,6 +247,7 @@ func orDefaultStr(v, def string) string {
 // parseFlags is the `while [ $# -gt 0 ]` loop of bin/hw, option for option.
 func (d *dsp) parseFlags(rest []string) {
 	for len(rest) > 0 {
+		d.noteQACarry(rest)
 		switch rest[0] {
 		case "--agent":
 			d.needVal(rest)

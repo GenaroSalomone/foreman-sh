@@ -21,6 +21,8 @@
                               a run env without HW_INVOKER_PANE) nothing falls back to the
                               environment's pane, which in an executor is its own: a kick
                               writes nothing and leaves a line in <work>/.cockpit/skipped-kicks.log
+             --lane NAME      the lane the brainer was opened for ($HW_COCKPIT_LANE); published as `lane`.
+                              A kick is told none and keeps the one in the file it rewrites.
              --state PATH     the file (default $HW_COCKPIT_STATE, else
                               <work>/.cockpit/<invoker>.json, or <core id>.<invoker>.json for an hc address)
              --stdout         print instead of writing (nothing is created)
@@ -201,12 +203,18 @@ def _core_ok(core):
     return core if core and re.fullmatch(r"[A-Za-z0-9_-]+", core) else None
 
 
+def _invoker_ok(v):
+    """A pane address is one path component: a herdr pane id (w1:p2) or an hc address (t2). The run env that names it
+    is executor-writable, so a value with a separator or a `..` must not reach a path (lead #2)."""
+    return isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:_.-]*", v) is not None and ".." not in v
+
+
 def state_path(invoker, core=None):
     p = os.environ.get("HW_COCKPIT_STATE")
     if p:
         return p
     w = work_root()
-    if not w or not invoker:
+    if not w or not invoker or not _invoker_ok(invoker):
         return None
     # An hc address (t2) is only unique inside one core: two cores (the app, a QA instance, a restart that recycles the
     # numbers) shared one file per address. The core's id goes in the name; a herdr pane id (w1:p2) needs none.
@@ -285,8 +293,8 @@ def hc_panes():
                 or not isinstance(got.get("cwd"), str):
             continue
         labels = {k: v for k, v in got["labels"].items() if isinstance(v, str)}
-        if not labels.get("hw_task"):
-            continue
+        if not labels.get("hw_task") or labels.get("hw_role"):
+            continue  # not an executor hw launched (a lane's dev server carries the task's labels and an hw_role)
         tokens = dict(labels)
         for k, v in labels.items():
             if k.startswith("hw_"):
@@ -1190,7 +1198,10 @@ def totals_of(rows, omitted):
             "rulings_pending": sum(r["rulings_pending"]["count"] for r in rows)}
 
 
-def build_state(invoker, seq, interval_s, rev, now=None):
+LANE = None  # the lane the brainer was opened for (--lane): the mod names an empty brainer by it
+
+
+def build_state(invoker, seq, interval_s, rev, now=None, lane=None):
     mods = {"runenv": _load("runenv"), "holdfacts": _load("holdfacts"), "actions": _load("hw-actions")}
     ok, panes, err = herdr_panes()
     hc_ok, hc_found = hc_panes()
@@ -1226,6 +1237,7 @@ def build_state(invoker, seq, interval_s, rev, now=None):
     state = {"schema": SCHEMA, "generated_at": now if now is not None else now_ms(),
              "writer": {"pid": os.getpid(), "hw_rev": rev, "seq": seq, "interval_s": interval_s},
              "invoker_pane": invoker,
+             "lane": lane,
              "herdr": {"ok": ok, "server_started_ms": None, "error": err},
              "totals": totals_of(rows, omitted), "rules": {"cut": cut_state(work_root()), "no_progress_after_ms": no_progress_ms()}, "rows": rows}
     return fit(state)
@@ -1372,7 +1384,7 @@ def write_once(invoker, path, interval_s, rev, to_stdout=False):
     if to_stdout:
         if path:  # read what the writers cached; --stdout creates nothing
             load_cache(path + CACHE_SUFFIX)
-        print(serialize(build_state(invoker, 0, interval_s, rev)), end="")
+        print(serialize(build_state(invoker, 0, interval_s, rev, lane=LANE)), end="")
         return 0
     if not path:
         print("cockpit-state: no state path (no work root, and no HW_COCKPIT_STATE)", file=sys.stderr)
@@ -1389,16 +1401,19 @@ def write_once(invoker, path, interval_s, rev, to_stdout=False):
                 return 0  # another writer is mid-write; its file is as new as ours
             time.sleep(0.02)
     try:
-        prev = 0
+        prev, lane = 0, LANE
         try:
             with open(path, encoding="utf-8") as fh:
-                prev = int(json.load(fh)["writer"]["seq"])
-        except (OSError, ValueError, KeyError, TypeError):
+                old = json.load(fh)
+            prev = int(old["writer"]["seq"])
+            # a kick (its own process) is told no lane: the file the brainer's writer wrote names it
+            lane = lane or (old.get("lane") if isinstance(old.get("lane"), str) else None)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             prev = 0
         cache_file = path + CACHE_SUFFIX  # MUTATION-ANCHOR: 922-M07
         load_cache(cache_file)
         _CACHE_SEEN.clear()
-        body = serialize(build_state(invoker, prev + 1, interval_s, rev))
+        body = serialize(build_state(invoker, prev + 1, interval_s, rev, lane=lane))
         save_cache(cache_file)
         tmp = "%s.tmp.%d" % (path, os.getpid())
         # 0600: the rows carry report summaries, which are the brainer's to read and nobody else's
@@ -1643,7 +1658,8 @@ def invoker_of_rundir(rundir):
     rundir = rundir.rstrip("/")
     if re.fullmatch(r"t\d+", os.path.basename(rundir)):
         rundir = os.path.dirname(rundir)
-    return (_load("runenv").read(rundir, lenient=True) or {}).get("HW_INVOKER_PANE")
+    v = (_load("runenv").read(rundir, lenient=True) or {}).get("HW_INVOKER_PANE")
+    return v if _invoker_ok(v) else None
 
 
 def note_skipped_kick(a):
@@ -1684,9 +1700,12 @@ def main(argv):
     ap.add_argument("--pilot", action="store_true")
     ap.add_argument("--stdout", action="store_true")
     ap.add_argument("--invoker")
+    ap.add_argument("--lane")
     ap.add_argument("--rundir")
     ap.add_argument("--state")
     a = ap.parse_args(argv)
+    global LANE
+    LANE = (a.lane or os.environ.get("HW_COCKPIT_LANE") or "").strip() or None
     if a.pilot:
         w = work_root()
         cdir = os.path.dirname(a.state or os.environ.get("HW_COCKPIT_STATE") or "") or (w and os.path.join(w, ".cockpit"))

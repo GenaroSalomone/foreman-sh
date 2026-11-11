@@ -21,7 +21,7 @@
 #   4. brain + lane      install.sh does the work; a toy repository is made for the
 #                        default lane. What changed is MEASURED (a fingerprint before and
 #                        after), not assumed
-#   5. a sample brief    examples/demo/briefs/hello.md → <brain>/<lane>/briefs/, never
+#   5. a sample brief    docs/examples/demo/briefs/hello.md → <brain>/<lane>/briefs/, never
 #                        over a file that is there
 #   6. a dry-run dispatch of that brief — the proof
 #   7. what is still yours: PATH, Claude Code's first run, `brain <lane>`
@@ -215,7 +215,7 @@ case "$FIRST_RUN" in *bypass*) say "PENDING the Bypass Permissions warning was n
 stage 3/7 "herdr's Claude integration (needed) and engram (recommended)"
 BLOCKED=""
 herdr_int="$(herdr integration status 2>/dev/null || true)"
-if printf '%s\n' "$herdr_int" | grep -q '^claude: current'; then
+if grep -q '^claude: current' <<<"$herdr_int"; then
   ok "herdr's claude integration"
 elif [ "$DRY" = 1 ]; then
   would "run: herdr integration install claude   (asks first; --yes answers it; creates $CLAUDE_CFG if Claude Code has not yet)"
@@ -336,10 +336,10 @@ fi
 stage 5/7 "a sample brief"
 BRIEF="$BRAIN/$LANE/briefs/$SAMPLE_TASK.md"
 TEMPLATE=""
-for t in "$SRC/examples/demo/briefs/hello.md" "$SRC/setup/export/overlay/examples/demo/briefs/hello.md"; do
+for t in "$SRC/docs/examples/demo/briefs/hello.md" "$SRC/setup/export/overlay/docs/examples/demo/briefs/hello.md"; do
   [ -f "$t" ] && { TEMPLATE="$t"; break; }
 done
-[ -n "$TEMPLATE" ] || die "the sample brief (examples/demo/briefs/hello.md) is not in $SRC"
+[ -n "$TEMPLATE" ] || die "the sample brief (docs/examples/demo/briefs/hello.md) is not in $SRC"
 if [ -f "$BRIEF" ]; then ok "$BRIEF (left as it is)"   # MUTATION-ANCHOR: 824-M02
 elif [ "$DRY" = 1 ]; then would "copy the sample brief to $BRIEF"
 else
@@ -361,7 +361,7 @@ else
   if [ "$rc" != 0 ]; then
     case "$out" in *"HW_INVOKER_PANE is UNRESOLVED"*) rc=0; out="$(dispatch --no-report)" || rc=$?; NO_REPORT=1 ;; esac
   fi
-  if [ "$rc" = 0 ] && printf '%s\n' "$out" | grep -q 'dry run — nothing created'; then
+  if [ "$rc" = 0 ] && grep -q 'dry run — nothing created' <<<"$out"; then
     printf '%s\n' "$out" | grep -E '^  dispatch |^    (agent|worktree|base|brief|verify) ' | sed 's/^/  /'
     ok "dry run: hw $LANE $SAMPLE_TASK${NO_REPORT:+ (--no-report: a plain terminal has no pane to report to; \`brain $LANE\` has)}"
   else

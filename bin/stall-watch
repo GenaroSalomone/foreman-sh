@@ -11,54 +11,43 @@
 # `STALLED since HH:MM`; the next turn end removes it), one line in ~/.cache/hw/stall-alerts.log, and, with HW_INVOKER_PANE set,
 # `channel-send --report`s the pane. ONE alert per stall: the marker names the turn it alerted for, and a later watcher of the
 # same turn finds it and stays quiet. A long legitimate wait (a heavy run, an unanswered ask) alerts too: the message says to look, not that it is dead.
-set -u
+#
+# Since 2026-11-10 this is a shim: the watcher is `hw-core stall-watch` (core/wrappers_stall_watch.go, tests in
+# core/wrappers_stall_watch_test.go and setup/tests/1141). It stays a file because hw-core starts it by this path, so
+# the same command works from a checkout that has not built hw-core yet, with the same message.
+set -euo pipefail
 
-STATE="${1:-}"; TURNS="${2:-}"; WHAT="${3:-a legal wait}"
-[ -d "$STATE" ] && [ -n "$TURNS" ] || exit 0
-
-D="${HW_STALL_DIR:-$HOME/.cache/hw}"
-ALERTS="$D/stall-alerts.log"
-POLL="${HW_STALL_POLL:-30}"
-LIMIT="${HW_STALL_AFTER_SEC:-$(( ${HW_STALL_MIN:-20} * 60 ))}"
-BIN="$(cd -P "$(dirname "$0")" 2>/dev/null && pwd)"
-now() { date +%s; }
-hhmm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || printf '?'; }  # BSD, then GNU
-cur_turns() { [ ! -r "$STATE/turns" ] || tr -dc '0-9' < "$STATE/turns"; }
-reported() {  # `done` in the current task's dir (the run dir, or t<N> from task 2 on), and no `reopened` beside it
-  local n="" dir="$STATE"
-  [ ! -r "$STATE/task" ] || n="$(tr -dc '0-9' < "$STATE/task")"
-  case "$n" in ""|0|1) ;; *) dir="$STATE/t$n" ;; esac
-  [ -e "$dir/done" ] && [ ! -e "$dir/reopened" ]
-}
-# an executor in the herdr app has HC_TERMINAL_ID and no HERDR_PANE_ID: alive while `hc get` says live
-pane_alive() {
-  if [ -z "${HERDR_PANE_ID:-}" ] && [ -n "${HC_TERMINAL_ID:-}" ]; then
-    command -v hc >/dev/null 2>&1 || return 0  # no hc to ask is not "gone"
-    hc get "$HC_TERMINAL_ID" --json 2>/dev/null | grep -q '"state": *"live"'; return
-  fi
-  [ -z "${HERDR_PANE_ID:-}" ] || herdr agent get "$HERDR_PANE_ID" >/dev/null 2>&1
-}
-
-mkdir -p "$D" 2>/dev/null
-start="$(now)"
-while :; do
-  sleep "$POLL" & wait $!
-  [ "$(cur_turns)" = "$TURNS" ] || exit 0
-  reported && exit 0
-  t="$(now)"
-  [ $((t - start)) -ge "$LIMIT" ] || continue
-  pane_alive || exit 0
-  # the marker is the claim: noclobber makes exactly one of several watchers of one stall win it. A marker of another turn is stale.
-  # A `cut` that failed prints nothing, the same bytes as a marker of another turn: it reads as stale and goes, and the claim below
-  # is made again. The direction is the safe one for a watcher, one duplicate alert at worst and never a stall left unsaid.
-  [ ! -e "$STATE/stalled" ] || [ "$(cut -d' ' -f2 "$STATE/stalled" 2>/dev/null)" = "$TURNS" ] || rm -f "$STATE/stalled"  # lint-shell: measured-elsewhere
-  ( set -C; printf '%s %s\n' "$start" "$TURNS" > "$STATE/stalled" ) 2>/dev/null || exit 0   # this stall was alerted
-  mins=$(( (t - start) / 60 ))
-  msg="stall: ${HW_PROJECT:-?}:${HW_TASK:-?} (pane ${HERDR_PANE_ID:-${HC_TERMINAL_ID:-?}}) ended its turn at $(hhmm "$start"), waiting on ${WHAT}, and has had no new turn for ${mins} min (HW_STALL_MIN=$((LIMIT / 60))). \`hw status\` shows it STALLED. It may be legitimate (a long heavy run, \`setup/heavy --status\`; an ask you have not answered) or stuck (an orphaned lock, a stopped holder): look at the pane, then rule it, or \`hw unstick\`/\`hw done\` it."
-  printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$msg" >> "$ALERTS"
-  [ -n "${HW_INVOKER_PANE:-}" ] || exit 0
-  cs="${HW_STALL_CHANNEL_SEND:-$BIN/channel-send}"
-  rc=0; "$cs" --report herdr "$HW_INVOKER_PANE" - "$msg" >/dev/null 2>&1 || rc=$?
-  [ "$rc" = 0 ] || printf '%s stall-watch: the alert above did not reach pane %s (channel-send exit %s)\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$HW_INVOKER_PANE" "$rc" >> "$ALERTS"
-  exit 0
+# ── the Go implementation: hw-core (core/wrappers_stall_watch.go)
+# The bash body is gone: this file keeps the name (the interface, setup/release-standard.md «Versioning») and execs
+# `hw-core stall-watch` with the same argv, stdin and environment. A `stall-watch=bash` word in ~/.config/hw/impl is retired: bin/impl-retired.sh says so
+# once and Go runs. hw-core is HW_CORE (a seam of the suite, never rebuilt), else beside this file, else core/dist/<os>-<arch>/
+# (setup/build-core builds it); one not built or older than core/'s sources is rebuilt by bin/core-rebuild when a toolchain is on PATH.
+set -euo pipefail
+_t_src="${BASH_SOURCE[0]}"
+while [ -L "$_t_src" ]; do
+  _t_dir="$(cd -P "$(dirname "$_t_src")" && pwd)" || break
+  _t_src="$(readlink "$_t_src")" || break
+  case "$_t_src" in /*) ;; *) _t_src="$_t_dir/$_t_src" ;; esac
 done
+_t_bin="$(cd -P "$(dirname "$_t_src")" 2>/dev/null && pwd)"
+[ ! -r "$_t_bin/impl-retired.sh" ] || { . "$_t_bin/impl-retired.sh"; impl_retired_warn stall-watch; }
+_t_core=""
+if [ -n "${HW_CORE:-}" ]; then
+  [ ! -x "$HW_CORE" ] || _t_core="$HW_CORE"
+else
+  _t_os="$(uname -s | tr 'A-Z' 'a-z')"; _t_arch="$(uname -m)"
+  case "$_t_arch" in x86_64) _t_arch=amd64 ;; aarch64|arm64) _t_arch=arm64 ;; esac
+  for _t_c in "$_t_bin/hw-core" "$_t_bin/../core/dist/$_t_os-$_t_arch/hw-core"; do
+    if [ -x "$_t_c" ]; then _t_core="$_t_c"; break; fi
+  done
+  if [ -n "$_t_core" ] && [ -d "$_t_bin/../core" ] \
+     && [ -n "$(find "$_t_bin/../core" -path '*/dist' -prune -o \( -name '*.go' -o -name '*.txt' -o -name go.mod \) -newer "$_t_core" -print -quit 2>/dev/null)" ]; then
+    _t_msg="$("$_t_bin/core-rebuild" "$_t_bin" "$_t_core" stall-watch 2>&1)" || :   # stale: rebuilt (bin/core-rebuild), or the old one runs with one line
+    [ -z "$_t_msg" ] || printf 'stall-watch: %s\n' "$_t_msg" >&2
+  fi
+fi
+if [ -n "$_t_core" ]; then
+  HW_WRAPPER_ARGV0="$0" HW_CORE_BIN_DIR="$_t_bin" exec "$_t_core" stall-watch "$@"
+fi
+printf 'stall-watch: hw-core is not built: run setup/build-core --native (it needs Go 1.22 or newer, https://go.dev/dl)\n' >&2
+exit 1

@@ -62,6 +62,7 @@ type brainRun struct {
 	awaitPane, resume, inPane        string
 	noConversation                   bool
 	engramLabel, engramSession       string
+	noEngram                         bool // the test worlds: no engram session is registered (the old worlds had no bin/engram-serve.sh to register with)
 	inproc                           bool
 	trap75                           bool
 	verdict, paneCwd                 string

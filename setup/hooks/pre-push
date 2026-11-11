@@ -182,7 +182,7 @@ range_needs_suite() {
     if ! changed="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null)"; then
       return 0   # could not compute this diff — fail toward requiring a verdict
     fi
-    printf '%s\n' "$changed" | grep -qE "$SUITE_TRIGGER_PATTERN"
+    grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$changed"
     return
   fi
   # The remote has no such ref (first push of this ref, or we do not know its
@@ -221,7 +221,7 @@ range_needs_suite() {
     if ! changed="$(git diff-tree --no-commit-id --name-only -r -m --root "$c" 2>/dev/null)"; then
       return 0   # could not read this commit's own change — fail toward requiring a verdict
     fi
-    if printf '%s\n' "$changed" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+    if grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$changed"; then
       return 0
     fi
   done <<EOF
@@ -316,7 +316,7 @@ ancestor_verdict_covers() {
     if ! changed="$(git diff-tree --no-commit-id --name-only -r -m --root "$c" 2>/dev/null)"; then
       return 1
     fi
-    if printf '%s\n' "$changed" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+    if grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$changed"; then
       trigger_tree="$(git rev-parse "$c^{tree}" 2>/dev/null || true)"
       [ -n "$trigger_tree" ] && full_verdict "$cache_dir/$trigger_tree" "$trigger_tree"
       return

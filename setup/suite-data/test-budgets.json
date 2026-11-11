@@ -55,7 +55,7 @@
     },
     "1272-herdr-cockpit-mod-reads-the-contract.sh": {
       "exit": 0,
-      "seconds": 1.24
+      "seconds": 3.04
     },
     "128-an-ancestors-verdict-can-cover-a-quieter-tip.sh": {
       "exit": 0,
@@ -104,10 +104,6 @@
     "187-un-instalador-de-un-comando.sh": {
       "exit": 0,
       "seconds": 34.17
-    },
-    "189-la-suite-no-escribe-en-engram.sh": {
-      "exit": 0,
-      "seconds": 0.89
     },
     "20-opencode-question-modal.sh": {
       "exit": 0,
@@ -350,6 +346,6 @@
       "seconds": 44.17
     }
   },
-  "measured_at": "2026-11-09T22:49:44Z",
+  "measured_at": "2026-11-10T21:05:10Z",
   "touched_budget_seconds": 90
 }

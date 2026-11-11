@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"hwcore/internal/mux"
 	"os"
 	"os/exec"
@@ -194,7 +195,16 @@ func (a *app) snapshotDoneReport(rundir string) {
 	if pane == "" {
 		return
 	}
-	info, _ := herdrOut(0, "agent", "get", pane)
+	// An app (hc) run publishes the same tokens as hw_-namespaced labels on its terminal: read them there, or the run
+	// closes with no report_* keys and History says "closed unreported" for every one (herdr-app-gaps-fix N-C).
+	getter := "herdr agent get "
+	var info string
+	if hcTerminal(pane) {
+		getter = "hc get "
+		info = hcTokensInfo(pane)
+	} else {
+		info, _ = herdrOut(0, "agent", "get", pane)
+	}
 	info = bashSub(info)
 	tokens := bashSub(strings.Join(jqTokens(info), "\n"))
 	if tokens == "" {
@@ -234,11 +244,11 @@ func (a *app) snapshotDoneReport(rundir string) {
 		}
 	}
 	summary := summaryOf(tokens)
-	src := func(what string) string { return "herdr agent get " + pane + " " + what }
+	src := func(what string) string { return getter + pane + " " + what }
 	a.receiptInto(rundir, "report_project", jqRawOr(tokens, "unknown", "hw_project"), src("token hw_project"))
 	a.receiptInto(rundir, "report_task", jqRawOr(tokens, "unknown", "hw_task"), src("token hw_task"))
-	a.receiptInto(rundir, "report_run", tokenRun, "herdr agent get "+pane+" token hw_run matched receipt run directory")
-	a.receiptInto(rundir, "report_summary", summary, "herdr agent get "+pane+" tokens sum/sum2/... before pane close")
+	a.receiptInto(rundir, "report_run", tokenRun, getter+pane+" token hw_run matched receipt run directory")
+	a.receiptInto(rundir, "report_summary", summary, getter+pane+" tokens sum/sum2/... before pane close")
 	a.receiptInto(rundir, "report_status", jqRawOr(tokens, "", "done_status"), src("token done_status"))
 	a.receiptInto(rundir, "report_state", jqRawOr(tokens, "unknown", "done_state"), src("token done_state"))
 	a.receiptInto(rundir, "report_artifacts", jqRawOr(tokens, "unknown", "artifacts"), src("token artifacts"))
@@ -458,4 +468,38 @@ func (a *app) receiptContextLine(receipt string) {
 		return
 	}
 	a.printf("    %s%s  (pane %s, read now)%s\n\n", a.cDim, a.ctxLineFor(pane), pane, a.c0)
+}
+
+// hcTerminal says whether a receipt's pane is an app terminal: herdr pane ids always carry a colon (`w3Z:p2`), hc addresses
+// never do (`t7`, `machine/t7`).
+func hcTerminal(pane string) bool { return pane != "" && !strings.Contains(pane, ":") }
+
+// hcTokensInfo is `hc get <addr> --json` in the shape of `herdr agent get`, {"result":{"agent":{"tokens":{…}}}}: the terminal's
+// labels are the tokens, under their hw_ name and under the bare one the report snapshot reads (done_status, sum, artifacts…).
+// "" when hc cannot answer.
+func hcTokensInfo(addr string) string {
+	raw, ok := hcOut(10*time.Second, "get", addr, "--json")
+	if !ok {
+		return ""
+	}
+	v, parsed := bjParse(brTrimNL(raw))
+	m, isMap := v.(jmap)
+	if !parsed || !isMap {
+		return ""
+	}
+	labels, _ := m["labels"].(jmap)
+	tokens := map[string]any{}
+	for k, val := range labels {
+		tokens[k] = val
+		if strings.HasPrefix(k, "hw_") {
+			if _, has := labels[strings.TrimPrefix(k, "hw_")]; !has {
+				tokens[strings.TrimPrefix(k, "hw_")] = val
+			}
+		}
+	}
+	out, err := json.Marshal(map[string]any{"result": map[string]any{"agent": map[string]any{"tokens": tokens}}})
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }

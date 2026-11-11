@@ -47,7 +47,7 @@ End with: Skill Resolution: {paths-injected|fallback-registry|fallback-path|none
 target_identity: <sha256>
 round: 1 | 2
 confirmed: []
-suspect: []            # every BLOCKER/CRITICAL one judge raised: {location, severity, judge, ruling: real|refuted|unverifiable, evidence}
+suspect: []            # every BLOCKER/CRITICAL one judge raised: {location, severity, judge, ruling: real|refuted|unverifiable, reproduced: true|false, evidence}; real + reproduced + introduced by the candidate is a fix work unit
 contradictions: []
 info: []
 fix_work_units: []

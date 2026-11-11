@@ -685,11 +685,26 @@ func doneWhoami() string {
 // left to expire (QA 2026-11-09 found two). The pid comes from the lease file and is signalled only while its
 // command line still names chaining-lease-expire — a recycled pid is somebody else's.
 func (d *doneRun) cancelLease(rundir string) {
-	if rundir == "" || !isFile(rundir+"/chaining-lease") { // a run that never held a lease has no timer to look for
+	pids := cancelLeaseTimers(rundir)
+	for _, pid := range pids {
+		d.app.info("cancelled the chaining lease timer (pid " + strconv.Itoa(pid) + "): this task is closed, nothing is left to expire")
+	}
+	if len(pids) == 0 {
 		return
 	}
-	// The lease file keeps only the NEWEST scheduler (`hw next` writes task N's over task N-1's), so the run's other
-	// timers are found by their command line, which carries the run directory.
+	if f, err := os.OpenFile(rundir+"/chaining-lease", os.O_WRONLY|os.O_APPEND, 0o666); err == nil {
+		f.WriteString("state=cancelled\n")
+		f.Close()
+	}
+}
+
+// cancelLeaseTimers signals every chaining-lease timer of the run and answers the pids it ended. The lease file keeps only the
+// NEWEST scheduler (`hw next` writes task N's over task N-1's), so the run's other timers are found by their command line, which
+// carries the run directory. A pid is signalled only while its command line still names chaining-lease-expire.
+func cancelLeaseTimers(rundir string) (cancelled []int) {
+	if rundir == "" || !isFile(rundir+"/chaining-lease") { // a run that never held a lease has no timer to look for
+		return nil
+	}
 	pids := map[int]bool{}
 	if pid, err := strconv.Atoi(t3LeaseField(rundir, "scheduler_pid")); err == nil && pid > 1 {
 		pids[pid] = true
@@ -701,7 +716,6 @@ func (d *doneRun) cancelLease(rundir string) {
 			}
 		}
 	}
-	cancelled := false
 	for pid := range pids {
 		cmdline, _ := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
 		if !strings.Contains(string(cmdline), "chaining-lease-expire") {
@@ -709,15 +723,8 @@ func (d *doneRun) cancelLease(rundir string) {
 		}
 		exec.Command("pkill", "-P", strconv.Itoa(pid)).Run() // the sleep: killing bash alone orphans it
 		if syscall.Kill(pid, syscall.SIGTERM) == nil {
-			cancelled = true
-			d.app.info("cancelled the chaining lease timer (pid " + strconv.Itoa(pid) + "): this task is closed, nothing is left to expire")
+			cancelled = append(cancelled, pid)
 		}
 	}
-	if !cancelled {
-		return
-	}
-	if f, err := os.OpenFile(rundir+"/chaining-lease", os.O_WRONLY|os.O_APPEND, 0o666); err == nil {
-		f.WriteString("state=cancelled\n")
-		f.Close()
-	}
+	return cancelled
 }

@@ -146,6 +146,24 @@ func DesignGate(artifactsRoot, boundary string) error {
 	return nil
 }
 
+// PluginSkipGate refuses a `review-skip: <skill>` for a plugin the brain vendors in setup/vendor/plugins (vendored: nil when
+// there is none to protect). A declared plugin that did not run is never accepted as skipped: the closing's own words used to
+// say "a skill that is not among your available skills is not installed", so an executor whose pane was launched without the
+// plugin wrote exactly that and closed (MEASURED 2026-11-10, a lane pane (w7H:p1VT), task 4: thermo, pstack,
+// blast-radius and comment-sicko, "not installed", accepted). The honest exit for a plugin that cannot run is --blocked.
+func PluginSkipGate(skills, summary string, vendored func(skill string) bool) error {
+	var refused []string
+	for _, sk := range strings.Split(skills, ",") {
+		if sk != "" && vendored != nil && reviewSkipped(summary, sk) && vendored(sk) { // # MUTATION-ANCHOR: 1150-G18
+			refused = append(refused, sk)
+		}
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and the report skips %s with review-skip:, but those plugins are vendored in setup/vendor/plugins: a declared plugin that did not run is not a skip, and \"not installed\" is not an outcome (a pane launched without a plugin is a dispatch error, not yours to skip). Run each over your committed range under its full name (plugin:skill); if you cannot — the skill is not among your available skills, the pane was not launched with the plugin — close with done-invoker --blocked naming it, so the brainer dispatches a fresh executor that loads it. NOTHING was sent or marked.", skills, strings.Join(refused, ", ")))
+}
+
 // PluginReviewGate holds a done report to the plugin review skills the closing named: comma-joined, each one
 // `plugin:piece` (a skill or an agent; a bare name, from an older receipt, is the skill part of any plugin). A piece
 // is released by the executor's own transcript — a recorded invocation of exactly that name, whatever the vendor
@@ -181,7 +199,7 @@ func PluginReviewGate(skills, summary string, proof *TranscriptProof, why string
 	if proof != nil && proof.Vendor == "pi" {
 		how = "the way pi records one: read the skill's SKILL.md (plugins/<plugin>/skills/<skill>/SKILL.md), or run the agent with the `subagent` tool, agent that full name AND a task AND async:false — a pstack agent, with pstack's `agent` tool, subagent_type that name and no run_in_background (a management call such as action:get, an async launch, and workflow:true or a script run nothing foreman can see)"
 	}
-	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each over your committed range under its full name (plugin:skill), "+how+" — or write a line  review-skip: <skill> — <why>  for a piece your vendor cannot run (no such agent registered, not installed, no diff). A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
+	return "", die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and there is no proof that %s ran: %s. Invoke each over your committed range under its full name (plugin:skill), "+how+". A plugin vendored in setup/vendor/plugins is never skipped: if you cannot run one, close with done-invoker --blocked naming it; a line  review-skip: <skill> — <why>  is accepted only for a piece no vendored plugin ships. A look-alike (pstack:…-subagent) is not the skill, and Judgment Day does not stand in for them. NOTHING was sent or marked.", strings.Join(shown, ", "), strings.Join(missing, ", "), proofIs))
 }
 
 // PluginEvidenceGate holds a done report to what each plugin review LEFT: a skill loaded and never applied still shows in
@@ -229,7 +247,7 @@ func PluginEvidenceGate(skills, summary, artifactsRoot string) error {
 	if len(missing) == 0 {
 		return nil
 	}
-	return die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and %s has no row recording that %s ran on the diff. Loading a skill is not applying it: add one row per skill,  <skill> | pass|fail|unresolved | <its findings, or \"no findings\"> | <correction>  — or write a line  review-skip: <skill> — <why>.  NOTHING was sent or marked.", skills, file, strings.Join(missing, ", ")))
+	return die("%s", fmt.Sprintf("this task's closing named the plugin review skills %s, and %s has no row recording that %s ran on the diff. Loading a skill is not applying it: add one row per skill,  <skill> | pass|fail|unresolved | <its findings, or \"no findings\"> | <correction>  — or, for a piece no vendored plugin ships, a line  review-skip: <skill> — <why>.  NOTHING was sent or marked.", skills, file, strings.Join(missing, ", ")))
 }
 
 // JudgmentDayGate holds a done report to the Judgment Day its closing declared: one call to EACH judge the receipt
@@ -354,14 +372,17 @@ func isSeparatorRow(l string) bool {
 }
 
 // ChecksGate is the inside of `if [ -n "$_ck" ]`: checks.md needs at least one
-// row and a pass/fail/unresolved verdict on every row. It returns CHECKS_NOTE.
+// row and a pass/fail/unresolved verdict on every row, and a plain done carries no `fail` row: a task whose own
+// checks.md says a requirement failed is not done, it closes --blocked (setup:bash-justify-or-port closed done over
+// 2 fail rows, 2026-11-10). It returns CHECKS_NOTE.
 func ChecksGate(artifactsRoot string) (note string, err error) {
 	file := artifactsRoot + "/checks.md"
 	how := fmt.Sprintf("Write %s as a table, one row per requirement of the brief: its Verification section and each numbered goal:  requirement | verdict | evidence | correction  (verdict: pass, fail or unresolved). NOTHING was sent or marked.", file)
 	if !isRegular(file) {
 		return "", die("%s", fmt.Sprintf("this is a build and there is no %s. %s", file, how))
 	}
-	var rows, pass, fail, unres, bad int
+	var rows, pass, fail, unres, bad, firstFail int
+	failWhy := ""
 	why := ""
 	hdr := false
 	// awk (macOS, UTF-8 locale) aborts on the first record with an invalid
@@ -389,6 +410,10 @@ func ChecksGate(artifactsRoot string) (note string, err error) {
 				pass++
 			case "fail":
 				fail++
+				if firstFail == 0 {
+					firstFail = rows
+					failWhy = c1
+				}
 			case "unresolved":
 				unres++
 			default:
@@ -411,12 +436,12 @@ func ChecksGate(artifactsRoot string) (note string, err error) {
 	if bad != 0 {
 		return "", die("%s", fmt.Sprintf("row %d of %s has %s. %s %s", bad, file, why, vocab, how))
 	}
+	if fail != 0 {
+		return "", die("%s", fmt.Sprintf("row %d of %s says fail (%s); fail rows in all: %d. A task that failed its own requirements is not done. Close it as blocked, so the executor stays alive and a ruling resumes this task: done-invoker --blocked \"partial: <the failed rows>; <what would unblock them>\". Or fix the work and set the row to pass. NOTHING was sent or marked.", firstFail, file, failWhy, fail))
+	}
 	parts := ""
 	if pass != 0 {
 		parts += fmt.Sprintf(", %d pass", pass)
-	}
-	if fail != 0 {
-		parts += fmt.Sprintf(", %d fail", fail)
 	}
 	if unres != 0 {
 		parts += fmt.Sprintf(", %d unresolved", unres)
@@ -440,4 +465,36 @@ func splitUnescapedPipes(l string) []string {
 		}
 	}
 	return append(cells, l[start:])
+}
+
+// pluginVendored says whether a plugin review piece (`plugin:piece`, or a bare piece from an older receipt) belongs to a plugin
+// the brain vendors in setup/vendor/plugins: the directory holds a .claude-plugin/plugin.json, and a bare name is a skill or an
+// agent one of them ships. nil (nothing protected) when the run's own `plugins` receipt says its vendor loads none (codex,
+// opencode: "NOT APPLIED — …"): there a skip is the only honest exit, and a fresh dispatch would load nothing either.
+func (c *Ctx) pluginVendored(receipt string) func(string) bool {
+	if strings.HasPrefix(receiptValue(receipt, "plugins"), "NOT APPLIED") { // # MUTATION-ANCHOR: 1150-G20
+		return nil
+	}
+	root := c.brainRoot() + "/setup/vendor/plugins"
+	isPlugin := func(n string) bool {
+		_, err := os.Stat(root + "/" + n + "/.claude-plugin/plugin.json")
+		return err == nil
+	}
+	return func(skill string) bool {
+		if plugin, _, qualified := strings.Cut(skill, ":"); qualified {
+			return isPlugin(plugin)
+		}
+		ents, _ := os.ReadDir(root)
+		for _, e := range ents {
+			if !isPlugin(e.Name()) {
+				continue
+			}
+			for _, f := range []string{"/skills/" + skill + "/SKILL.md", "/agents/" + skill + ".md"} {
+				if _, err := os.Stat(root + "/" + e.Name() + f); err == nil {
+					return true
+				}
+			}
+		}
+		return false
+	}
 }

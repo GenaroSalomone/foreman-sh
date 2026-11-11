@@ -273,6 +273,9 @@ func (t *t3) outboxForeign(meta, lane string) string {
 // flush on open, so the close runs in a process of its own and is waited for only until `by` (HW_FLUSH_CLOSE_WAIT_MS, shared by the
 // whole flush, 5 s): a close still running then goes on without us, its output in close.log beside the done marker.
 func (t *t3) outboxClose(state, status, proj, task string, by time.Time) {
+	if t.outboxLease(state, proj, task) { // a --keep-pane run keeps its pane, and the lease `hw next` needs is started here
+		return
+	}
 	if status == "blocked" {
 		return
 	}
@@ -326,4 +329,40 @@ func t3AtoiOr(v string, def int) int {
 		return n
 	}
 	return def
+}
+
+// outboxLease is what done-invoker does after an admitted report of a run launched with `--keep-pane <duration>`: it starts the
+// bounded chaining lease (`hw chaining-lease-start`), the only authority `hw next` accepts. A report delivered through this flush
+// never ran that step, so the executor's next task was refused as "task 1 has no chaining authority" (herdr-app-gaps-fix N-B).
+// The lease is read from the RUN's env file, not the brainer's. It says whether the run holds one (and so keeps its pane): a legacy
+// --keep-pane run, with no lease duration, keeps its pane and has no lease to start, as in done-invoker.
+func (t *t3) outboxLease(state, proj, task string) bool {
+	rundir := t3RunDir(state)
+	env, err := os.ReadFile(rundir + "/env")
+	if err != nil || !t3ReChainingOn.Match(env) {
+		return false
+	}
+	val := func(key string) string { // the run's env file is KEY='value' lines; one read, no subprocess
+		// a quote inside a value is written '\'' (core/t5l_env.go): `--why "the team's next task"` must reach the lease whole
+		m := regexp.MustCompile(`(?m)^` + key + `='?((?:[^'\n]|'\\'')*)'?\s*$`).FindSubmatch(env)
+		if m == nil {
+			return ""
+		}
+		return strings.ReplaceAll(string(m[1]), `'\''`, `'`)
+	}
+	secs := val("HW_CHAINING_LEASE_SECONDS")
+	if secs == "" {
+		return false
+	}
+	workdir := val("HW_WORKDIR")
+	if workdir == "" {
+		workdir = filepath.Dir(filepath.Dir(rundir)) // <workdir>/.hw/<run>
+	}
+	cmd := exec.Command(t.binDir()+"/hw", "chaining-lease-start")
+	cmd.Env = append(os.Environ(), "HW_WORKDIR="+workdir, "HW_RUN="+filepath.Base(rundir),
+		"HW_CHAINING_LEASE_SECONDS="+secs, "HW_CHAINING_LEASE_REASON="+val("HW_CHAINING_LEASE_REASON"), "HW_CHAINING_LEASE_HOLDER="+val("HW_CHAINING_LEASE_HOLDER"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.warn("the report for " + proj + ":" + task + " landed, but its chaining lease could not be started (" + err.Error() + "), so `hw next` will refuse it: " + strings.TrimSpace(string(out)))
+	}
+	return true
 }

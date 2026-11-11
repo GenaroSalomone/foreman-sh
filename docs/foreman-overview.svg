@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 456" width="960" height="456" role="img" aria-labelledby="foreman-overview-title foreman-overview-desc">
+  <title id="foreman-overview-title">foreman-sh 0.8.0 at a glance</title>
+  <desc id="foreman-overview-desc">A brainer that plans and cannot write code sends briefs to executors in their own worktrees, which report back; reviews and a retro follow, guards stop repository writes and secrets reach executors as resolvers, all inside the herdr desktop app, with Claude and pi as the supported agents.</desc>
+  <defs>
+    <marker id="fo-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+    <marker id="fo-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+    <marker id="fo-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+  </defs>
+  <style>
+    .serif { font-family: 'Instrument Serif', Georgia, 'Times New Roman', serif; }
+    .sans  { font-family: Geist, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .mono  { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+  <rect width="960" height="456" fill="#f5f5f5"/>
+
+  <text x="24" y="36" class="serif" font-size="28" fill="#2d3142">foreman-sh 0.8.0</text>
+  <text x="24" y="60" class="sans" font-size="12" fill="#4f5d75">Plan with one agent. Build with many. Everything runs in the herdr desktop app.</text>
+
+  <!-- zone: the herdr desktop app -->
+  <rect x="24" y="72" width="912" height="320" rx="8" fill="#ececec" fill-opacity="0.5" stroke="#bfc0c0" stroke-width="1"/>
+  <text x="40" y="96" class="mono" font-size="8" fill="#4f5d75" letter-spacing="0.14em">HERDR DESKTOP APP</text>
+  <text x="920" y="96" class="mono" font-size="8" fill="#7a8399" letter-spacing="0.14em" text-anchor="end">COCKPIT · ISSUES · ARTIFACTS · MARKDOWN VIEWER</text>
+
+  <!-- connectors first -->
+  <line x1="256" y1="164" x2="388" y2="164" stroke="#4f5d75" stroke-width="1" marker-end="url(#fo-arrow)"/>
+  <rect x="304" y="142" width="36" height="16" rx="2" fill="#f1f1f1"/>
+  <text x="322" y="154" class="mono" font-size="12" fill="#7a8399" text-anchor="middle">BRIEF</text>
+
+  <line x1="388" y1="204" x2="256" y2="204" stroke="#4f5d75" stroke-width="1" marker-end="url(#fo-arrow)"/>
+  <rect x="296" y="182" width="52" height="16" rx="2" fill="#f1f1f1"/>
+  <text x="322" y="194" class="mono" font-size="12" fill="#7a8399" text-anchor="middle">REPORT</text>
+
+  <line x1="588" y1="184" x2="720" y2="184" stroke="#4f5d75" stroke-width="1" marker-end="url(#fo-arrow)"/>
+  <rect x="632" y="162" width="64" height="16" rx="2" fill="#f1f1f1"/>
+  <text x="664" y="174" class="mono" font-size="12" fill="#7a8399" text-anchor="middle">REVIEW</text>
+
+  <line x1="820" y1="232" x2="820" y2="288" stroke="#4f5d75" stroke-width="1" marker-end="url(#fo-arrow)"/>
+  <rect x="828" y="252" width="40" height="16" rx="2" fill="#f1f1f1"/>
+  <text x="848" y="264" class="mono" font-size="12" fill="#7a8399" text-anchor="middle">THEN</text>
+
+  <line x1="488" y1="288" x2="488" y2="232" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#fo-arrow-link)"/>
+  <rect x="496" y="252" width="104" height="16" rx="2" fill="#f1f1f1"/>
+  <text x="548" y="264" class="mono" font-size="12" fill="#7a8399" text-anchor="middle">AS RESOLVER</text>
+
+  <line x1="156" y1="288" x2="156" y2="232" stroke="#eb6c36" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#fo-arrow-accent)"/>
+  <rect x="164" y="252" width="120" height="16" rx="2" fill="#f1f1f1"/>
+  <text x="224" y="264" class="mono" font-size="12" fill="#7a8399" text-anchor="middle">NO REPO WRITES</text>
+
+  <!-- brainer (focal) -->
+  <rect x="56" y="136" width="200" height="96" rx="6" fill="#f5f5f5"/>
+  <rect x="56" y="136" width="200" height="96" rx="6" fill="#eb6c36" fill-opacity="0.08" stroke="#eb6c36" stroke-width="1"/>
+  <rect x="64" y="144" width="88" height="16" rx="2" fill="none" stroke="#eb6c36" stroke-opacity="0.5" stroke-width="0.8"/>
+  <text x="108" y="156" class="mono" font-size="8" fill="#eb6c36" text-anchor="middle" letter-spacing="0.08em">CLAUDE · PI</text>
+  <text x="156" y="184" class="sans" font-size="16" font-weight="600" fill="#2d3142" text-anchor="middle">Brainer</text>
+  <text x="156" y="204" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">plans, writes briefs,</text>
+  <text x="156" y="220" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">never touches code</text>
+
+  <!-- executors -->
+  <rect x="388" y="136" width="200" height="96" rx="6" fill="#f5f5f5"/>
+  <rect x="388" y="136" width="200" height="96" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+  <rect x="396" y="144" width="88" height="16" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.4" stroke-width="0.8"/>
+  <text x="440" y="156" class="mono" font-size="8" fill="#2d3142" text-anchor="middle" letter-spacing="0.08em">CLAUDE · PI</text>
+  <text x="488" y="184" class="sans" font-size="16" font-weight="600" fill="#2d3142" text-anchor="middle">Executors</text>
+  <text x="488" y="204" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">one brief each, in their</text>
+  <text x="488" y="220" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">own worktree and branch</text>
+
+  <!-- reviews -->
+  <rect x="720" y="136" width="200" height="96" rx="6" fill="#f5f5f5"/>
+  <rect x="720" y="136" width="200" height="96" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+  <text x="820" y="184" class="sans" font-size="16" font-weight="600" fill="#2d3142" text-anchor="middle">Reviews</text>
+  <text x="820" y="204" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">review plugins and</text>
+  <text x="820" y="220" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">Judgment Day, opt-in</text>
+
+  <!-- guards -->
+  <rect x="56" y="288" width="200" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="56" y="288" width="200" height="80" rx="6" fill="#eb6c36" fill-opacity="0.05" stroke="#eb6c36" stroke-opacity="0.5" stroke-width="1" stroke-dasharray="4,4"/>
+  <text x="156" y="324" class="sans" font-size="16" font-weight="600" fill="#2d3142" text-anchor="middle">Guards</text>
+  <text x="156" y="344" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">refuse writes to your repo</text>
+
+  <!-- secrets -->
+  <rect x="388" y="288" width="200" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="388" y="288" width="200" height="80" rx="6" fill="#2d3142" fill-opacity="0.05" stroke="#4f5d75" stroke-width="1"/>
+  <text x="488" y="324" class="sans" font-size="16" font-weight="600" fill="#2d3142" text-anchor="middle">Secrets</text>
+  <text x="488" y="344" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">Bitwarden items, never values</text>
+
+  <!-- retro -->
+  <rect x="720" y="288" width="200" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="720" y="288" width="200" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+  <text x="820" y="324" class="sans" font-size="16" font-weight="600" fill="#2d3142" text-anchor="middle">Retro</text>
+  <text x="820" y="344" class="sans" font-size="12" fill="#4f5d75" text-anchor="middle">what to change next time</text>
+
+  <!-- legend -->
+  <line x1="24" y1="412" x2="936" y2="412" stroke="#2d3142" stroke-opacity="0.1" stroke-width="0.8"/>
+  <text x="24" y="436" class="mono" font-size="8" fill="#4f5d75" letter-spacing="0.14em">LEGEND</text>
+  <line x1="96" y1="432" x2="128" y2="432" stroke="#4f5d75" stroke-width="1" marker-end="url(#fo-arrow)"/>
+  <text x="140" y="436" class="sans" font-size="12" fill="#4f5d75">hand-off</text>
+  <line x1="232" y1="432" x2="264" y2="432" stroke="#eb6c36" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#fo-arrow-accent)"/>
+  <text x="276" y="436" class="sans" font-size="12" fill="#4f5d75">guard</text>
+  <line x1="344" y1="432" x2="376" y2="432" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#fo-arrow-link)"/>
+  <text x="388" y="436" class="sans" font-size="12" fill="#4f5d75">secret resolver</text>
+  <text x="936" y="436" class="mono" font-size="8" fill="#7a8399" text-anchor="end" letter-spacing="0.14em">SUPPORTED AGENTS: CLAUDE, PI</text>
+</svg>

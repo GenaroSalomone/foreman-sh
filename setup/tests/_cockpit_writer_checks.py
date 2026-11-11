@@ -489,6 +489,29 @@ def kick_names_its_brainer():
     assert not os.path.exists(own), "the kick of a resolved run also wrote the executor's own pane"
 
 
+def lane_published():
+    """The lane a brainer was opened for (--lane, which bin/brain passes) is `lane`, so the mod can name a brainer
+    that has no executors. No flag is null; a kick, told no lane, keeps the one in the file it rewrites."""
+    w = cw.World(tmpdir())
+    w.executor(task="a", status="working")
+    w.publish()
+    assert state(w)["lane"] is None, "no --lane must publish lane: null"
+    r = cw.run_writer(w, BIN, "--stdout", "--lane", "setup")
+    assert json.loads(r.stdout)["lane"] == "setup", "--lane is not published: %s" % r.stdout[:200]
+    r = cw.run_writer(w, BIN, "--once", "--lane", "demo")
+    assert r.returncode == 0, r.stderr
+    assert json.load(open(w.state_path()))["lane"] == "demo"
+    ex = w.executor(task="b", status="working")
+    w.publish()
+    subprocess.run([os.path.join(BIN, "cockpit-state"), "--kick", "--invoker", w.invoker], env=w.env(), timeout=20)
+    end = time.time() + 5
+    while time.time() < end and os.path.isdir(w.state_path() + ".kick"):
+        time.sleep(0.1)
+    time.sleep(0.6)
+    got = json.load(open(w.state_path()))
+    assert got["lane"] == "demo", "a kick dropped the lane: %r" % got["lane"]
+
+
 def kick_of_a_gone_brainer_leaves_no_file():
     """QA6 N4: a one-shot kick naming an hc brainer that has left must not redraw its file ("report undelivered" beside the
     brainer that replaced it): hc says not_found (exit 3) and the file goes. A live one is still written."""
@@ -841,7 +864,7 @@ def timing_40():
 
 
 CHECKS = {f.__name__: f for f in (classes, done_tokens_outlive_the_task, row_order, private_files, killed_writer, loop_survives_a_failed_write, herdr_down, rows_cap, size_cap, summary_rejoin, effort_published, strings_are_clean, atomic, debounce,
-                                  loop_dies_with_parent, loop_binds_to_pane, loop_reloads_its_code, dead_writers_files_are_swept, ctx_from_transcript, ctx_live, cut_rule, timing_40, kick_names_its_brainer, kick_of_a_gone_brainer_leaves_no_file)}
+                                  loop_dies_with_parent, loop_binds_to_pane, loop_reloads_its_code, dead_writers_files_are_swept, ctx_from_transcript, ctx_live, cut_rule, timing_40, kick_names_its_brainer, lane_published, kick_of_a_gone_brainer_leaves_no_file)}
 
 if __name__ == "__main__":
     BIN = os.path.abspath(sys.argv[1])

@@ -5,7 +5,10 @@
 [![CI](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml/badge.svg)](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-foreman-sh runs coding agents in two roles, on top of [herdr](https://herdr.dev):
+![foreman-sh 0.8.0: a brainer that plans and never touches code, executors in their own worktrees, reviews and a retro, guards, secrets as resolvers, all inside the herdr desktop app; Claude and pi are the supported agents](docs/foreman-overview.svg)
+
+foreman-sh runs coding agents in two roles, on top of [herdr](https://herdr.dev),
+and since 0.8.0 it runs from the herdr desktop app ([The herdr app](#the-herdr-app)):
 
 - a **brainer**, the planner, that reads your code, plans the work and writes
   briefs, but cannot touch your repository;
@@ -30,6 +33,36 @@ sequenceDiagram
 **Install on macOS:** `brew install GenaroSalomone/tap/foreman-sh && foreman-sh init`
 builds a brain with a demo lane and ends with a dry-run dispatch. Linux, step by
 step and requirements: [Quickstart](#quickstart). Not related to Ruby's `foreman`.
+
+## What a prompt looks like
+
+You type one line to the brainer:
+
+```text
+Logging in with a capitalised email returns a 500. Fix it.
+```
+
+It writes the brief an executor works from, `~/brain/myapp/briefs/fix-login.md`:
+
+~~~md
+---
+kind: build
+---
+
+## Goal
+Logging in as `Ann@Example.com` works like `ann@example.com`.
+
+## Done when
+- A test that fails on the old code passes on the new.
+
+## Verification
+```
+npm test -- login
+```
+
+## Limits
+- Touch only `src/auth/`.
+~~~
 
 ## Why
 
@@ -63,15 +96,16 @@ mechanism here:
 - **Briefs that are checked.** A brief's front matter is validated against the
   dispatch before anything is built, and `hw done` runs the brief's verification
   command itself and records its exit code.
-- **Your agent, your model.** Claude Code, OpenCode, pi and Codex
-  ([L3](docs/KNOWN-LIMITATIONS.md)) run a lane's executors; each one gets a
+- **Your agent, your model.** Claude Code and pi are the native agents;
+  OpenCode and Codex also run a lane's executors, with limits
+  ([L3](docs/KNOWN-LIMITATIONS.md), [L3b](docs/KNOWN-LIMITATIONS.md#l3b-pi-is-a-dispatch-target-its-guard-reads-text-and---sandbox-is-what-contains)). Each executor gets a
   `cheap-explorer` subagent on its vendor's cheapest tier.
 - **Frameworks when you want them.** By default the brief is the whole
   contract; `--sdd speckit` opts into [Spec Kit](https://github.com/github/spec-kit)'s phases.
 - **Secrets as Bitwarden items.** A brief names `secrets: [item, …]`; the value
   reaches the executor through `hw secret run`, never as text in a brief or a prompt.
-- **A cockpit.** A card per executor, and a band above the brainer's prompt that
-  names the one that needs you.
+- **A cockpit.** A card per executor, in the herdr app's side panel or as a band
+  above the brainer's prompt in the terminal UI, naming the one that needs you.
 - **Cleanup that is safe.** `hw reap` removes the worktree, branch and database
   of a task that is merged and clean, and nothing else.
 - **A Go core.** `hw`, `brain`, `channel-send` and the invokers run in `hw-core`,
@@ -83,13 +117,14 @@ mechanism here:
 - **macOS or Linux** (Debian/Ubuntu-class, bash 5 for the shell parts); Linux works, not verified per release
   ([L1](docs/KNOWN-LIMITATIONS.md)).
 - **[herdr](https://herdr.dev)**, running, with its Claude Code integration:
-  `herdr integration install claude`.
+  `herdr integration install claude`. The desktop app is optional: the terminal
+  UI works without it ([The herdr app](#the-herdr-app)).
 - **[Claude Code](https://claude.com/claude-code)**, with its first run finished:
   run `claude --dangerously-skip-permissions`, complete the welcome and login,
   accept the warning, then `/exit`. `install.sh --permissions ask` leaves the
   permission prompts on ([INSTALL.md](docs/INSTALL.md#permissions-skip-recommended-or-ask)).
-- `git`, `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`; on Linux, Node 22.7
-  or newer.
+- `git` with `user.name` and `user.email` set (a dispatch commits as you; an unset identity can fail it),
+  `jq` 1.7 or newer, `python3`, `rg`, `fd` and `sd`; on Linux, Node 22.7 or newer.
 - **Go 1.22 or newer**, which `install.sh` uses to build `hw-core`. `install.sh --check`
   lists it as missing and names https://go.dev/dl.
 
@@ -104,7 +139,8 @@ Recommended and optional:
   gives the brainer memory across sessions, and without it nothing is saved
   between them ([L8](docs/KNOWN-LIMITATIONS.md)). Install it with
   `brew install gentleman-programming/tap/engram && engram setup claude-code`
-  and answer `y` when it asks about the allowlist.
+  and answer `y` when it asks about the allowlist. `brain` also needs `engram serve` running
+  (`127.0.0.1:7437`); without it `brain` warns `engram session NOT registered`.
 - **Judgment Day**, a blind review of a diff by two judges
   ([L10](docs/KNOWN-LIMITATIONS.md)); **Bitwarden CLI (`bw`)**, for a brief that
   declares `secrets:`; **[OpenCode](https://opencode.ai)** 1.18.31 or newer and
@@ -172,11 +208,15 @@ this is the head of a healthy one:
 $ ./install.sh --brain ~/brain --check
 prerequisites
   ok    git
+  ok    jq
   ok    jq 1.7.1 (>= 1.7)
+  ok    python3
   ok    herdr
   ok    claude
-  ok    go 1.26 (builds hw-core)
-  ok    herdr's claude integration
+  ok    herdr 0.9.5 (>= 0.9.1)
+  ok    claude 2.1.322 (>= 2.1.289)
+  ok    go 1.27 (builds hw-core)
+  …
 
 first run of Claude Code in this account (yours to do)
   ok    welcome completed
@@ -186,11 +226,13 @@ first run of Claude Code in this account (yours to do)
 
 ### 3. Try it on a toy repository
 
+Before the first `brain`, finish the [Requirements](#requirements); `--check` names what is left.
+
 ```sh
 git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
 git -C ~/code/toy add README.md && git -C ~/code/toy commit -m init
 ./install.sh --brain ~/brain --lane demo --repo ~/code/toy
-cp examples/demo/briefs/hello.md ~/brain/demo/briefs/
+cp docs/examples/demo/briefs/hello.md ~/brain/demo/briefs/
 herdr   # once, in a terminal: `brain` needs herdr's server (without it: server_not_running)
 brain demo
 ```
@@ -203,6 +245,8 @@ hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none --no-report --dry-
 hw demo hello --brief ~/brain/demo/briefs/hello.md --sdd none             # launches it
 ```
 
+In a dry run, `!` lines are warnings and `✗` stops it: `herdr's agent registry could not be read` means herdr is
+not running, and Claude Code's first run pending means finish it as `--check` says.
 `--no-report` is for the preview only, outside a pane `brain` opened
 ([L7](docs/KNOWN-LIMITATIONS.md)); the launch line has none. An executor opens in a
 new herdr tab, writes `HELLO.md`, commits it on branch `task/hello`, and its
@@ -221,7 +265,8 @@ new release's "In short"; `hw status` tells you when a newer release exists
 
 ## How it works
 
-1. **Brief.** You describe the work; the brainer writes a brief.
+1. **Brief.** You describe the work; the brainer writes a brief
+   ([what that looks like](#what-a-prompt-looks-like)).
 2. **Dispatch.** `hw` creates a worktree and branch outside your checkout,
    opens a herdr tab, starts the agent and makes sure the brief arrived.
 3. **Work.** The executor works and commits on its branch. If it needs a
@@ -229,9 +274,8 @@ new release's "In short"; `hw status` tells you when a newer release exists
 4. **Report.** The executor finishes with `done-invoker`. The report arrives
    in the brainer as a message, with no polling.
 5. **Close.** `hw done` runs the brief's verification, records the result and
-   closes the tab. Merging is always up to you; once a task is merged, its
-   worktree, branch and database are removed by `hw reap`, which the brainer's
-   session start runs in the background, after archiving the task's outputs.
+   closes the tab. Merging is always up to you; once it is merged, `hw reap`
+   removes the task's worktree, branch and database.
 
 ## Everyday use
 
@@ -262,21 +306,31 @@ it builds anything, and the executor reaches the value only through
 is not printed or written ([INSTALL.md](docs/INSTALL.md#secrets-bitwarden),
 [L23](docs/KNOWN-LIMITATIONS.md)).
 
+### The herdr app
+
+0.8.0 runs foreman from the [herdr desktop app](https://herdr.dev). In a terminal
+the app opened, `brain <lane>` opens the lane's brainer there and `hw` launches
+its Claude executors in app terminals of their own; a report, an ask, a ruling,
+`hw next`, `hw done` and `hw revive` go through the same commands as in the
+terminal UI. A report sent while the brainer is closed arrives when it reopens.
+
+![The herdr app with foreman's look: spaces and agents on the left, a terminal in the middle, the cockpit on the right with three brainers and five executors](docs/images/herdr-app-look.png)
+
+The right column holds the Cockpit, Issues and Artifacts panels. The look in the
+picture is foreman's own; this export carries the Cockpit mod only
+([`herdr-app/`](herdr-app/README.md) says how to put it in a layout). Without the
+app, `brain <lane>` opens the brainer in a herdr pane, as in the rest of this
+page. What the app route does not cover yet (lanes with dev servers, other agents
+than Claude, `--here`) is in
+[L29](docs/KNOWN-LIMITATIONS.md#l29-the-herdr-app-herdr-core-carries-turn-end-tokens-the-brainer-and-the-executor-launch).
+
 ### The cockpit
 
-A brainer opened by `brain` runs with a cockpit mod: a card per executor, and a
-band above the prompt that names the one that needs you. `/cockpit` opens the
-full pane. A card, top to bottom:
-
-```text
-task-05 · Add retries to the importer        ● working 3h12m · turn 41m
-claude · claude-sonnet-5-5 · high · ctx 41% ▰▰▱▱▱▱
-2 commits · last 37m ago · gate running 12m
-⚠ no progress 47m · 1 ruling queued 25m
-                                                   [ receipt ]
-```
-
-Each control runs a command that already exists. Turn the cockpit off with
+A card per executor, with what waits on you first: in the herdr app's right
+panel, or in the terminal UI as a band above the brainer's prompt (`/cockpit`
+opens the full pane). A card shows the task, its state and how long it has held
+it, the model and its context use, the commits, and a warning when something
+needs you: an ask, a blocked report, no progress. Turn it off with
 `FOREMAN_COCKPIT=0` or `brain <lane> --no-cockpit`; every card line is in
 [REFERENCE.md](docs/REFERENCE.md#the-cockpit).
 
@@ -290,7 +344,7 @@ in [REFERENCE.md](docs/REFERENCE.md#customizing-a-lane-projectsjson).
 
 | | Isolation | Guards the brainer | Agents | UI |
 |---|---|---|---|---|
-| **foreman-sh** | worktree and branch per task | yes | Claude Code, OpenCode, pi, Codex ([L3](docs/KNOWN-LIMITATIONS.md)) | herdr panes |
+| **foreman-sh** | worktree and branch per task | yes | Claude Code and pi; OpenCode and Codex with limits ([L3](docs/KNOWN-LIMITATIONS.md)) | herdr desktop app or panes |
 | [claude-squad](https://github.com/smtg-ai/claude-squad) | tmux and worktree per agent | — | Claude Code, Codex, Gemini, Aider | TUI |
 | [Conductor](https://www.conductor.build) | isolated workspaces | — | Claude Code, Codex, Cursor | macOS app |
 | [uzi](https://github.com/devflowinc/uzi) | worktree per agent | — | Claude Code, Codex and others | CLI and tmux |
@@ -299,14 +353,6 @@ in [REFERENCE.md](docs/REFERENCE.md#customizing-a-lane-projectsjson).
 | [Claude Code agent teams](https://code.claude.com/docs/en/agent-teams) | shared checkout | plan approval | Claude Code | panel or tmux |
 
 Compared from each project's own documentation, September 2026.
-
-What foreman-sh adds on top of isolation:
-
-- the brainer cannot write to your code;
-- a brief's front matter is checked against the dispatch before anything is
-  built;
-- `hw done` runs the brief's verification command itself and records its exit
-  code in the receipt.
 
 ## Learn more
 

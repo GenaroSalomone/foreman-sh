@@ -17,7 +17,7 @@ lines for your shell profile: add them and open a new terminal.
 
 - macOS, or Linux (Debian/Ubuntu-class, bash 5; Linux works, not verified per release, see
   `KNOWN-LIMITATIONS.md` L1). Windows was removed in 0.7.0 (see [Windows](#windows) below).
-- `git`, `jq` 1.7 or newer, `python3`, `sd`, `fd` and `rg` (`hw` calls all three).
+- `git` with `user.name` and `user.email` set (a dispatch commits as you; an unset identity can fail it), `jq` 1.7 or newer, `python3`, `sd`, `fd` and `rg` (`hw` calls all three).
   On Linux (Debian: `apt install sd fd-find ripgrep`, then link `fdfind` as `fd`)
   also Node 22.7 or newer (the OpenCode guard plugin is an ES module in a `.js` file).
   On macOS, `--check` does not name `sd`, `fd` and `rg` yet; the Homebrew formula
@@ -152,6 +152,9 @@ engram setup claude-code
 
 engram asks `Add to allowlist? (y/N)`: answer `y`. It lists only engram's own
 memory tools in Claude Code's permissions, so saving to memory never stops to ask.
+
+`brain` also needs `engram serve` running (`127.0.0.1:7437`) to register its memory session; without it
+it warns `engram session NOT registered`.
 
 It does not run that itself. That command writes your Claude Code config by
 engram's own rules, which falls outside what this installer says it writes,

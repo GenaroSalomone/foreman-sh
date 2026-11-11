@@ -35,6 +35,8 @@
 # last exception, 16-status.sh's real `hw status` over the live work
 # directories, now runs over a fixture tree instead.
 set -euo pipefail
+# NOT `set -E`: an ERR trap inherited into functions runs between a pipeline and the `${PIPESTATUS[@]}` read after it and
+# clobbers it (1040 F10 read rc=0 for a refused dispatch, 2026-11-10). A helper that fails still trips the trap at its call line.
 
 # STRIP GIT'S AMBIENT ENVIRONMENT BEFORE ANYTHING ELSE.
 #
@@ -277,7 +279,26 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 TMP="$(mktemp -d "$_tmp_root/hw-test.XXXXXX")"
 unset _tmp_root
-trap 'rm -rf "$TMP"' EXIT
+# A SUBJECT THAT DIES UNDER `set -e` SAYS WHERE (retro-fixes-1110). A failing `x; rc=$?` ends the subject with no `not ok` line,
+# and the runner shows only the exit code: it cost three calls to find the line. The ERR trap remembers the failing command's line
+# in the SUBJECT (the outermost frame, so a failure inside a helper names the helper's call, not a line of this file); the EXIT
+# trap prints the verdict when the subject leaves non-zero and `fail` did not already print one (`fail` drops $TMP/.verdict: a file,
+# because `fail` also runs in subshells, which do not share a variable and do not run this trap).
+# (bash 3.2 reports a compound command's closing line for a command inside it, so the failing command's text rides along.)
+_hw_errline=; _hw_errcmd=
+# Under `bash -c` the stack has ONE frame: index n-2 is -1, a "bad array subscript" under `set -u` that turned a failing exit into 0 (115).
+_hw_err() { _hw_errcmd="${BASH_COMMAND:0:100}"; local n="${#BASH_LINENO[@]}"; if [ "$n" -gt 1 ]; then _hw_errline="${BASH_LINENO[$((n-2))]:-?}"; else _hw_errline="${1:-?}"; fi; }
+_hw_exit() {
+  local rc="$1"
+  # Only a subject file speaks: a `bash -c` that sources this file (115 does, on purpose) is not a subject and prints no verdict.
+  case "$0" in *.sh) ;; *) rc=0 ;; esac
+  if [ "$rc" -ne 0 ] && [ ! -e "$TMP/.verdict" ]; then  # MUTATION-ANCHOR: 1322-M01
+    printf 'not ok - %s exited rc=%s at line %s (%s)\n' "${0##*/}" "$rc" "${_hw_errline:-?}" "${_hw_errcmd:-no command recorded}" >&2
+  fi
+  rm -rf "$TMP"
+}
+trap '_hw_err $LINENO' ERR
+trap '_hw_exit $?' EXIT
 # _gocache_fallback — gocache_default (setup/gocache.sh) for a harness that copies only _common.sh (145): the SAME rule, kept
 # identical by 1004 (it compares the two). Under set -u with TMPDIR unset it must not die (entorno-fix2-070).
 _gocache_fallback() {
@@ -406,7 +427,7 @@ export LC_ALL=en_US.UTF-8
 # person's serve lives on. Measured 2026-09-28: an OpenCode run under a sandbox
 # HOME found no serve there (the real one was down), its engram plugin spawned
 # `engram serve` with that HOME, and the sandbox store held the real port for an
-# hour (bin/engram-serve.sh). A subject that starts an agent with an engram
+# hour (core/engram_serve.go). A subject that starts an agent with an engram
 # plugin, or `engram serve` itself, now resolves port 9, which is not that port.
 # Pinned by 189-la-suite-no-escribe-en-engram.sh.
 export HW_ENGRAM_URL="http://127.0.0.1:9/hw-test-no-engram"
@@ -415,7 +436,7 @@ export ENGRAM_PORT=9
 # brain waits for a serve to start; port 9 never will, so no subject pays the timeout
 export HW_ENGRAM_WAIT=0
 # the serve at port 9 never answers, and an invoker's health probe waits HW_ENGRAM_HEALTH_TIMEOUT (default 10 s) on each of two tries
-# (bin/engram-serve.sh): 1264 took 36.5 s, 7.55 s with this. A subject that needs the default sets its own.
+# (core/engram_serve.go): 1264 took 36.5 s, 7.55 s with this. A subject that needs the default sets its own.
 export HW_ENGRAM_HEALTH_TIMEOUT=0.5
 # NO SUBJECT STARTS THE BRAINER'S HOUSEKEEPING (setup/guards/lane_housekeeping.py):
 # a SessionStart driven here would run `hw status` and detach a real
@@ -513,15 +534,32 @@ json.dump(t, open(sys.argv[2], "w"), indent=2)
 PY
 }
 
-# lane_build_file <lane> — the lane's build hook in the tree under test: the
-# file projects.json's `build` names, relative to the table. A lane's build path
-# lived in a `case` arm in bin/hw until stage 3; a subject that reads or mutates
-# it reads this file now. Empty for a lane with no hook.
-lane_build_file() {
-  local b
-  b="$(jq -r --arg l "$1" '.lanes[$l].build // empty' "$HW_PROJECTS_JSON")"
-  [ -n "$b" ] || return 0
-  printf '%s/%s' "$(dirname "$HW_PROJECTS_JSON")" "$b"
+# go_anchor_held <id> <core/file.go> <what it holds> — a claim whose body was bash and is Go now is HELD by a Go mutant, which
+# setup/tests/848-* kills in process; this proves the three facts that make that true without paying the build again: the
+# anchor is on one line of the Go file, setup/mutation/mutation-anchors.tsv names that file for it, and a mutant row
+# (setup/tests/contract-hw/mutants-t5l-*) mutates it. A removed anchor, or a mutant dropped from the list, fails here.
+go_anchor_held() {
+  local id="$1" file="$2" what="$3" n
+  n="$(grep -c "MUTATION-ANCHOR: $id\([^A-Za-z0-9_-]\|\$\)" "$ROOT/$file")"
+  [ "$n" = 1 ] || fail "$id: expected one MUTATION-ANCHOR line in $file, found $n ($what)"
+  grep -qxF "$(printf '%s\t%s' "$id" "$file")" "$ROOT/setup/mutation/mutation-anchors.tsv" \
+    || fail "$id: setup/mutation/mutation-anchors.tsv does not name $file for it ($what)"
+  grep -hq "^$id|${file#core/}|" "$ROOT"/setup/tests/contract-hw/mutants-t5l-* \
+    || fail "$id: no mutant row in setup/tests/contract-hw/mutants-t5l-* mutates $file ($what)"
+  pass "$id held on the Go ($file): $what"
+}
+
+# go_anchor_killed <id> <core/file.go> <what> — the anchor of a port whose mutants run IN PROCESS (core/bpr_mutants_test.go, setup/tests/1298):
+# one MUTATION-ANCHOR line in the file, the file named in the table, and a row of contract-hw/mutants-bpr that mutates it.
+go_anchor_killed() {
+  local id="$1" file="$2" what="$3" n
+  n="$(grep -c "MUTATION-ANCHOR: $id\([^A-Za-z0-9_-]\|\$\)" "$ROOT/$file")"
+  [ "$n" = 1 ] || fail "$id: expected one MUTATION-ANCHOR line in $file, found $n ($what)"
+  grep -qxF "$(printf '%s\t%s' "$id" "$file")" "$ROOT/setup/mutation/mutation-anchors.tsv" \
+    || fail "$id: setup/mutation/mutation-anchors.tsv does not name $file for it ($what)"
+  grep -q "^$id|${file#core/}|" "$ROOT/setup/tests/contract-hw/mutants-bpr" \
+    || fail "$id: no row of setup/tests/contract-hw/mutants-bpr mutates $file ($what)"
+  pass "$id held on the Go ($file), killed in process by setup/tests/1298: $what"
 }
 
 # home_brain — put the tree UNDER TEST where bin/ expects to find brain.
@@ -560,7 +598,7 @@ home_opencode_config() {
 # The runner sums the `ok -` lines across every subject file, so no file keeps
 # a count of its own — a per-file counter could only ever report a fragment.
 pass() { printf 'ok - %s\n' "$1"; }
-fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
+fail() { : > "$TMP/.verdict" 2>/dev/null || true; printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
 # has_text <text> <regex> — does the text hold a line matching the regex?
 #

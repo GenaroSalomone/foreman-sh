@@ -6,6 +6,11 @@
 #
 #   agent:     claude | opencode | codex
 #   model:     the vendor's own form (opencode needs provider/model)
+#   effort:    low | medium | high | xhigh | max (codex also ultra; pi also off | minimal) — --effort's own levels,
+#              refused in --effort's own words when the vendor cannot take it. A CHECK, like model:, never a source:
+#              the flag (or pi's roster default) still chooses, and a brief that says high on a dispatch that
+#              resolves low is refused before anything is built. A brief that declares neither model: nor effort:
+#              gets one warning naming both (never a refusal).
 #   sdd:       none (the default; omit it) | speckit (opt-in, needs --sdd speckit)
 #   base:      the branch the worktree is built on — declare it on any task
 #              whose result is measured
@@ -122,10 +127,10 @@ code and a hash of the output go to the receipt, and `hw receipt <project>
 <task>` shows them beside what was dispatched.>
 
 ```
-git diff --name-only main > "$HW_ARTIFACTS/changed"; HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw --keep-going
+git diff --name-only "$(git merge-base HEAD main)" > "$HW_ARTIFACTS/changed"; HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw --keep-going
 ```
 
-<Step one of two, and the only line the fence pins: the touched subjects and partitions (minutes),
+<Step one of two, and the only line the fence pins: the touched subjects (minutes; the Go that changed is a focused `go test -run`, below),
 which `hw done` re-runs under its per-line timeout. Step two, the full fast gate
 `HW_TEST_GATE=fast bash setup/test-hw --keep-going`, is the BRAINER's, once, on the merge tree: the executor
 does not run it. It stays out of the fence because a two-line pin loses `hw done`'s cached-verdict shortcut
@@ -150,16 +155,22 @@ The full suite already includes every Go partition (`setup/go-test-core.sh`): do
 run them before it, and never a bare `go test ./...` over `core/` with `HW_INPROC_ALL=1`
 (it starts the monolithic TestC848 and never finishes; `core/main_test.go` exits 2 on it).
 How to run Go tests: `setup/CLAUDE.md`, "Go tests go through the runner".
-A partition is `setup/go-test-core.sh <name>` (`--list` names them), alone only when the
-brief's change can reach just that one. For t5 goldens and t5 mutants name the partitions out loud —
-`setup/go-test-core.sh c843` for the goldens, `c848-1` … `c848-8` for the mutants — not
-`--affected`: its map does not know a golden case, and a change that moves one reaches no
-partition it lists.
+A whole partition (`setup/go-test-core.sh <name>`, `--list` names them) is the brainer's: inside an
+executor the runner exits 75 for any partition, list or `--affected --run` over `touched_budget_seconds`, and
+the executor runs a focused `go test -run` instead (below). For t5 goldens and t5 mutants `--affected` is no map:
+it does not know a golden case, and a change that moves one reaches no partition it lists. The executor runs the
+focused test of the case; the brainer names the partitions out loud — `c843` for the goldens, `c848-1` … `c848-8` for the mutants.
 
-The Go tests a change touches, spelled so it runs:
+The Go a change touches, as ONE focused test (a whole partition is the brainer's), run in the background:
 
 ```
-git diff --name-only main > "$HW_ARTIFACTS/changed"
+setup/heavy --short -- sh -c 'cd core && go test -count=1 -run <TestName> .'
+```
+
+What `--affected` reaches, spelled so it runs (only while the estimate is under the budget; over it, the line above):
+
+```
+git diff --name-only "$(git merge-base HEAD main)" > "$HW_ARTIFACTS/changed"
 bash setup/go-test-core.sh --affected "$HW_ARTIFACTS/changed" --run
 ```
 
@@ -168,7 +179,7 @@ placeholder. Written `--affected <file>` it is not the interface: `<file>` names
 and a shell reads the angle brackets as a redirect. Handed a real source file it refuses (exit 2);
 `setup/go-test-core.sh --help` carries the same interface (its example still spells the changed file as `/tmp/changed`; use `$HW_ARTIFACTS/changed`).
 
-Verify with the touched subjects and partitions only; the full fast gate is the brainer's, once on the merge tree
+Verify with the touched subjects and a focused `go test -run` only; the full fast gate is the brainer's, once on the merge tree
 (`setup/CLAUDE.md`, "A setup executor verifies…"). Not repeated here.
 
 Before the gate, also run `bash setup/test-budget-gate` — it answers a new subject's missing 1:1 budget entry in seconds,
@@ -180,6 +191,7 @@ For an old/new proof, edit through `setup/mutation/safe-mutate <file> -- <cmd>` 
 A brief about TIME (a budget, a wait, a speed-up) names a deterministic proxy first — a count of
 processes, calls or files — and a wall-clock number only as the second measure: seconds move with the
 machine's load, a count does not.
+A timing task starts its run with `setup/heavy --quiet <max-load1> -- <cmd>`, records the load1 `heavy.log` prints for it, and runs a control (the base commit) in the same hour.
 
 Anything else here — which directions to run it in, what a fixture must pin, how
 to reproduce the old behaviour — is for the executor and hw never touches it.
@@ -216,6 +228,7 @@ branches), and the file is named in your first commit. A collision still happeni
 introduces, never someone else's.>
 
 ## QA
+<A QA in an isolated Herdr app starts it with `bin/herdr-isolated start <short dir under /tmp>` and ends it with `bin/herdr-isolated stop <dir>` before it reports: closing the app's pid leaves its herdr-core running, and done-invoker warns about it. To CHECK for a leak do not `pgrep` by name: the leaked core's argv is `hc --hc-launchd`, so a name match finds nothing. The detector is `HerdrLeaks` in `core/invokers/herdr_leak.go` (what done-invoker runs): it ties a process to the run by the sockets and cwd under the instance dir. By hand, after `bin/herdr-isolated stop <dir>`: `lsof -nP -U | rg <dir>` listing nothing.>
 <A browser or deployed-build check: QA is handed one string that only the new build carries (a commit sha, or a marker in the bundle) and FAILS if it is not there. A 200 alone does not prove the new build.>
 
 ## Reviewing PRs

@@ -32,6 +32,7 @@ type lch struct {
 	layoutOut, layoutDoc string // LAYOUT_OUT, LAYOUT_DOC
 	pAgent, pShell, pDev string // P_AGENT, P_SHELL, P_DEV
 	wt                   string // WT  the work directory the lane built
+	hcDevAddrs           []string // herdr-core: the dev-server terminals this launch started or found (hcDevStart)
 
 	// the rollback record (bin/hw "LAUNCH_WT=… LAUNCH_BRANCH_CREATED=…")
 	launchWT, launchBranch               string

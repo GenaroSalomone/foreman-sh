@@ -69,7 +69,7 @@ if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
   _want="" _prev=""
   for _a in "$@"; do [ "$_prev" != --to ] || _want="v${_a#v}"; _prev="$_a"; done
   if [ -n "$_want" ]; then
-    printf '%s\n' "$_tags" | grep -Fxq "$_want" || { printf 'install: %s has no tag %s\n' "$_repo" "$_want" >&2; exit 1; }
+    grep -Fxq "$_want" <<<"$_tags" || { printf 'install: %s has no tag %s\n' "$_repo" "$_want" >&2; exit 1; }
     _tag="$_want"
   fi
   [ -n "$_tag" ] || { printf 'install: %s has no published v* tag\n' "$_repo" >&2; exit 1; }
@@ -766,7 +766,7 @@ if type -P herdr >/dev/null 2>&1; then
   # Captured first: `| grep -q` exits on the first match, herdr takes SIGPIPE,
   # and pipefail turns an installed integration into a missing one.
   herdr_int="$(herdr integration status 2>/dev/null || true)"
-  if printf '%s\n' "$herdr_int" | grep -q '^claude: current'; then
+  if grep -q '^claude: current' <<<"$herdr_int"; then
     ok "herdr's claude integration"
   else
     printf "  MISSING herdr's claude integration — hw reads an agent's state through it. Install: herdr integration install claude\n"
@@ -779,7 +779,7 @@ if [ "$VENDOR" = opencode ]; then
     floor opencode 1
   fi
   if type -P herdr >/dev/null 2>&1; then
-    if printf '%s\n' "$herdr_int" | grep -q '^opencode: current'; then
+    if grep -q '^opencode: current' <<<"$herdr_int"; then
       ok "herdr's opencode integration"
     else
       printf "  MISSING herdr's opencode integration — hw reads an opencode executor's state through it. Install: herdr integration install opencode\n"
@@ -1167,6 +1167,8 @@ put() {  # <src file> <dst file>
 sync_dir "$SRC/bin" "$BRAIN/bin"
 sync_dir "$SRC/lib" "$BRAIN/lib"
 sync_dir "$SRC/layouts" "$BRAIN/layouts"
+# The agent roles: hw reads the cheap-explorer's from <brain>/_agents, and without it every dry run says "explorer NOT INJECTED".
+[ ! -d "$SRC/_agents" ] || { mkdir -p "$BRAIN/_agents"; sync_dir "$SRC/_agents" "$BRAIN/_agents"; }
 # The cockpit mod: `brain` loads it from here with --plugin-dir, so it is mirrored
 # like bin/ (the installer owns it). A tree that carries no cockpit has none.
 [ ! -d "$SRC/cockpit" ] || { mkdir -p "$BRAIN/cockpit"; sync_dir "$SRC/cockpit" "$BRAIN/cockpit"; }

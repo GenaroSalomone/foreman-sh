@@ -111,6 +111,10 @@ _hw_restore_env_file() {
     # Rule 7: identity only. Enforced on the KEY, before the value is even read,
     # so nothing else in the file can ever reach the environment.
     [[ $key == HW_* || $key == ENGRAM_* ]] || continue
+    # ...and never a name hw EXECS or reads code from (HW_CORE, HW_BW_BIN, HW_BIN_DIR, HW_IMPL*, *_ROOT): the file sits in the
+    # executor-writable workdir, and the next `hw` in this shell would run what it names (lead #10). Mirrored in
+    # core/t4_revive_args.go (an exact-name allowlist there); setup/tests/1292 holds both.
+    [[ $key == (HW_CORE*|HW_IMPL*|HW_BIN_DIR|HW_SECRET_DIR|HW_*_CORE|HW_*_BIN|HW_*_BIN_DIR|HW_*_BIN_DIRS|HW_*_ROOT|HW_*_ROOTS|ENGRAM_BIN|ENGRAM_*_BIN) ]] && continue
     # Rule 4: a variable the pane already has wins. ${(P)key+x} is the indirect
     # form of ${VAR+x} — set-but-empty counts as set, which is correct.
     [[ -n ${(P)key+x} ]] && continue

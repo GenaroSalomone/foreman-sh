@@ -21,6 +21,7 @@
 #   · summary_rejoin  the done-invoker's 80-char chunks (trailing blanks trimmed by herdr)
 #                  read back as the text they carried, soft breaks and a hard cut alike
 #   · effort_published  the dispatch file's effort= line is rows[].effort; no line, or only the agent's default, is null
+#   · lane_published  --lane (bin/brain passes the lane it opened) is `lane`; none is null; a kick keeps the file's
 #   · strings_are_clean  no published string holds a control byte or an escape sequence (a newline or a colour code is one space)
 #   · atomic       a reader never sees half a file (>= 1000 concurrent reads); every write is a new inode; seq rises by 1
 #   · killed_writer  kill -9 in the middle of a write leaves a whole file, and the next writer removes the tmp it left

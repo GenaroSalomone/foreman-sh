@@ -197,6 +197,9 @@ class World:
         e["XDG_STATE_HOME"] = os.path.join(self.tmp, "xdg-state")  # the machine's own herdr-core (its core.json) must not name the files
         e.update({"HW_COCKPIT_HERDR": self.herdr, "HW_COCKPIT_WORK": self.work, "HW_COCKPIT_INVOKER": self.invoker})
         e.pop("HW_COCKPIT_STATE", None)
+        # the writer asks `hc` for the terminals of herdr-core, and a real `hc` under the XDG_STATE_HOME above AUTOSTARTS a core there, which nothing
+        # stops: 805 left five per run (full suite 2026-11-10). A world's hc is absent unless the test hands it a stub (1296).
+        e["HW_COCKPIT_HC"] = os.path.join(self.tmp, "no-hc")
         e.update(extra)
         return e
 

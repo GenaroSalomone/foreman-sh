@@ -742,12 +742,11 @@ func (d *dsp) piBuildArgs(perm string) {
 			d.effort, d.effortSrc = lvl, src
 		}
 	}
-	switch d.effort {
-	case "":
-	case "off", "minimal", "low", "medium", "high", "xhigh", "max":
+	if msg := effortRefusal(d.agent, d.effort); msg != "" {
+		d.die(msg)
+	}
+	if d.effort != "" {
 		d.agentArgs += " --thinking " + d.effort
-	default:
-		d.die("pi --effort must be one of: off minimal low medium high xhigh max (got: " + d.effort + ")")
 	}
 	ext := d.piExtensionArgs()
 	d.agentArgs += " " + ext + " " + d.piSkillArgs() + d.piLaneRulesArg()

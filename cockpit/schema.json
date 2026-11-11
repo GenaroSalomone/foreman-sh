@@ -27,6 +27,7 @@
           }
         },
         "invoker_pane": { "type": "string", "description": "The brainer pane whose executors these rows are." },
+        "lane": { "type": ["string", "null"], "description": "The lane the brainer was opened for (`brain <lane>`), the name of its section; null when the writer was not told (a kick keeps the one in the file). Optional: a writer older than the mod does not publish it and the mod then names the brainer by its rows' projects, else by invoker_pane. Added without a change of `schema`: it is a field a v1 reader ignores." },
         "herdr": {
           "type": "object", "additionalProperties": false,
           "required": ["ok", "server_started_ms", "error"],

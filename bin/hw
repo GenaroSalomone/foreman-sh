@@ -60,7 +60,7 @@ else
     [ -z "$_msg" ] || warn "$_msg"
   fi
 fi
-[ -n "$_core" ] || die "hw-core is not built: run setup/build-core --native (it needs Go 1.22 or newer, https://go.dev/dl)"
+[ -n "$_core" ] || die "hw-core is not built: run setup/build-core --native (it needs Go 1.22 or newer, https://go.dev/dl)$([ -z "${HW_TASK:-}${HW_RUN:-}" ] || printf '; a worktree has no hw-core of its own (core/dist/ is gitignored): run the hw on PATH, not bin/hw')"  # MUTATION-ANCHOR: 1323-M01
 export HW_BRAIN_ROOT="$BRAIN" HW_CORE_BIN_DIR="$HW_BIN_DIR" HW_CORE_ROOT="$_brain_root"
 
 # an executor does not have the brainer's verbs: hw-core says so, with the argv as typed

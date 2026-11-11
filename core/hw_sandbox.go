@@ -376,11 +376,16 @@ func (s *sbT) profile(kind string) (string, int) {
 		pf("  (subpath %s) (subpath %s) (subpath %s) (subpath %s)\n", lit(common+"/objects"), lit(common+"/refs"), lit(common+"/logs"), lit(gitdir))
 		pf("  (regex #\"^%s/packed-refs(\\.lock|\\.new)?$\"))\n", sbRe(common))
 	}
+	pf(";; hw done runs <workdir>/.hw/<run>/verify unsandboxed: the pin is not the executor's to rewrite, nor a newer run dir theirs to plant (lead #16)\n")
+	pf("(deny file-write* (regex #\"^%s/\\.hw/[^/]+/verify$\"))\n", sbRe(wd))
+	pf("(deny file-write-create file-write-unlink (regex #\"^%s/\\.hw(/[^/]+)?$\"))\n", sbRe(wd))
 	pf(";; control sockets run code outside the sandbox: herdr, docker, ssh-agent\n")
 	pf("(deny network-outbound (remote unix-socket))\n") // MUTATION-ANCHOR: s8-net-deny
 	pf("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n")
 	pf(";; credentials that reach other machines\n")
 	pf("(deny file-read* (subpath %s) (subpath %s) (subpath %s))\n", lit(home+"/.ssh"), lit(home+"/.config/gh"), lit(home+"/.docker"))
+	// The Bitwarden session token unlocks the whole vault, not the `agents` folder hw scopes to (lead #13).
+	pf("(deny file-read* (literal %s))\n", lit(sbCanon(envOr("HW_SECRET_DIR", home+"/.cache/hw"))+"/bw-session"))
 	return b.String(), 0
 }
 

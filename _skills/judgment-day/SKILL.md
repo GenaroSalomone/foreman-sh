@@ -25,8 +25,8 @@ Load only when the user explicitly requests Judgment Day or equivalent dual/adve
 - Each judge returns one neutral findings result and terminates. Wait for both; never accept a partial judgment.
 - Two-judge agreement is the corroboration mechanism; no third refuter is launched.
 - Only the parent orchestrator merges/persists findings, launches the fix actor (`jd-fix-agent`), and launches scoped re-judgment.
-- Fix only severe findings confirmed by both judges and caused by the candidate; a `causal_disposition: pre-existing` defect is `info` and never blocks. WARNING/SUGGESTION rows remain `info`.
-- A BLOCKER/CRITICAL only one judge reports is a severe suspect. Before the verdict, the orchestrator verifies each one against the source, read-only, and rules it `real`, `refuted` or `unverifiable` with the evidence. A `real` suspect is still not auto-fixed and makes the verdict `ESCALATED` when the candidate introduced it; a `real` one already at the base stays `info` like any `pre-existing` defect; the second judge's silence is not a refutation.
+- Fix only severe findings confirmed by both judges (or a single-judge suspect ruled `real` and reproduced, below) and caused by the candidate; a `causal_disposition: pre-existing` defect is `info` and never blocks. WARNING/SUGGESTION rows remain `info`.
+- A BLOCKER/CRITICAL only one judge reports is a severe suspect. Before the verdict, the orchestrator verifies each one against the source, read-only, and rules it `real`, `refuted` or `unverifiable` with the evidence. A `real` suspect the orchestrator also reproduced (a command run or a failing input, in the ledger) and the candidate introduced enters the fix loop like a confirmed finding: it is a fix work unit, and the scoped re-judgment sees it. One ruled `real` but not reproduced is not auto-fixed and makes the verdict `ESCALATED`; one still open after round two is `ESCALATED` too; a `real` one already at the base stays `info` like any `pre-existing` defect; the second judge's silence is not a refutation.
 - Permit at most two fix rounds and two scoped re-judgments. Re-judgment sees only the frozen ledger plus fix delta and may record fix-caused defects.
 - A rebase after a judgment is not a new target. Compare the own diff as judged with the one now, file by file (`hw review-delta <judged-base> <judged-head>` inside an hw executor; per-file `git patch-id --stable` elsewhere): an unchanged diff keeps the verdict; otherwise run a scoped re-judgment over the changed files only, which does not reset the fix-round budget. Re-judge the full range only when the comparison cannot be made.
 - **A declared Judgment Day is enforced in code** (pi and Claude, from the executor's transcript, by `done-invoker`): at most 3 two-judge rounds (the first judgment and two scoped re-judgments) and 8 judge runs, and the FIRST judgment's findings (by file) are the frozen ledger — a scoped re-judgment that reports a finding at a file neither the ledger nor its own prompt (ledger plus fix delta) names is refused, unless the judge marks it `"causal_disposition":"fix-caused"` (the one thing a re-judgment may record; it joins the ledger). Ids are not compared (the orchestrator renumbers when it merges). A call that launches ONE judge is a coverage relaunch: it extends the ledger and is not a round. A breach already made cannot be undone: the close is accepted when the report says `ESCALATED` (naming what is open), else refused.
@@ -39,7 +39,7 @@ Load only when the user explicitly requests Judgment Day or equivalent dual/adve
 |---|---|
 | Target unclear | Ask one scope question and stop. |
 | Both judges confirm severe finding | Ask the human before round-one correction; then use the bounded fix actor. Inside an hw executor the question goes through `ask-invoker`, and is skipped when the brief already authorizes corrections. |
-| One judge reports it | Record suspect; do not auto-fix. If BLOCKER/CRITICAL, verify it against the source before the verdict. |
+| One judge reports it | Record suspect. If BLOCKER/CRITICAL, verify it against the source before the verdict: ruled `real`, reproduced and introduced by the candidate, it enters the fix loop like a confirmed one; otherwise do not auto-fix. |
 | Judges contradict | Escalate for explicit human decision. |
 | Scoped re-judgment fails before round two | Parent may launch the final bounded fix round. |
 | Any issue remains after round two | Escalate and stop. |
@@ -54,7 +54,7 @@ Load only when the user explicitly requests Judgment Day or equivalent dual/adve
    for a pair that belongs together). Under Claude Code they are two `Task` calls in one message.
    A background judge re-invokes you when it finishes. Do not wait with `ScheduleWakeup`, `sleep` or polling: end the turn or do other read-only work until both results arrive. `ScheduleWakeup` belongs to `/loop` and refuses a call without its `prompt`.
 3. Merge findings into the frozen ledger and persist it through the selected artifact store. Verify every severe suspect against the source and record its ruling in the ledger.
-4. Ask the human before round-one correction (inside an hw executor: `ask-invoker`, or skip it when the brief already authorizes corrections); run the fix actor (`jd-fix-agent`) only for confirmed severe IDs.
+4. Ask the human before round-one correction (inside an hw executor: `ask-invoker`, or skip it when the brief already authorizes corrections); run the fix actor (`jd-fix-agent`) only for confirmed severe IDs and for suspects ruled `real` and reproduced.
 5. Run both judges again (`jd-judge-a`, `jd-judge-b`) only over the frozen ledger plus immutable fix delta.
 6. Repeat once at most, then run independent final verification and return the terminal verdict.
 

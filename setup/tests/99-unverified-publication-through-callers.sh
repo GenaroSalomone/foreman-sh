@@ -95,7 +95,9 @@ def run_case(publication, caller, route, delivery):
                         else 'Metadata publication could not be established; do not rely on a token record on this pane.')
                 assert note in output, (label, 'caller lost publication evidence', output)
                 if publication != 'verified':
-                    notices = (case/'herdr').read_text()
+                    # the herdr stub's log exists only if the caller asked herdr something (core/invokers/route.go resolves a sender through
+                    # `herdr agent get`); done-invoker on a refused delivery may not, and no notice is no false claim
+                    notices = (case/'herdr').read_text() if (case/'herdr').is_file() else ''
                     assert not re.search(r'remains recorded|[Ii][Ss] recorded on this pane|question published on', output+notices), (label, 'false durable record claim', output, notices)
                 assert not (state/'done').exists() and not (case/'closed').exists() and not (state/'close.log').exists(), (label, 'failure marked or closed task')
                 assert (state/'ask-count').read_text() == '1', (label, 'failure consumed ask')

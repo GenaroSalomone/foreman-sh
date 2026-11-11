@@ -147,13 +147,16 @@ class Oracle:
         return r
 
     def _run(self, agent, cwd, config_dir):
-        # A probe is a real session: it fires the directory's SessionStart hooks. It must
+        # A probe is a real session in a directory whose project config is repo content. Measured 2026-11-10: with no
+        # flag, claude -p ran that repo's SessionStart hook and its .mcp.json server unattended, no trust prompt
+        # (lead #1). So hooks are off and only the --mcp-config below is loaded; the project's AGENTS still load
+        # (they are what is probed; `--setting-sources user` would hide them). It must
         # not inherit the caller's pane (herdr would repoint it at this throwaway
         # session) nor start lane housekeeping (a detached `hw reap --apply`).
         env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "HW_"))}
         env.update(CLAUDE_CONFIG_DIR=config_dir, HW_HOUSEKEEPING="0", HW_AGENT_TOOLS="off")
         cmd = [self.claude, "-p"] + (["--agent", agent] if agent else []) + [
-            "--no-session-persistence", "--mcp-config", self.mcp_config(), "--output-format", "stream-json", "--verbose", "ok"]
+            "--no-session-persistence", "--settings", '{"disableAllHooks":true}', "--strict-mcp-config", "--mcp-config", self.mcp_config(), "--output-format", "stream-json", "--verbose", "ok"]
         try:
             p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                  stdin=subprocess.DEVNULL, text=True)

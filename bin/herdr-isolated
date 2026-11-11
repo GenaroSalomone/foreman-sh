@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+#
+# herdr-isolated — start and stop an ISOLATED Herdr app instance (its own window, its own herdr-core) under a directory you name.
+#
+#   herdr-isolated start <dir> [--brain] [--quiet]   build <dir>, start the app from a clean env, prove its sockets are under <dir>, write <dir>/env
+#   herdr-isolated stop  <dir>                       stop everything that instance started: app, feeders, core (the --hc-launchd parent) and holder
+#   herdr-isolated ls    <dir>                       list those processes (pid, comm, why) and stop nothing
+#   herdr-isolated shot  <dir> <out.png>             raise the instance's window, wait, take the screenshot; refuse a frame equal to the last one
+#
+# WHY. The recipe in herdr-app/README.md was prose: one QA spent ~30 tool calls rebuilding it, and killing the app and the feeder
+# by pid leaves the DETACHED core alive (an `--hc-launchd` parent re-parented to pid 1 plus its `hold --socket <dir>/run/herdr-core/…`
+# child). `stop` finds the instance by ITS OWN directory — a process holding a unix socket under <dir>, or an herdr process whose cwd
+# is under <dir> — never by name alone, so it cannot match the person's core (~/.local/state/herdr-core) or another executor's instance.
+#
+# <dir> must be absolute, SHORT (59 characters or fewer: its longest socket path, 44 more, has a 103-character limit) and must not contain, or sit inside, the person's own
+# herdr dirs. A started instance is also listed in $HW_ARTIFACTS/tmp/herdr-instances, which done-invoker reads to warn about one
+# that outlives the report.
+#
+# WHAT start BUILDS: the instance has its OWN HOME (<dir>/h), its own CLAUDE_CONFIG_DIR (<dir>/claude) and a private engram
+# (ENGRAM_PORT=9, never 7437), so nothing a probe does lands in the person's ~/.claude.json, ~/.claude* or engram. <dir>/bin holds a
+# fixture `gh` and a stand-in `claude` first on every terminal's PATH (a real claude cannot sign in under another config dir:
+# "Not logged in", measured 2026-11-10; its credentials are in the keychain, never to be read or copied). <dir>/q runs a command
+# in the instance's clean environment. With --brain, <dir>/brain is a copy of THIS tree (no .git) with its own hw-core, and the
+# instance's PATH carries <dir>/brain/bin and HW_BRAIN_ROOT: `<dir>/q hw …` runs against it, never against the real brain.
+#
+# EXIT: 0 done; 1 stop left a survivor / start failed / shot got a frame equal to the last; 2 usage or a refused <dir>.
+set -uo pipefail
+
+SELF_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd -P "$SELF_DIR/.." && pwd)"
+APP_BIN="${HERDR_ISOLATED_APP:-/Applications/Herdr.app/Contents/MacOS/Herdr}"
+REAL_HOME="${HERDR_ISOLATED_REAL_HOME:-$HOME}"
+
+die() { printf 'herdr-isolated: %s\n' "$*" >&2; exit 2; }
+usage() { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+physical() { ( cd -P "$1" 2>/dev/null && pwd ) || printf '%s' "$1"; }
+
+HOLDER_SOCKET_SUFFIX=44
+# validate <dir>: absolute, short, not the person's, not an ancestor of anything of his.
+validate() {
+  case "$1" in /*) ;; *) die "<dir> must be an absolute path: $1" ;; esac
+  case "$1" in *[[:space:]]*|*..*) die "<dir> must have no spaces and no '..': $1" ;; esac
+  case "$1" in *\'*|*\"*|*\$*|*\`*|*\\*) die "<dir> must have no quote, \$, backtick or backslash (q is generated from it): $1" ;; esac
+  local d p longest
+  d="${1%/}"; p="$(physical "$d")"
+  # A UNIX SOCKET PATH HOLDS 103 CHARACTERS (macOS sun_path is 104 with the NUL), and the longest one an instance binds is the holder's:
+  # <dir>/run/herdr-core/default.holder.<8 hex>.sock, 44 characters below <dir> (lsof of two live instances, 2026-11-10). The cap was a flat 48,
+  # below the 54 of an executor's own TMPDIR (<cache>/hw-run-tmp/<run>), so the run had to detour through a /tmp symlink. The core may bind the
+  # physical path (/tmp is /private/tmp: 8 more), so the longer of the two is judged.
+  longest="${#d}"; [ "${#p}" -le "$longest" ] || longest="${#p}"
+  [ $((longest + HOLDER_SOCKET_SUFFIX)) -le 103 ] || die "<dir> is $longest characters (as its physical path says); the instance's longest socket path, <dir> plus $HOLDER_SOCKET_SUFFIX, would pass the 103 a unix socket path holds. Keep <dir> at $((103 - HOLDER_SOCKET_SUFFIX)) or fewer: $1"
+  case "$d" in ""|/|/tmp|/private/tmp|"$REAL_HOME") die "<dir> is too broad: $1" ;; esac
+  # a depth of at least 2 below the root: /tmp/x, /srv/u/x
+  [ "$(printf '%s' "$d" | awk -F/ '{print NF-1}')" -ge 2 ] || die "<dir> must be at least two levels deep: $1"
+  local own
+  for own in "$REAL_HOME/.local/state/herdr-core" "$REAL_HOME/.local/share/herdr-core" "$REAL_HOME/.config/herdr-app" "$REAL_HOME/.config/herdr"; do
+    case "$own/" in "$d/"*|"$p/"*) die "<dir> would contain the person's own $own: $1" ;; esac
+    case "$d/" in "$own/"*) die "<dir> is inside the person's own $own: $1" ;; esac
+  done
+}
+
+# ancestors of this shell: never signalled
+self_chain() { local p=$$; while [ -n "$p" ] && [ "$p" -gt 1 ]; do printf '%s\n' "$p"; p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"; done; }
+
+# scan <dir>: "pid<TAB>comm<TAB>why" lines for every process that belongs to the instance under <dir> (or its physical path).
+scan() {
+  local d p chain
+  d="${1%/}"; p="$(physical "$d")"
+  chain="$(self_chain | tr '\n' ' ')"
+  {
+    lsof -nP -U -F pn 2>/dev/null | awk -v a="$d" -v b="$p" '
+      /^p/ {pid=substr($0,2); next}
+      /^n/ {n=substr($0,2); if (index(n,a "/")==1 || index(n,b "/")==1) print pid "\tsocket\t" n}'
+    lsof -nP -d cwd -F pn 2>/dev/null | awk -v a="$d" -v b="$p" '
+      /^p/ {pid=substr($0,2); next}
+      /^n/ {n=substr($0,2); if (n==a || n==b || index(n,a "/")==1 || index(n,b "/")==1) print pid "\tcwd\t" n}'
+  } | while IFS="$(printf '\t')" read -r pid why name; do
+    case " $chain " in *" $pid "*) continue ;; esac
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null)"; [ -n "$comm" ] || continue
+    base="${comm##*/}"
+    # a cwd alone only counts for the instance's own binaries; a socket under <dir> is the instance's by definition
+    if [ "$why" = cwd ]; then case "$base" in herdr-core|Herdr|herdr-app|herdr) ;; *) continue ;; esac; fi
+    printf '%s\t%s\t%s %s\n' "$pid" "$base" "$why" "$name"
+  done | sort -un -k1,1
+}
+
+alive_pids() { scan "$1" | cut -f1; }
+
+# an instance has the shape start (or the README recipe) gives it: app/ and run/. A broad dir that merely holds some socket is refused.
+shaped() { [ -d "${1%/}/app" ] && [ -d "${1%/}/run" ] || die "$1 is not an isolated instance (no app/ and run/ inside); refusing to signal what holds a socket under it"; }
+
+cmd_ls() {
+  validate "$1"; shaped "$1"
+  local out; out="$(scan "$1")"
+  [ -n "$out" ] || { echo "no process of $1"; return 0; }
+  printf '%s\n' "$out" | awk -F'\t' '{printf "%s\t%s\t%s\n",$1,$2,$3}'
+}
+
+cmd_stop() {
+  validate "$1"; shaped "$1"
+  local d="${1%/}" pids n=0
+  pids="$(alive_pids "$d")"
+  if [ -z "$pids" ]; then echo "herdr-isolated: nothing of $d is running"; unregister "$d"; return 0; fi
+  # Kill the OUTERMOST parents first so a supervisor cannot respawn: TERM all, then re-scan (a pid is re-verified by the scan, never by
+  # the old list), then KILL what is left.
+  printf '%s\n' "$pids" | while read -r p; do kill -TERM "$p" 2>/dev/null; done
+  while [ "$n" -lt 20 ]; do
+    sleep 0.25; n=$((n+1))
+    [ -n "$(alive_pids "$d")" ] || break
+  done
+  local left; left="$(alive_pids "$d")"
+  if [ -n "$left" ]; then
+    printf '%s\n' "$left" | while read -r p; do kill -KILL "$p" 2>/dev/null; done
+    sleep 0.5
+    left="$(scan "$d")"
+  fi
+  if [ -n "$left" ]; then
+    printf 'herdr-isolated: still alive after SIGKILL:\n%s\n' "$left" >&2
+    return 1
+  fi
+  unregister "$d"
+  printf 'herdr-isolated: stopped %s process(es) of %s\n' "$(printf '%s\n' "$pids" | wc -l | tr -d ' ')" "$d"
+}
+
+registry() { [ -n "${HW_ARTIFACTS:-}" ] && printf '%s/tmp/herdr-instances' "$HW_ARTIFACTS"; }
+register() {
+  local r; r="$(registry)" || return 0
+  mkdir -p "$(dirname "$r")" && { grep -qxF "$1" "$r" 2>/dev/null || printf '%s\n' "$1" >> "$r"; }
+}
+unregister() {
+  local r tmp; r="$(registry)" || return 0
+  [ -f "$r" ] || return 0
+  tmp="$r.$$"; grep -vxF "$1" "$r" > "$tmp" 2>/dev/null; mv "$tmp" "$r"
+}
+
+# the environment of the instance: ONE list, used for the app, for <dir>/q and (as exports) for nothing the caller's shell sees.
+# HOME and CLAUDE_CONFIG_DIR are the instance's own; USER/LOGNAME ride along (QA6 N1). The REAL ~/.local/bin does NOT: the core puts
+# $HOME/.local/bin first on every terminal's PATH, so with the real one in reach `hc run claude` ran the real claude (measured 2026-11-10)
+# and only the four binaries the app needs are linked into <dir>/h/.local/bin (see start). The engram is private and unreachable (never 7437).
+instance_env() { # <dir> <with-brain 0|1>
+  local I="$1" path="$1/bin"
+  [ "$2" != 1 ] || path="$path:$1/brain/bin"
+  ENVV=(HOME="$I/h" USER="${USER:-$(id -un)}" LOGNAME="${USER:-$(id -un)}" TERM=xterm-256color LANG=en_US.UTF-8
+    PATH="$path:$I/h/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    ZDOTDIR="$I/zdot" HERDR_APP_HOME="$I/app" XDG_STATE_HOME="$I/state" XDG_CONFIG_HOME="$I/config" XDG_RUNTIME_DIR="$I/run" HERDR_TELEMETRY=0
+    CLAUDE_CONFIG_DIR="$I/claude" ENGRAM_PORT=9 ENGRAM_DATA_DIR="$I/engram" TMPDIR="$I/tmp" GIT_CONFIG_GLOBAL="$I/h/.gitconfig")
+  [ "$2" != 1 ] || ENVV+=(HW_BRAIN_ROOT="$I/brain")
+}
+
+# what a probe finds first on its PATH: a gh with no auth and no network, and a claude that is not the real one.
+stand_ins() { # <dir>
+  local I="$1"
+  cat > "$I/bin/gh" <<'GH'
+#!/bin/sh
+# fixture gh for the isolated app: no auth, no network
+case "$*" in *"auth status"*) echo "fixture gh"; exit 0;; esac
+echo '[]'
+GH
+  cat > "$I/bin/claude" <<'CLAUDE'
+#!/bin/sh
+# stand-in claude for an isolated Herdr instance. A real claude cannot sign in under the instance's own CLAUDE_CONFIG_DIR ("Not logged in")
+# and must never run under the person's: this one writes <config>/sessions/<pid>.json like claude, logs its argv and environment, reports
+# its state by OSC 7501 (idle at the prompt, working while it answers a line) and answers every line it is sent with "stand-in: <line>".
+D="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+case " $* " in *" --version "*|*" -v "*) echo "0.0.0 (herdr-isolated stand-in)"; exit 0;; esac
+mkdir -p "$D/sessions"
+printf '{"pid":%s,"sessionId":"%s","cwd":"%s"}\n' "$$" "$(uuidgen 2>/dev/null || echo "stand-in-$$")" "$PWD" > "$D/sessions/$$.json"
+echo "$(date +%T) pid=$$ cwd=$PWD HOME=$HOME CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-unset} argv=$*" >> "$D/stand-in.log"
+trap 'rm -f "$D/sessions/$$.json"' EXIT
+osc() { printf '\033]7501;state=%s\007' "$1"; }
+osc idle
+while IFS= read -r line; do osc working; echo "stand-in: $line"; sleep 1; osc idle; done
+CLAUDE
+  chmod +x "$I/bin/gh" "$I/bin/claude"
+}
+
+# <dir>/q <command…>: run a command in the instance's environment. Never the caller's HW_*/HERDR_* (an executor's pane address), never the person's HOME.
+write_q() { # <dir>
+  { printf '#!/bin/sh\n# run a command in the isolated instance'"'"'s clean environment (herdr-isolated start)\nexec env -i'; printf " '%s'" "${ENVV[@]}"; printf ' "$@"\n'; } > "$1/q"
+  chmod +x "$1/q"
+}
+
+# --brain: a copy of THIS tree whose lane table (projects.json: work and the lanes live under ~) resolves under the instance's HOME, and its own hw-core.
+brain_copy() { # <dir>
+  local I="$1" build="${HERDR_ISOLATED_BUILD_CORE:-setup/build-core --native}"
+  mkdir -p "$I/brain" || return 1
+  rsync -a --exclude .git --exclude node_modules --exclude core/dist --exclude .artifacts --exclude .worktrees "$REPO/" "$I/brain/" || return 1
+  ( cd "$I/brain" && $build >"$I/brain-build.log" 2>&1 ) || { echo "herdr-isolated: building hw-core in $I/brain failed; see $I/brain-build.log" >&2; return 1; }
+}
+
+cmd_start() { # <dir> [--brain] [--quiet]
+  validate "$1"
+  local I="${1%/}" brain=0 quiet=0 a; shift
+  for a in "$@"; do case "$a" in --brain) brain=1 ;; --quiet) quiet=1 ;; *) usage ;; esac; done
+  [ -x "$APP_BIN" ] || die "the Herdr app is not at $APP_BIN"
+  [ -z "$(alive_pids "$I")" ] || die "an instance already runs under $I (herdr-isolated ls $I); stop it first"
+  mkdir -p "$I"/{app,state,config,run,bin,zdot,h,claude,engram,tmp} || die "cannot create $I"
+  # the app's built-in mods (read from the person's tree, never written), then this tree's mods/layouts/themes over them.
+  # The person's foreman-* entries are SYMLINKS into the brain main checkout: copying one would run his mods in the instance,
+  # and the copy of this tree's mod over it would then fail ("Not a directory") or write through the link into main. So a
+  # symlink is never copied (the tree's own mod takes its place), and none may be left in the instance.
+  find "$I/app" -type l -delete 2>/dev/null   # a leftover of an older start; a link is removed, never followed
+  mkdir -p "$I/app/mods" || die "cannot create $I/app/mods"
+  if [ -d "$REAL_HOME/.config/herdr-app/mods" ]; then
+    for m in "$REAL_HOME/.config/herdr-app/mods"/*; do
+      [ -e "$m" ] && [ ! -L "$m" ] || continue
+      cp -R "$m" "$I/app/mods/" || die "could not copy the built-in mod $m into $I/app/mods"
+    done
+  fi
+  cp -R "$REPO/herdr-app/mods" "$REPO/herdr-app/layouts" "$REPO/herdr-app/themes" "$I/app/" || die "could not copy this tree's herdr-app mods/layouts/themes into $I/app"
+  links="$(find "$I/app" -type l 2>/dev/null)"
+  [ -z "$links" ] || { printf '%s\n' "$links" >&2; die "the instance's app dir holds symlinks (above): it would run, or write into, a tree that is not this one"; }
+  echo '{"frame.welcomed":"skipped"}' > "$I/app/shared.json"   # overlay.close does not dismiss the welcome
+  printf '[user]\n\tname = probe\n\temail = probe@example.invalid\n' > "$I/h/.gitconfig"
+  # the app needs herdr-core ("Herdr needs herdr-core" without it) and the probes drive hc/herdr-app: those four, linked, and nothing else of the
+  # person's ~/.local/bin (his claude is there)
+  mkdir -p "$I/h/.local/bin" || die "cannot create $I/h/.local/bin"
+  for b in herdr-core hc herdr-app herdr; do
+    [ -e "$REAL_HOME/.local/bin/$b" ] && ln -sfn "$REAL_HOME/.local/bin/$b" "$I/h/.local/bin/$b"
+  done
+  stand_ins "$I"
+  [ "$brain" = 0 ] || brain_copy "$I" || die "could not build the instance's brain copy"
+  instance_env "$I" "$brain"; write_q "$I"
+  # exec takes PATH from the login shell, not from this env: prepend $I/bin there (the fixture gh, the stand-in claude). The person's own
+  # ~/.zshrc is NOT sourced: HOME is the instance's, and his rc files are not the probe's.
+  printf 'export PATH=%s/bin:$PATH\n' "$I" > "$I/zdot/.zshrc"
+  printf 'export PATH=%s/bin:$PATH\n' "$I" > "$I/zdot/.zlogin"
+  # <dir>/env: what drives this instance (source it; never run a bare herdr-app/hc without it — they reach the person's own app)
+  cat > "$I/env" <<ENV
+export HERDR_APP_HOME=$I/app XDG_STATE_HOME=$I/state XDG_CONFIG_HOME=$I/config XDG_RUNTIME_DIR=$I/run HERDR_TELEMETRY=0
+ENV
+  register "$I"
+  # env -i: the app hands EVERY terminal it opens the environment it was started with; from an executor's shell that is its HW_*.
+  env -i "${ENVV[@]}" nohup "$APP_BIN" >"$I/app.log" 2>&1 &
+  local pid=$! i=0
+  # prove: the app's own socket is under $I, and it is not the person's
+  while [ "$i" -lt 60 ]; do
+    sleep 0.5; i=$((i+1))
+    if lsof -nP -a -U -p "$pid" 2>/dev/null | grep -q "$I/app/herdr-app.sock\|$(physical "$I")/app/herdr-app.sock"; then break; fi
+    kill -0 "$pid" 2>/dev/null || { echo "herdr-isolated: the app exited at start; see $I/app.log" >&2; cmd_stop "$I" >/dev/null 2>&1; return 1; }
+  done
+  if ! lsof -nP -a -U -p "$pid" 2>/dev/null | grep -q "$I/app/herdr-app.sock\|$(physical "$I")/app/herdr-app.sock"; then
+    echo "herdr-isolated: the app (pid $pid) has no socket under $I after 30 s; stopping the instance" >&2
+    cmd_stop "$I" >/dev/null 2>&1; return 1
+  fi
+  echo "$pid" > "$I/app.pid"
+  [ "$quiet" = 1 ] || printf 'herdr-isolated: app pid %s, socket %s/app/herdr-app.sock\n  drive it:  %s/q herdr-app do …   (or . %s/env; herdr-app do …)\n  screenshot: herdr-isolated shot %s <out.png>\n  stop it:   herdr-isolated stop %s\n' "$pid" "$I" "$I" "$I" "$I" "$I"
+}
+
+# shot <dir> <out.png>: `herdr-app shot` saves the LAST frame the window drew, and a window that is not frontmost may not redraw: a shot
+# taken without raising it is a stale frame (5 of 5 first shots of one QA; 8 hand-run osascript raises in another). Raise THIS instance's
+# window by its pid (never by name: the person's own Herdr is another process), give it time to draw, shoot, and refuse a PNG whose bytes
+# equal the last shot of this instance (<dir>/shot.sha): a frame that did not change is a frame that did not redraw, or nothing moved — look.
+cmd_shot() { # <dir> <out.png>
+  validate "$1"; shaped "$1"
+  local I="${1%/}" out="$2" pid sha last tries=0
+  case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
+  pid="$(cat "$I/app.pid" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive_pids "$I" | grep -qx "$pid" || die "no running app of $I (its pid file is gone or the app exited): herdr-isolated start $I"
+  [ -x "$I/q" ] || die "$I has no q: it was started by an older herdr-isolated; stop and start it again"
+  last="$(cat "$I/shot.sha" 2>/dev/null)"
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries+1))
+    osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true" >/dev/null 2>&1 \
+      || echo "herdr-isolated: could not raise the window of pid $pid (System Events refused osascript); the frame may be stale" >&2
+    sleep "${HERDR_ISOLATED_SHOT_WAIT:-4}"
+    "$I/q" herdr-app shot "$out" >/dev/null 2>"$I/shot.err" || { cat "$I/shot.err" >&2; die "herdr-app shot failed for $I"; }
+    sha="$(shasum -a 256 "$out" | cut -d' ' -f1)"
+    [ "$sha" != "$last" ] && break
+  done
+  if [ "$sha" = "$last" ]; then
+    echo "herdr-isolated: $out is byte-identical to the last shot of $I after $tries raises: the window did not redraw, or nothing changed" >&2
+    return 1
+  fi
+  echo "$sha" > "$I/shot.sha"
+  printf '%s\n' "$out"
+}
+
+case "${1:-}" in
+  start) [ $# -ge 2 ] || usage; shift; cmd_start "$@" ;;
+  stop)  [ $# -eq 2 ] || usage; cmd_stop "$2" ;;
+  ls)    [ $# -eq 2 ] || usage; cmd_ls "$2" ;;
+  shot)  [ $# -eq 3 ] || usage; cmd_shot "$2" "$3" ;;
+  *) usage ;;
+esac

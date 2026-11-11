@@ -3,11 +3,12 @@ import { h_flex, v_flex, Scrollbar } from "gpui-base";
 import { focused, home, layout, props, readTextFile, run, setShared, shared, terminals, theme } from "herdr";
 import * as fs from "fs/promises";
 import {
-  attentionParts, classify, cut, dur, laneOf, metaText, noProgressAfterMs, parseState, progressText,
-  folderError, modelOf, statusText, subagentLine, subagentsSummary, terminalFor,
+  attentionParts, brainerLane, classify, cut, dur, metaText, noProgressAfterMs, parseState, progressText,
+  ctxLevel, filterId, FILTERS, folderError, keeps, modelOf, scrub, statusText, subagentLine, subagentsSummary, terminalFor, waitingQueue,
 } from "./state.js";
-import { activeChild, LOOK_LAYOUTS, shownLook, switchOf } from "./switcher.js";
-import { alarm, kindOf, colorOf, lookOf, mark, SPACE, TEXT } from "./tokens.js";
+import { activeChild, LOOK_LAYOUTS, shownLook, SWITCH_ROW2, switchOf } from "./switcher.js";
+import { ageText, lineOf, parseUsage, sortAccounts } from "./usage.js";
+import { alarm, button, kindOf, colorOf, lookOf, mark, SPACE, TEXT } from "./tokens.js";
 
 // The foreman cockpit as the herdr app draws it. The data is the file
 // bin/cockpit-state writes for each brainer pane (contract: cockpit/schema.json;
@@ -26,6 +27,7 @@ import { alarm, kindOf, colorOf, lookOf, mark, SPACE, TEXT } from "./tokens.js";
 
 // The four attention states that need the brainer: their status text in its color, bold.
 const LOUD = new Set(["challenge", "ask", "blocked", "report"]);
+const QUEUE_MAX = 8;
 const URGENT = ["blocked", "waits", "working", "idle"];
 // No hover: the app's tooltip is a plain label as wide as its text, so a report on hover drew a bar
 // across the window. A row shows what it has instead: its report and what waits wrap under it.
@@ -43,6 +45,7 @@ const detailOf = (r, attention) => (r.report !== null && r.report.status !== "bl
 export default class Cockpit extends View {
   init(_props, cx) {
     this.states = [];
+    this.usage = [];
     this.error = null;
     this.open = new Set();
     this.folded = new Set();
@@ -51,6 +54,7 @@ export default class Cockpit extends View {
     this.held = [];
     this.picked = null;
     this.published = "";
+    this.filter = filterId(shared("foreman.cockpit.filter")); // remembered by the app across restarts and windows
     const p = props();
     if (switchOf(p)) return;
     this.refresh(cx);
@@ -99,6 +103,15 @@ export default class Cockpit extends View {
       }
       this.states = states;
       this.error = null;
+      // The accounts' usage, written by bin/statusline-usage-tee; a missing folder is no line, never an error.
+      const udir = `${home()}/.cache/hw/claude-usage`;
+      const us = [];
+      for (const name of await fs.readdir(udir).catch(() => [])) {
+        if (!name.endsWith(".json")) continue;
+        const u = parseUsage(await readTextFile(`${udir}/${name}`).catch(() => ""));
+        if (u !== null) us.push(u);
+      }
+      this.usage = sortAccounts(us);
     } finally {
       this.reading = false;
     }
@@ -136,6 +149,18 @@ export default class Cockpit extends View {
     return el.when(target !== null, (e) => e.cursor_pointer().on_click(() => run("pane.focus", { terminal: target })));
   }
 
+  // The context meter: a 36 px bar filling with use, quiet below 60 %, the warning color from 80 %, the alarm from 90 %;
+  // the percent is written only once it warns. No window known (pct null): no meter, the meta line still says the tokens.
+  meter(r, t, dim) {
+    const lv = ctxLevel(r.ctx.pct);
+    if (lv === null) return null;
+    const color = dim || lv === "quiet" ? t.dim : lv === "mid" ? t.muted : lv === "warn" ? t.ansi3 ?? t.working : t.blocked;
+    const w = Math.max(2, Math.round((36 * Math.min(100, r.ctx.pct)) / 100));
+    return h_flex().id(`ctx-${r.id}`).flex_none().gap(5).items_center()
+      .child(div().w(36).h(3).rounded(2).bg(t.hover).child(div().w(w).h(3).rounded(2).bg(color)))
+      .when(lv === "warn" || lv === "alarm", (e) => e.child(div().text_size(TEXT.label).text_color(color).font_semibold().child(`${Math.round(r.ctx.pct)}%`)));
+  }
+
   // One row. C: the task, its status and its lines (meta, progress, report, subagents, what waits),
   // a left bar in the signal color when it waits. D: Linear's one-line row with a label and an age,
   // the report under it. G: Zed's 24 px tree row under an indent guide, the report in a hover card.
@@ -155,6 +180,7 @@ export default class Cockpit extends View {
           .child(name(13, 400))
           .when(Boolean(label), (e) => e.child(div().flex_none().h(18).px(7).rounded(10).border_1().border_color(t.border)
             .text_size(TEXT.label).text_color(t.muted).flex().items_center().child(label)))
+          .children([this.meter(r, t, dim)].filter((x) => x !== null))
           .child(div().flex_none().w(34).text_right().text_size(12).text_color(t.dim).child(age(r, now))))
         .when(detail !== "" && (loud || attention !== ""), (e) => e.child(div().pl(38).pr(14).pb(10).text_size(12).line_height(1.5)
           .text_color(r.attention === "blocked" || r.attention === "challenge" ? t.blocked : t.muted).child(cut(detail, 200))));
@@ -170,6 +196,7 @@ export default class Cockpit extends View {
           .child(mark(look, kind, t, 11))
           .child(name(13, 400))
           .child(div().flex_none().text_size(12).text_color(t.dim).child(meta))
+          .children([this.meter(r, t, dim)].filter((x) => x !== null))
           .child(div().flex_none().w(34).text_right().text_size(12).text_color(t.dim).child(age(r, now))))
         .when(detail !== "" && (loud || attention !== ""), (e) => e.child(div().ml(22).mr(12).mt(2).mb(6).px(8).py(6).rounded(4)
           .bg(t.background).border_1().border_color(t.border).font_family(look.mono).text_size(12).line_height(1.5)
@@ -205,6 +232,7 @@ export default class Cockpit extends View {
       .child(h_flex().w_full().min_w(0).gap(10)
         .child(mark(look, kind, t, 12))
         .child(name(12.5, kind === "idle" ? 400 : 700))
+        .children([this.meter(r, t, dim)].filter((x) => x !== null))
         .child(div().flex_none().text_size(TEXT.label).text_color(loud ? color : t.muted)
           .when(loud, (e) => e.font_bold())
           .child(statusText(r, now))))
@@ -220,68 +248,125 @@ export default class Cockpit extends View {
     return this.states
       .map((state) => ({ state, ...classify(state, now) }))
       .filter((g) => g.cls === "fresh" || g.cls === "stale")
-      .sort((a, b) => laneOf(a.rows).localeCompare(laneOf(b.rows)) || a.state.invoker_pane.localeCompare(b.state.invoker_pane));
+      .sort((a, b) => brainerLane(a.state).localeCompare(brainerLane(b.state)) || a.state.invoker_pane.localeCompare(b.state.invoker_pane));
   }
 
-  // One brainer: its lane, its pane id and hw's counts, then its rows. Another brainer is another
-  // section, because an ask waits on that brainer and nobody else.
+  // One brainer with executors: its lane and hw's counts, then its rows; the lane says which brainer,
+  // so the pane id is not repeated. Another brainer is another section, because an ask waits on that
+  // brainer and nobody else.
   section(g, now, t, look) {
     const dim = g.cls === "stale";
+    const kept = g.rows.filter((r) => keeps(this.filter, r));
     const thresholdMs = noProgressAfterMs(g.state);
-    const lane = cut(laneOf(g.rows) || g.state.invoker_pane, 40);
+    const lane = cut(brainerLane(g.state), 40);
     const counts = this.counts(g.state);
-    const right = [g.state.invoker_pane, counts].filter(Boolean).join(" · ");
-    const kinds = new Set(g.rows.map((r) => kindOf(r.attention)));
+    const kinds = new Set(kept.map((r) => kindOf(r.attention)));
     const urgent = URGENT.find((k) => kinds.has(k)) ?? "idle";
     const key = g.state.invoker_pane;
-    const shut = this.folded.has(key) || g.rows.length === 0;
-    const rows = shut && look.id === "g" ? [] : g.rows.map((r) => this.card(r, now, t, dim, thresholdMs, look));
+    const shut = this.folded.has(key);
+    const rows = shut && look.id === "g" ? [] : kept.map((r) => this.card(r, now, t, dim, thresholdMs, look));
     const head = look.id === "d"
       ? h_flex().h(34).mt(6).px(14).gap(8).bg(t.surface).border_t(1).border_b(1).border_color(t.border).text_size(12.5)
         .child(mark(look, dim ? "idle" : urgent, t, 12))
         .child(div().flex_none().font_weight(500).text_color(dim ? t.dim : t.foreground).child(lane))
-        .child(div().flex_none().text_color(t.dim).child(String(g.rows.length)))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(right))
+        .child(div().flex_none().text_color(t.dim).child(String(kept.length)))
+        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(counts))
       : look.id === "g"
         ? h_flex().id(`sec-${key}`).h(26).mt(4).pl(4).pr(6).gap(6).cursor_pointer().text_size(12.5).text_color(t.muted)
           .on_click((_e, cx) => { if (this.folded.has(key)) this.folded.delete(key); else this.folded.add(key); cx.notify(); })
           .child(div().flex_none().w(12).text_center().text_size(9).text_color(t.dim).child(shut ? "▸" : "▾"))
           .child(div().flex_none().font_weight(500).text_color(dim ? t.dim : t.foreground).child(lane))
-          .child(div().flex_none().child(String(g.rows.length)))
-          .child(div().flex_1().min_w(0).truncate().text_right().pr(6).text_size(12).text_color(t.dim).child(right))
+          .child(div().flex_none().child(String(kept.length)))
+          .child(div().flex_1().min_w(0).truncate().text_right().pr(6).text_size(12).text_color(t.dim).child(counts))
         : h_flex().w_full().min_w(0).gap(10).pt(16).px(14).pb(6).border_b(1).border_color(t.border).text_size(TEXT.label)
           .child(div().flex_none().text_size(13).font_bold().text_color(dim ? t.dim : t.foreground).child(lane))
-          .child(div().flex_none().text_color(t.muted).child(cut(g.state.invoker_pane, 24)))
           .child(div().flex_1().min_w(0).truncate().text_right().text_color(dim ? t.dim : t.foreground).child(counts));
     return v_flex().w_full().min_w(0).flex_none()
       .child(head)
-      .when(look.id === "d" && g.rows.length === 0, (e) => e.child(div().pl(38).pr(14).pt(10).pb(12).text_size(12.5).text_color(t.dim).child("No executors.")))
       .children(rows);
   }
 
-  // What waits on the brainers, above everything: C's full-width signal block, D's inbox card, G's outlined callout.
+  // One line per Claude account, above everything: its name and its 5-hour and 7-day windows, amber from 80 %,
+  // red from 95 %, dimmed (and aged) when no session has refreshed the file for 15 min.
+  usageLines(now, t, look) {
+    if (this.usage.length === 0) return null;
+    const color = (lv) => (lv === "crit" ? t.blocked : lv === "warn" ? t.ansi3 ?? t.working : t.muted);
+    const rows = this.usage.map((u) => {
+      const l = lineOf(u, Math.floor(now / 1000));
+      return h_flex().id(`usage-${l.account}`).w_full().min_w(0).h(24).gap(10).items_center().text_size(TEXT.label)
+        .child(div().flex_none().size(6).rounded(3).bg(l.stale ? t.dim : color(l.level)))
+        .child(div().flex_none().w(60).truncate().text_color(l.stale ? t.dim : t.foreground).child(scrub(l.account)))
+        .children(l.parts.map((p) => div().flex_none().text_color(l.stale ? t.dim : color(p.level))
+          .when(p.level !== "ok" && !l.stale, (e) => e.font_semibold()).child(`${p.label} ${p.text}`)))
+        .when(l.stale, (e) => e.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`${ageText(l.ageS)} ago`)));
+    });
+    return v_flex().id("usage").w_full().flex_none().px(14).py(6).border_b(1).border_color(t.border).children(rows);
+  }
+
+
+  // The brainers with no executors: one line of their lanes, not a section each (eight idle brainers
+  // filled the panel with eight headers and eight "No executors."). Same lane names, no new copy.
+  idle(groups, t, look) {
+    const names = groups.map((g) => cut(brainerLane(g.state), 24)).join(" · ");
+    const dimmed = groups.every((g) => g.cls === "stale");
+    const row = h_flex().w_full().min_w(0).flex_none();
+    if (look.id === "d") {
+      return row.h(34).mt(6).px(14).gap(8).bg(t.surface).border_t(1).border_b(1).border_color(t.border).text_size(12.5)
+        .child(mark(look, "idle", t, 12))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(names));
+    }
+    if (look.id === "g") {
+      return row.h(26).mt(4).pl(4).pr(6).gap(6).text_size(12.5)
+        .child(div().flex_none().w(12))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(names));
+    }
+    return row.gap(10).pt(16).px(14).pb(6).border_b(1).border_color(t.border).text_size(TEXT.label)
+      .child(div().flex_1().min_w(0).truncate().text_color(dimmed ? t.dim : t.muted).child(names));
+  }
+
+  // The queue of what needs the person, above everything, oldest first (`waitingQueue`): a title with the counts, then one
+  // entry per waiting executor; a click on an entry focuses that executor's pane (`pane.focus`, the app's own API). C: the
+  // full-width signal block, D: the inbox card, G: the outlined callout.
   callout(rows, now, t, look) {
     if (rows.length === 0) return null;
     const by = (a) => rows.filter((r) => r.attention === a).length;
     const title = [[by("report"), "report", "to read"], [by("ask"), "ask", "to answer"], [by("challenge"), "challenge", "to rule"],
       [by("blocked"), "blocked", ""]].filter(([n]) => n > 0)
       .map(([n, l, what]) => (l === "blocked" ? `${n} blocked` : `${n} ${l}${n === 1 ? "" : "s"} ${what}`)).join(" · ");
-    const items = rows.map((r) => (look.id === "c" ? `${r.task} (${r.project}, ${age(r, now)})` : `${r.task} · ${r.project} · ${age(r, now)}`));
-    if (look.id === "c") {
+    const shown = rows.slice(0, QUEUE_MAX);
+    const c = look.id === "c";
+    const entry = (r) => {
+      const k = kindOf(r.attention);
+      return this.clickable(h_flex().id(`q-${r.id}`).w_full().min_w(0).gap(8).items_center().h(c ? 20 : 22).text_size(c ? TEXT.label : 12)
+        .when(!c, (e) => e.px(4).rounded(4).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)))
+        .when(c, (e) => e.hover((s) => s.font_bold())), r)
+        .child(c ? div().flex_none().child("■") : mark(look, k, t, 11))
+        .child(div().flex_1().min_w(0).truncate().child(`${r.task}`))
+        .child(div().flex_none().when(!c, (e) => e.text_color(t.dim)).child(`${r.project} · ${r.attention === "report" ? "reported" : r.attention}`))
+        .child(div().flex_none().w(34).text_right().when(!c, (e) => e.text_color(t.dim)).child(age(r, now)));
+    };
+    const more = rows.length > shown.length ? [div().text_size(TEXT.label).when(!c, (e) => e.text_color(t.dim)).child(`+${rows.length - shown.length}`)] : [];
+    if (c) {
       return v_flex().w_full().flex_none().px(14).py(12).gap(3).bg(t.done).text_color(t.background)
         .child(div().text_size(14).font_bold().child(title))
-        .child(div().text_size(TEXT.label).child(items.join(" · ")));
+        .children([...shown.map(entry), ...more]);
     }
     const kind = rows.some((r) => r.attention === "blocked" || r.attention === "challenge") ? "blocked" : "waits";
     const box = look.id === "d"
-      ? h_flex().mt(10).mx(12).mb(4).px(12).py(10).rounded(8).border_1().border_color(t.border).bg(t.raised)
-      : h_flex().m(8).px(10).py(8).rounded(6).border_1().border_color(t.input).bg(t.background);
-    return box.flex_none().gap(look.id === "d" ? 10 : 8).items_start()
-      .child(mark(look, kind, t, 12))
-      .child(v_flex().flex_1().min_w(0).gap(1)
-        .child(div().text_size(13).font_weight(look.id === "d" ? 600 : 500).text_color(t.foreground).child(title))
-        .children(look.id === "d" ? [div().text_size(12).line_height(1.5).text_color(t.muted).child(items.join("  /  "))]
-          : items.map((x) => div().text_size(12).line_height(1.5).text_color(t.muted).child(x))));
+      ? v_flex().mt(10).mx(12).mb(4).px(12).py(10).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      : v_flex().m(8).px(10).py(8).rounded(6).border_1().border_color(t.input).bg(t.background);
+    return box.flex_none().gap(2)
+      .child(h_flex().gap(look.id === "d" ? 10 : 8).items_center().child(mark(look, kind, t, 12))
+        .child(div().flex_1().min_w(0).truncate().text_size(13).font_weight(look.id === "d" ? 600 : 500).text_color(t.foreground).child(title)))
+      .children([...shown.map(entry), ...more]);
+  }
+
+  // The state filter: all / needs you / working / done; the choice is the app's shared state, so it survives a restart.
+  filters(t, look) {
+    return h_flex().id("cockpit-filter").w_full().flex_none().min_w(0).px(look.id === "c" ? 14 : 12).py(6).gap(look.id === "g" ? 2 : 4)
+      .border_b(1).border_color(t.border)
+      .children(FILTERS.map((f) => button(`filter-${f.id}`, f.label, t, this.filter === f.id, look)
+        .on_click((_e, cx) => { this.filter = f.id; setShared("foreman.cockpit.filter", f.id); cx.notify(); })));
   }
 
   // The right column's switch: one label per stack child; the app's own `layout.select`. C: words in
@@ -293,26 +378,24 @@ export default class Cockpit extends View {
     const pick = (i) => (_e, cx) => { this.picked = i.child; run("layout.select", { stack: sw.stack, child: i.child }); cx.notify(); };
     const label = (i) => {
       const on = i.child === shown;
-      const el = div().id(`tab-${i.child}`).flex_none().flex().items_center().cursor_pointer().on_click(pick(i)).child(i.label);
+      const el = div().id(`tab-${i.child}`).flex_shrink_1().min_w(0).flex().items_center().cursor_pointer().on_click(pick(i)).child(i.label);
       if (look.id === "c") return el.text_size(13).text_color(on ? t.foreground : t.muted).when(on, (e) => e.font_bold())
         .when(!on, (e) => e.hover((s) => s.text_color(t.foreground)));
-      if (look.id === "d") return el.h(26).px(10).rounded(6).border_1().border_color(on ? t.border : t[look.dock]).text_size(12.5)
+      if (look.id === "d") return el.h(26).px(8).rounded(6).border_1().border_color(on ? t.border : t[look.dock]).text_size(12.5)
         .text_color(on ? t.foreground : t.muted).when(on, (e) => e.bg(t.raised)).when(!on, (e) => e.hover((s) => s.text_color(t.foreground)));
-      return el.h_full().px(12).text_size(13).border_r(1).border_b(on ? 0 : 1).border_color(t.border)
+      return el.h_full().px(10).text_size(13).border_r(1).border_b(on ? 0 : 1).border_color(t.border)
         .text_color(on ? t.foreground : t.muted).when(!on, (e) => e.hover((s) => s.bg(t.hover)));
     };
-    if (look.id === "g") {
-      return h_flex().size_full().items_stretch().bg(t[look.dock])
-        .children(sw.items.map(label))
-        .child(h_flex().flex_1().justify_end().pr(8).border_b(1).border_color(t.border).child(this.looks(t, look)));
-    }
-    return h_flex().size_full().px(look.id === "c" ? 14 : 12).gap(look.id === "c" ? 14 : 6).bg(t[look.dock]).border_b(1).border_color(t.border)
-      .children(sw.items.map(label))
-      .child(look.id === "d"
-        ? h_flex().flex_1().min_w(0).justify_end().child(div().min_w(0).h(24).px(8).rounded(6).border_1().border_color(t.border)
-          .text_size(12).text_color(t.muted).flex().items_center().child(div().min_w(0).truncate().child(live)))
-        : div().flex_1().min_w(0).truncate().text_size(TEXT.label).text_color(t.muted).child(live))
+    // Two rows, so nothing is ever squeezed out: the labels on the first (they share the width and may shrink, never clip a
+    // neighbour), the live count and the look switcher on the second. One row held five labels, the count and C D G only
+    // while the column was wide: in D at 392 px the switcher was cut to "C" and the count vanished.
+    const row1 = look.id === "g"
+      ? h_flex().w_full().flex_1().min_h(0).items_stretch().bg(t[look.dock]).children(sw.items.map(label))
+      : h_flex().w_full().flex_1().min_h(0).items_center().px(look.id === "c" ? 14 : 8).gap(look.id === "c" ? 10 : 2).bg(t[look.dock]).children(sw.items.map(label));
+    const row2 = h_flex().w_full().flex_none().h(SWITCH_ROW2).min_w(0).items_center().px(look.id === "c" ? 14 : 12).gap(8).bg(t[look.dock]).border_b(1).border_color(t.border)
+      .child(div().flex_1().min_w(0).truncate().text_size(look.id === "d" ? 12 : TEXT.label).text_color(t.muted).child(live))
       .child(this.looks(t, look));
+    return v_flex().size_full().min_w(0).overflow_hidden().child(row1).child(row2);
   }
 
   // The look switcher, C · D · G: each label shows its layout (`layout.switch {name}`), the shown one marked.
@@ -340,9 +423,10 @@ export default class Cockpit extends View {
     const now = Date.now();
     this.held = terminals(); // once per frame, not once per row
     const groups = this.groups(now);
-    const drawn = look.id === "c" ? groups.filter((g) => g.rows.length > 0) : groups;
+    const drawn = groups.filter((g) => g.rows.length > 0);
+    const empty = groups.filter((g) => g.rows.length === 0);
     const stale = groups.some((g) => g.cls === "stale");
-    const loud = groups.filter((g) => g.cls === "fresh").flatMap((g) => g.rows).filter((r) => LOUD.has(r.attention));
+    const loud = waitingQueue(groups.filter((g) => g.cls === "fresh").flatMap((g) => g.rows));
     // Nothing live: the freshest file's own class says why, and one line stands for every brainer.
     const freshest = this.states.reduce((best, s) => (best === null || s.generated_at > best.generated_at ? s : best), null);
     const silent = groups.length === 0 ? classify(freshest, now) : null;
@@ -353,14 +437,15 @@ export default class Cockpit extends View {
         e.child(alarm(silent.cls === "herdr-down"
           ? `HERDR UNREACHABLE — rows unknown (${silent.why})`
           : `NO STATE — no writer's file is live (${silent.why})`, null, t).text_size(TEXT.label)))
-      .children([this.callout(loud, now, t, look)].filter((x) => x !== null))
+      .children([this.usageLines(now, t, look), this.callout(loud, now, t, look)].filter((x) => x !== null))
+      .when(drawn.length > 0, (e) => e.child(this.filters(t, look)))
       .when(stale, (e) => e.child(div().flex_none().px(14).py(4).text_size(TEXT.label).text_color(t.dim).child("stale — a writer has not beaten for 15 s; its rows are dimmed")))
       .when(silent === null && drawn.length === 0, (e) => e.child(div().px(14).py(SPACE.sm).text_size(TEXT.label).text_color(t.dim).child("no executors")))
       .child(
         div().flex_1().min_h(0).relative()
           .child(
             v_flex().id("cockpit-rows").absolute().inset_0().overflow_y_scroll()
-              .children(drawn.map((g) => this.section(g, now, t, look))),
+              .children([...drawn.filter((g) => g.rows.some((r) => keeps(this.filter, r))).map((g) => this.section(g, now, t, look)), ...(empty.length > 0 ? [this.idle(empty, t, look)] : [])]),
           )
           .child(Scrollbar.vertical("cockpit-rows").absolute().inset_0()),
       )

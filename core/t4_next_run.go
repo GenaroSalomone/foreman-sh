@@ -157,6 +157,11 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 			release()
 			a.die("task delivered, but its chaining lease could not be marked consumed; refusing to advance the counter")
 		}
+		// A consumed lease has nothing left to expire: its timer (a bash and a 3600 s sleep) is ended now, not left until
+		// `hw done` (herdr-app-gaps-fix N-D). The lease file keeps its state=consumed, which is what `hw next` reads.
+		for _, pid := range cancelLeaseTimers(s.rundir) {
+			a.info("ended the chaining lease timer of task " + s.seq + " (pid " + itoa(pid) + "): its lease is consumed")
+		}
 	}
 	if s.brief != "" && nextDesignGate(s.brief) {
 		a.receiptInto(s.rundir, "design_boundary_t"+nextSeq, nextFmValue("boundary", s.brief),
@@ -167,6 +172,7 @@ func (a *app) nextDeliver(s *nextState, nextSeq string) int {
 			"kind build (declared or undeclared) at hw next — done-invoker requires $HW_ARTIFACTS/checks.md")
 	}
 	if s.brief != "" {
+		a.nextPluginsReceipt(s.rundir, s.brief, s.vendor)
 		a.nextPluginReviewReceipt(s.rundir, "plugin_review_t"+nextSeq, s.brief)
 		a.nextJdAgentsReceipt(s.rundir, "jd_agents_t"+nextSeq, s.brief, s.vendor, s.wtdir)
 	}

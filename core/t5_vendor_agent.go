@@ -139,6 +139,32 @@ func (d *dsp) effortDeclaredDefault() (level, src string, ok bool) {
 	return "low", "pi roster, kind " + orDefaultStr(kind, "none"), true
 }
 
+// effortRefusal is the ONE judgment of a level for a vendor, in --effort's words, and "" when the level is the vendor's
+// (or none was given). Both doors call it — the --effort flag in each vendor's arm of buildAgentArgs (and piBuildArgs), and
+// the brief's `effort:` (checkBriefContract) — so a level a vendor cannot take is refused in the same words wherever it was
+// written (setup/decisions.md 2026-11-08, «un nivel, una puerta»).
+func effortRefusal(agent, level string) string {
+	switch {
+	case level == "":
+		return ""
+	case agent == "codex":
+		if !vdValidEffort(level) && level != "ultra" { // # MUTATION-ANCHOR: 844-B65
+			return "codex --effort must be one of: low medium high xhigh max ultra (got: " + level + ")"
+		}
+	case agent == "pi":
+		switch level {
+		case "off", "minimal", "low", "medium", "high", "xhigh", "max":
+		default:
+			return "pi --effort must be one of: off minimal low medium high xhigh max (got: " + level + ")"
+		}
+	default:
+		if !vdValidEffort(level) { // # MUTATION-ANCHOR: 844-B44
+			return "--effort must be one of: low medium high xhigh max (got: " + level + ")"
+		}
+	}
+	return ""
+}
+
 // modelEffortSuffix reads a reasoning level written into a model id — `<model>:<level>`, pi's own CLI spelling
 // (provider/id:<level>). ok=false when the id carries no colon, or carries something after it that is not a level.
 func modelEffortSuffix(model string) (base, level string, ok bool) {
@@ -194,8 +220,8 @@ func (d *dsp) buildAgentArgs() {
 			d.agentArgs += " --model " + orDefaultStr(d.modelPinned, d.model) // # MUTATION-ANCHOR: 844-B43
 		}
 		if d.effort != "" {
-			if !vdValidEffort(d.effort) { // # MUTATION-ANCHOR: 844-B44
-				d.die("--effort must be one of: low medium high xhigh max (got: " + d.effort + ")")
+			if msg := effortRefusal(d.agent, d.effort); msg != "" {
+				d.die(msg)
 			}
 			d.agentArgs += " --effort " + d.effort // # MUTATION-ANCHOR: 844-B45
 		}
@@ -245,8 +271,9 @@ func (d *dsp) buildAgentArgs() {
 		}
 		d.opencodeEffortOverlay = ""
 		if d.effort != "" {
-			if !vdValidEffort(d.effort) { // # MUTATION-ANCHOR: 844-B58
-				d.die("--effort must be one of: low medium high xhigh max (got: " + d.effort + ")")
+			msg := effortRefusal(d.agent, d.effort)
+			if msg != "" { // # MUTATION-ANCHOR: 844-B58
+				d.die(msg)
 			}
 			if d.opencodePrimaryAgent == "" { // # MUTATION-ANCHOR: 844-B59
 				d.die("--effort needs a named, resolved primary to attach it to, but none is being passed to opencode (either HW_OPENCODE_AGENT is explicitly empty, or '" + ocAgent + "' is not defined in " + home + "/.config/opencode/opencode.json — see the warning above). Fix the agent name, unset the override, or drop --effort.")
@@ -267,8 +294,8 @@ func (d *dsp) buildAgentArgs() {
 			d.agentArgs += " --model " + d.model // # MUTATION-ANCHOR: 844-B64
 		}
 		if d.effort != "" {
-			if !vdValidEffort(d.effort) && d.effort != "ultra" { // # MUTATION-ANCHOR: 844-B65
-				d.die("codex --effort must be one of: low medium high xhigh max ultra (got: " + d.effort + ")")
+			if msg := effortRefusal(d.agent, d.effort); msg != "" {
+				d.die(msg)
 			}
 			d.agentArgs += " -c model_reasoning_effort=" + d.effort // # MUTATION-ANCHOR: 844-B66
 		}

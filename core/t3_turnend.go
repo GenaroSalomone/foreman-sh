@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -29,7 +28,6 @@ import (
 	"hwcore/internal/mux"
 	"unicode/utf8"
 
-	"hwcore/internal/engramhealth"
 )
 
 func (t *t3) operator() string {
@@ -515,51 +513,29 @@ func (t *t3) engramRenew(stateDir string) {
 	t.engramLeasePost(id, project, dir)
 }
 
-// engramLeasePost is engram_serve_verdict then engram_session_post: renew the session's 30-minute lease, on a serve
-// proven to be this machine's store, and never say anything.
+// engramLeasePost is engram_serve_verdict then engram_session_post: renew the session's 30-minute lease, on a serve proven to
+// be this machine's store, and never say anything.
 func (t *t3) engramLeasePost(id, project, dir string) {
 	if t.fs.readonly {
 		return
 	}
-	if st, err := os.Stat(t.binDir() + "/engram-serve.sh"); err != nil || st.IsDir() {
-		return
-	}
-	url := t.getenv("HW_ENGRAM_URL")
-	if url == "" {
-		port := t.getenv("ENGRAM_PORT")
-		if port == "" {
-			port = "7437"
-		}
-		url = "http://127.0.0.1:" + port
-	}
+	srv := t.engramSrv()
+	url := srv.url()
 	if !t.engramServeIsOurs(url) {
 		return
 	}
-	body, _ := json.Marshal(map[string]string{"id": id, "project": project, "directory": dir})
-	cl := &http.Client{Timeout: 5 * time.Second}
-	if resp, err := cl.Post(url+"/sessions", "application/json", bytes.NewReader(body)); err == nil {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}
+	srv.sessionPost(id, project, dir, url)
+}
+
+func (t *t3) engramSrv() engramServe {
+	return engramServe{getenv: t.getenv, home: t.getenv("HOME")}
 }
 
 // engramServeIsOurs is engram_serve_verdict returning 0: the serve on the port is
 // this machine's store (its /health instance_id is the .instance-id of the data dir).
 func (t *t3) engramServeIsOurs(url string) bool {
-	dir := t.getenv("ENGRAM_DATA_DIR")
-	if strings.TrimSpace(dir) == "" {
-		dir = t.getenv("HOME") + "/.engram"
-	}
-	want := ""
-	if b, err := os.ReadFile(dir + "/.instance-id"); err == nil {
-		want = strings.Join(strings.Fields(string(b)), "")
-	}
-	probe := engramhealth.Get(url+"/health", engramhealth.Budget(t.getenv("HW_ENGRAM_HEALTH_TIMEOUT")))
-	if !probe.OK {
-		return false
-	}
-	got := jqRawOr(probe.Body, "", "instance_id")
-	return want != "" && got != "" && got == want
+	_, rc := t.engramSrv().verdict(url)
+	return rc == 0
 }
 
 // ── the verb ─────────────────────────────────────────────────────────────────

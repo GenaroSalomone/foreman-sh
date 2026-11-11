@@ -167,7 +167,7 @@ func (b *brainRun) launchHC() int {
 	// ONLY A START needs the account and the environment: focusing the brainer that is already open must not fail
 	// on them (the TUI focus path does not). A replacement resolves them BEFORE the old terminal is ended, so a
 	// refusal there leaves the lane's brainer alive.
-	replaced := false
+	replaced := false // # MUTATION-ANCHOR: go-1340-M02
 	var plan brainerLaunch
 	if addr == "" || b.reset || b.resume != "" {
 		var planOK bool
@@ -175,7 +175,8 @@ func (b *brainRun) launchHC() int {
 			return 1
 		}
 	}
-	if addr != "" && (b.reset || b.resume != "") {
+	replacing := addr != "" && (b.reset || b.resume != "")
+	if replacing {
 		if !b.permissionsResolve() {
 			b.errf("brain: %s\n", b.permissionsErr)
 			return 1
@@ -187,6 +188,9 @@ func (b *brainRun) launchHC() int {
 			return 1
 		}
 		addr, replaced = "", true
+	}
+	if addr != "" && !replaced {
+		b.engramRegister() // focusing the open brainer: no refusal is left, and the session is renewed as it always was
 	}
 	opened := false
 	if addr == "" {
@@ -262,6 +266,8 @@ func (b *brainRun) hcStartBrainer(plan brainerLaunch) (string, int) {
 	if argRC != 0 {
 		return "", argRC
 	}
+	// THE LAST REFUSAL IS BEHIND US (hcEnd's, the permissions', the agent args'): the session is registered for a terminal that starts now.
+	plan = b.withEngramSession(plan)
 	argv := []string{"env",
 		"-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH",
 		"-u", "HERDR_TAB_ID", "-u", "HERDR_WORKSPACE_ID", "-u", "HW_INVOKER_PANE",

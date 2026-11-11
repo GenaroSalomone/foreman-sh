@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# shell-lint — the two shell checks `bash -n` cannot make, over the shell files of a commit.
+#
+#   setup/shell-lint <base> <new> <path>...
+#
+# <base> is the commit the change rests on, <new> the tree it makes (a tree-ish, or `:` for the index): the files are read as git
+# objects, so the staged bytes and a commit-tree tree are judged the same way. Exit 0 clean (or nothing to ask); 1 refused, the
+# reasons on stderr; 2 usage.
+#
+#   QUOTING. `bash -n` passes an edit that opens a quote it never closes when a later quote happens to balance it. `shellcheck -i
+#   SC2026,SC1078,SC1079` catches it and has 0 hits on the tree it was introduced with (740 files, 2026-11-10). Without shellcheck
+#   on PATH the quoting check does not run: it says so on stderr and exits 0 (a commit is not refused for a tool that is not
+#   here). Exit 0 is not silence: setup/commit-tree and setup/hooks/pre-commit print this output on a clean run too.
+#
+#   SILENT PIPEFAIL GREPS. `printf '%s\n' "$x" | grep -q PAT` under `set -o pipefail` fails when grep leaves at its first match and
+#   printf dies of SIGPIPE: a line that IS there reads as missing once $x passes the pipe buffer (setup/commit-tree's own deps
+#   check, on a 9810-line file). Judged on the lines the change ADDS, so an old site is not a refusal for an unrelated edit; the fix is
+#   a here-string, `grep -q PAT <<<"$x"`, which has no pipe.
+set -uo pipefail
+[ "$#" -ge 3 ] || { printf 'usage: setup/shell-lint <base> <new|:> <path>...\n' >&2; exit 2; }
+base="$1"; new="$2"; shift 2
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/shell-lint.XXXXXX")" || exit 2
+trap 'rm -rf "$tmp"' EXIT
+have_sc=1; command -v shellcheck >/dev/null 2>&1 || have_sc=0
+PIPE_RE='^[^#]*(^|[^[:alnum:]_])(echo|printf)[[:space:]][^|]*\|[[:space:]]*grep[[:space:]]+(-[A-Za-z-]+[[:space:]]+)*-[A-Za-z]*q'
+blob() { # <rev> <path> → the content, empty when the object is not there
+  if [ "$1" = : ]; then git show ":$2" 2>/dev/null; else git show "$1:$2" 2>/dev/null; fi
+}
+bad=0; sc_said=0
+for p in "$@"; do
+  blob "$new" "$p" > "$tmp/new" && [ -s "$tmp/new" ] || continue
+  case "$p:$(head -n 1 "$tmp/new")" in
+    *.sh:*|*:'#!'*bash*|*:'#!/bin/sh'*|*:'#!/usr/bin/env sh'*) ;;
+    *) continue ;;
+  esac
+  if [ "$have_sc" = 1 ]; then
+    if ! out="$(shellcheck -s bash -i SC2026,SC1078,SC1079 -- "$tmp/new" 2>&1)"; then
+      printf 'shell-lint: %s has an unbalanced quote that `bash -n` accepts (shellcheck SC2026/SC1078/SC1079):\n%s\n' "$p" "$(printf '%s\n' "$out" | sed "s|$tmp/new|$p|g" | head -12)" >&2
+      bad=1
+    fi
+  elif [ "$sc_said" = 0 ]; then
+    printf 'shell-lint: shellcheck is not installed here, so the quoting check did not run\n' >&2; sc_said=1
+  fi
+  blob "$base" "$p" > "$tmp/old" || : > "$tmp/old"
+  diff "$tmp/old" "$tmp/new" 2>/dev/null | sed -n 's/^> //p' | grep -E "$PIPE_RE" > "$tmp/added" || true
+  if [ -s "$tmp/added" ]; then
+    printf 'shell-lint: %s adds a pipe from printf or echo into grep -q (under pipefail, grep leaving at its first match kills the writer with SIGPIPE and a line that is there reads as missing). Write `grep -q PAT <<<"$x"`:\n%s\n' "$p" "$(head -5 "$tmp/added" | sed 's/^/    /')" >&2
+    bad=1
+  fi
+done
+exit "$bad"

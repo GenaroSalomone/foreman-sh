@@ -128,7 +128,7 @@ func (l *lch) run() {
 
 // repolessArm is the `repoless)` arm of bin/hw's `case "$_LANE"`.
 func (l *lch) repolessArm() {
-	l.hcLaneGate("repoless")
+	l.hcLaneGate()
 	l.wt = filepath.Join(l.c.work, l.proj, l.task)
 	l.step("1/3  work directory")
 	if st, err := os.Stat(l.wt); err == nil && st.IsDir() {

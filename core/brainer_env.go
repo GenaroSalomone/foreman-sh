@@ -56,9 +56,6 @@ func (b *brainRun) planBrainer(proj string) (brainerLaunch, bool) {
 	if b.kind == "opencode" {
 		p.pairs = append(p.pairs, "OPENCODE_CONFIG_CONTENT="+jqCompact(map[string]any{}, p.engramProxy, b.engramLabel, p.mcpBin)) // # MUTATION-ANCHOR: go-422-M03
 	}
-	if b.engramSession != "" {
-		p.pairs = append(p.pairs, "BRAIN_ENGRAM_SESSION="+b.engramSession)
-	}
 	if accountFlag != "" {
 		p.pairs = append(p.pairs, accountFlag) // # MUTATION-ANCHOR: go-122-M02
 	}
@@ -70,6 +67,17 @@ func (b *brainRun) planBrainer(proj string) (brainerLaunch, bool) {
 		p.pairs = append(p.pairs, "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
 	}
 	return p, true
+}
+
+// withEngramSession registers the brainer's engram session and hands the pane its id (BRAIN_ENGRAM_SESSION). It is called
+// once the launch cannot be refused any more: a refusal before it posts no session and prints no engram line.
+func (b *brainRun) withEngramSession(p brainerLaunch) brainerLaunch {
+	b.engramRegister()
+	if b.engramSession != "" {
+		// right after ENGRAM_PROJECT (before OPENCODE_CONFIG_CONTENT, which an opencode lane carries: env order has no effect)
+		p.pairs = append(p.pairs[:1], append([]string{"BRAIN_ENGRAM_SESSION=" + b.engramSession}, p.pairs[1:]...)...)
+	}
+	return p
 }
 
 // brainerAgentArgs is the brainer's own argv, minus the program: `--` and its
@@ -125,6 +133,10 @@ func (b *brainRun) brainerAgentArgs(p brainerLaunch, pane, tab string, hc bool) 
 	}
 	cockpitOn := !b.noCockpit                                   // # MUTATION-ANCHOR: go-803-M03
 	cockpitOn = cockpitOn && b.getenv("FOREMAN_COCKPIT") != "0" // # MUTATION-ANCHOR: go-803-M02
+	// UNDER THE APP THE SIDE PANEL IS THE COCKPIT: the plugin folder paints the same panel inside the Claude pane, so an
+	// app (hc) brainer shows two (herdr-app-gaps-fix G-A, measured 2026-11-10). The writer the side panel reads is kept
+	// (cockpitWriter does not look at this), and no knob is needed to tell them apart.
+	cockpitOn = cockpitOn && !hc
 	if cockpitOn {
 		cockpitDir := cleanJoin(b.binDir+"/..", "cockpit")
 		floor, _ := b.cockpitFloor()

@@ -176,7 +176,7 @@ if [ -n "$dirty" ]; then
     } >&2
     exit 1
   fi
-  if printf '%s\n' "$dirty_paths" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+  if grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$dirty_paths"; then
     {
       echo "verify-for-push: the working tree has uncommitted changes to a path that can invalidate the suite (matches SUITE_TRIGGER_PATTERN), so there is no single commit whose tree this run would verify."
       echo "$dirty" | sed 's/^/    /'

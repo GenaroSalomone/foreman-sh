@@ -30,7 +30,7 @@ staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
 
 # Budget is mandatory; legacy format diagnostics remain advisory during migration.
 # The checker reads the index, including archives staged by this same commit.
-if printf '%s\n' "$staged" | grep -qE '/decisions\.md$'; then
+if grep -qE '/decisions\.md$' <<<"$staged"; then
   python3 "$(git rev-parse --show-toplevel)/setup/hooks/decisions-check.py" --staged
 fi
 
@@ -44,7 +44,7 @@ fi
 # it also copies the retired list and the partition table, because the gate reads them beside the budgets file.
 tb_root="$(git rev-parse --show-toplevel)"
 if [ -f "$tb_root/setup/test-budget-gate" ] \
-   && printf '%s\n' "$staged" | grep -qE '^setup/(suite-data/test-budgets\.json|suite-data/test-budget-ceilings\.tsv|suite-data/retired-subjects\.txt|suite-data/go-test-partitions\.txt|test-budget-gate)$' \
+   && grep -qE '^setup/(suite-data/test-budgets\.json|suite-data/test-budget-ceilings\.tsv|suite-data/retired-subjects\.txt|suite-data/go-test-partitions\.txt|test-budget-gate)$' <<<"$staged" \
    && git cat-file -e :setup/suite-data/test-budgets.json 2>/dev/null; then
   tb_dir="$(mktemp -d "${TMPDIR:-/tmp}/hw-precommit-budget.XXXXXX")"
   git show :setup/suite-data/test-budgets.json > "$tb_dir/test-budgets.json"
@@ -66,6 +66,26 @@ if [ -f "$tb_root/setup/test-budget-gate" ] \
       echo "If you are certain: git commit --no-verify"
     } >&2
     exit 1
+  fi
+fi
+
+# THE SHELL OF THIS COMMIT, LINTED IN SECONDS (setup/shell-lint, the same helper `setup/commit-tree` runs): a quote `bash -n` accepts
+# that shellcheck SC2026/SC1078/SC1079 does not, and a `printf | grep -q` pipe the commit ADDS under pipefail. Every commit, a merge too.
+# A repo with no setup/shell-lint (a fixture) is not asked.
+sl_root="$(git rev-parse --show-toplevel)"
+if [ -x "$sl_root/setup/shell-lint" ]; then
+  sl_files=()
+  while IFS= read -r f; do [ -z "$f" ] || sl_files+=("$f"); done <<SHLINT
+$(git diff --cached --name-only --diff-filter=ACMR)
+SHLINT
+  if [ "${#sl_files[@]}" -gt 0 ]; then
+    sl_base=HEAD; git rev-parse --verify -q HEAD >/dev/null 2>&1 || sl_base="$(git hash-object -t tree /dev/null)"
+    if ! sl_out="$("$sl_root/setup/shell-lint" "$sl_base" : "${sl_files[@]}" 2>&1)"; then  # MUTATION-ANCHOR: 1233-M05
+      { echo "pre-commit: setup/shell-lint refuses this commit, in seconds:"; printf '%s\n' "$sl_out" | sed 's/^/    /'; echo; echo "If you are certain: git commit --no-verify"; } >&2
+      exit 1
+    fi
+    # a clean run still speaks when a check did not run (no shellcheck): shown on every commit, never only on a refusal
+    [ -z "$sl_out" ] || printf '%s\n' "$sl_out" >&2  # MUTATION-ANCHOR: 1233-M07
   fi
 fi
 
@@ -127,7 +147,7 @@ tooling="$(printf '%s\n' "$staged" | grep -E '^(bin/|lib/|shell/|layouts/|setup/
 # hooks it exercises has no list, and must commit the way it always has.
 sweep_lanes_file="$(git rev-parse --show-toplevel)/setup/hooks/sweep-lanes"
 sweep_lanes="$(grep -vE '^[[:space:]]*(#|$)' "$sweep_lanes_file" 2>/dev/null || true)"
-if printf '%s\n' "$sweep_lanes" | grep -vqE '^([a-z][a-z0-9-]*)?$'; then
+if grep -vqE '^([a-z][a-z0-9-]*)?$' <<<"$sweep_lanes"; then
   echo "pre-commit: $sweep_lanes_file holds a line that is not a lane name (a lowercase word) — refusing." >&2
   exit 1
 fi
@@ -246,12 +266,12 @@ if [ "$hook_merge" != 1 ] && git rev-parse --verify -q main^{tree} >/dev/null 2>
   done <<< "$(git diff --cached -U0 --diff-filter=AM -- setup bin 2>/dev/null | grep -E '^(\+\+\+ b/|\+.*MUTATION-ANCHOR: [0-9])' || true)"
 fi
 hook_docs=0
-if ! printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN" \
+if ! grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$staged" \
    && [ -f "$root/setup/gate-select" ] && [ -f "$root/setup/suite-data/test-budgets.json" ] \
    && python3 "$root/setup/gate-select" "$root" "$hook_changed" "$SUITE_TRIGGER_PATTERN" 2>/dev/null | grep -q '^subject '; then
   hook_docs=1
 fi
-if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PATTERN"; then
+if [ "$hook_docs" = 1 ] || grep -qE "$SUITE_TRIGGER_PATTERN" <<<"$staged"; then
   # THE SAME DOOR HAS A SECOND LATCH, and it was open until 2026-09-09.
   # `git -c <key>=<value>` serialises every `-c` into GIT_CONFIG_PARAMETERS and
   # exports it, so a descendant git applies it at COMMAND-LINE precedence —
@@ -479,7 +499,7 @@ if [ "$hook_docs" = 1 ] || printf '%s\n' "$staged" | grep -qE "$SUITE_TRIGGER_PA
   # contract, and on 2026-08-25 a commit rewrote bin/channel-send's whole
   # opencode route without it running. It caught a real regression the moment it
   # was finally run: the stub still modelled the removed two-route design.
-  if printf '%s\n' "$staged" | grep -qE '^bin/(channel-send|ask-invoker|done-invoker|invoker-common\.sh)$' \
+  if grep -qE '^bin/(channel-send|ask-invoker|done-invoker|invoker-common\.sh)$' <<<"$staged" \
      && [ -x "$root/setup/test-channel-send" ]; then
     if ! out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
                     -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \

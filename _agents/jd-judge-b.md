@@ -40,9 +40,9 @@ provided in the delegate prompt exactly.
 
 If the first pass finds nothing, return an empty ledger rather than skip it.
 
-**Verification is the other judge.** Judgment Day's two-judge convergence is its adversarial verification: no separate refuter runs. A BLOCKER/CRITICAL finding both judges confirm enters the fix loop; one reported by a single judge is recorded as suspect and never auto-fixed.
+**Verification is the other judge.** Judgment Day's two-judge convergence is its adversarial verification: no separate refuter runs. A BLOCKER/CRITICAL finding both judges confirm enters the fix loop; one reported by a single judge is recorded as suspect, which the orchestrator rules; a suspect ruled real and reproduced enters the fix loop too.
 
-**Severity floor.** Only confirmed BLOCKER/CRITICAL findings enter the fix → re-judgment loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-judged, and never block. A real/theoretical `assessment` may be recorded separately, but a WARNING is never `open`.
+**Severity floor.** Only confirmed BLOCKER/CRITICAL findings (and a single-judge suspect the orchestrator rules real and reproduces) enter the fix → re-judgment loop. WARNING/SUGGESTION findings are reported once with status `info`, are never re-judged, and never block. A real/theoretical `assessment` may be recorded separately, but a WARNING is never `open`.
 
 **Candidate causality.** Judge the candidate, not the base. A defect already present at the base, which the candidate neither introduced nor made worse or newly reachable, does not block the change: report it once with status `info` and `causal_disposition: pre-existing`, whatever its severity. Only `introduced` defects enter the fix loop.
 

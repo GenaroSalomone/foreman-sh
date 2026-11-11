@@ -416,7 +416,7 @@ func closeJudgmentDayText(f *promptFacts) string {
 		"2. Run "+skill+" over `git diff \"$(hw review-range)\"..HEAD` (the branch point computed now, never a range of your own) "+judges+"."+diffFile+" At most two rounds. "+rule+
 		"If hw review-range fails: --blocked. An empty range is reported, not judged. After a rebase, run `hw review-delta <judged-base> <judged-head>` and do what it prints."+judgeSpecText(f.briefText)+"\n"+
 		"3. The skill's fix-round question needs no answer here: this brief is the authorization. Apply the fixes both judges confirm; judges that contradict each other, or anything left after round two, is ESCALATED: report it, do not wait.\n"+
-		"4. The report carries the judged range (base SHA..head SHA), the verdict APPROVED or ESCALATED"+report+", and, separately, each severe finding only ONE judge raised (unconfirmed, so not fixed), with its file:line.", f.plugins)
+		"4. The report carries the judged range (base SHA..head SHA), the verdict APPROVED or ESCALATED"+report+", and, separately, each severe finding only ONE judge raised (unconfirmed: fix it only once reproduced), with its file:line.", f.plugins)
 }
 
 var (
@@ -468,7 +468,8 @@ brief's Verification section and per numbered goal —
 
 verdict is exactly pass, fail or unresolved; evidence is a command and its
 result, or a file:line. Fill it in as you go: done-invoker refuses a missing
-file, no rows, or an empty verdict.`
+file, no rows, an empty verdict, or any fail row — a requirement you did not
+meet closes --blocked, never done.`
 
 // behaviourFixText is the red-test rule; the fast-gate clause only where the repo carries setup/test-hw, and it says the full gate is
 // the brainer's (2026-11-09: executors kept running it and the brainer killed five). What done-invoker checks does not move.
@@ -482,7 +483,7 @@ changes no expectation, and a refactor that does has broken something.`
 		s += `
 
 Verify touched subjects only, in the background (a foreground call is cut at 600 s):
-git diff --name-only main > "$HW_ARTIFACTS/changed"; HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw --keep-going
+git diff --name-only "$(git merge-base HEAD main)" > "$HW_ARTIFACTS/changed"; HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw --keep-going
 The full fast gate is the brainer's: do not run it.`
 	}
 	return s

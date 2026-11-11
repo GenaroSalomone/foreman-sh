@@ -33,12 +33,13 @@ const doneUsage = "Usage: done-invoker [--blocked] [--retask] \"<one paragraph>\
 const doneHelp = doneUsage + `
 
 FLAGS
-  --blocked    file the task as blocked instead of done: only the summary and the engram id are checked
+  --blocked    file the task as blocked instead of done: only the summary and the engram id are checked. This is the
+               close for work that did not meet a requirement: a done is refused while checks.md has a fail row
   --retask     claim the next task number, when the brainer re-tasked you WITHOUT hw next moving the counter
   --check      run every close gate the real call would run and print what they accept or refuse, WITHOUT
                delivering a report, writing the done marker or closing the pane. It validates the summary's
                900-character limit, checks.md (one row per requirement of the brief, verdict exactly pass,
-               fail or unresolved), a brief's declared design boundary, and the plugin review proof.
+               fail or unresolved; a fail row refuses a done, it closes --blocked), a brief's declared design boundary, and the plugin review proof.
                Same flags and summary as the real call: run it first, because a refusal found there costs nothing.
   --help, -h   this text, wherever it stands among the flags
 `
@@ -64,18 +65,9 @@ func hasNonSpace(s string) bool {
 	return false
 }
 
-// laneEngram is `lane_get <project> engram` from project-spaces.sh ("" on failure).
+// laneEngram is `lane_get <project> engram` ("" for a lane the table does not have, or a table that does not load).
 func (c *Ctx) laneEngram(project string) string {
-	const script = `[ -r "$1/project-spaces.sh" ] || exit 1
-. "$1/project-spaces.sh" >/dev/null 2>&1 || true
-command -v lane_get >/dev/null 2>&1 || exit 1
-if command -v lane_config_load >/dev/null 2>&1; then lane_config_load "${HW_BRAIN_ROOT:-$(dirname "$1")}" >/dev/null 2>&1 || true; fi
-lane_get "$2" engram 2>/dev/null`
-	var b bytes.Buffer
-	if rc := c.run(runOpts{stdout: &b}, "bash", "-c", script, "_", c.BinDir, project); rc != 0 {
-		return ""
-	}
-	return strings.TrimRight(b.String(), "\n")
+	return tableEngram(c.laneTableDoc(), project) // a nil table has no lanes
 }
 
 func (c *Ctx) done(args []string) error {
@@ -220,9 +212,6 @@ loop:
 			if label == "" {
 				label = project
 			}
-			if st, err := os.Stat(c.BinDir + "/engram-serve.sh"); err != nil || st.IsDir() {
-				return die("cannot find engram-serve.sh beside %s — this brain/bin is incomplete. NOTHING was sent or marked.", c.BinDir)
-			}
 			var ids []string
 			seen := map[string]bool{}
 			for _, m := range engramIDRe.FindAllString(summary, -1) {
@@ -284,7 +273,7 @@ loop:
 				return err
 			}
 			checksNote = n
-			preflight = append(preflight, "checks.md: "+strings.TrimPrefix(strings.TrimSpace(n), "checks.md:")+" (it has rows and every verdict is one of pass, fail, unresolved)")
+			preflight = append(preflight, "checks.md: "+strings.TrimPrefix(strings.TrimSpace(n), "checks.md:")+" (it has rows, every verdict is pass, fail or unresolved, and none is fail: a fail row closes --blocked, not done)")
 		} else {
 			preflight = append(preflight, "checks.md: not owed by this task's brief")
 		}
@@ -305,6 +294,9 @@ loop:
 	if status == "done" {
 		if skills := receiptValue(receipt, "plugin_review_t"+c.taskSeq()); skills != "" { // # MUTATION-ANCHOR: 1150-G04
 			key := "plugin_review_t" + c.taskSeq()
+			if err := PluginSkipGate(skills, summary, c.pluginVendored(receipt)); err != nil { // # MUTATION-ANCHOR: 1150-G19
+				return err
+			}
 			proof, why := c.ReadTranscriptProof(receipt, receiptAt(receipt, key))
 			note, err := PluginReviewGate(skills, summary, proof, why)
 			if err != nil {
@@ -348,6 +340,12 @@ loop:
 				checksNote += "\njudgment day: WARNING — " + w
 			}
 		}
+	}
+
+	// -- an isolated herdr instance this run started and left alive: a warning, never a refusal (herdr-app-isolated)
+	if w := c.herdrLeakWarning(workdir, artifacts); w != "" {
+		c.errf("done-invoker: warning: %s\n", w)
+		checksNote += "\nherdr: WARNING — " + w
 	}
 
 	// --check IS THE REHEARSAL: every gate above ran, and nothing below runs at all.

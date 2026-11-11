@@ -211,6 +211,9 @@ loop:
 		a.die(msg)
 	}
 	a.nextValidateSDDModel(model, effective, "this pane was launched with that model; hw next cannot change it")
+	a.nextCheckBriefModel(s.brief, s.pane, model)
+	a.nextCheckBriefEffort(s.brief, s.vendor, s.pane, nextDispatchEffort(s.rundir))
+	a.nextCheckBriefPlugins(s.brief, s.vendor, s.pane, s.rundir)
 
 	a.nextReportPaneContext(s.pane)
 

@@ -363,7 +363,12 @@ def touched(root, changed, trigger):
     cap = budgets.get("touched_budget_seconds", 180)
     cheap = float(budgets.get("touched_cheap_seconds", 15))
     found, slow, pinned = slow_hits(root, changed, trigger)
+    # INSIDE AN hw EXECUTOR (HW_TASK) THE CAP BINDS THE CHEAP TAIL TOO. The floor above is the brainer's: one shared file
+    # (setup/mutation/mutation-anchors.tsv, or a test-budgets.json edit) names about 100 or 20 subjects of 15 s or less, and an
+    # executor that ran them all paid a gate for a seconds-long edit (readme-perfect, 2026-11-10). The cheapest still go first.
     kept = {n for n in found if n in pinned or slow[n] <= cheap}  # MUTATION-ANCHOR: 510-T01
+    if os.environ.get("HW_TASK"):  # MUTATION-ANCHOR: 510-T03
+        kept = {n for n in kept if n in pinned}  # the cheap tail goes through the cap below, cheapest first
     spent = sum(slow[n] for n in kept)  # a pinned subject is never cut, and its cost is still what the run pays
     cut = set()
     # ASCENDING: the cheapest of what is left goes first, so the subjects that end up CUT are the ones that do not fit —
@@ -397,7 +402,7 @@ def main(argv):
     if len(argv) > 4 and argv[4] == "touched":
         return touched(root, changed, trigger)
     if not changed:
-        print("all no changed paths were named")
+        print("all no changed paths were named")  # MUTATION-ANCHOR: 1014-M19
         return 0
     tests = os.path.join(root, "setup", "tests")
     budgets = json.loads(read(os.path.join(root, "setup", "suite-data", "test-budgets.json")))

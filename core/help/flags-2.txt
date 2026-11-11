@@ -22,6 +22,11 @@
     --no-reuse-check   legacy exact alias for --fresh
 
 BRIEF KEYS (front-matter; docs/BRIEF-TEMPLATE.md has the whole block)
+    model: <m>         a check against the resolved dispatch, refused before
+                       anything is built on disagreement; never a source.
+    effort: <level>    the same, for --effort: the same levels per vendor and
+                       the same refusal words. A brief that declares neither
+                       model: nor effort: gets one warning naming both.
     sandbox: true      same as --sandbox; `false` never turns a --sandbox off.
     requires-agents: [primary:|subagent:]<name>[, …]
                        agents the task cannot do without. hw refuses the

@@ -70,6 +70,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 **Sandbox**
 
 - [L11. `--sandbox` is macOS-only and opt-in](#l11---sandbox-is-macos-only-opt-in-claude-code-and-pi-only-and-leaves-tcp-open)
+- [L31. Security-audit leads left open](#l31-security-audit-leads-left-open-every-agent-runs-as-the-same-uid-so-the-guards-are-behavioural-and---sandbox-is-the-only-enforced-boundary)
 
 **Cleanup**
 
@@ -142,9 +143,17 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   terminal now launches the executor there too: one `hc run --bg --no-parent --no-notify` terminal named for the task,
   labelled `hw_project`/`hw_task`/`hw_run` and `herdr.space=<the lane's space>`, with the herdr variables unset and the
   brief as claude's launch task (proved by `hc get`: `status=working` or a turn past 0); a second dispatch of the same
-  task finds it by `hc ls --label hw_project= --label hw_task=` and launches nothing. Only claude executors on the plain lanes (setup,
-  git-worktree, repoless) are launched; a lane with dev servers, another vendor, `--here` and the cheap explorer's
-  arming are refused or skipped by name, and the receipt records no session id on hc. `hw done` of that run kills and removes its terminals by label (`hc ls --label hw_project= --label hw_task=`, then `hc kill` and `hc rm`: a terminal with other labels is never touched; dispatch records the run as `.hw/<run>/hc`, and a run without that record makes no `hc` call), the in-use guard reads the terminal's status and report labels from `hc get`, and `hw reap`/`hw status`/the worktree occupancy count an hc run's live terminals as occupants of its worktree (an unreadable `hc ls` is "unobserved", never "free").
+  task finds it by `hc ls --label hw_project= --label hw_task=` and launches nothing. Claude executors on every lane are launched, the lanes with a dev server or a
+  database included: the worktree, ports and per-worktree database are built as from a TUI pane, and each dev server is its own
+  `hc run` terminal, rendered from the lane's layout (cwd and env), named `<task>-<role>`, carrying the task's
+  `hw_project`/`hw_task`/`hw_run` plus `hw_role=<the pane's label>`, so `hw done` and `hw reap` end it with the executor and
+  nothing takes it for the executor (a task's executor is the terminal with no `hw_role`: `hc ls` carries no labels, so dispatch
+  and `hw revive` read one `hc get` per terminal; a dev terminal already live for the task is kept, not doubled). A read-only
+  dispatch (`--worktree none --no-db`, or a lane whose dev server is opt-in, without it) starts none. Another vendor, `--sandbox`
+  and `--here` are refused by name, and the dry run prints each of them as a ✗ (one function, `hcRefusal`, which the launch asks
+  again); the cheap explorer's arming is skipped, and the receipt records no session id on hc. A dev server runs as `sh -c <cmd>` with the dispatching shell's `PATH`, not the
+  user's interactive shell: a tool only an interactive profile puts on `PATH` is not found, and the server's terminal ends when its
+  process exits (`hc read <terminal>` while it is listed, `hc ls --all` after). `hw done` of that run kills and removes its terminals by label (`hc ls --label hw_project= --label hw_task=`, then `hc kill` and `hc rm`: a terminal with other labels is never touched; dispatch records the run as `.hw/<run>/hc`, and a run without that record makes no `hc` call), the in-use guard reads the terminal's status and report labels from `hc get`, and `hw reap`/`hw status`/the worktree occupancy count an hc run's live terminals as occupants of its worktree (an unreadable `hc ls` is "unobserved", never "free").
   `channel-send hc <terminal> - <message>` delivers to an hc terminal (a brainer `brain <lane>` opened in the app, or an
   executor): redirects wait for the receiver's `idle`/`done` status with `hc wait`, `--report` and a held `--ruling`
   reply do not, `hc send` is never given `--if` (it refuses a finished Claude) or `--force` (it may answer a dialog), and
@@ -170,7 +179,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   label=brain`, `hc get` and `herdr-app ls`, with `hw … --dry-run` printing `invoker t1b (resolved by env; verified as
   label=brain cwd=…)` (setup tests 1262 and 1263), the launch argv and the dry-run route (core `TestHCDispatch*`), and the `hc` route, the invokers' reports, the ask hold and `hw ruling`
   against a fake `hc` that records argv (setup test 1264; core/invokers `TestHC*`), the read tools by a fake `hc` (core `TestHCRun*`, `TestHCDispatchNeverFocusesAHerdrSpace`, setup tests 1278 and 1266), and `hw next`, the outbox flush and the wait backoff the same way (setup tests 1279, 1262), and `hw done`/occupancy against a stateful fake `hc` (core `TestDoneRunEndsTheHCTerminal`, `TestHCOccupancy`; red on the old code). Against a live core (herdr app 0.1.14, hc 0.1.19, isolated instance, real claude haiku, main e0ff921f1, 2026-11-10; the fifth live-cycle QA): `brain <lane>` in an app terminal, `hw` dispatch with the brief proved by `hc get`, `hw ruling` delivered mid-turn by the PostToolUse hook, `ask-invoker` and its reply, `done-invoker` reaching the brainer, `hw done` of a kept terminal, `hw next` on a `--keep-pane` run, the outbox flush on reopening the brainer, `hw wait` (blocking and non-blocking), `brain --reset`/`--resume`/`relaunch` and the cockpit, Issues and Artifacts panels all `measured` live. The four suspicions this entry once listed were refuted there: the brainer's `PATH` starts with `brain/bin`, `hw wait`/`hw unstick` work on hc (`hw unstick` refusing a non-OpenCode terminal by name), the brainer has a cockpit writer, and `--reset`/`--resume`/`relaunch` restart it. The sixth live-cycle QA (main 253a6eadd, real claude haiku, 2026-11-10) repeated all of it and measured `hw revive` of an app run live too. Not measured live: the Artifacts panel (the isolated home has no signed-in claude), and the remaining slices (design §5 and §6b).
-- **Workaround:** keep in the TUI what the app refuses by name (a lane with dev servers, a vendor other than claude, `--here`). Do not start the app from inside a herdr pane **or an hw executor's shell**: the core gives
+- **Workaround:** keep in the TUI what the app refuses by name (a vendor other than claude, `--sandbox`, `--here`). Do not start the app from inside a herdr pane **or an hw executor's shell**: the core gives
   every terminal the launcher's environment until it restarts, and that is herdr's variables (`HERDR_ENV`, `HERDR_PANE_ID`, …) AND the executor's
   `HW_*` (measured: `HW_INVOKER_PANE`, `HW_RUN`, `HW_TASK` in every app terminal). Start the app with `env -i` and only what it needs
   (`herdr-app/README.md`); a brainer `brain <lane>` opens there starts without the run identity (`HW_RUN`, `HW_TASK`, `HW_PROJECT`, …).
@@ -233,7 +242,17 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
     (`ruling`, `human-boundary`, `executor-turn-end`, `chaining-lease-start` and
     `-expire`, `outbox flush`, `output`, `stage`) and the dispatch
     (`hw <lane> <task> …`, its dry run and its launch, `--agent pi` included), and the large writers: `done`,
-    `next`, `revive`, `preview`, `reap --apply` and `sweep --apply`. Anything else is bash.
+    `next`, `revive`, `preview`, `reap --apply` and `sweep --apply`. Anything else is bash, and each group that stays is named, with its reason, in "What stays bash, and why" below.
+  - **What stays bash, and why.** A file stays only for a reason that is not "it works"; one line per group:
+    - **Launchers** (`hw`, `brain`, `channel-send`, `ask-invoker`, `done-invoker`, `hw-stop-hook.sh`, `hw-secret`, `hw-sandbox`, `browser-close`, `brain-archive`, `secret-unlock`, `opencode-auto`, `codex-channel-session-hook.sh`, `stall-watch`, with `core-rebuild` and `impl-retired.sh`): each finds or rebuilds `hw-core` and execs it, so it has to run before `hw-core` exists. `stall-watch` is one now: its body moved to Go.
+    - **Installers and bootstrap** (`install.sh`, `scripts/`, `lib/hw/deps.sh`, `setup/build-core`, `setup/check-machine`, `setup/install/`): they run before Go exists or bring it.
+    - **Git hooks** (`setup/hooks/`) and `setup/commit-tree`: git runs the hook file itself in clones where `hw-core` may be unbuilt, and they are the gate over `hw-core`'s own changes.
+    - **The suite runner and its helpers** (`setup/test-hw`, `setup/heavy`, `bin/suite-gate`, `bin/invoker-common.sh`, the mutation, measurement and release tooling): they build and test `hw-core`, so they cannot depend on it; `bin/invoker-common.sh` is sourced only by the test harness. `hw status` no longer runs `bin/suite-gate`: the slots line is read in Go.
+    - **Glue to an external CLI** (`gh-attach`, `herdr-isolated`, `statusline-usage-tee`, the Bitwarden MCP starter): the work is the external tool's, and Go would add a rewrite and nothing else.
+    - **`bin/lint-shell`** lints the bash that stays; it has no Go consumer.
+    - **Lane selectors** (the per-lane build files under `lanes/` other than `git-worktree.sh`): a name and a header, no body. `projects.json` `build` names the file and `hw-core` reads its basename (`core/t5l_lanes.go`) to pick the Go builder; the bash that used to be there was a dead copy. `lanes/git-worktree.sh` keeps its body: `install.sh --lane` writes it into a new brain before Go exists.
+    - **`bin/state-witness.sh`** has no runtime consumer left (every gate, `hw wait`, `hw next`, `channel-send` and now `hw-reconcile` run the witness in Go); it stays as the **oracle** the Go witness is held to: `core/witness_parity_test.go` and the subjects 30, 203, 33 and 1266 run it beside the Go on the same screens, and `setup/guards/mutate-state-witness.sh` mutates it. Deleting it means freezing those answers as goldens first, as `core/brain_parity_test.go` did for the 0.5.x brain; that is its own change.
+    - **Not ported yet, and said so:** one Go call site that still runs `bin/project-spaces.sh`: `hw-core brain` asks the loader for the words of a lane table that does not load (jq's own diagnostic, which differs from one jq version to the next and is pinned by `TestBrainParityD3LaneTableDiagnostics`). `done-invoker` and `ask-invoker` no longer run it: they read the lane table themselves (`core/invokers/lanetable.go`). The file itself stays for `install.sh` and `scripts/init.sh`, which read the table before Go exists. Each of the rest is a duplicate of Go that is waiting for its own change, not a decision to keep bash.
   - **The Stop hook** (`bin/hw-stop-hook.sh`, run at every turn end of every wired
     Claude Code and Codex session) runs in Go by default (0.6.0): the registered script stays bash and execs
     `hw-core stop-hook`, so no hook configuration changes on upgrade. It runs the turn end in
@@ -262,8 +281,8 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
     are shims that exec `hw-core <tool>`; the transcripts the bash left behind
     (`core/testdata/wrappers/`) hold the Go to what it answered (`setup/tests/1027`).
     A `hw-core` that is not built names `setup/build-core --native` and exits 1; one older than
-    `core/` is rebuilt by `bin/core-rebuild` when a toolchain is on PATH. `hw-reconcile` stays bash:
-    nothing on the runtime path calls it. Three differences, all at the edge of the shell:
+    `core/` is rebuilt by `bin/core-rebuild` when a toolchain is on PATH. `hw-reconcile` is a shim too
+    (`core/wrappers_reconcile.go`; nothing on the runtime path calls it; it needs `hw-core`, which the bash did not, lists its findings by directory name and words a lane table that does not load in its own words). Three differences, all at the edge of the shell:
     a failed `exec` is worded as bash 3.2 words it (other bash versions word it differently), the
     hook's sequence number is the clock in nanoseconds with no `python3` needed (the bash exits 0
     without one), and `jq`'s printing of a non-string `session_id` is imitated for strings,
@@ -554,6 +573,11 @@ it leaves the brain directory, is unguarded even with the hook registered.
     and `n`, and `.claude/skills/<n>/SKILL.md` (project or user) proves `n`; a partial read (`offset`/`limit`)
     still counts. Any other `<x>/SKILL.md` proves nothing, and a plugin laid out differently is released with
     `review-skip: <skill> — <why>`.
+  - **A plugin vendored in `setup/vendor/plugins` is never skipped.** `review-skip:` for thermo, ponytail or pstack is
+    refused (the exit for one that cannot run is `--blocked`, so the brainer dispatches a fresh executor that loads it);
+    only a piece no vendored plugin ships, or a run whose vendor loads no plugin (`plugins` receipt `NOT APPLIED`), keeps it.
+    `hw next` holds the other half: a re-task brief declaring a plugin the pane did not launch with is refused before
+    anything is sent (claude and pi; a plugin is loaded when a session starts).
   - **A pi close that DECLARES Judgment Day is held to the two judges.** The receipt carries `jd_agents_t<N>` when the
     brief declares `review: judgment-day` (or a list naming it), the lane is pi, and BOTH `jd-judge-a` and
     `jd-judge-b` exist in the directories pi registers (the lane's `.claude/agents`, then the account's);
@@ -891,7 +915,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
   `layout.apply` for instead of the one herdr answered — `hw done` then reports
   "nothing to close" and leaves the executor's tab open — a defect no stubbed
   subject sees, because none of them parses a real `layout.apply` reply.
-- **Workaround:** the demo lane (`examples/demo/`) exercises the real path once
+- **Workaround:** the demo lane (`docs/examples/demo/`) exercises the real path once
   by hand. Before each release candidate is published the maintainer runs one
   end-to-end pass with a real herdr server and real Claude Code and OpenCode
   executors (ask, challenge and report through the return channel); that run
@@ -1164,3 +1188,20 @@ it leaves the brain directory, is unguarded even with the hook registered.
 - **Evidence:** `measured` against stubs (`setup/tests/1286`) and once live against the two RO apps (2026-11-09).
 - **Workaround:** name the non-boolean values a release depends on in `## Testing / Verification` and print them from the host; a person opens each screen.
 
+### L31. Security-audit leads left open: every agent runs as the same uid, so the guards are behavioural and `--sandbox` is the only enforced boundary
+- **Scope:** the twelve leads the 2026-11-10 security audit left as "needs validation" and that were not fixed with the others (the audit's numbering; the nine that were executed are fixed and have tests). All of them assume an executor, or a prompt-injected one, that can write its own run directory or worktree.
+- **Impact:** each line is the lead, the open fact that would settle it, and why it is bounded:
+  - **#5** the brain guard may not resolve a relative path inside a quoted `sh -c` / `python -c` string (`deny_brain_writes.py` `_names`); open: a run of `sh -c 'rm ../../../brain/x'` from a product executor. A same-uid shell reaches brain anyway, so this is a tripwire gap, not a boundary.
+  - **#6** the brainer's read-only guard lists mutator verbs and omits `curl -o`, `tar -x`, `unzip`, `ditto`, `sqlite3`, `awk`/`sed` writes (`deny_repo_writes.py` `MUTATORS`); open: whether the brainer's lane lets those binaries run. A closed verb list is a tripwire by design (L5).
+  - **#8** the issue viewer passes third-party GitHub markdown to the app's `TextView.markdown` with no scheme or image filter; open: what the herdr app does with a clicked link or a remote image, which is app code outside this repository.
+  - **#9** `hw outbox flush` trusts the executor-writable `.meta`/`.msg` and runs `hw done` on the task the meta names (`core/t3_outbox.go` `outboxForeign` binds lane and run, not task); open: whether a forged meta for another task of the lane closes it. An unsandboxed executor can already send a report as itself.
+  - **#11** `hw done` archives a pi transcript through `newestSession`, which accepts a symlink named `*.jsonl` that `copyFile` follows (`core/transcript_archive.go`); open: whether a sandboxed pi executor's link to a read-denied file lands in the archive. The executor cannot read the archive.
+  - **#12** operator-side writers into the executor-writable run dir (`brain` repoint, `hw next`, `hw ruling`) write by path with no `O_NOFOLLOW`; open: whether a planted symlink makes the operator write outside the sandbox's write set.
+  - **#14** operator-side `git -C <worktree>` reads a gitdir/config the sandbox leaves writable (`<wt>/.git`, `commondir`); open: whether a redirected gitdir with `core.fsmonitor` runs under `hw done`.
+  - **#15** the sandbox grants the whole common `objects`/`refs`/`logs`, so a sandboxed executor can move any branch (see L11), and `hw train push`, `hw done`/`reap` and new worktrees trust local refs as provenance; open: whether a forged merge on the base makes an unmerged sibling removable or runs a nominated `verify-for-push`.
+  - **#17** `hw status` and `hw-reconcile` print run-dir values (receipt `pane`, `model_running`) with raw control sequences; open: which sequences the operator's terminal honours. Terminal spoofing only.
+  - **#18** an executor can write the chaining-lease and done marker that make its pane the next dispatch's reuse target (`core/t4_next_util.go`); open: nothing beyond the printed `REUSE WARNING`; `--fresh` avoids it. It delivers a later brief to a pane the same uid already controls.
+  - **#20** `hw revive` re-arms the sandbox with the cwd of the last `session_resume` line of the executor-writable `receipt.jsonl` (`core/t4_revive.go`), cross-checked only against the executor-writable env; open: whether a forged line widens the write scope across a revive. The operator runs `hw revive` and the cwd is printed.
+  - **#21** `hw sweep --apply` closes the herdr tab or workspace whose id a run-dir file names (`core/t4_sweep.go`); open: whether a forged id plus a done marker closes another pane. Availability only; an unsandboxed executor can call `herdr` itself.
+- **Evidence:** `unverified`: source-confirmed by the audit, not executed here. The nine leads that were executed are in the changelog entry of this release.
+- **Workaround:** run an executor that must not be trusted under `--sandbox` (L11) and read what `hw done`, `hw revive`, `hw sweep` and `hw outbox flush` print before accepting it.

@@ -7,7 +7,7 @@ func (c *Ctx) exitMeaning(rc int) string {
 	if c.Prog == "ask-invoker" {
 		switch rc {
 		case 1:
-			return "NOT DELIVERED — no ask was spent and no marker written, so nothing was lost; retry the identical command"
+			return "NOT DELIVERED — no ask was spent and no marker written, so nothing was lost; the message above names what clears it — run it again only when it says to"
 		case 4:
 			return "DELIVERED and provably in the brainer session, but its TURN failed — do NOT re-ask"
 		case 5:
@@ -17,7 +17,7 @@ func (c *Ctx) exitMeaning(rc int) string {
 	}
 	switch rc {
 	case 1:
-		return "NOT DELIVERED — nothing was reported, no marker written, this pane is the only copy; retry the identical command"
+		return "NOT DELIVERED — nothing was reported, no marker written, this pane is the only copy; the message above names what clears it — run it again only when it says to"
 	case 4:
 		return "DELIVERED AND SAFE, but the owned tab/workspace could not be closed — do NOT re-run this, close it by hand"
 	case 5:

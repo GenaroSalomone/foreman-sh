@@ -52,8 +52,8 @@ case "$out" in *"NOW through pi's native steering"*) ok 0 "hw ruling says it del
 req2() { [ "$(wc -l < "$T/requests.jsonl" | tr -d ' ')" -ge 2 ]; }
 waitfor 60 req2 || { ok 1 "pi made its second request after the long command"; exit 1; }
 second="$(sed -n 2p "$T/requests.jsonl")"
-printf '%s' "$second" | grep -q 'LIVE-DONE'; ok $? "the second request carries the command's result (the tool call ended)"
-printf '%s' "$second" | grep -q 'PROBE-RULING'; ok $? "the second request ALREADY carries the ruling: it landed as steering after the tool call, not at a turn end"
+grep -q 'LIVE-DONE' <<<"$second"; ok $? "the second request carries the command's result (the tool call ended)"
+grep -q 'PROBE-RULING' <<<"$second"; ok $? "the second request ALREADY carries the ruling: it landed as steering after the tool call, not at a turn end"
 [ -z "$(ls "$W/.hw/20261105-100000-1"/pending-ruling* 2>/dev/null)" ]; ok $? "nothing is left pending for the turn end"
 [ -n "$(ls "$W/.hw/20261105-100000-1"/ruling-delivered.* 2>/dev/null)" ]; ok $? "the delivery is recorded"
 [ "$FAILS" = 0 ]

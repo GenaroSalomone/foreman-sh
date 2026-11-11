@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify, folderError, parseState, dur, laneOf, metaText, modelOf, scrub, terminalFor, titleOf } from "./state.js";
+import { brainerLane, classify, folderError, parseState, dur, laneOf, metaText, modelOf, scrub, terminalFor, titleOf } from "./state.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const fixtures = join(root, "cockpit/fixtures");
@@ -51,6 +51,34 @@ for (const [rows, want] of [
   [[], ""],
 ]) {
   if (laneOf(rows) !== want) fail(`laneOf(${JSON.stringify(rows)})`, laneOf(rows), want);
+}
+
+checks += 6;
+// A brainer is named by its lane, whether or not it has executors; a file from a writer older than the field falls back to
+// its rows, then to its pane id.
+for (const [state, want] of [
+  [{ lane: "setup", rows: [], invoker_pane: "w3Z:p2" }, "setup"],
+  [{ lane: "setup", rows: [{ project: "demo" }], invoker_pane: "w3Z:p2" }, "setup"],
+  [{ lane: null, rows: [{ project: "demo" }], invoker_pane: "w3Z:p2" }, "demo"],
+  [{ rows: [{ project: "zeta" }, { project: "alpha" }], invoker_pane: "w3Z:p2" }, "alpha, zeta"],
+  [{ lane: "  ", rows: [], invoker_pane: "w3Z:p2" }, "w3Z:p2"],
+  [{ rows: [], invoker_pane: "w41:pX0" }, "w41:pX0"],
+]) {
+  if (brainerLane(state) !== want) fail(`brainerLane(${JSON.stringify(state)})`, brainerLane(state), want);
+}
+
+checks += 4;
+// `lane` is optional (older writers), a string or null; any other type is a dead file.
+{
+  const base = JSON.parse(readFileSync(join(fixtures, "fresh-empty.json"), "utf8"));
+  for (const [lane, ok] of [[undefined, true], [null, true], ["setup", true], [7, false]]) {
+    if (lane === undefined || lane === 7 || lane === null) {
+      const doc = { ...base };
+      if (lane === undefined) delete doc.lane; else doc.lane = lane;
+      if ((parseState(JSON.stringify(doc)) !== null) !== ok) fail(`parseState lane=${lane}`, !ok, ok);
+    }
+  }
+  if (parseState(JSON.stringify(base))?.lane !== "setup") fail("parseState keeps lane", "other", "setup");
 }
 
 checks += 5;

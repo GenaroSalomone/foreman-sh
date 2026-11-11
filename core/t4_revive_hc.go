@@ -46,10 +46,19 @@ func (a *app) reviveOnHC(st *reviveRunState, sid, vendor, cmdArgs string, envSho
 	if !ok || !parsed || !isList {
 		a.reviveDie("could not read whether " + proj + ":" + task + " is already live — `hc ls` did not answer. Refusing rather than resuming a session twice.")
 	}
+	var addrs []string
 	for _, e := range list {
 		if m, isMap := e.(jmap); isMap && hcStr(m, "address") != "" {
-			a.reviveDie("session " + sid + " of run " + filepath.Base(rundir) + " is still live in " + hcStr(m, "address") + " — a live session is never resumed twice")
+			addrs = append(addrs, hcStr(m, "address"))
 		}
+	}
+	// the task's dev-server terminals carry its labels too, and are not a session
+	agents, readable := hcNotDev(addrs, func(addr string) (string, bool) { return hcOut(20*time.Second, "get", addr, "--json") })
+	if !readable {
+		a.reviveDie("could not read whether " + proj + ":" + task + " is already live — `hc get` did not answer. Refusing rather than resuming a session twice.")
+	}
+	for _, addr := range agents {
+		a.reviveDie("session " + sid + " of run " + filepath.Base(rundir) + " is still live in " + addr + " — a live session is never resumed twice")
 	}
 	if exitStatus(a.reviveSandboxArmed(proj, task)) != 1 { // FAIL CLOSED: anything but a clean "never armed"
 		a.reviveDie("this run was launched in the sandbox, and an app terminal cannot be armed with it; hw revive will not start it unconfined")

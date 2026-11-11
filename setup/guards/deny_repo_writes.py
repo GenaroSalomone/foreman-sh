@@ -2191,16 +2191,28 @@ def _unwrap_env(text, budget=None):
 # (a pipeline stays whole: `rg -l x <brain> | xargs rm` is one piece that names
 # the root AND mutates). The mutator pieces are cleared only when each is a
 # plain run of path-like words (no quote, `$`, backtick, glob, redirect, paren)
-# that names no root, lands in none, and no `cd` exists anywhere to move them.
+# that names no root and lands in none. A `cd` moves the directory the next pieces run from
+# (measured 2026-11-10, model-effort-parity and heavy-discipline: `cd <worktree>; cp a b; sed -n 1,80p <skill symlink into brain>` was
+# refused on every judgment-day run, the read-only skill path being the only protected word): it is followed piece by piece, and only
+# when it is a plain `cd <word>` that lands outside every root. Any other `cd` (inside a subshell, with `$`, `~`, `-`, `popd`) clears nothing.
 _SIMPLE_PIECE = re.compile(r"[\w@%+=:,./~ \t-]*")
 _CD_WORD = re.compile(r"(?<![\w-])(?:cd|pushd|popd)(?![\w-])")
+_PLAIN_CD = re.compile(r"\s*cd\s+([\w@%+=:,./][\w@%+=:,./-]*)\s*")  # not `-`, `-P`, `-L`: an option word is no directory
 
 
 def _mutators_clear_of_protected(cfg, text, cwd):
-    if not (cwd and _is_abs(cwd)) or _CD_WORD.search(text):
+    if not (cwd and _is_abs(cwd)):
         return False
     seen = False
     for piece in re.split(r";|&&|\|\||\n", text):
+        if _CD_WORD.search(piece):
+            m = _PLAIN_CD.fullmatch(piece)
+            if not m or m.group(1) == "-":  # MUTATION-ANCHOR: 1312-M01
+                return False
+            cwd = _norm(m.group(1)) if _is_abs(m.group(1)) else _norm(_join(cwd, m.group(1)))
+            if _inside_protected(cfg, cwd):
+                return False
+            continue
         mutates = any(_is_command_position(piece, m.start())
                       for m in MUTATORS.finditer(piece)) or any(
             _is_command_position(piece, m.start())

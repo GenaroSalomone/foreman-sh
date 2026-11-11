@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-var nextKnownKeys = map[string]bool{"agent": true, "model": true, "sdd": true, "placement": true, "worktree": true,
+var nextKnownKeys = map[string]bool{"agent": true, "model": true, "effort": true, "sdd": true, "placement": true, "worktree": true,
 	"database": true, "invoker": true, "requires": true, "requires-agents": true, "kind": true, "base": true,
 	"decision": true, "delivery": true, "boundary": true, "deployed_check": true, "sandbox": true, "review": true, "plugins": true,
 	"requested_by": true, "asked": true, "authorizes": true, "secrets": true}
@@ -351,4 +351,94 @@ func nextGit(dir string, args ...string) error {
 func nextExecutable(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir() && st.Mode()&0o111 != 0
+}
+
+// nextCheckBriefModel is the `model:` check of a re-task brief, the twin of nextCheckBriefEffort and the brief door of the same
+// ONE check the dispatch runs (modelEffortSuffixRefusal, brDispatchActual): a level written inside the id is refused in the
+// words of --effort, and a model the pane was not launched with is refused too, because --model is fixed at the pane's launch
+// and hw next cannot change it. A check, never a source. Nothing is sent and the counter does not move.
+func (a *app) nextCheckBriefModel(brief, pane, running string) {
+	declared := nextDecl(nextBriefDeclares(brief), "model")
+	if declared == "" {
+		return
+	}
+	if msg := modelEffortSuffixRefusal(declared, "the brief's model:"); msg != "" {
+		a.die(msg + ". NOTHING was sent and the counter did NOT move.")
+	}
+	if running == "" {
+		running = "<unmeasured>"
+	}
+	if declared != running {
+		a.die("the re-task brief declares model=" + declared + " but " + pane + " runs model=" + running + ", fixed at ITS launch: hw next cannot change it. NOTHING was sent and the counter did NOT move. Dispatch a fresh executor with --model " + declared + ", or change the brief if the brief is what is wrong.")
+	}
+}
+
+// nextCheckBriefEffort is the `effort:` check of a re-task brief, the brief door of the same ONE check the dispatch runs
+// (effortRefusal, brBriefDeclares): a level the vendor cannot take is refused in --effort's words, and a level the pane was
+// not launched with is refused too, because --effort is fixed at the pane's launch and hw next cannot change it. A check,
+// never a source. Nothing is sent and the counter does not move.
+func (a *app) nextCheckBriefEffort(brief, vendor, pane, running string) {
+	declared := nextDecl(nextBriefDeclares(brief), "effort")
+	if declared == "" {
+		return
+	}
+	if msg := effortRefusal(vendor, declared); msg != "" {
+		a.die(msg + ". NOTHING was sent and the counter did NOT move.")
+	}
+	if running == "" {
+		running = "<unmeasured>"
+	}
+	if declared != running {
+		a.die("the re-task brief declares effort=" + declared + " but " + pane + " runs effort=" + running + ", fixed at ITS launch: hw next cannot change it. NOTHING was sent and the counter did NOT move. Dispatch a fresh executor with --effort " + declared + ", or change the brief if the brief is what is wrong.")
+	}
+}
+
+// nextCheckBriefPlugins is the `plugins:` check of a re-task brief, the twin of nextCheckBriefEffort: a plugin is loaded when
+// a session starts (claude --plugin-dir, pi -e), so hw next cannot add one to a live pane, and a re-task that declares a review
+// plugin the pane did not launch with would be told "not installed" by its own executor and close on a review-skip (MEASURED
+// 2026-11-10, a lane pane (w7H:p1VT), task 4). The pane's own launch is the receipt row `plugins` written at dispatch
+// (absent when the brief asked for none, "NOT APPLIED — …" when the vendor loads none); only claude and pi load plugins, so
+// any other vendor is not held to it. A check, never a source. Nothing is sent and the counter does not move.
+func (a *app) nextCheckBriefPlugins(brief, vendor, pane, rundir string) {
+	if vendor != "claude" && vendor != "pi" { // # MUTATION-ANCHOR: 1150-G16
+		return
+	}
+	var loaded []string
+	if v, rc := reviveReceiptLast(rundir+"/receipt.jsonl", "plugins"); rc == 0 && !strings.HasPrefix(v, "NOT APPLIED") {
+		loaded = pluginsOfValue(v)
+	}
+	var missing []string
+	for _, n := range nextPluginsDeclared(brief) {
+		if !has(loaded, n) { // # MUTATION-ANCHOR: 1150-G17
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	have := "none"
+	if len(loaded) > 0 {
+		have = strings.Join(loaded, ", ")
+	}
+	a.die("the re-task brief declares plugins " + strings.Join(missing, ", ") + " (plugins: or review:), but " + pane + " was launched with " + have + ", and a plugin is loaded when a session starts (" + map[string]string{"claude": "--plugin-dir", "pi": "-e"}[vendor] + "): hw next cannot add one to a live pane. NOTHING was sent and the counter did NOT move. Dispatch a fresh executor, which loads them: hw <project> <task> --fresh. Or change the brief if the brief is what is wrong — an executor that is not given a declared review plugin must not close on a review-skip.")
+}
+
+// nextPluginsReceipt records, for a re-task onto a vendor that loads no plugin (codex, opencode), the same `plugins` row its launch
+// writes when the brief declares some: "NOT APPLIED — …". Without it a pane launched with no plugins has no row, done-invoker reads
+// that as a pane that WAS meant to load them (the measured case) and refuses the review-skip that is the only exit a vendor with no
+// plugin has, while a fresh dispatch of the same brief is let close (Judgment Day, both judges, 2026-11-10). claude and pi write nothing:
+// their row is the launch's, and nextCheckBriefPlugins already held the re-task to it.
+func (a *app) nextPluginsReceipt(rundir, brief, vendor string) {
+	declared := nextPluginsDeclared(brief)
+	if vendor == "claude" || vendor == "pi" || len(declared) == 0 { // # MUTATION-ANCHOR: 1150-G21
+		return
+	}
+	// The vendor is herdr's live detection, an input: empty or unrecognised for a pane that may really be claude or pi. A pane whose
+	// launch row says plugins WERE applied, or an unnamed vendor, never gets the row that would shadow it as the LAST one every reader
+	// takes (done-invoker's exemption, hw revive's --plugin-dir) — Judgment Day round 2, both judges.
+	if prior, rc := reviveReceiptLast(rundir+"/receipt.jsonl", "plugins"); vendor == "" || (rc == 0 && prior != "" && !strings.HasPrefix(prior, "NOT APPLIED")) { // # MUTATION-ANCHOR: 1150-G22
+		return
+	}
+	a.receiptInto(rundir, "plugins", "NOT APPLIED — "+orDefaultStr(vendor, "unknown")+" does not load plugins (asked: "+strings.Join(declared, ",")+")",
+		"brief plugins: and review: in "+brief+" at hw next; only claude (--plugin-dir) and pi (-e) load plugins")
 }

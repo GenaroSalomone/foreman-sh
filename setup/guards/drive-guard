@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""drive-guard — feed a PreToolUse guard one payload that lives in a FILE, and print its verdict.
+
+    drive-guard [--env K=V]... [--cwd DIR] [--tool NAME] --guard <guard.py> <payload-file>
+
+<payload-file> is either a whole hook payload (JSON with `tool_name`, `tool_input`, `cwd`) or, for a Bash probe, the COMMAND TEXT ITSELF
+(any file that is not such a JSON object): no quoting, no escaping, `--tool` (default Bash) and `--cwd` (default `.`) wrap it.
+Prints `deny: <reason>` or `allow` and exits 1 / 0; exit 2 is a usage error, 3 a guard that crashed with no verdict (never read as allow).
+
+WHY. A Bash call that spells a protected path (the brainer's checkout, say) is itself judged by the live guard, so driving a guard
+from the shell with the payload on the command line trips the guard you are testing. The path travels in a file you wrote with
+Write; this command's own line names only the file. The guard runs with HW_TASK, HW_PROJECT and HW_WORKDIR unset (this shell's own
+executor identity is not the probe's) plus the `--env` assignments, so the verdict is the probe's, not the caller's.
+"""
+import json
+import os
+import subprocess
+import sys
+
+
+def usage(msg=""):
+    if msg:
+        print("drive-guard: " + msg, file=sys.stderr)
+    print("\n\n".join(__doc__.split("\n\n")[:2]), file=sys.stderr)
+    sys.exit(2)
+
+
+def main(argv):
+    env = {k: v for k, v in os.environ.items() if k not in ("HW_TASK", "HW_PROJECT", "HW_WORKDIR")}
+    guard = cwd = None
+    tool = "Bash"
+    rest = []
+    it = iter(argv)
+    for a in it:
+        if a in ("--env", "--cwd", "--tool", "--guard"):
+            v = next(it, None)
+            if v is None:
+                usage(a + " needs a value")
+            if a == "--env":
+                if "=" not in v:
+                    usage("--env wants K=V: " + v)
+                env[v.split("=", 1)[0]] = v.split("=", 1)[1]
+            elif a == "--cwd":
+                cwd = v
+            elif a == "--tool":
+                tool = v
+            else:
+                guard = v
+        elif a.startswith("--"):
+            usage("unknown option " + a)
+        else:
+            rest.append(a)
+    if guard is None or len(rest) != 1:
+        usage("a --guard and exactly one payload file")
+    try:
+        text = open(rest[0], encoding="utf-8").read()
+    except (OSError, UnicodeDecodeError) as e:
+        usage("cannot read the payload file: " + str(e))
+    try:
+        payload = json.loads(text)
+        whole = isinstance(payload, dict) and "tool_name" in payload
+    except ValueError:
+        whole = False
+    if not whole:
+        payload = {"tool_name": tool, "tool_input": {"command": text.rstrip("\n")}}
+    if cwd is not None or "cwd" not in payload:
+        payload["cwd"] = cwd or "."
+    p = subprocess.run([sys.executable or "python3", guard], input=json.dumps(payload), capture_output=True, text=True, env=env)
+    out = p.stdout + p.stderr
+    if p.returncode == 2 or '"deny"' in out:
+        print("deny: " + " ".join(out.split())[:300])
+        return 1
+    if p.returncode != 0:
+        print("error: the guard exited %d without a verdict: %s" % (p.returncode, " ".join(out.split())[:300]))
+        return 3
+    print("allow")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

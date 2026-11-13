@@ -138,13 +138,13 @@ func (a *app) nextEnvFacts(e nextMsgEnv) *promptFacts {
 		f.laneQA = a.nextQAOverride(e)
 	}
 	f.qaTarget = e.proj != "" && a.nextLaneField(e.proj, "qa_target") != ""
-	f.jd = e.baseRef != "" && e.reviewMode != "plugins" && e.reviewMode != "none" && f.build // # MUTATION-ANCHOR: 1020-G06
+	f.independent = nextIndependentReview(e.brief)
+	f.jd = e.baseRef != "" && e.reviewMode != "plugins" && e.reviewMode != "none" && f.build && !f.independent // # MUTATION-ANCHOR: 1020-G06
 	f.designGate = nextDesignGate(e.brief)
 	if f.designGate {
 		f.boundary = nextFmValue("boundary", e.brief)
 	}
 	f.jdRequired = nextJudgmentDayRequired(e.brief)
-	f.pluginsOnly = e.reviewMode == "plugins" && f.build // # MUTATION-ANCHOR: 1020-G07
 	return f
 }
 

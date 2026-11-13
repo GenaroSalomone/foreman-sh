@@ -103,12 +103,15 @@ func (a *app) cmdStatusFull() int {
 	outbox := a.startJob(one, nil, func(b *app) int { return b.outboxQuiet(project) })
 	worktrees := a.startJob(one, []string{"--quiet"}, (*app).cmdWorktrees)
 	agentTools := a.startJob(one, nil, func(b *app) int { return b.agentToolsQuiet(project) })
-	var tabs, hygiene, rules, decisions *heldJob
+	var tabs, hygiene, rules, decisions, briefs *heldJob
 	if project == "" {
 		tabs = a.startJob(one, nil, (*app).tabsQuiet)
 		hygiene = a.startJob(one, nil, (*app).hygieneQuiet)
 		rules = a.startJob(one, nil, (*app).rulesQuiet)
 		decisions = a.startJob(one, nil, (*app).decisionsQuiet)
+	}
+	if project != "" {
+		briefs = a.startJob(one, nil, func(b *app) int { return b.briefsQuiet(project) })
 	}
 	rc, orphans := a.statusTable(project, all)
 	if rc != 0 {
@@ -128,8 +131,10 @@ func (a *app) cmdStatusFull() int {
 			}
 		}
 	} else {
-		if rc := a.replay(worktrees); rc != 0 {
-			return rc
+		for _, j := range []*heldJob{worktrees, briefs} {
+			if rc := a.replay(j); rc != 0 {
+				return rc
+			}
 		}
 		a.info("scoped to " + project + " — `hw status` with no project adds the cross-lane checks")
 	}

@@ -509,6 +509,42 @@ func (a *app) decisionsQuiet() int {
 	return 0
 }
 
+// ── briefsQuiet ─────────────────────────────────────────────────────────────
+
+// briefsArchivableMin is how many finished briefs a lane may hold before `hw status` names the archive. The count is
+// what `hw briefs archive` would move, so a fresh archive leaves it at 0; 25 is about a day or two of a busy lane's
+// finished work, enough that the line is never noise and early enough that the lane never reaches hundreds again.
+const briefsArchivableMin = 25
+
+// briefsQuiet names the verb that archives a lane's finished briefs once enough of them pile up. "Finished" is
+// briefsPlan's definition, the one `hw briefs archive` moves by: there is no second one here. A lane with no briefs
+// directory, or a plan that cannot be computed, says nothing beyond what briefsPlan already printed.
+func (a *app) briefsQuiet(lane string) (rc int) {
+	if lane == "" || !isDir(a.c.brain+"/"+lane+"/briefs") {
+		return 0
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(exitNow); !ok {
+				panic(r)
+			}
+			rc = 0 // briefsPlan died (its message is out): this section never ends `hw status`
+		}
+	}()
+	n := 0
+	for _, r := range a.briefsPlan(lane) {
+		if r.move {
+			n++
+		}
+	}
+	if n < briefsArchivableMin {
+		return 0
+	}
+	a.printf("\n")
+	a.warn(itoa(n) + " finished briefs → hw briefs archive " + lane + " --apply")
+	return 0
+}
+
 // ── _agent_tools_quiet ──────────────────────────────────────────────────────
 
 // agentToolsQuiet: A SUBAGENT THAT DECLARES A TOOL ITS SESSION DOES NOT HAVE STARTS WITHOUT IT, SILENTLY (MEASURED

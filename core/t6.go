@@ -8,7 +8,7 @@ package main
 // t6Verbs are the verbs of this train.
 var t6Verbs = map[string]bool{
 	"train": true, "suite": true, "unstick": true, "ledger": true, "briefs": true,
-	"cockpit-state": true, "secret": true, "-V": true, "--version": true,
+	"cockpit-state": true, "secret": true, "review": true, "-V": true, "--version": true,
 }
 
 func isT6Verb(v string) bool { return t6Verbs[v] }
@@ -25,6 +25,8 @@ func (a *app) cmdT6(verb string) int {
 		return a.cmdLedger()
 	case "briefs":
 		return a.cmdBriefs()
+	case "review":
+		return a.cmdReview()
 	case "cockpit-state":
 		return a.cmdExecHelper("cockpit-state")
 	case "secret":

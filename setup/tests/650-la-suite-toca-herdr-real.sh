@@ -90,7 +90,7 @@ BRAIN="$TMP/brain"
 mkdir -p "$BRAIN/setup" "$BRAIN/$LANE/briefs" "$TMP/work" "$TMP/ev"
 for d in bin layouts lanes; do cp -R "$ROOT/$d" "$BRAIN/$d"; done
 cp -R "$ROOT/setup/guards" "$BRAIN/setup/guards"
-for f in CLAUDE.md CLAUDE.shared.md guards.json; do [ ! -f "$ROOT/$f" ] || cp "$ROOT/$f" "$BRAIN/$f"; done
+for f in CLAUDE.md CLAUDE.shared.md guards.json projects.json; do [ ! -f "$ROOT/$f" ] || cp "$ROOT/$f" "$BRAIN/$f"; done
 [ -z "${HW650_HW:-}" ] || cp "$HW650_HW" "$BRAIN/bin/hw"
 python3 - "$ROOT/projects.json" "$BRAIN/projects.json" "$TMP/work" "$LANE" <<'PY'
 import json, sys

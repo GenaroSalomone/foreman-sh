@@ -1338,3 +1338,47 @@ func TestReplyHoldWaitsForTheAskToProveDelivery(t *testing.T) {
 		t.Fatalf("a herdr hold waited: %v", time.Since(start))
 	}
 }
+
+// rc1-app-live-qa F6: an hc terminal keeps its labels, so after the answer of a delivered ask `hc get` still read
+// hw_ask_state=delivered. The reply that clears the hold also labels the executor's terminal answered; a report
+// without a hold, and a reply that was never delivered, leave the labels alone.
+func TestReplyToAnHCTerminalMarksTheAskAnswered(t *testing.T) {
+	w := newCSWorld(t)
+	hcStub := `printf 'hc %s\n' "$*" >> "$STUB_DIR/calls"
+case "$1" in
+  get) n=$(cat "$STUB_DIR/hc-turn" 2>/dev/null || echo 0)
+       printf '{"address":"%s","state":"live","turn":%s,"status":{"app":"claude-code","state":"idle"},"labels":{"hw_ask_state":"delivered"}}\n' "$2" "$n" ;;
+  send) n=$(cat "$STUB_DIR/hc-turn" 2>/dev/null || echo 0); echo $((n+1)) > "$STUB_DIR/hc-turn" ;;
+  label) ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(w.bin+"/hc", []byte("#!/bin/bash\n"+hcStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.set("HW_HC_PROOF_MS", "3000")
+	hold := w.stub + "/pending-reply-1"
+	os.WriteFile(hold, []byte("logical_id=x\n"), 0o644)
+	r := w.cs("--report", "--reply-hold", hold, "hc", "t7", "-", "the answer")
+	r.rcIs(t, 0)
+	if !strings.Contains(w.calls(), "hc label t7 hw_ask_state=answered\n") {
+		t.Errorf("the answer was delivered but the ask was not marked answered; calls:\n%s", w.calls())
+	}
+	// no hold, no label: a plain report to an hc terminal is not an answer
+	os.WriteFile(w.stub+"/calls", nil, 0o644)
+	r = w.cs("--report", "hc", "t7", "-", "a report")
+	r.rcIs(t, 0)
+	if strings.Contains(w.calls(), "hc label") {
+		t.Errorf("a report with no reply hold labelled the terminal; calls:\n%s", w.calls())
+	}
+	// not delivered (hc send nothing moves => exit 5): the ask stays delivered
+	os.WriteFile(w.stub+"/calls", nil, 0o644)
+	os.WriteFile(w.bin+"/hc", []byte("#!/bin/bash\n"+strings.Replace(hcStub, `echo $((n+1)) > "$STUB_DIR/hc-turn"`, `:`, 1)), 0o755)
+	w.set("HW_HC_PROOF_MS", "300")
+	os.WriteFile(hold, []byte("logical_id=x\n"), 0o644)
+	r = w.cs("--report", "--reply-hold", hold, "hc", "t7", "-", "the answer")
+	r.rcIs(t, 5)
+	if strings.Contains(w.calls(), "hc label") {
+		t.Errorf("an unconfirmed delivery marked the ask answered; calls:\n%s", w.calls())
+	}
+}

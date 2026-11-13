@@ -94,12 +94,13 @@ func (l *lch) brainGuardOn() bool { return l.brainGuardApplies() && l.brainGuard
 // so itself), where the review is not declared (the optional close may skip Judgment Day entirely), and for every
 // other vendor (unchanged).
 func (l *lch) jdAgentsReceipt(dir string) {
-	// THE SAME GATES THE CLOSING HAS (`f.jd = l.judgmentDayApplies()`): a declared Judgment Day AND a resolved base
-	// ref AND a build kind. Without them the prompt renders no judge call at all, so a row written here would refuse a
-	// close nothing asked for (Judgment Day, both judges, 2026-11-04).
+	// Only a kind: review brief runs Judgment Day now: a build owes the independent review, and the builder's own close never
+	// renders a judge call (reviewOwedBy is false only for review: none, and that mode names no Judgment Day), so a row written
+	// for a build would refuse a close nothing asked for (Judgment Day, both judges, 2026-11-04; the builder's JD close was
+	// unreachable once every review: value owed the independent review, 2026-11-12).
 	// pi AND claude (pi-adopt-gentle, 2026-11-05): a declared Judgment Day is held to its protocol on both vendors, read off
 	// each one's own transcript. Another vendor writes no row: hw cannot read its transcript.
-	if (l.agent != "pi" && l.agent != "claude") || !l.reviewDeclared() || l.reviewMode() != "judgment-day" || !l.judgmentDayApplies() {
+	if (l.agent != "pi" && l.agent != "claude") || !l.reviewDeclared() || l.reviewMode() != "judgment-day" || l.reviewerOf() == "" {
 		return
 	}
 	cfg := orDefaultStr(l.env("CLAUDE_CONFIG_DIR"), l.env("HOME")+"/.claude")
@@ -113,12 +114,14 @@ func (l *lch) jdAgentsReceipt(dir string) {
 // pluginReviewReceipt is THE PLUGIN REVIEW SKILLS THE CLOSING NAMED, keyed by task 1: done-invoker refuses a done
 // report with no evidence that each ran.
 func (l *lch) pluginReviewReceipt(dir string) {
-	sk := pluginReviewSkillsNamed(l.reviewMode(), l.env("HW_REVIEW_BASE_REF"), l.checksGateApplies(), l.pluginsDeclared())
-	if len(sk) == 0 { // # MUTATION-ANCHOR: 1150-G07
+	// the pieces moved to the reviewer: the builder of a build that owes the independent review proves /simplify (claude) and nothing else
+	if !l.independentReview() {
 		return
 	}
-	l.receiptInto(dir, "plugin_review_t1", strings.Join(reviewSkillsQualified(l.pluginsDeclared()), ","),
-		"brief plugins: and review: in "+l.brief+" at dispatch — done-invoker proves each skill from the transcript, or takes a review-skip: line")
+	if piece := closeSimplifyPiece(l.agent); piece != "" {
+		l.receiptInto(dir, "plugin_review_t1", piece,
+			"kind build owing the independent review, on claude, at dispatch — done-invoker proves the Skill call `simplify` from the transcript, or takes a review-skip: line")
+	}
 }
 
 // checksGateApplies is `_checks_gate_applies`: a build leaves checks.md.
@@ -668,6 +671,8 @@ func (l *lch) writeRunEnv(workdir, extra, invoker string) {
 		l.receiptInto(dir, "release_t1", l.releaseJSON, "brief release: prod in "+l.brief+" at dispatch — done-invoker re-diffs the env, wants the screens, and the QA run reported")
 	}
 	l.pluginReviewReceipt(dir)
+	l.reviewOwedReceipt(dir)
+	l.reviewerReceipts(dir)
 	l.jdAgentsReceipt(dir)
 	if l.reportToChosen {
 		l.receiptInto(dir, "report_route",

@@ -173,6 +173,17 @@ export function titleOf(r) {
 // none, and a sentence where it has no reader ("n/a — hw has no model reader"); neither is a model to draw.
 export const modelOf = (r) => (typeof r.model === "string" && /^[\w.@:/[\]-]{1,64}$/.test(r.model) ? r.model : null);
 
+// pane → model id for every row whose receipt names one: what the cockpit hands the agents panel (rc1-app-live-qa F4), so
+// both draw the model from the same field (`model_running`, read once by bin/cockpit-state). A row with no model is absent.
+export function modelsByPane(rows) {
+  const out = {};
+  for (const r of rows) {
+    const id = modelOf(r);
+    if (id !== null && isStr(r.pane) && r.pane !== "") out[r.pane] = id;
+  }
+  return out;
+}
+
 // Vendor, model, effort and context on one line; an unknown field is left out, not drawn as a dash.
 export function metaText(r) {
   return [r.vendor, modelOf(r), r.effort, ctxMeta(r.ctx)]
@@ -235,6 +246,26 @@ export const heldSince = (r) => (r.attention === "working" ? r.dispatched_at : r
 export function waitingQueue(items, rowOf = (x) => x) {
   return items.filter((x) => WAITS.has(rowOf(x).attention))
     .sort((a, b) => (heldSince(rowOf(a)) ?? Infinity) - (heldSince(rowOf(b)) ?? Infinity) || rowOf(a).task.localeCompare(rowOf(b).task));
+}
+
+// The queue block's fold, kept by the app across restarts: { folded, seen } where `seen` is the ids the person
+// has been shown. A row not in `seen` is news, and news reopens a folded block. Returns the next state and
+// whether it differs from `saved` (the caller writes only then).
+export function queueFold(saved, ids) {
+  const was = saved !== null && typeof saved === "object" && Array.isArray(saved.seen) ? saved : { folded: false, seen: [] };
+  const known = new Set(was.seen);
+  const fresh = ids.some((id) => !known.has(id));
+  const next = { folded: was.folded === true && !fresh, seen: [...ids].sort() };
+  const same = next.folded === (was.folded === true) && JSON.stringify(next.seen) === JSON.stringify([...was.seen].sort());
+  return { state: next, changed: !same };
+}
+
+// A report's summary line, or null when there is nothing to say: empty, a blocked report (its own line says
+// it) or just "Done", which the status already told.
+export function summaryText(r) {
+  const s = r.report?.summary?.trim() ?? "";
+  if (r.report === null || r.report === undefined || r.report.status === "blocked" || s === "") return null;
+  return /^done[.!\s]*$/i.test(s) ? null : r.report.summary;
 }
 
 // The meter's band for a context percent: null when unknown, then quiet < 60 <= mid < 80 <= warn < 90 <= alarm.

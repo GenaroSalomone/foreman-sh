@@ -47,18 +47,24 @@
 # The design, what it rules out and what would reverse it:
 # setup/decisions.md, "Etapa 4: el instalador".
 set -euo pipefail
+# The 0.9.x installer (then called foreman-sh) hands an upgrade over to this file through three
+# FOREMAN_SH_* variables, and it cannot be changed after the fact. Read those three under their
+# new names and drop the old ones, so a nested run never sees the handover twice.
+for _v in VERSION INSTALLED_FROM UPGRADE_TARGET; do
+  eval "[ -n \"\${FOREMAN_$_v:-}\" ] || [ -z \"\${FOREMAN_SH_$_v:-}\" ] || export FOREMAN_$_v=\"\$FOREMAN_SH_$_v\"; unset FOREMAN_SH_$_v"
+done
 # NOT RUN FROM A CHECKOUT (`curl -fsSL …/install.sh | bash -s -- --brain ~/brain`):
 # there is no bin/ beside this file, so fetch the LAST PUBLISHED TAG (never main)
 # into a temporary directory, run that checkout's install.sh with the same
 # arguments, and remove the directory. Everything the installer needs is copied
 # into the brain, so nothing points back at the temporary checkout.
-# FOREMAN_SH_REPO overrides the repository URL (the tests serve a local one).
+# FOREMAN_REPO overrides the repository URL (the tests serve a local one).
 _self="${BASH_SOURCE[0]:-}"
 if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
-  _repo="${FOREMAN_SH_REPO:-https://github.com/GenaroSalomone/foreman-sh}"
+  _repo="${FOREMAN_REPO:-https://github.com/GenaroSalomone/foreman}"
   for _need in git curl; do
     # git must RUN: on a Mac without the Command Line Tools /usr/bin/git is a shim that exits 1 (see scripts/init.sh tool_runs)
-    { type -P "$_need" >/dev/null 2>&1 && { [ "$_need" != git ] || git --version >/dev/null 2>&1; }; } || { printf 'install: %s is required to fetch foreman-sh and was not found on PATH\n' "$_need" >&2; exit 1; }
+    { type -P "$_need" >/dev/null 2>&1 && { [ "$_need" != git ] || git --version >/dev/null 2>&1; }; } || { printf 'install: %s is required to fetch foreman and was not found on PATH\n' "$_need" >&2; exit 1; }
   done
   _refs="$(git ls-remote --tags --refs "$_repo" 'v*' 2>/dev/null)" || { printf 'install: cannot list the tags of %s\n' "$_repo" >&2; exit 1; }
   # a release tag is vMAJOR.MINOR.PATCH; a pre-release (-rc.1) is only taken when no release exists
@@ -73,13 +79,13 @@ if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
     _tag="$_want"
   fi
   [ -n "$_tag" ] || { printf 'install: %s has no published v* tag\n' "$_repo" >&2; exit 1; }
-  _tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman-sh.XXXXXX")" || { printf 'install: cannot create a temporary directory\n' >&2; exit 1; }
+  _tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman.XXXXXX")" || { printf 'install: cannot create a temporary directory\n' >&2; exit 1; }
   trap 'rm -rf "$_tmp"' EXIT
-  case " $* " in *" --dry-run "*) printf 'install: dry run — fetching foreman-sh %s into a temporary directory to read its plan; nothing is written to the brain\n' "$_tag" >&2 ;; esac
-  printf 'install: fetching foreman-sh %s\n' "$_tag" >&2
-  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$_tag" "$_repo" "$_tmp/foreman-sh" >&2 || { printf 'install: cannot clone %s at %s\n' "$_repo" "$_tag" >&2; exit 1; }
+  case " $* " in *" --dry-run "*) printf 'install: dry run — fetching foreman %s into a temporary directory to read its plan; nothing is written to the brain\n' "$_tag" >&2 ;; esac
+  printf 'install: fetching foreman %s\n' "$_tag" >&2
+  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$_tag" "$_repo" "$_tmp/foreman" >&2 || { printf 'install: cannot clone %s at %s\n' "$_repo" "$_tag" >&2; exit 1; }
   _rc=0
-  FOREMAN_SH_INSTALLED_FROM="$_repo" bash "$_tmp/foreman-sh/install.sh" "$@" || _rc=$?
+  FOREMAN_INSTALLED_FROM="$_repo" bash "$_tmp/foreman/install.sh" "$@" || _rc=$?
   # Piped, bash reads this file from stdin: leaving the rest unread once it outgrows
   # the pipe buffer makes curl fail with 23 (write error) under pipefail, even when
   # the install itself succeeded. Read it to the end; a real file or a terminal has nothing to drain.
@@ -88,7 +94,7 @@ if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/hw" ]; then
 fi
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRAIN_DIR="" LANE="" REPO="" BASE="" CHECK=0 VENDOR="" MODEL="" WITH_JD=0 WITH_RP=0 WITH_REC=0 PERMISSIONS_OPT=""
-UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0 NO_CORE="${FOREMAN_SH_NO_CORE:-0}"   # FOREMAN_SH_NO_CORE=1 is the suite's seam (tests/_common.sh), not a user option: it skips the build and says so
+UPGRADE=0 DRY_RUN=0 TO="" BIN_DIR_GIVEN=0 NO_CORE="${FOREMAN_NO_CORE:-0}"   # FOREMAN_NO_CORE=1 is the suite's seam (tests/_common.sh), not a user option: it skips the build and says so
 ORIG_ARGS=("$@")
 OPERATOR="" MIN_MODEL="" REQ_BY=""   # "" = not given; --min-model / --requested-by "none" = given, none
 BIN_DIR_OUT="${HOME}/.local/bin"
@@ -98,15 +104,15 @@ MARKER=".brain-install.json"
 # How a hint tells the person to run this installer again: piped, there is no
 # ./install.sh to run (the temporary checkout is gone), so the hint is the pipe.
 INSTALL_CMD="./install.sh"
-[ -z "${FOREMAN_SH_INSTALLED_FROM:-}" ] || INSTALL_CMD="curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s --"
+[ -z "${FOREMAN_INSTALLED_FROM:-}" ] || INSTALL_CMD="curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman/main/install.sh | bash -s --"
 # A package (the Homebrew formula) runs this file through its own command and names it.
-INSTALL_CMD="${FOREMAN_SH_INSTALL_CMD:-$INSTALL_CMD}"
+INSTALL_CMD="${FOREMAN_INSTALL_CMD:-$INSTALL_CMD}"
 # `init` is the guided first run (scripts/init.sh): prerequisites, a brain, a first lane, a sample brief and a
 # dry-run dispatch, in one command. It is dispatched before the flags below, which know nothing of it.
 if [ "${1:-}" = init ]; then
   shift
   [ -f "$SRC/scripts/init.sh" ] || { printf 'install: scripts/init.sh is not in %s\n' "$SRC" >&2; exit 1; }
-  FOREMAN_SH_INIT_CMD="$INSTALL_CMD init" exec bash "$SRC/scripts/init.sh" "$@"
+  FOREMAN_INIT_CMD="$INSTALL_CMD init" exec bash "$SRC/scripts/init.sh" "$@"
 fi
 # The version floors live in lib/hw/deps.conf,
 # the one file hw, brain and this script all read. Sourced from the tree being installed.
@@ -118,7 +124,7 @@ DEPS_NO_CACHE=1   # --check promises to write nothing; the version cache is for 
 # The tag this checkout sits on, else its short sha. The marker install.sh
 # writes carries the same value, so an installed brain reports it too.
 install_version() {
-  [ -z "${FOREMAN_SH_VERSION:-}" ] || { printf '%s\n' "$FOREMAN_SH_VERSION"; return 0; }   # a package has no .git
+  [ -z "${FOREMAN_VERSION:-}" ] || { printf '%s\n' "$FOREMAN_VERSION"; return 0; }   # a package has no .git
   git -C "$SRC" describe --tags --exact-match 2>/dev/null || git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown
 }
 
@@ -134,8 +140,9 @@ usage: install.sh init [--brain DIR] [--lane NAME] [--repo PATH] [--yes] [--dry-
   --lane NAME     a lane for one product repository (lowercase word)
   --repo PATH     that repository's checkout (a git repo; never written to)
   --base BRANCH   the branch task worktrees start from (default: the repo's current branch)
-  --vendor V      who runs the lane's executors: claude (default) or opencode. The
-                  brainer is Claude Code either way
+  --vendor V      who runs the lane's executors: claude (default) or opencode, which is
+                  deprecated: outside the 1.0 promise, it can be removed without a major version.
+                  The brainer is Claude Code either way
   --model P/M     an opencode lane's default model, provider/model (default: opencode's own)
   --operator NAME the name hw's messages give for whoever decides (default: "the operator")
   --min-model T   the lowest Claude tier the lane launches without --below-floor-why:
@@ -256,17 +263,17 @@ abspath() {  # absolute, symlinks resolved for the parts that exist
 # ever among them: paths, names and switches). `upgrade` replays them from the
 # target release's own install.sh, runs --check and prints that release's
 # "In short". Three ways to get the target, by how this copy got here:
-#   - a Homebrew keg:        `brew upgrade foreman-sh`, then the new keg applies it;
+#   - a Homebrew keg:        `brew upgrade foreman`, then the new keg applies it;
 #   - `curl | bash`, or a copy already fetched for this: it IS the target, applies it;
 #   - a checkout or tarball: the release tarball is downloaded, and its install.sh applies it.
-# FOREMAN_SH_LATEST_URL (JSON with tag_name) and FOREMAN_SH_TARBALL_BASE
+# FOREMAN_LATEST_URL (JSON with tag_name) and FOREMAN_TARBALL_BASE
 # (<base>/vX.Y.Z.tar.gz) point the lookups elsewhere; the tests serve file:// ones.
 RECORD_REL=".foreman/install.json"
-DEFAULT_LATEST_URL="https://api.github.com/repos/GenaroSalomone/foreman-sh/releases/latest"   # recorded for bin/release-check, which names no repository itself
+DEFAULT_LATEST_URL="https://api.github.com/repos/GenaroSalomone/foreman/releases/latest"   # recorded for bin/release-check, which names no repository itself
 TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 latest_tag() {
   local t
-  t="$(curl -fsSL --max-time 15 "${FOREMAN_SH_LATEST_URL:-$DEFAULT_LATEST_URL}" 2>/dev/null \
+  t="$(curl -fsSL --max-time 15 "${FOREMAN_LATEST_URL:-$DEFAULT_LATEST_URL}" 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)" || return 1
   [[ "$t" =~ $TAG_RE ]] || return 1
   printf '%s\n' "$t"
@@ -310,7 +317,7 @@ for l in (r.get("lanes") or [None]):
         diff = ["%s %s -> %s" % (k, l[k], declared(l, k) or "none") for k in ("vendor", "model", "operator", "min_model", "requested_by")
                 if k not in OWN and l.get(k) and declared(l, k) is not None and declared(l, k) != l[k]]
         # only the copy that applies says so: the one that fetches it would say it twice
-        if diff and (os.environ.get("FOREMAN_SH_INSTALLED_FROM") or os.environ.get("FOREMAN_SH_UPGRADE_TARGET") == "1"):
+        if diff and (os.environ.get("FOREMAN_INSTALLED_FROM") or os.environ.get("FOREMAN_UPGRADE_TARGET") == "1"):
             print("upgrade: lane %s: projects.json wins over the install record (%s)" % (l["lane"], "; ".join(diff)), file=sys.stderr)
     print(" ".join(shlex.quote(x) for x in a))
 PY
@@ -345,7 +352,7 @@ do_upgrade() {
   lines="$(replay_lines "$BR")" || die "upgrade: $rec is not a readable install record — nothing was changed"
   cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version") or "unknown")' "$rec")"
 
-  if [ -n "${FOREMAN_SH_INSTALLED_FROM:-}" ] || [ "${FOREMAN_SH_UPGRADE_TARGET:-}" = 1 ]; then
+  if [ -n "${FOREMAN_INSTALLED_FROM:-}" ] || [ "${FOREMAN_UPGRADE_TARGET:-}" = 1 ]; then
     how=apply; tag="$(install_version)"
   else
     if [ -n "$TO" ]; then
@@ -355,17 +362,17 @@ do_upgrade() {
       [ -n "$tag" ] || [ "$DRY_RUN" = 1 ] || die "upgrade: cannot find the newest release (offline?) — nothing was changed; --to VERSION names one"
       [ -n "$tag" ] || tag="(newest release: not reachable now)"
     fi
-    if [ -z "$TO" ] && [ "${FOREMAN_SH_INSTALL_CMD:-}" = foreman-sh ] && type -P brew >/dev/null 2>&1; then
+    if [ -z "$TO" ] && [ "${FOREMAN_INSTALL_CMD:-}" = foreman-setup ] && type -P brew >/dev/null 2>&1; then
       how=brew
     else
-      how=tarball; url="${FOREMAN_SH_TARBALL_BASE:-https://github.com/GenaroSalomone/foreman-sh/archive/refs/tags}/$tag.tar.gz"
+      how=tarball; url="${FOREMAN_TARBALL_BASE:-https://github.com/GenaroSalomone/foreman/archive/refs/tags}/$tag.tar.gz"
     fi
   fi
 
   printf 'upgrade%s\n' "$([ "$DRY_RUN" = 0 ] || printf ' (dry run: nothing is fetched, written or run)')"
   printf '  brain      %s\n  recorded   %s\n  target     %s\n' "$BR" "$cur" "$tag"
   case "$how" in
-    brew)    printf '  get it     brew upgrade foreman-sh, then the new keg reinstalls\n' ;;
+    brew)    printf '  get it     brew upgrade foreman, then the new keg reinstalls\n' ;;
     tarball) printf '  get it     download %s\n' "$url" ;;
     apply)   printf '  get it     this copy is the target\n' ;;
   esac
@@ -378,18 +385,18 @@ EOF
 
   case "$how" in
     brew)
-      brew upgrade foreman-sh || die "upgrade: brew upgrade foreman-sh failed — nothing of the brain was changed"
-      type -P foreman-sh >/dev/null 2>&1 || die "upgrade: foreman-sh is not on PATH after the brew upgrade"
-      FOREMAN_SH_UPGRADE_TARGET=1 foreman-sh upgrade --brain "$BR" || rc=$?
+      brew upgrade foreman || die "upgrade: brew upgrade foreman failed — nothing of the brain was changed"
+      type -P foreman-setup >/dev/null 2>&1 || die "upgrade: foreman-setup is not on PATH after the brew upgrade"
+      FOREMAN_UPGRADE_TARGET=1 foreman-setup upgrade --brain "$BR" || rc=$?
       exit "$rc" ;;
     tarball)
       type -P tar >/dev/null 2>&1 || die "upgrade: tar is required and was not found on PATH"
-      tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman-sh.XXXXXX")" || die "upgrade: cannot create a temporary directory"
+      tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman.XXXXXX")" || die "upgrade: cannot create a temporary directory"
       trap 'rm -rf "$tmp"' EXIT
       curl -fsSL --max-time 120 "$url" -o "$tmp/release.tar.gz" || die "upgrade: cannot download $url — nothing was changed"
       { mkdir "$tmp/src" && tar -xzf "$tmp/release.tar.gz" -C "$tmp/src" --strip-components=1 2>/dev/null \
-        && [ -f "$tmp/src/install.sh" ] && [ -f "$tmp/src/bin/hw" ]; } || die "upgrade: $url is not a foreman-sh release — nothing was changed"
-      FOREMAN_SH_UPGRADE_TARGET=1 FOREMAN_SH_VERSION="$tag" FOREMAN_SH_INSTALLED_FROM="${FOREMAN_SH_TARBALL_BASE:-https://github.com/GenaroSalomone/foreman-sh}" \
+        && [ -f "$tmp/src/install.sh" ] && [ -f "$tmp/src/bin/hw" ]; } || die "upgrade: $url is not a foreman release — nothing was changed"
+      FOREMAN_UPGRADE_TARGET=1 FOREMAN_VERSION="$tag" FOREMAN_INSTALLED_FROM="${FOREMAN_TARBALL_BASE:-https://github.com/GenaroSalomone/foreman}" \
         bash "$tmp/src/install.sh" upgrade --brain "$BR" || rc=$?
       exit "$rc" ;;
   esac
@@ -397,13 +404,13 @@ EOF
   # apply: this copy is the release being installed
   while IFS= read -r line; do
     eval "set -- $line"
-    env -u FOREMAN_SH_UPGRADE_TARGET bash "$SRC/install.sh" "$@" \
+    env -u FOREMAN_UPGRADE_TARGET bash "$SRC/install.sh" "$@" \
       || die "upgrade: the reinstall failed (above). $BR may be half updated: run upgrade again, or go back with --to $cur"
   done <<EOF
 $lines
 EOF
   printf '\ncheck\n'
-  env -u FOREMAN_SH_UPGRADE_TARGET bash "$SRC/install.sh" --brain "$BR" --check || rc=$?
+  env -u FOREMAN_UPGRADE_TARGET bash "$SRC/install.sh" --brain "$BR" --check || rc=$?
   printf '\nupgraded %s -> %s\n' "$cur" "$tag"
   # docs/RELEASE-NOTES.md since the docs moved; a release cut before that has it at the root
   notes_file="$SRC/docs/RELEASE-NOTES.md"; [ -f "$notes_file" ] || notes_file="$SRC/RELEASE-NOTES.md"
@@ -724,7 +731,7 @@ if type -P claude >/dev/null 2>&1; then floor claude 0; fi
 # hw-core, the Go half of hw, is REQUIRED (0.6.0): it is built here, so a Go toolchain of 1.22 or newer on PATH is
 # too, and without one the run refuses below (`missing=1`), before anything is written.
 CORE_BUILD=0
-if [ "$NO_CORE" = 1 ]; then say "NOTE  hw-core is not built (FOREMAN_SH_NO_CORE=1, the suite's seam): hw dies until setup/build-core --native has built it"
+if [ "$NO_CORE" = 1 ]; then say "NOTE  hw-core is not built (FOREMAN_NO_CORE=1, the suite's seam): hw dies until setup/build-core --native has built it"
 elif [ ! -f "$SRC/setup/build-core" ] || [ ! -d "$SRC/core" ]; then :
 elif ! type -P go >/dev/null 2>&1; then
   printf '  MISSING go >= 1.22 — no Go toolchain on PATH, and hw-core (the Go half of hw) is required. Install: https://go.dev/dl\n'; missing=1; fix_tool "go >= 1.22: https://go.dev/dl"
@@ -990,7 +997,9 @@ if lane and isinstance(pj, dict):
 # refusal below names how to leave it.
 def work_of(table):
     w = table.get("work") if isinstance(table, dict) else None
-    return os.path.expanduser(os.path.expandvars(w)) if isinstance(w, str) and w else os.path.join(os.path.dirname(brain), "work")
+    r = table.get("root") if isinstance(table, dict) else None
+    w = w if isinstance(w, str) and w else (r + "/work" if isinstance(r, str) and r else None)   # `root` is the agents root (docs/layout.md)
+    return os.path.expanduser(os.path.expandvars(w)) if w else os.path.join(os.path.dirname(brain), "work")
 
 def inside(path, root):
     path, root = os.path.realpath(path), os.path.realpath(root)
@@ -1225,8 +1234,8 @@ if [ "$CORE_BUILD" = 1 ]; then
         case "$_v" in go) continue ;; esac
         case "$(printf '%s' "$_k" | tr 'A-Z_' 'a-z-')" in
           stop-hook|hw-secret|hw-sandbox|browser-close|brain-archive|secret-unlock|opencode-auto|codex-channel-session-hook)
-            say "WARN  $_implf line $_n ($_l) means nothing since 0.7.0, which removed the bash of the eight small tools: Go runs; delete the line (the way back for that tool is foreman-sh upgrade --to 0.6.3)" ;;
-          *) say "WARN  $_implf line $_n ($_l) means nothing since 0.6.0, which removed the bash of hw, brain, channel-send and the invokers: Go runs; delete the line (the way back is foreman-sh upgrade --to 0.5.0)" ;;   # MUTATION-ANCHOR: 993-M08
+            say "WARN  $_implf line $_n ($_l) means nothing since 0.7.0, which removed the bash of the eight small tools: Go runs; delete the line (the way back for that tool is foreman-setup upgrade --to 0.6.3)" ;;
+          *) say "WARN  $_implf line $_n ($_l) means nothing since 0.6.0, which removed the bash of hw, brain, channel-send and the invokers: Go runs; delete the line (the way back is foreman-setup upgrade --to 0.5.0)" ;;   # MUTATION-ANCHOR: 993-M08
         esac
       done < "$_implf"
       unset _n _l _k _v
@@ -1273,7 +1282,7 @@ if [ -f "$BRAIN/projects.json" ]; then
   done < <(jq -r '.lanes[] | .opencode_config_dir // empty' "$BRAIN/projects.json")
 fi
 src_sha="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
-marker_new="$(printf '{\n  "installed_from": "%s",\n  "commit": "%s",\n  "version": "%s"\n}\n' "${FOREMAN_SH_INSTALLED_FROM:-$SRC}" "$src_sha" "$(install_version)")"
+marker_new="$(printf '{\n  "installed_from": "%s",\n  "commit": "%s",\n  "version": "%s"\n}\n' "${FOREMAN_INSTALLED_FROM:-$SRC}" "$src_sha" "$(install_version)")"
 if [ "$(cat "$BRAIN/$MARKER" 2>/dev/null)" = "$marker_new" ]; then ok "$MARKER"
 else printf '%s\n' "$marker_new" > "$BRAIN/$MARKER"; chg "$MARKER (commit $src_sha)"; fi
 
@@ -1442,7 +1451,9 @@ if not lane:
     sys.exit(0)
 
 # Beside the brain (see the plan pass above); a table that names its own keeps it.
-work = pj.get("work") if isinstance(pj, dict) and pj.get("work") else os.path.join(os.path.dirname(brain), "work")
+work = (pj.get("work") if isinstance(pj, dict) and pj.get("work") else
+        pj["root"] + "/work" if isinstance(pj, dict) and isinstance(pj.get("root"), str) and pj.get("root") else
+        os.path.join(os.path.dirname(brain), "work"))
 work = os.path.expanduser(os.path.expandvars(work))
 os.makedirs(work, exist_ok=True)
 

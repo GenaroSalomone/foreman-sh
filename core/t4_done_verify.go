@@ -470,7 +470,7 @@ func doneChildEnv(extra map[string]string) []string {
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			k = kv[:i]
 		}
-		if k == "HW_CORE_BIN_DIR" || k == "HW_CORE_ROOT" {
+		if k == "HW_CORE_BIN_DIR" || k == "HW_CORE_ROOT" || k == "HW_DONE_INVOKER_PID" { // the last is the closer's own marker: a `hw done` inside the verification is not that close
 			continue
 		}
 		if _, over := extra[k]; over {

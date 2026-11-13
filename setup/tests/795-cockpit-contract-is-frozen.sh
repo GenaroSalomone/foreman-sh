@@ -168,8 +168,8 @@ for l in open(os.path.join(C, "verbs.txt")):
 if [v[0] for v in verbs] != ["done", "ruling", "reply", "challenge-reply", "receipt", "preflight"]: bad("verbs.txt is not exactly done, ruling, reply, challenge-reply, receipt, preflight")
 WANT = {"done": ("hw done <project> <task>", "confirm=yes", "stdin=no"),
         "ruling": ("hw ruling <pane> -", "confirm=no", "stdin=text"),
-        "reply": ("channel-send --report --reply-hold <pending_reply> herdr <pane> - -", "confirm=no", "stdin=text"),
-        "challenge-reply": ("channel-send --ruling --reply-hold <pending_reply> herdr <pane> - -", "confirm=no", "stdin=text"),
+        "reply": ("channel-send --report --reply-hold <pending_reply> <route> <pane> - -", "confirm=no", "stdin=text"),
+        "challenge-reply": ("channel-send --ruling --reply-hold <pending_reply> <route> <pane> - -", "confirm=no", "stdin=text"),
         "receipt": ("hw receipt <project> <task>", "confirm=no", "stdin=no"),
         "preflight": ("hw preflight --json -- <argv...>", "confirm=no", "stdin=no")}
 for v in verbs:

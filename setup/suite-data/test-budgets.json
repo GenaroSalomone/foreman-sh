@@ -15,7 +15,7 @@
     },
     "104-a-failed-rotation-leaves-no-debris.sh": {
       "exit": 0,
-      "seconds": 0.67
+      "seconds": 2.0
     },
     "105-decisions-staged-budget.sh": {
       "exit": 0,
@@ -31,7 +31,7 @@
     },
     "109-supersede-resolves-by-engram-id.sh": {
       "exit": 0,
-      "seconds": 0.41
+      "seconds": 2.0
     },
     "115-git-c-does-not-reach-fixture-hooks.sh": {
       "exit": 0,
@@ -59,7 +59,7 @@
     },
     "128-an-ancestors-verdict-can-cover-a-quieter-tip.sh": {
       "exit": 0,
-      "seconds": 1.39
+      "seconds": 2.0
     },
     "129-pre-push-refuses-ai-attribution-in-new-commits.sh": {
       "exit": 0,
@@ -79,7 +79,7 @@
     },
     "145-a-test-run-does-not-write-on-a-live-pane.sh": {
       "exit": 0,
-      "seconds": 0.62
+      "seconds": 2.0
     },
     "152-la-atribucion-muere-en-commit-msg.sh": {
       "exit": 0,
@@ -277,7 +277,7 @@
       "exit": 0,
       "seconds": 0.94
     },
-    "824-foreman-sh-init-lleva-de-cero-al-primer-dry-run.sh": {
+    "824-foreman-init-lleva-de-cero-al-primer-dry-run.sh": {
       "exit": 0,
       "seconds": 124.72
     },
@@ -346,6 +346,6 @@
       "seconds": 44.17
     }
   },
-  "measured_at": "2026-11-10T21:05:10Z",
+  "measured_at": "2026-11-13T00:12:33Z",
   "touched_budget_seconds": 90
 }

@@ -157,6 +157,38 @@ function policyText(value, where) {
 
 const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
+// {brain} and {work} as `projects.json` beside the policy spells them: the agents
+// root is written once, as its `root` (docs/layout.md). Same rule as the Python
+// half's `root_tokens`: {brain} is root/brain, {work} is `work` else root/work,
+// in the file's own spelling, so values and messages read as they did before.
+export function rootTokens(path) {
+  const pj = join(dirname(path), "projects.json");
+  let table;
+  try {
+    table = JSON.parse(readFileSync(pj, "utf8"));
+  } catch (error) {
+    throw policyError(`{brain}/{work} need ${pj}: ${String(error?.message ?? error)}`);
+  }
+  const root = isObject(table) ? table.root : undefined;
+  if (typeof root !== "string" || !root) throw policyError(`{brain}/{work} need a \`root\` path in ${pj}`);
+  const work = typeof table.work === "string" && table.work ? table.work : `${root}/work`;
+  return { "{brain}": `${root}/brain`, "{work}": work };
+}
+
+function expandRootTokens(doc, path) {
+  const { comment, ...rest } = doc;
+  const body = JSON.stringify(rest);
+  if (!body.includes("{brain}") && !body.includes("{work}")) return doc;
+  const tokens = rootTokens(path);
+  const sub = (v) => {
+    if (typeof v === "string") return Object.entries(tokens).reduce((s, [k, r]) => s.split(k).join(r), v);
+    if (Array.isArray(v)) return v.map(sub);
+    if (isObject(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, sub(x)]));
+    return v;
+  };
+  return Object.fromEntries(Object.entries(doc).map(([k, v]) => [k, k === "comment" ? v : sub(v)]));
+}
+
 export function loadPolicy(path = POLICY_PATH) {
   let doc;
   try {
@@ -165,6 +197,7 @@ export function loadPolicy(path = POLICY_PATH) {
     throw policyError(`cannot read ${path}: ${String(error?.message ?? error)}`);
   }
   if (!isObject(doc)) throw policyError(`${path} is not a JSON object`);
+  doc = expandRootTokens(doc, path);
   const unknown = Object.keys(doc).filter((k) => !TOP_KEYS.includes(k)).sort();
   const missing = ["brain_root", "defaults", "lanes", "product_repos"]
     .filter((k) => !(k in doc));

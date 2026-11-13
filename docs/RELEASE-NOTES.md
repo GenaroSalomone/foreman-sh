@@ -1,238 +1,287 @@
-# foreman-sh 0.9.0-rc.1
+# foreman 1.0.0-rc.1
 
-foreman-sh 0.9.0-rc.1 rounds out the herdr app as the place to run foreman: new panels for ports, quota and history, a cockpit that queues what waits on you, and a toolchain that is all Go but its shims.
+foreman 1.0.0-rc.1 is the first 1.0 candidate: foreman-sh is renamed `foreman`, the 1.0 promise is written down, and a whole person-shaped cycle runs from the herdr app's buttons.
 
 ## In short
 
-- **Every lane dispatches from the app.** Lanes with dev servers and per-worktree databases launch from an app terminal too, their dev servers run as app terminals that `hw done` ends, and a dry run now names any refusal the launch would make.
-- **More of the cockpit in the app.** Ports and machine load, account quota, run history, an attention queue of what waits on you, and issue views with chips, each one click away in the right column.
-- **Safer by default.** `--sandbox` no longer exposes the vault session or the pinned verify file, and the kill and Bitwarden guards close the bypasses an audit found.
-- **Briefs declare their own effort**, and `hw next` holds a re-task to the model and effort the pane was launched with, on every vendor.
-- **A newcomer's install works from the docs alone**: the explorer agent installs, and the README names every first-run step.
-- **Honest gates and clean release QA**: Go reds surface in every batch gate, the fast gate prints its first-exec cost, `setup/heavy` can wait for a quiet machine, and a release QA is dispatched with the release's flags and accepted however it was launched.
+- **foreman is its name, and 1.0 says what it promises.** The repository and the Homebrew formula are now `foreman`, a 0.9.x install upgrades in place, and the README states the 1.0 surface: `hw`, `brain` and the invokers on Claude Code and pi.
+- **The Cockpit acts, not just shows.** Queue rows carry **Reply**, **Rule** and **Done** buttons, Agents tells a brainer from an executor at a glance, and Files renders markdown and images the way the viewer does.
+- **The app runs a product-lane cycle end to end.** Dispatch from Issues, watch ports, answer, rule, close and read the history against a lane with a dev server, proved live in an isolated app.
+- **A faster, more honest batch gate.** The mutation partitions move to the release gate, every gate run is logged in `gate-runs.tsv`, known flakes are labelled, and the gate names what it did not run.
+- **Reds surface at commit time.** `setup/commit-tree` runs the touched subjects of seconds before it commits, bash subjects take `--base`, and `setup/heavy` keeps the tail of every run.
 
 ## What changed
 
-99 changes since 0.8.0.
+113 changes since 0.9.0-rc.1.
 
 ### Added
-- Herdr app: a **Ports** panel in the right column lists every live executor with its ports (listening or not), the CPU and memory of its process tree, and the machine's load, executors and free memory against the load cap.
-- The herdr app's Cockpit shows each Claude account's 5-hour and 7-day usage at the top,
-  one line per account, amber from 80% and red from 95%, dimmed with its age when no session
-  has refreshed it for 15 minutes. It reads what `bin/statusline-usage-tee` keeps from Claude
-  Code's own status line (no credential, no Keychain).
-- The Herdr app has a History panel (a fourth label in the right column): finished
-  runs by lane, newest first, with each run's outcome, duration, model and commits.
-  Opening one shows its timeline (the brief, each step's tools and key outputs,
-  asks and rulings), the report and links to its artifacts. It is read-only and
-  reads what hw already records; the session file is parsed where it lives.
-- `docs/KNOWN-LIMITATIONS.md` L16 names every group of files that stays bash,
-  with its reason, and the ones whose port is still open.
-- A brief can declare `effort:` the way it declares `model:`: a check against the resolved dispatch (never a source), refused before anything is built when it disagrees, with the same levels and refusal words as `--effort` on claude, opencode, codex and pi. `--dry-run` lists it on the `contract` line.
-- A brief that declares neither `model:` nor `effort:` gets one warning naming both and what the dispatch resolves; it is never a refusal.
-- The app cockpit puts what waits on you in one queue at the top, oldest first; a click on an entry focuses that executor's pane. Each executor row carries a context meter (quiet below 60%, warning from 80%, alarm from 90%), and a filter (all / needs you / working / done) narrows every brainer's executors, remembered across restarts. In all three looks.
-- `bin/herdr-isolated start|stop|ls <dir>`: an isolated Herdr app instance starts from the README recipe (clean env, mods, layouts, the N1 fix) and stops entirely — app, feeders, the detached herdr-core and its holder — found by the instance's own socket directory, never by name. It refuses a `<dir>` that is broad or contains the person's own herdr tree.
-- `done-invoker` warns, naming pids and sockets, when an herdr process of an isolated instance the run started (a socket under its TMPDIR or a registered instance dir, or an herdr binary whose cwd is its work directory) is still alive at report time. A warning, not a refusal; the person's own core is never reported.
-- The README shows what a prompt looks like: the one line a person types, and the
-  brief the brainer writes from it, near the top of the page. The example is held
-  by a test against the check `hw` runs on a brief's front matter.
-- The README carries a screenshot of the herdr app running foreman, with three
-  brainers and five executors in the cockpit.
-- `setup/tests/1338` holds that an invoker's shell-out to `hw` uses a verb an executor may run, or strips `HW_TASK` and `HW_RUN` first.
-- `setup/heavy --quiet <max-load1> -- <cmd>` holds the job (and its slot) until the machine's 1-minute load average is at or
-  under the bound, saying once a minute what it reads. For a timing run that must start on a quiet machine.
-- The fast gate's summary prints `first-exec assessments: N (~S s at 0.28 s each, …)`: how many first-exec checks macOS ran
-  during the gate (`setup/first-exec-count`, ~2 s), the serialized cost behind a slow suite, so a fix's ceiling is known before it
-  is written. The headers of `setup/test-hw` and `setup/go-test-core.sh` point at the evidence (`setup/evidence/pool-3x/README.md`).
-- `setup/go-test-core.sh --base <ref> -run <TestName>` runs one focused Go test on that commit's tree and on the current one and says red, green or none on each, so a red can be told apart as the branch's or the base's without building a copy by hand.
-- `setup/commit-tree` refuses a new `setup/tests/*.sh` that has no entry in `setup/suite-data/test-budgets.json`, naming the entry to add, instead of letting the gate refuse to start.
-- `setup/shell-lint`, run by `setup/commit-tree` and by the pre-commit hook over the shell files of a commit: it refuses a quote that `bash -n` accepts but shellcheck does not, and a `printf … | grep -q` pipe the commit adds.
-- `setup/guards/drive-guard --guard <guard.py> [--env K=V]… <file>` feeds a PreToolUse guard one payload kept in a file (a whole
-  hook payload, or the bare command text of a Bash probe) and prints `deny: <reason>` or `allow`. A Bash call that spells a
-  protected path is itself refused by the live guard, so a guard could not be driven from the shell; the path now travels in a file.
-- `bin/herdr-isolated shot <dir> <out.png>` raises the instance's window by its pid, waits, takes the screenshot and refuses a frame
-  byte-identical to the last (a stale frame). The OSC 7501 payload that registers an agent state is documented in `herdr-app/README.md`.
-- Issues panel: saved views (filter and display kept apart; "Ready to dispatch" and "In flight" offered), a chip per issue for the executor working on it and its pull request, and "Hand to brainer", which delivers the issue to its lane's brainer through `channel-send`.
-- `hw <lane> <task>` from a herdr app terminal now builds the lanes that have dev servers or a database as it does from a
-  TUI pane: the worktree, ports and per-worktree database, and each dev server as an `hc run` terminal of its own
-  (labelled with the task, plus `hw_role`), which `hw done` and `hw reap` end with the executor.
+- In the herdr app's Agents list, each row's icon tells a brainer from an executor: a brain for a brainer
+  (a terminal named `brain-<lane>` with no `hw_task`), a hard hat for an executor (one carrying `hw_task`, and no
+  `hw_role`); every other terminal keeps its program icon. It is `herdr-app/mods/foreman-agents`, a clone of the app's
+  `agents` mod that the three foreman layouts now place; link it into `~/.config/herdr-app/mods/` as the README says.
+- `foreman-files` copies a local image it opens into `~/.config/herdr-app/cache/foreman-files/`,
+  named by its content, because the app draws images only from its own folder; copies not opened
+  for 30 days are removed.
+- A Files block can name the file it shows first with `props.open`.
+- `setup/env-prefix-check` (run by subject 1356) fails when an environment prefix that `bin/` or `core/` reads is neither swept in `setup/tests/_common.sh` nor on `setup/suite-data/env-prefix-allowlist.tsv` with a reason. It would have caught the `HC_*` leak that lasted about 2.7 days.
+- `setup/test-hw --base <ref> <subject>...` answers «is this red the branch's or the base's?» for bash subjects the way `go-test-core.sh --base` does for Go: one fresh clone at `<ref>`, each named `setup/tests` subject run there and on this tree under `env -i`, `red`/`green`/`none` for each, exit = this tree's.
+- In the herdr app's Cockpit, the queue's rows have buttons: **Reply** on an ask, **Rule** on a challenge (or a queued
+  ruling), **Done** on a reported task (it asks first). Each runs the argv `cockpit/verbs.txt` gives, read from that file
+  (`props.verbs` in the layout's cockpit block); a failed verb shows its output and the row stays, a cut-off send shows
+  `unknown`, and a row clears only once the next state read shows the change. There is no merge button.
+- Every whole fast gate run from a linked worktree (the brainer's batch gate) appends one row
+  to the main checkout's `setup/suite-data/gate-runs.tsv`: date, tree, the `HW_GATE_BATCH` label
+  if set, result (`green`, `red`, `known-flake`, `killed`), the first failing job and the wall
+  seconds. The first-try rate of the batch gates is now a query. A gate run in the main
+  checkout itself says it leaves no row: a row in the tree under test would change what the
+  next gate diffs.
+- A red subject listed in `setup/suite-data/flaky-ledger.tsv` that is red at the merge base
+  too is printed `known flake` and recorded `known-flake` in `gate-runs.tsv`; the gate itself
+  stays red.
+- Herdr app: `cmd-shift-f` (`mod.open:foreman-paths`) lists the file paths on the focused terminal's screen, newest first,
+  and opens the chosen one in the Files panel; a missing file and a screen with no paths say so. `herdr-app/README.md`
+  names which printed links it reaches.
+- `hw <lane> <task> --agent pi|opencode|codex` now launches from a terminal of the herdr app, as it does from a herdr TUI
+  pane: one `hc run` terminal running the vendor's own binary with the brief as its launch task. Only `--sandbox` and `--here`
+  are still refused there.
+- **`--sandbox` in the herdr app.** A sandboxed dispatch from an app terminal was refused ("the executor would run
+  UNCONFINED"). The run is now armed before `hc run` and the shim's directory goes first on the terminal's `PATH`; the
+  broker's heartbeat proves the agent runs inside the profile, and a terminal without one is killed. `hw revive` arms a
+  sandboxed run again the same way instead of refusing it.
+- **A brainer in the herdr app can reset itself: `brain <lane> --reset --self`.** It was refused ("has no herdr-core
+  mapping yet"). The brainer arms the reset and a detached process waits for that turn to end, ends the terminal and
+  starts a new one; the lane's open runs are repointed to the new terminal. `--force` and the unreported-executors
+  gate work as in a herdr pane.
+- `projects.json` names the agents root once, as `root`: brain is `<root>/brain`, work `<root>/work`
+  (unless `work` is set), the archive `<root>/archive`. `guards.json` spells the root `{brain}` and
+  `{work}`, resolved from the `projects.json` beside it; the guards protect exactly what they did.
+- `projects.json` names organisations: `orgs` maps each to the directory its product checkouts live
+  under, and every lane names its `org`. A table where a lane names an unknown org, or a
+  `product_repo` checkout outside its org's directory, does not load. Organisation-only rules read
+  `org`, never a list of lane names.
+- `bin/move-root --to <dir> [--dry-run]` moves the agents root (`brain/`, `work/`, `archive/`) by rename
+  and repairs what names it: git worktree links and remotes, every account's `settings.json` and
+  `.claude.json`, `~/.codex/hooks.json` and `config.toml`, herdr, herdr-app and hc state, LaunchAgents,
+  hw's run state, symlinks into the trees and `<root>/CLAUDE.md`, the accounts' project directories,
+  and the brain's root-bearing files (committed). It checks the engram labels do not change, refuses
+  while any process stands in the trees or herdr/hc is running, and journals every step;
+  `bin/move-root --undo` puts it back.
+- `bin/move-root --audit`: a hard-coded `<root>/brain|work` outside history, or a root-bearing file on
+  another root, is red (`setup/tests/1361`).
+- `docs/layout.md` defines each piece once (agents root, brain, work, archive, lane, org, product
+  checkout), where each kind of file lives, how to add a lane and choose its org, and how to move the root.
+- The Cockpit of the herdr app has a **Dispatch…** control under each brainer: it lists the briefs of that lane that were
+  never dispatched, prints the `hw <lane> <task> --dry-run` manifest, and runs `hw <lane> <task> --report-to <the brainer>`
+  only after a confirmation. Its three verbs are in `cockpit/dispatch-verbs.txt`, beside the frozen `verbs.txt`.
+- The Agents panel of the herdr app shows each executor's model beside its row, from the same `model_running` the Cockpit row reads.
+- `hw review <lane> <task> [--dry-run]`: the independent review of a build. It measures the branch's diff (code-only lines: only `decisions/`, `briefs/`, changelog fragments and `docs/` are prose; `.claude/**`, `CLAUDE.md`, `_agents/`, `_skills/`, `plugins/`, `*.golden`, `testdata/` and binaries count), picks tier 0, S (1-400 lines) or L (more), plus Judgment Day when the build's brief lists `judgment-day`, writes the reviewer's brief from `docs/REVIEW-BRIEF.md` and dispatches a fresh claude opus executor on `task/<task>-review-<short sha>`, cut at the reviewed SHA (a product lane is cut from `origin/task/<task>` and refuses a head that branch is not at). The build's receipt gains `review_run`, `review_head` and `review_tier`; the reviewer's run gets `functions.txt` (the functions the diff changed). Tier 0 dispatches nothing and records `review_head`.
+- A build's dispatch writes `review_owed=1` to its receipt (not for `review: none` with a `review-skip:` reason, nor for a kind that is not a build), so a forgotten or failed `hw review` is never read as "nothing owed".
+- A `kind: review` brief with `review_of: <lane>:<task>@<sha>` gets its own gate keys at dispatch (`plugin_review_t1`, `jd_agents_t1` when Judgment Day is listed, `checks_required_t1`, `review_of_t1`), so done-invoker proves each review piece from the reviewer's transcript. `review-skip` and `review_of` are known frontmatter keys.
+- `hw done <lane> <task> --accept-review "<why>"`: a brainer's override of the review gate, recorded in the receipt as
+  `review_accepted`. Refused when `HW_TASK` or `HW_RUN` is set, so an executor cannot use it.
+- `hw review <lane> <task> --at <sha>`: a blind review of a past head, for benchmarking (a PR before its fixes). The SHA must resolve to a commit in the lane's checkout; the reviewer runs on `task/<task>-review-at-<short sha>`, cut locally at it, so nothing is pushed and no remote ref is needed (a product lane's `origin/task/<task>` comparison is skipped: the tree is cut at the stamped SHA itself, and the reviewer's close gate, `HEAD` equal to the reviewed SHA, is unchanged). The base is the merge-base of the SHA with the lane's base, as before. The build's receipt is not touched (no `review_head`, `review_tier` or `review_run`), so a past-head verdict can never satisfy `hw done`'s merge gate; the dry run says so. `hw help advanced` lists it.
+- An independent reviewer's `done-invoker` is held to its review: when the run's receipt has `review_of_t<n>` (written by `hw review`'s dispatch), `review.md` must exist, its first line must be `verdict: approve|changes-needed  head: <sha>` with the reviewed SHA, every row `id | blocker|should|nit|follow-up | file:line | …` must carry a known severity and a file:line, `approve` may carry no `blocker` row and `changes-needed` needs one, and the function table in `checks.md` (`function | what it does | verdict | action`, verdict `simple|split|merge|inline`) must have a row for every function in `functions.txt`. The reviewer's worktree `git rev-parse HEAD` must equal the reviewed SHA, so the bytes it read are the bytes the verdict names.
+- `checks.md` of a reviewer may hold that function table: the build's checks gate skips it for a run with `review_of_t<n>`.
+- `bin/statusline-look`: the Claude Code status line in foreman's look (`Fable 5.2 · 9.0% · branch · +0 -0`, theme colors, no labels), the same pinned ccstatusline on both accounts, with backups and `revert`.
+- `herdr-app/mods/foreman-tabs`: brainer and executor tabs draw the brain and hard-hat icons in the tab bar.
+- `setup/commit-tree` refuses a new `setup/tests` subject whose number another subject of the tree already holds (`setup/test-number-check`, the check `setup/test-hw` runs first), naming `setup/next-test-number`.
+- `setup/test-hw` repeats the touched subjects the budget cut (`SKIPPED, names your diff and was NOT run: …`) in the last lines of the run, uncapped, so a `tail` shows them.
+- `docs/BRIEF-TEMPLATE.md`: a mutant goes through `setup/mutation/safe-mutate` and must compile; a "costs no visible time" claim is 6 interleaved old/new pairs, medians; a pi leg starts with `pi -p --model <m> "say ok"` and is UNVERIFIED if it fails.
+- `hw status <lane>` now says when a lane holds 25 or more finished briefs:
+  `N finished briefs → hw briefs archive <lane> --apply`. The count is what that verb would move, so a
+  fresh archive leaves the status quiet.
+- A brief can ask for a review of its tests: `review: [..., tests]` loads foreman's own `test-review`
+  skill (plugin `tests`), whose pass criterion is a test that fails on the old code and passes on the new,
+  OLD/NEW output pasted. The close is held to it like any review plugin: a Skill call in the transcript and
+  a `test-review` row in `checks.md`, and no `review-skip:` for it. Pages for Go, vitest with Testing
+  Library and pytest with FastAPI are picked by the diff's file types.
+- `webguide`, a vendored plugin: Chrome's Modern Web Guidance (`GoogleChrome/modern-web-guidance`, Apache-2.0, pinned at `4dd9683`). A brief that touches UI loads it with `plugins: [webguide]` after `setup/vendor/plugins/install`; it is not a review piece, and the lane's `CLAUDE.md` wins when its guidance disagrees.
 
 ### Changed
-- `bin/stall-watch` is a shim now: the stall timer runs as `hw-core stall-watch`.
-  Same arguments, same alert, same marker and log.
-- `hw status` reads the machine-wide suite-slots line itself instead of
-  running `bin/suite-gate`; the line is byte-for-byte the same.
-- `done-invoker` and `ask-invoker` read the lane table themselves (the
-  operator's name, a lane's engram label, the roots a run env file may live
-  under) instead of running `bin/project-spaces.sh` in a bash of their own.
-  Same answers on a table the loader accepts; on a table that parses but the
-  loader would refuse, they now answer from what they can read rather than
-  falling back, and no longer print the loader's diagnostic (every other
-  command already stops at it).
-- `hw-reconcile` runs in Go (`hw-core hw-reconcile`); `bin/hw-reconcile` is a
-  shim with the same name and arguments, and the same output and exit codes
-  (0 nothing to report, 3 a recovery queue, 1 a failure) on the same runs. It
-  is still read-only. It no longer needs `bin/state-witness.sh`,
-  `bin/project-spaces.sh` or an inline `python3` program; it reads a run's env
-  file itself and still runs `python3 bin/holdfacts` to validate a hold (a
-  `holdfacts` or `python3` that is missing is now a failure, exit 1, not a
-  queue that reads as empty). Four differences: it needs `hw-core` (from a
-  checkout that has not built one it says so and exits 1); the recovery queue
-  lists the runs in the order of their directory names, where the bash listed
-  them in whatever order the filesystem returned them; on a lane table that
-  does not load it says so in its own words, not jq's; and a run on an app
-  terminal (hc) is asked through hc like the other commands, not through
-  herdr only.
-- `done-invoker` refuses a plain done while the task's own `checks.md` has a `fail` row: a task that says a requirement failed closes `done-invoker --blocked` (it stays alive and a ruling resumes it). `unresolved` rows are still accepted, and `--blocked` is not gated.
-- Inside an hw executor, the touched gate (`HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw`) exits 75 instead of silently becoming the whole fast gate when the selector would go whole; pre-commit keeps its fallback.
-- A runner waiting for a machine slot repeats its WAITING line every 300 s and names the holder's whole run age, not only its subject's.
-- Inside an executor (`HW_TASK`), `setup/go-test-core.sh` holds every partition it is asked to run to the same estimate-vs-budget
-  refusal as `--affected --run`: a lone partition, a `+a,b` list or a hand list over `touched_budget_seconds` exits 75 and names the
-  focused run. `setup/heavy` allows an executor run ONE slot job (held or queued) at a time; a second exits 75. The short lane and
-  a job started by a heavy job are not counted.
-- The one-test form is `setup/heavy --short -- sh -c 'cd core && go test -count=1 -run <T> .'` (the old `… go test … ./<pkg>` form
-  fails from the repo root: `core/` is its own module). The rules and the brief template ask an executor for the touched subjects plus
-  a focused `go test -run`, not "touched Go partitions", which the runner refuses. The probe recipe uses a timestamp-shaped `HW_RUN`
-  and tells a codex probe the `herdr pane report-metadata` line. The brief template points the leak check at `HerdrLeaks`.
-- `regen-grep.sh` names the third golden family, `setup/fixtures/verb-golden/`, and exits 1 while it still holds the old text.
-- `hw next` holds a re-task brief's `model:` to the model the pane was launched with, the way it already held `effort:`: a disagreement is refused (nothing sent, counter unmoved) and names `--model` on a fresh executor; a level written inside the id is refused in `--effort`'s words.
-- When a dispatch REUSES a live pane, the brief's `model:` is held to the pane's own recorded model (it was compared with the lane's default, which the pane does not run).
-- The README and INSTALL name the git identity a dispatch commits with, the `herdr integration install claude`
-  and `engram setup claude-code` steps before the first `brain`, `engram serve`, and what a dry run's
-  warnings mean.
-- `hw next` refuses a re-task brief that declares review plugins (`plugins:` or a `review:` list) the pane did not launch with, on claude and pi: a plugin is loaded when a session starts, so the executor was told "not installed" and closed on a `review-skip:`. Nothing is sent and the counter does not move; the refusal names the fresh dispatch (`hw <project> <task> --fresh`).
-- `done-invoker` refuses a `review-skip:` for a plugin vendored in `setup/vendor/plugins` (thermo, ponytail, pstack): a declared plugin that did not run is never a skip, and the exit for one that cannot run is `--blocked`. A run whose vendor loads no plugin (codex, opencode) and a piece no vendored plugin ships keep their skip. The closing's prose and the refusal now say so.
-- The export's root is tidier: the sample brief `init.sh` copies is now `docs/examples/demo/briefs/hello.md` (was `examples/demo/`), and `scripts/repo-settings.sh`, a maintainer's tool for the GitHub repository settings, is no longer exported. `shell/` and `CHANGELOG.md` stay at the root: `~/.zsh` symlinks point into `shell/`, and `CHANGELOG.md` is the one history ledger (`docs/RELEASE-NOTES.md` holds only the current release).
-- The README opens with one image of what foreman-sh provides (brainer, executors,
-  reviews, retro, guards, secrets, the herdr desktop app) and a section on running
-  it from the app; Claude Code and pi are named as the native agents.
-- The cockpit has one short section in the README instead of three overlapping
-  ones; the card sample lives in REFERENCE.md only.
-- The sample `install.sh --check` output in the README matches what the installer
-  prints today.
-- When `shellcheck` is not installed, `setup/commit-tree` and the pre-commit hook now say so on every commit (before, the notice was shown only when a commit was refused).
-- `setup/go-test-core.sh --base <ref> -run <Test>` says `skipped` instead of `green` when every selected test skipped (an opt-in corpus test without its switch) and exits 1 on this tree, naming the switch.
-- The refusal of an over-budget Go run inside an executor now prints, for each affected corpus, one focused command per `setup/tests/contract-hw/cases-*` file with the corpus' own case variable (`HW_INPROC_CASES`, `HW_C848_CASES`, …) and the number of cases, instead of `-run <TestName>`. The variables live in the new `CASES=` line of `setup/suite-data/go-test-partitions.txt`.
-- `setup/suite-data/go-test-deps.txt`: a path mapped to a corpus is also mapped to that corpus' mutant partitions (their unmutated control run reads it), so `--affected` queues them. `rest` is unchanged.
-- The exit footer of `ask-invoker` and `done-invoker` no longer says "retry the identical command" under a refusal; it points at the message above it.
-- `bin/herdr-isolated start` accepts a `<dir>` of up to 59 characters (the longest socket path of an instance, 44 more, must stay under the 103 a unix socket holds) instead of 48, so an executor's own `TMPDIR` works.
-- The executor sleep guard also refuses a same-line `cmd > out 2>&1 & other` (a `&` that backgrounds a command redirecting to a file, whatever follows it on the line).
-- `setup/tests/1014` reads a copy of the sources taken once when it starts, so an edit made during its 15-25 minute run no longer queues behind it or mixes into a mutant.
-- `~/.cache/hw/heavy.log` lines are now `start end wall rc load1=<at start>/<at end> tag cmd`: a timing quoted from the log
-  says how loaded the machine was.
-- The fast gate and its `.fast` verdict now say how many Go partitions ran (`go partitions Q of N`).
-- Inside an hw executor, the slow subjects the touched form selects are cut at `touched_budget_seconds` even when each is quick, and the cut is printed.
-- The documented changed-paths file is written against the merge base (`git diff --name-only "$(git merge-base HEAD main)"`), so a worktree behind main does not list other people's changes as its own.
-- The executor sleep guard also refuses a command that ends in a shell `&` and redirects to a file, naming `run_in_background`, and reads `nice -n N` as a prefix of the command it wraps.
-- A `HW_INPROC_CASES`, `HW_C848_CASES` or `HW_C870_CASES` list that names a case matching nothing now fails instead of running nothing.
-- Judgment Day: a BLOCKER/CRITICAL only one judge raised, ruled `real`, reproduced by the orchestrator and introduced by the
-  candidate, now enters the fix loop like a confirmed finding (it used to stay unfixed and force an ESCALATED verdict, which made
-  two disjoint judges zero-recall). One ruled real but not reproduced is still not auto-fixed.
-- `bin/herdr-isolated start` builds the whole QA instance: its own `HOME` and `CLAUDE_CONFIG_DIR` (a trust entry or any claude state lands
-  under the instance, never in the real `~/.claude.json`), a private unreachable engram, a fixture `gh`, a stand-in `claude` first on
-  every terminal's PATH (a real claude cannot sign in under another config dir: measured "Not logged in"), `<dir>/q` to run a command in
-  that environment, and with `--brain` a copy of the tree with its own hw-core. The person's `~/.local/bin` is no longer on the instance's
-  PATH (`hc run claude` ran the real claude through it); only `herdr-core`, `hc`, `herdr-app` and `herdr` are linked.
-- The Issues block of the three layouts names the hw state folder (`props.dir`) the Cockpit already reads.
-- `hw <lane> <task> --dry-run` under herdr-core prints, as ✗, every refusal the real dispatch makes there (`--sandbox`,
-  a vendor other than claude, `--here`); it used to print ✓ and the launch then died.
-- `hw revive` and the re-dispatch check on herdr-core read past a task's dev-server terminals when looking for its executor.
+- The herdr app's Files panel shows a file the way the file viewer does: markdown is rendered
+  (headings, bold, tables, code blocks), code and plain text keep their syntax colors and wrap
+  long lines, and a local image is drawn. The three foreman layouts place `foreman-files`, a
+  clone of the app's `files` mod, with the tree unchanged; link it with
+  `ln -sfn "$PWD/herdr-app/mods/foreman-files" ~/.config/herdr-app/mods/foreman-files`.
+- `bin/herdr-isolated start --brain` also puts `cockpit/verbs.txt` and `projects.json` under the brain root the layouts name inside `<dir>/h` (the
+  layouts and the History mod read them from the instance's HOME; without them the Cockpit said "buttons off" and History
+  listed no product lane). Its stand-in `claude` treats a launch prompt as a turn and runs a line that begins with `!` in its
+  own environment, so a QA can ask, challenge, report and dispatch as an executor or brainer. `herdr-app/README.md` has the
+  product-lane (dev-server) cycle: a fixture lane under `<dir>/h`, a stand-in `npx` that serves 200 on `HW_PORT_WEB`, and
+  `--keep-pane` so the report row stays for **Done**.
+- In the herdr app, `brain <lane>` opens its tab named `brain` and `hw <lane> <task>`
+  opens its tab named after the task, instead of the app's numbers («1», «2»).
+  An executor's dev-server terminals keep the app's numbering, and a tab a person
+  already named is left alone.
+- foreman-sh is now `foreman`: the repository, the Homebrew formula (`foreman`
+  in the tap) and the environment variables
+  (`FOREMAN_SH_*` became `FOREMAN_*`). The installer command is `foreman-setup`,
+  and nothing links an executable called `foreman`, because homebrew-core already
+  has a formula with that name.
+- An install made by 0.9.x upgrades to this release with `foreman-setup upgrade
+  --brain DIR`. The three variables a 0.9.x installer hands to the new one
+  (`FOREMAN_SH_VERSION`, `FOREMAN_SH_INSTALLED_FROM`, `FOREMAN_SH_UPGRADE_TARGET`)
+  are still read. The tap records the rename in `formula_renames.json`, and the formula
+  keeps a deprecated `foreman-sh` command so a 0.9.x install's own `foreman-sh upgrade`
+  completes.
+- The README and the reference state what 1.0 promises: `hw`, `brain`, the invokers,
+  the brief format, the install and the herdr app, with its mods, layouts and the
+  `hc` backend. A change that breaks a working setup takes a new major version.
+- An edit to `setup/mutation/mutation-anchors.tsv` no longer selects every subject that builds a mutant: `mutate_anchor` (in `_common.sh`) names the table, so the selector read it as named by every caller, and one row pulled 12 slow subjects (2285 s) into a touched list with no red of the branch's. `setup/gate-select` now selects, for the table, only the subjects whose own text spells it (and 540, which judges it); the 28 `# gate-when:` lines that listed it lose it.
+- The sleep/poll guard no longer refuses a bounded `tail -f … | grep --line-buffered` in the `Monitor` tool: a Monitor command is judged as a background run bounded by its `timeout_ms`. Without a numeric `timeout_ms` an unbounded follow or loop is still refused, and the refusal names `timeout_ms` as the form that passes. Nothing is loosened for `Bash`.
+- `setup/heavy` keeps the last 40 lines of every run's output (stdout and stderr, the short lane too) in `~/.cache/hw/heavy-out/<tag>-<timestamp>.log`, and the `heavy.log` line now ends in ` out=<that file>`: a red of a batch gate can be classified after the fact. The caller still receives both streams, apart. Files older than 14 days are removed.
+- `setup/heavy -- bash setup/tests/<n>-*.sh` (a lone subject, nothing else on the line) takes the short lane by itself when `suite-data/test-budgets.json` budgets it at 120 s or less, instead of queueing behind a frozen holder. A subject over the cap, one the table does not list, or a line with another word queues as before.
+- The runner's `ENV-ONLY` label (a red subject that passes alone under `env -i`) now names the variable that turns it red again: each group of the gate's exported variables (the name up to its first `_`) is put back alone into the clean run, and the label reads `ENV-ONLY (red again when only HC_* is put back …)`, the variable's own name for a lone one, or says that no single group flips it and how many were tried.
+- `setup/commit-tree` now runs, before it commits, the subjects `setup/gate-select` names for the commit's paths whose budget is 20 s or less (cheapest first, up to 180 budgeted seconds), refuses the commit when one is red (the ref unmoved, the subject and its first `not ok` line named), and lists the slower ones as `NOT RUN here`. Each subject runs in its own session under a wall limit (its budget, at least 20 s) and the whole check under a 150 s allowance: a subject that never returns (the memory guard freezes a tree under 26% free memory) is killed and listed as `FROZEN/TIMEOUT`, never counted as red, and the rest are not started. A red used to surface 30 minutes to 29 hours later, in a batch gate.
+- `setup/go-test-core.sh --bless <patterns>` inside an executor narrows itself instead of exiting 75: it runs only the cases whose golden holds a line a pattern matches, through each corpus' own `HW_*_CASES` selector (estimate: partition seconds x the share of cases kept, held to `touched_budget_seconds`). When it cannot narrow (a NEW line is in no golden, a matching case no cases-* file names, or the narrowed run is still over the budget) it exits 75 and prints the focused commands and the `golden-bless` step to run by hand. Outside an executor the whole batch runs as before.
+- `cockpit/verbs.txt`: the app's `exec` has no stdin, so for the `stdin=text` verbs the app passes the person's text as one
+  argv word in place of the lone `-` (no shell, nothing expanded); a text that `hw` or `channel-send` would read as a flag
+  is refused with a message, never rewritten. The Claude cockpit mod still uses stdin.
+- The mutation partitions (`m844`, `m848`, `m840`, `m826`, `m861`-`m866`, `m871`, `mbrain`: 21 of the 40 Go partitions, about half the batch's Go work) leave the fast gate and
+  run in the release gate: the partition table's `RELEASE=` line names them (`go-test-core.sh --release`), the fast gate in every form queues none and lists the ones a diff
+  reaches as `DEFERRED, names your diff: mutation partitions …`, and `setup/release/cut` runs them as one batch after the release suite and refuses the cut when one is red.
+  No mutant is dropped; the full run still queues them. The worst-case fast gate estimate falls from 1253 s to 818 s.
+- The fast gate names what it did not run: a slow subject that names the diff and was left out
+  is listed in the last lines as `DEFERRED, names your diff: <n> -> bash setup/tests/<file>`.
+- An executor's touched form that would queue Go partitions over `touched_budget_seconds` exits
+  75 before any subject runs, naming the focused `go test -run` form; the refusal for a path no
+  subject names now prints a loop that runs the reference subjects, and the executor's touched
+  run says how to check a freeze (`ps -o state=`), since it runs outside `setup/heavy`.
+- `mutate_anchor` fails at its first use, naming `setup/mutation/mutation-anchors.tsv`, for an
+  anchor id the registry does not list (it failed only at subject 540, the end of the gate).
+- Herdr app cockpit: the «N reports to read» block folds from its header (kept across restarts; a new report reopens it), and a report's summary line shows only when it says more than «Done».
+- Herdr app Agents, «Grouped by space»: the brainer is the first row of its space, its executors follow; a group's fold is kept across restarts.
+- **What the herdr app still refuses says why.** `brain --in-pane`, `hw … --here` and `hw revive` of a pi, opencode or
+  codex run on the app used to say "no herdr-core mapping yet: this step…" or name a state that was no longer true
+  ("only claude executors are launched"); each now gives the measured reason and the command that does the job there.
+- The readers of the lane table (`bin/project-spaces.sh`, hw-core, the label proxy, cockpit-state,
+  brainer-metrics, suite-gate, the invokers (Go and their shell fallback), the suite runner, `install.sh`, the zsh
+  completion) take `work` from `root` when the table does not set it.
+- The rules, docs, skills and scripts say `<brain>` and `<work>` instead of one machine's paths; an
+  organisation-only rule names the `org` it applies to.
+- The README has a "Tools foreman works with" table: every tool foreman installs, pins, launches or reads,
+  whether it is required, and its version floor or pinned commit, including the `tests` review piece and `webguide`.
+- The README's diagram is a 1920×1080 architecture picture (`docs/foreman-architecture.png`, source
+  `docs/foreman-architecture.html`): brainer, `hw`, executors, the return channel, engram, review pieces, `setup/heavy` and the way to a merge.
+- A build owes the independent review by default: every `review:` value on a `kind: build` (or no kind) owes it, whether the key is absent, `judgment-day`, `rdd`, `plugins`, a list or a bare `none`. The one opt-out is `review: none` WITH a `review-skip: <why>` line. A bare `review: none` still owes the review and warns for one release (it is refused after that).
+- The builder no longer runs Judgment Day or a review skill. Its closing is: commit per unit, its own OLD/NEW tests, and `/simplify` on claude (proved by the Skill call `simplify`, receipt `plugin_review_t<n>`; pi: `pstack:deslop` when loaded, unproved; codex and opencode: not available). The reviewer runs Judgment Day when the brief declares `judgment-day`, `rdd` or a list naming it.
+- `hw review` adds the plugin items of the build's `review:` list to the reviewer's tier, and `review: plugins` adds the brief's `plugins:` (S4); `rdd` is accepted in a list as Judgment Day.
+- A build that owes the review launches with `--keep-pane` by default (a pane is needed for the one fix round); the manifest says it was the default. The manifest's `review` line names the independent review for every build.
+- The docs now say what the independent review is: every `kind: build` owes it whatever `review:` says (only `review: none` + `review-skip:` opts out), `hw review` picks the tier by code-only lines (0 / S 1-400 / L +ponytail and two pstack principles / +Judgment Day when the brief names it), the builder closes with OLD/NEW tests and `/simplify` and runs no Judgment Day, and `hw done` offers «Merge it» only for an approved head or the brainer's `--accept-review`. Updated: the `review:` paragraph of `BRIEF-TEMPLATE.md`, `INSTALL.md`, `REFERENCE.md`, and the brainer rule that still called the review opt-in.
+- `hw review --at <sha>` (a benchmark of a past head, never the merge gate) is documented, with its one known gap: on an already-merged commit the base is the current base, so it counts 0 lines and prints tier 0 (KNOWN-LIMITATIONS L34).
+- `hw help flags` says what `review:` means now (a build owes the independent review whatever it says; `review: none` opts out only with `review-skip:`), instead of «a review is opt-in». The export README's «Reviews you opt into» bullet says the same, and two of its feature bullets were joined onto one line each to stay inside test 1024's 380-line budget (no wording dropped).
+- `hw done` no longer prints «Merge it» for every branch with a commit ahead. It recomputes the code-only lines at the branch head
+  and offers the merge only for an approval at that head (the reviewer's `review.md`), a diff with no code, a recorded
+  `review-skip:`, or `--accept-review "<why>"`. Otherwise it prints `NOT MERGEABLE: review <verdict> at <sha>, head is <sha>`
+  and why. A missing verdict is a denial, never «nothing owed». Owed follows the diff, not the brief's kind, and a review run's
+  own branch is never offered.
+- On a product lane `hw done` compares the reviewed SHA with the PR's `headRefOid` (read-only `gh pr view`) and prints
+  `gh pr ready <n>` only for a draft PR at that head. Builds open their PRs with `gh pr create --draft`.
+- The three foreman layouts show `foreman-tabs` instead of the shipped `tabs` mod.
+- The two accounts' `statusLine` no longer differ (`@2.2.27` vs `@latest`).
+- `setup/heavy --short` says, on its exit-124 kill, to rerun without `--short` (a cold `go test` takes a slot) and that `--max <s>` only lowers the 120 s cap; the printed focused-run forms (`setup/go-test-core.sh`, `docs/BRIEF-TEMPLATE.md`) say the same.
+- The Claude status line says the context once, `▓▓░░░░░░░░ 170k/1M`, and colors the bar by use:
+  muted below 60%, amber below 85%, red above.
+- Its git counts are the branch's commits against `main`, and absent on `main` itself, instead of the
+  working tree's uncommitted changes.
+- The refusals for a bad `review:` list and for `review: plugins` with no review plugin now name `tests`
+  among the plugins that carry a review skill.
+
+### Deprecated
+- Codex and OpenCode are outside the 1.0 promise. They keep working, and either
+  can be removed without a major version.
 
 ### Removed
-- `bin/hw-train`: the bash body of the merge train, a second implementation of
-  `core/t6_train.go` that nothing called any more. `hw train add|status|push`
-  is unchanged.
-- The bash bodies of the per-lane build files under `lanes/` (other than
-  `git-worktree.sh`): dead copies of the Go builders. The files stay as named
-  selectors; `projects.json` `build` is unchanged and `hw <lane> <task>`
-  behaves the same.
-- `bin/engram-serve.sh`: the launch asked the engram serve who it was by running
-  that bash lib; `hw-core` now does it itself (`core/engram_serve.go`, the same
-  check the turn end and `brain` already ran). The receipt line for a
-  registration that failed names the POST, not a `curl`. `done-invoker` no
-  longer refuses a `bin/` that lacks the file.
-- The README no longer repeats, under "How it compares", what the Why table and
-  the Features list already say.
+- The Cockpit's **Dispatch…** control and its `cockpit/dispatch-verbs.txt`. A brief is dispatched from its
+  brainer with `hw <lane> <task>`.
+- The herdr app's **Artifacts** panel (`foreman-artifacts`): its mod, its entry in the right column's switch
+  and stack in the three looks (C, D, G), its tests and its README sections.
 
 ### Fixed
-- The Artifacts panel in the Herdr app shows an artifact's page from the top, at the panel's
-  width, with no empty block above it. The picture's box was as tall as the PNG with the page
-  centred inside it, so a tall page floated hundreds of pixels down; the panel now sizes the box
-  from its own width and the PNG's proportions.
-- `brain` no longer registers an engram session before a refusal: a refused `brain`
-  ("Nothing was sent and nothing was restarted") posts nothing to engram and prints no
-  engram line (the session is registered once the launch cannot be refused any more).
-- A fast gate run on main itself (an empty diff against main) queues every Go partition
-  instead of none, and says so.
-- The app cockpit names each brainer by its lane, also when it has no executors, instead of its pane id, and the header no longer says the same thing twice. Brainers with no executors share one line of lane names instead of a section each, in all three looks. `cockpit-state` takes `--lane` (`bin/brain` passes it) and publishes `lane` in the state file, an optional field of schema 1: older files still read, named by their rows' projects.
-- The herdr app's right-column switch bar no longer clips the look switcher (`C D G`) and the live count in look D (and C, G) with five panel labels: the bar is two rows, labels above, the count and the look switcher below, readable down to a 300 px column.
-- The regen scripts take a per-golden-directory lock: two concurrent regens nested one copy inside the other (30 copies, ~40 min).
-- A red that is its fast-gate time budget is labelled `BUDGET-STALE` (with both numbers) under `--keep-going`, not `ENV-ONLY`.
-- The repo-write guard follows a plain `cd <dir>` in a compound command instead of giving up on it, so a read-only path under the
-  brainer's checkout beside a `cp` in the worktree (the judgment-day skill) is no longer refused; a write there still is.
-- `setup/heavy`: a pause that heavy made itself no longer raises a false FROZEN alert when it ends while the watchdog is sampling the process table.
-- An app (herdr-core) brainer shows one cockpit, the side panel: `brain` no longer adds `--plugin-dir <cockpit>` to the
-  claude it starts in an app terminal, and keeps the writer the side panel reads. `--no-cockpit` / `FOREMAN_COCKPIT=0`
-  still stop both, as before.
-- `herdr-isolated start` (and the README recipe) builds the isolated app instance from THIS tree's mods: the person's
-  `foreman-*` symlinks are no longer copied, a copy that fails is reported instead of swallowed, and `start` refuses an instance
-  whose app dir holds a symlink. Before, the instance ran the person's mods and the next copy of the tree's mods failed four
-  times with "Not a directory" (or wrote through a link).
-- A report that reaches the brainer through `hw outbox flush` (what `brain <lane>` runs when it opens) now starts the
-  chaining lease of a `--keep-pane <duration>` run, from the run's own env, as done-invoker does. Before, `hw next` said
-  "task 1 has no chaining authority".
-- The History panel reads an app run as `done` or `blocked`, not "closed unreported": `hw done` and `hw receipt` now snapshot an
-  app (herdr-core) run's report from the `hw_*` labels on its terminal into the receipt, as they did from a herdr pane's tokens.
-- `hw next` ends the chaining-lease timer (a bash and its 3600 s sleep) of the lease it consumes, instead of leaving it until `hw done`.
-- When a dispatch reuses a pane whose vendor is not the lane's (a codex pane under a claude lane), the brief's `effort:` is judged by the pane's vendor: `effort: ultra` on a codex pane is no longer refused with claude's levels.
-- `install.sh` now copies `_agents/` into the brain, so a fresh install's dry run no longer says
-  `explorer NOT INJECTED` for the `cheap-explorer` the README promises.
-- The QA a `release: prod` brief dispatches from its `qa:` line now carries the release's own
-  `--base`, `--sdd`, `--model`, `--effort`, `--agent`, `--account` and `--fresh`, so it launches as that
-  QA brief does by hand with them. Before, a QA brief declaring `base: main` was refused ("the brief and
-  the flags disagree") against the lane's own base. A flag whose key the QA brief declares with a
-  different value is not carried: that declaration stays the QA's own. `hw --dry-run` now prints the
-  command the QA would run.
-- A release's `done-invoker` no longer refuses a QA that has reported done. The gate reads the QA's state with
-  `hw ledger`, which `hw` refuses to a shell carrying `HW_TASK`/`HW_RUN` (an executor's), so the refusal went to
-  stderr and the gate read an empty `done_at`, however the QA had been launched. The gate now makes that call as the
-  invoker, and a `hw ledger` that fails is reported with its own words instead of as "has not reported".
-- When the QA really has not reported, the refusal now says what to do: close with `done-invoker --blocked`, end the
-  turn, and run `done-invoker` again only after the brainer's ruling; it no longer reads like something to retry in a loop.
-- `setup/commit-tree` refuses a commit that adds a `core/*.go` with no line in
-  `setup/suite-data/go-test-deps.txt`, naming the line to add: test 1014 P03 used to go
-  red on main after the batch gate.
-- `hw` run as `bin/hw` from a worktree (which has no `hw-core`: `core/dist/` is gitignored)
-  now says, when `HW_TASK` or `HW_RUN` is set, to run the `hw` on PATH instead.
-- `setup/export/clean-install-check` removes the export tree and the per-vendor HOMEs
-  (about 570 MB) when every step passed, and keeps them on a FAIL; `--keep`, a no-op until now,
-  keeps them on a pass too. The logs always stay.
-- The fast gate is red when it queues no Go partition although the changed paths name `core/` or the Go runner, instead of green.
-- `printf … | grep -q` pipes in the hooks, the runner and the release scripts no longer depend on `grep` outliving its writer under pipefail.
-- `setup/export/check` decodes git's quoted paths in a `--tracked` list, so a tracked file with a non-ASCII name is not reported as unclassified.
-- The `hw next` contract world refuses to replace an existing pane fixture by accident.
-- `--sandbox` no longer lets the executor read the Bitwarden session token (`bw-session`), which unlocks the whole
-  vault rather than the `agents` folder.
-- `--sandbox` no longer lets the executor rewrite the pinned `<workdir>/.hw/<run>/verify` that `hw done` runs
-  unsandboxed, nor plant or rename a run directory.
-- The OpenCode Bitwarden guard now judges `secret-unlock --auto|--setup` and `hw-secret --auto|--setup` (its prefilter
-  skipped them).
-- The blind-kill guard refuses `pkill -u|-U <uid>` with no pattern, and sees through `env -u VAR`, `nice`, `setsid`,
-  `caffeinate` and `eval`.
-- `cockpit-state` no longer builds a state path from a `HW_INVOKER_PANE` that is not one path component.
-- Shell restore no longer replays names hw execs or reads code from (`HW_CORE`, `HW_BW_BIN`, `HW_BIN_DIR`,
-  `HW_IMPL*`, `*_ROOT`) from the executor-writable run env, and `hw revive` replays only the exact names the run env
-  writer writes: `BASH_ENV`, `ZDOTDIR`, `PATH`, `DYLD_*` and any other name are refused.
-- `hw status`'s agent-tools probe (`claude -p` inside each product checkout) no longer runs that repo's project hooks
-  or `.mcp.json` servers: it passes `--settings '{"disableAllHooks":true}'` and `--strict-mcp-config`. A product
-  repo's own MCP servers are therefore not started by the probe, so tools served only by them are reported as unknown.
-- `setup/commit-tree` refuses a path argument that holds a newline (several paths in ONE argument, which is what an
-  unquoted `$VAR` is in zsh), exit 1 with nothing written. It used to read it as an already-gone path and exit 0 with only
-  the other named paths committed.
-- `done-invoker`'s checks.md preflight line and the build prompt's checks.md note now say what the gate does: a `fail` row
-  refuses a done and the task closes `--blocked`.
-- A dispatch of a lane with dev servers or a database from the herdr app is no longer refused with "dev servers and
-  databases need `hc run` terminals of their own" after the dry run said ✓.
+- `herdr-app/mods/foreman-cockpit/looks.test.mjs` (run by test 1272) no longer asserts QA-recipe strings that the README
+  moved into `bin/herdr-isolated`.
+- In the herdr app (the `hc` route, where a brainer and an executor are core terminals, not herdr panes), the Cockpit now
+  offers **Reply** and **Rule**: the state file's `ask` carries the hold's `route` (`herdr` or `hc`, null with
+  `pending_reply`) and `cockpit/verbs.txt` hands it to `channel-send` as `<route>` where it said `herdr`. Before, the writer
+  set `pending_reply` only for a herdr-route hold, so an ask or a challenge raised under the app showed no button.
+- The Issues hand-off finds the lane's brainer under the app's core: when `herdr pane list` has none it lists `hc ls --json
+  --label label=brain` and delivers with `channel-send hc <terminal>`. Before, it answered "The brainers could not be listed:
+  no herdr server is running". A refused send now says its cause, not channel-send's closing "my stdout is NOT a terminal" line.
+- `hw done` no longer refuses a report as STRANDED when its task branch is already merged into
+  the lane's base by ancestry: a `done-invoker` exit 5 (delivery unconfirmed) whose report the brainer
+  received and merged is treated as delivered. A branch still at its start point proves nothing and stays refused.
+- `herdr-isolated stop` ends every process whose command line names the instance directory (the cockpit
+  writers of a `--brain` instance, which hold no socket and used to respawn a core under it), and
+  TERMs again on every wait round instead of leaving a respawn to the KILL.
+- `herdr-isolated start` canonicalizes `<dir>` to its physical path, so the app's home and the pane cwd agree
+  (`/tmp/x` is `/private/tmp/x`).
+- `herdr-isolated shot` puts the app that was in front back in front once it has taken the frame.
+- `setup/commit-tree` refuses a commit that names the suite's time-budget table (`test-budgets.json`, its ceilings,
+  the retired list or the partition table) when `setup/test-budget-gate` finds the new tree's table over budget, and
+  `setup/test-budget-gate` now prints the headroom (full suite and fast gate) on green as well as on red.
+- `setup/release/cut` with no `--out` and no `HW_ARTIFACTS` writes its evidence to `~/.cache/hw/release-<VERSION>-<n>`
+  (the next free `n`) instead of a mktemp directory, and prints `evidence: <dir>` as its first line and its last.
+- `done-invoker --check` with no summary prints a usage line that names `--check`, and its exit footer says
+  `CHECK REFUSED` (a rehearsal delivers nothing by design) instead of `NOT DELIVERED`.
+- `hw`'s dispatch manifest, for a setup `kind: build` brief with no runnable Verification fence, shows
+  `verify      ! setup build with no fence: paste the BRIEF-TEMPLATE Done-when fence` instead of a plain `none —` line.
+- `hw done` and `hw reap` no longer list `gpui-kit.d.ts` and `jsconfig.json` (ignored, regenerable) as «DO NOT REMOVE THIS WORKTREE YET». The regenerable list was copied in three places (`core/reap.go`, `core/t4_done_wt.go`, `core/t4_reap_wt.go`); it is now one constant in `core/wt_regenerable.go` that names both files.
+- `setup/test-budget-gate` leaves the release-gate partitions (the `RELEASE=` line of `go-test-partitions.txt`: the `m*` mutation partitions) out of its worst-case fast-gate estimate; the full-suite estimate still counts them. Measured on this tree: 1252 s before, 817 s after.
+- `HEAVY_ONLY=<F..> bash setup/tests/1040-…` runs only the claims it names; it ran every mutant
+  after them.
+- A gate run in the main checkout no longer reads the runner's own `gate-runs.tsv` rows as a changed path (it narrowed the
+  in-process suite to 0 Go partitions); a full run in an executor ignores `HW_TEST_CHANGED` again instead of hitting the touched
+  form's refusal.
+- The close after a report now ends the herdr app terminal of a `--worktree none` task in a repo lane:
+  `hw done` looked for its run record only under the lane's worktree path, found none, searched herdr's tabs and said
+  "NOTHING TO CLOSE" with exit 0, so the terminal stayed open and the report piled up in the cockpit.
+- The close that `done-invoker` starts after a report no longer exits 0 when it found no tab, space or terminal to close:
+  it says "NOT CLOSED — NOTHING FOUND" and exits non-zero, so the task keeps the `close-failed` file `hw status` shows.
+  A hand-run `hw done` on a task that opened nothing is unchanged.
+- `done-invoker` and `ask-invoker` no longer refuse an opencode executor started with `--prompt <brief>`: the nested-headless
+  guard read the word `run` inside the brief as `opencode run`.
+- An opencode executor's turn-end plugin publishes in a herdr-app terminal (`HC_TERMINAL_ID`), not only in a herdr TUI pane.
+- Herdr app dispatch (`hc run`) now records `model_running` in the receipt, as the TUI route does, so `bin/cockpit-state`
+  and the cockpit row show `vendor · model · effort · ctx` for app-dispatched executors.
+- **The stall alert and `setup/heavy`'s FROZEN alert reach a brainer in the herdr app.** Both run
+  `channel-send --report herdr "$HW_INVOKER_PANE"`, and an app brainer's address is a terminal (`t24`) that herdr does not
+  know: every alert since the move to the app ended in a log as "did not reach pane t24 (channel-send exit 1)".
+  `channel-send` now sends the `herdr` word through `hc` when the target is an app terminal and the caller runs on
+  herdr-core; a herdr pane id (it carries a colon) and every caller in a herdr TUI keep the herdr route. The vault alert
+  uses the same command but still finds the brainer through herdr only (L29).
+- **`hw status` for executors in the herdr app.** It read "context: not measured" for every app executor (it asked herdr
+  for a terminal herdr does not have) and now reads the terminal's screen with `hc read`; a finished app run read "its
+  placement record is gone, so what closed is not recorded" and now names its terminal ("app terminal t4 closed"); a
+  stalled or stale app executor is to be read with `hc read <terminal>`, not `herdr pane read`.
+- **A `--keep-pane` lease on the herdr app expires.** Its expiry closed nothing for an app run
+  (`cleanup=no-owned-container`), so the terminal stayed open for ever; it now ends the run's terminals as `hw done` does.
+  The lease also names the terminal that started it instead of `by=unknown`, and an expiry ends terminals only while
+  its own run's terminal is still one of the task's.
+- **`hw unstick` on an app terminal that names no agent** refused with "t5 is , not OpenCode"; the sentence now reads.
+- The Rule button of the herdr app now sends: `hw ruling t5 …` run by the app's own `exec` (no `HC_TERMINAL_ID`, but the app's
+  `HERDR_APP_HOME` and `XDG_RUNTIME_DIR`) was refused as "not running as a terminal of an app". A process the app started is now on
+  the app's backend; a process with a herdr TUI ancestor, or without those variables, is still refused.
+- The answer to an executor's ask in the herdr app now marks the ask `hw_ask_state=answered`; `hc get` kept `delivered` after the reply.
+- `done-invoker` reads a background Judgment Day judge's answer: an Agent launched with `run_in_background` answers its tool call only with "Async agent launched", and its findings arrive as a `<task-notification>` (a `user` line, or a `queued_command` attachment). The protocol check used to say «not checked — the judges' results carry no readable findings» over a full ledger; it now reads the notification (once, however many lines repeat it) and holds a background re-judgment to the frozen ledger like a foreground one.
+- `hw review --at <sha>` no longer says «review_owed=1 still stands in the build's receipt» when the dispatch fails: a past head never touches that receipt. It says so and prints `hw review <lane> <task> --at <sha>` to re-run.
+- `docs/REVIEW-BRIEF.md`: the reviewer checks binaries itself and keeps them out of a judge's target paths; judge prompts carry intent, not reassurance (a test value is not "fine"); three more defect classes (a test or placeholder value reaching production, tests reaching the network through an unpatched client, user-visible text driven by placeholder data).
+- A test run can no longer label a live herdr-core terminal: `setup/test-channel-send` puts a tripwire `hc`
+  first on PATH (a call is recorded and refused, and fails the file), so the brainer's terminal is no longer
+  drawn as an executor with the fixtures of that test.
+- The herdr app's Cockpit buttons (Reply, Rule, Done) run `hw` and `channel-send` from the brain's `bin/`.
+  They died with «cannot run hw: No such file or directory» because the app's PATH did not carry it.
+- The Spaces list drags with a reducer (`foreman-spaces`, a clone of the app's `spaces`): a drop no longer needs a mouse-move
+  to have reported the target, and leaving the list cancels the drag. The live pointer path is unverified.
+- The gate's snapshot wrapper (`setup/test-hw-snapshot.py`) reads the runner's output as bytes. A subject that
+  printed bytes that are not UTF-8 raised `UnicodeDecodeError` in the wrapper, which removed the private
+  snapshot while the runner kept going, so every later bash subject read «does not parse».
+- The release cut no longer re-runs the fast gate for the commit that only folds the release notes: a
+  candidate that differs from a first-parent ancestor with a green fast-gate verdict only in the changelog,
+  the release notes and the removed fragments reuses that verdict, and the gate line says which tree and paths.
+- A partition of the in-process suite whose only failure is go test's `-timeout` panic, in a run whose process
+  tree was seen stopped (the memory guard's freeze), is run once more instead of turning a frozen machine into
+  a red cut.
+- `bin/statusline-usage-tee` hands the status line command the last 8 MB of a long transcript (`HW_STATUSLINE_TAIL_MB`, 0 turns it off) instead of the whole file: ccstatusline read a 473 MB transcript on every refresh, at 2.8 GB RSS and 4.3 s each; now 178 MB and 0.56 s, same output.
 
 ## Known limits
 
@@ -242,9 +291,9 @@ foreman-sh 0.9.0-rc.1 rounds out the herdr app as the place to run foreman: new 
   goes back. Every limit, with its evidence, is in
   [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md).
 
-## Upgrading from 0.8.0
+## Upgrading from 0.9.0-rc.1
 
-Run `foreman-sh upgrade --brain DIR`. A brain installed before `upgrade`
+Run `foreman-setup upgrade --brain DIR`. A brain installed before `upgrade`
 existed has no record of its flags yet: run your install command once more,
 and `upgrade` works from then on.
 

@@ -23,11 +23,19 @@ const childSessions = new Set();
 let rootSessionID;
 let inputSinceIdle = false;
 
-function isHwExecutor() {
-  return (
+// In a pane (herdr TUI) or an hc terminal of the herdr app: the app's terminal carries HC_TERMINAL_ID and no HERDR_*, and
+// `hw executor-turn-end` publishes to whichever backend the environment names.
+function inAPane() {
+  return Boolean(process.env.HC_TERMINAL_ID) || (
     process.env.HERDR_ENV === "1" &&
     process.env.HERDR_SOCKET_PATH &&
-    process.env.HERDR_PANE_ID &&
+    process.env.HERDR_PANE_ID
+  );
+}
+
+function isHwExecutor() {
+  return (
+    inAPane() &&
     process.env.HW_TASK &&
     process.env.HW_RUN &&
     process.env.HW_WORKDIR

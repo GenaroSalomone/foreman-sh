@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"hwcore/internal/mux"
 )
 
 //go:embed channel_send_help.txt
@@ -338,6 +340,13 @@ parse:
 		c.die("usage: channel-send [--require admitted|processed] [--id logical-id] [--allow-turn-ended] [--report|--ruling] [--report-state absolute-directory] [--reply-hold absolute-file] <claude|opencode|opencode-tui|codex|herdr> <session-or-pane-or-directory> <endpoint|-> <message|-> (a lone '-' for the message reads it from stdin — the way for text with backticks, $, quotes or newlines that argv would mangle)")
 	}
 	c.vendor, c.tgt, c.endpoint = args[0], args[1], args[2]
+	// An app terminal named on the herdr route is an hc terminal: stall-watch, setup/heavy's FROZEN alert and hw secret's vault
+	// alert all say `--report herdr "$HW_INVOKER_PANE"`, and with the brainer in the herdr app that pane is `t24`, which herdr
+	// does not know: every alert of 2026-11-11 ended "did not reach pane t24 (channel-send exit 1)". A herdr pane id always
+	// carries a colon and the TUI has no HC_TERMINAL_ID, so the herdr route is untouched there.
+	if c.vendor == "herdr" && mux.IsHCAddress(c.getenv, c.tgt) { // MUTATION-ANCHOR: cs-herdr-hc
+		c.vendor = "hc"
+	}
 	if strings.HasPrefix(c.endpoint, "--") { // `channel-send herdr <pane> --report - m` took --report as the endpoint and waited 90 s (2026-11-09)
 		c.die("endpoint " + c.endpoint + " looks like an option: options go BEFORE the vendor (channel-send " + c.endpoint + " " + c.vendor + " <target> <endpoint> <message>); a herdr endpoint is -")
 	}
@@ -449,6 +458,11 @@ func (c *chanSend) clearReplyHold() {
 	}
 	csTranscriptAppend(filepath.Dir(c.replyHold), kind, envelope, c.message)
 	os.Remove(c.replyHold)
+	// An hc terminal keeps its labels until someone writes them (a herdr pane's tokens expire on their own TTL), so the
+	// ask's `hw_ask_state=delivered` would outlive its answer (rc1-app-live-qa F6). Best effort, like the transcript.
+	if c.vendor == "hc" {
+		extRun(extCall{Name: "hc", Args: []string{"label", c.tgt, "hw_ask_state=answered"}, Env: childEnv(), Merge: true})
+	}
 }
 
 // csTranscriptAppend is transcript_append (the bash state witness): best effort, always.

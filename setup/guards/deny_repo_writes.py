@@ -313,6 +313,49 @@ def _policy_text(value, where):
     return value
 
 
+def root_tokens(path):
+    """{brain} and {work} as `projects.json` beside `path` spells them.
+
+    The agents root is written once, as `root` in projects.json (docs/layout.md):
+    {brain} is `root`/brain and {work} is `work`, else `root`/work, both in the
+    file's own spelling, so a value or a message reads exactly as it did when the
+    root was spelled out here. Only WHERE the root is read from moved; what a
+    guard protects did not.
+    """
+    pj = os.path.join(os.path.dirname(path), "projects.json")
+    try:
+        with open(pj, encoding="utf-8") as f:
+            table = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise PolicyError("{brain}/{work} need %s: %s: %s" % (pj, type(exc).__name__, exc))
+    root = table.get("root") if isinstance(table, dict) else None
+    if not isinstance(root, str) or not root:
+        raise PolicyError("{brain}/{work} need a `root` path in %s" % pj)
+    work = table.get("work")
+    return {"{brain}": root + "/brain",
+            "{work}": work if isinstance(work, str) and work else root + "/work"}
+
+
+def _expand_root_tokens(doc, path):
+    """Every string of the policy but `comment`, with {brain} and {work} resolved."""
+    body = json.dumps({k: v for k, v in doc.items() if k != "comment"})
+    if "{brain}" not in body and "{work}" not in body:
+        return doc
+    tokens = root_tokens(path)
+
+    def sub(v):
+        if isinstance(v, str):
+            for k, r in tokens.items():
+                v = v.replace(k, r)
+            return v
+        if isinstance(v, list):
+            return [sub(x) for x in v]
+        if isinstance(v, dict):
+            return {k: sub(x) for k, x in v.items()}
+        return v
+    return {k: (v if k == "comment" else sub(v)) for k, v in doc.items()}
+
+
 def load_policy(path=None):
     """Read and check `guards.json`, returning (brain_root, product_repos, lanes).
 
@@ -326,6 +369,7 @@ def load_policy(path=None):
         raise PolicyError("cannot read %s: %s: %s" % (path, type(exc).__name__, exc))
     if not isinstance(doc, dict):
         raise PolicyError("%s is not a JSON object" % path)
+    doc = _expand_root_tokens(doc, path)
     unknown = sorted(set(doc) - _TOP_KEYS)
     missing = sorted({"brain_root", "product_repos", "defaults", "lanes"} - set(doc))
     if unknown or missing:

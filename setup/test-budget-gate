@@ -25,6 +25,7 @@ import fnmatch
 import heapq
 import json
 import os
+import re
 import sys
 
 JOB_MAX = 600.0
@@ -41,6 +42,14 @@ def go_partitions(path):
         if len(f) >= 5 and not line.lstrip().startswith("#"):
             out.append((f[0], float(f[3])))
     return out
+
+
+def release_partitions(path):
+    """The ERE of go-test-partitions.txt's `RELEASE=` line (the partitions the fast gate does not queue: setup/release/cut runs them), or None."""
+    for line in open(path, encoding="utf-8") if os.path.exists(path) else []:
+        if line.startswith("RELEASE="):
+            return re.compile(line.split("=", 1)[1].strip()) if line.split("=", 1)[1].strip() else None
+    return None
 
 
 def retired(path):
@@ -93,16 +102,26 @@ def main(budgets_path, ceilings_path):
     threshold = float(budgets.get("fast_gate_threshold_seconds", 0))
     fast_s = sum(s for n, s in jobs.items() if n in files and s <= threshold)
     cap = GO_CAP
-    fast = fast_s + batch_wall([s for _, s in parts], cap)
+    # THE FAST GATE QUEUES NO RELEASE PARTITION (the table's RELEASE= line: the m* mutation partitions run in setup/release/cut, brainer's ruling
+    # 2026-11-11), so the worst case of the fast gate leaves them out. The full-suite estimate above still counts them: the full run queues them.
+    rel = release_partitions(os.path.join(data, "go-test-partitions.txt"))
+    fast_parts = [p for p in parts if not (rel and rel.search(p[0]))]  # MUTATION-ANCHOR: 965-M02
+    fast = fast_s + batch_wall([s for _, s in fast_parts], cap)
     if suite_ceil is not None and fast > suite_ceil:
-        top = sorted(parts, key=lambda p: -p[1])[:3]
-        bad.append("estimated worst-case fast gate %.0fs (%.0f s of fast subjects, then %d partitions %d at once) is over %.0fs (its SUITE ceiling); the largest partitions: %s"
-                   % (fast, fast_s, len(parts), cap, suite_ceil, ", ".join("%s %.0fs" % p for p in top)))
+        top = sorted(fast_parts, key=lambda p: -p[1])[:3]
+        bad.append("estimated worst-case fast gate %.0fs (%.0f s of fast subjects, then %d partitions %d at once, %d release partitions left out) is over %.0fs (its SUITE ceiling); the largest partitions: %s"
+                   % (fast, fast_s, len(fast_parts), cap, len(parts) - len(fast_parts), suite_ceil, ", ".join("%s %.0fs" % p for p in top)))
+    # the room that is left, said either way: a green line without it let main sit at the ceiling until a touched run found out
+    room = "headroom: full suite %.0fs under its %.0fs limit" % (WALL_MAX - wall, WALL_MAX)
+    if suite_ceil is not None:
+        room += ", worst-case fast gate %.0fs under its %.0fs SUITE ceiling" % (suite_ceil - fast, suite_ceil)
     for b in bad:
         print("not ok - " + b)
-    if not bad:
-        print("ok - %d subjects, none over %.0fs beyond its ceiling; %d partitions; estimated full suite %.0fs, worst-case fast gate %.0fs"
-              % (len(files), JOB_MAX, len(parts), wall, fast))
+    if bad:
+        print("not ok - " + room)
+    else:
+        print("ok - %d subjects, none over %.0fs beyond its ceiling; %d partitions; estimated full suite %.0fs, worst-case fast gate %.0fs; %s"
+              % (len(files), JOB_MAX, len(parts), wall, fast, room))
     return 1 if bad else 0
 
 

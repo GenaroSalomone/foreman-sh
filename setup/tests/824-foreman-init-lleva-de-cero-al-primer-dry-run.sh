@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `foreman-sh init` takes an empty HOME to a first dry-run dispatch in one command
+# `foreman-setup init` takes an empty HOME to a first dry-run dispatch in one command
 #
 # WHAT THIS HOLDS. Measured 2026-10-07 (scratch HOME, private engram port): the
 # manual path from INSTALL.md to a first `hw demo hello --dry-run` is nine
@@ -16,7 +16,7 @@
 #   2d. git and python3 are not Homebrew's (Command Line Tools): a machine missing ONLY git is told
 #      `xcode-select --install`, is not offered brew and is not sent to --with-recommended;
 #   2e. without Go, init stops where install.sh refuses (hw-core is required, go-060 S2) and writes no brain (4b below); with the
-#      suite's seam FOREMAN_SH_NO_CORE=1 it finishes and passes on install.sh's NOTE that hw-core is not built (4c);
+#      suite's seam FOREMAN_NO_CORE=1 it finishes and passes on install.sh's NOTE that hw-core is not built (4c);
 #   3. without --yes and without a terminal, herdr's integration is asked for,
 #      not done: the run stops, names the command and writes no brain;
 #   4. `init --yes` builds the brain, the demo lane on a toy repository, the
@@ -38,7 +38,7 @@
 #   M07 the in-run Homebrew offer fired for what Homebrew cannot install (only git missing);
 #   M08 install.sh's NOTE lines (hw runs in bash: no Go) are not passed on.
 #
-# Run alone:  bash setup/tests/824-foreman-sh-init-lleva-de-cero-al-primer-dry-run.sh
+# Run alone:  bash setup/tests/824-foreman-init-lleva-de-cero-al-primer-dry-run.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR OPENCODE_CONFIG_DIR OPENCODE_EXECUTOR_CONFIG
 [ -f "$ROOT/scripts/init.sh" ] || fail "scripts/init.sh is not in the tree — there is no \`init\` to test"
@@ -206,7 +206,7 @@ for _l in "$FARM"/*; do case "${_l##*/}" in go) ;; *) ln -s "$(readlink "$_l")" 
 OLD_HOME="$HOME"; export HOME="$TMP/home-nogo"; mkdir -p "$HOME"
 cp -p "$LOGS/herdr-install" "$TMP/herdr-install.4"; cp -p "$LOGS/engram-setup" "$TMP/engram-setup.4"   # section 5 counts the first run's calls
 git config --global user.name t; git config --global user.email t@t
-rc=0; out="$(unset FOREMAN_SH_NO_CORE; PATH="$STUBS:$NOGO" init --yes 2>&1)" || rc=$?   # _common.sh sets it: the suite never builds Go
+rc=0; out="$(unset FOREMAN_NO_CORE; PATH="$STUBS:$NOGO" init --yes 2>&1)" || rc=$?   # _common.sh sets it: the suite never builds Go
 if [ -d "$ROOT/core" ] && [ -f "$ROOT/setup/build-core" ]; then
   [ "$rc" = 1 ] || fail "4b: init --yes without Go must refuse, since hw-core is required (got $rc): $out"
   case "$out" in *"MISSING go >= 1.22"*"https://go.dev/dl"*"init: install.sh failed (exit 1)"*) ;; *) fail "4b: init does not show install.sh's refusal for lack of Go: $out" ;; esac
@@ -214,9 +214,9 @@ if [ -d "$ROOT/core" ] && [ -f "$ROOT/setup/build-core" ]; then
   pass "4b: without Go init stops where install.sh refuses, shows why (go >= 1.22, https://go.dev/dl) and writes no brain"
   # 4c. the suite's seam: no build, one NOTE that init passes on (and the way the install would say so to a person who set it)
   export HOME="$TMP/home-nogo-seam"; mkdir -p "$HOME"; git config --global user.name t; git config --global user.email t@t
-  rc=0; out="$(FOREMAN_SH_NO_CORE=1 PATH="$STUBS:$NOGO" init --yes 2>&1)" || rc=$?
-  [ "$rc" = 0 ] || fail "4c: init --yes with FOREMAN_SH_NO_CORE=1 must finish (got $rc): $out"
-  case "$out" in *"NOTE  hw-core is not built (FOREMAN_SH_NO_CORE=1"*"setup/build-core --native"*) ;; *) fail "4c: init does not pass on install.sh's NOTE that hw-core is not built: $out" ;; esac
+  rc=0; out="$(FOREMAN_NO_CORE=1 PATH="$STUBS:$NOGO" init --yes 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || fail "4c: init --yes with FOREMAN_NO_CORE=1 must finish (got $rc): $out"
+  case "$out" in *"NOTE  hw-core is not built (FOREMAN_NO_CORE=1"*"setup/build-core --native"*) ;; *) fail "4c: init does not pass on install.sh's NOTE that hw-core is not built: $out" ;; esac
   [ ! -e "$HOME/.config/hw/impl" ] || fail "4c: a switch file was written with no hw-core built"
   pass "4c: with the seam init finishes and passes on install.sh's one-line NOTE that hw-core is not built"
 else
@@ -276,9 +276,9 @@ saw_mutant "M07 the offer fired for what brew cannot install" "$(PATH="$STUBS:$N
 # M08 — install.sh's NOTE lines dropped: the unmutated 4c run carried the seam's NOTE
 if [ -d "$ROOT/core" ] && [ -f "$ROOT/setup/build-core" ]; then
   rm -f "$MUT/scripts/init.sh"; cp "$ROOT/scripts/init.sh" "$MUT/scripts/init.sh"; mutate_anchor 824-M08 "$MUT/scripts/init.sh" '  :'   # was: ... sed -n 's/^  NOTE  //p' | while ... say "NOTE  $_note"
-  m8="$(HOME="$TMP/home-nogo-m" FOREMAN_SH_NO_CORE=1 PATH="$STUBS:$NOGO" minit --yes || true)"
+  m8="$(HOME="$TMP/home-nogo-m" FOREMAN_NO_CORE=1 PATH="$STUBS:$NOGO" minit --yes || true)"
   # positive evidence: the run REACHED its end (so the mutated line ran) and the NOTE is gone
-  case "$m8" in *"init: done"*) case "$m8" in *"NOTE  hw-core is not built (FOREMAN_SH_NO_CORE=1"*) m8=NOTE-STILL-THERE ;; *) m8=NOTE-GONE ;; esac ;; *) m8=RUN-NEVER-FINISHED ;; esac
+  case "$m8" in *"init: done"*) case "$m8" in *"NOTE  hw-core is not built (FOREMAN_NO_CORE=1"*) m8=NOTE-STILL-THERE ;; *) m8=NOTE-GONE ;; esac ;; *) m8=RUN-NEVER-FINISHED ;; esac
   saw_mutant "M08 install.sh's NOTE not passed on" "$m8" "NOTE-GONE"
 fi
 

@@ -50,7 +50,7 @@ var (
 var laneFields = []string{"product_repo", "hw_aliases", "brain_aliases", "space", "engram", "vendor", "model", "account", "artifacts", "repoless",
 	"checkout", "checkout_var", "base", "base_ref_prefix", "branch", "worktree_root", "worktree", "ports",
 	"hint_aliases", "build", "agents_from", "deps", "db", "devserver", "reap", "sweep", "brain_guard", "brief_note", "qa_target",
-	"model_floor", "model_pins", "subagent_model", "pi_subagent_models", "requested_by", "opencode_config_dir", "suite_lock"}
+	"model_floor", "model_pins", "subagent_model", "pi_subagent_models", "requested_by", "opencode_config_dir", "suite_lock", "org"}
 
 var laneSub = map[string][]string{
 	"model_floor": {"tier", "accepts"},
@@ -314,12 +314,15 @@ func loadTable(file, home string) (*table, []string) {
 	}
 	var top []string
 	for _, k := range sortedKeys(root) {
-		if !has([]string{"comment", "work", "operator", "metrics_direct", "survey_order", "retention", "pi_roster", "lanes"}, k) {
+		if !has([]string{"comment", "root", "work", "orgs", "operator", "metrics_direct", "survey_order", "retention", "pi_roster", "lanes"}, k) {
 			top = append(top, k)
 		}
 	}
 	if len(top) > 0 {
 		return bad("unknown top-level key(s): " + strings.Join(top, ", "))
+	}
+	if msg := orgProblems(root, lanesV, home); msg != "" {
+		return bad(msg)
 	}
 	retErr := "retention is {artifact_retention_days, backup_retention_days, build_output_days}, each a whole number of days >= 0 (0 disables that window)"
 	if r := field(root, "retention"); r != nil {
@@ -380,8 +383,12 @@ func loadTable(file, home string) (*table, []string) {
 		}
 		seen[a.kind+"\x00"+a.alias] = true
 	}
-	workV := field(root, "work")
-	if workV == nil {
+	workS := ""
+	if w := field(root, "work"); w != nil && w.truthy() {
+		workS = w.tostring()
+	} else if r := field(root, "root"); r != nil {
+		workS = r.tostring() + "/work" // `root` is the one place the agents root is written (docs/layout.md)
+	} else {
 		return bad("no top-level `work`")
 	}
 	var survey []string
@@ -395,7 +402,7 @@ func loadTable(file, home string) (*table, []string) {
 			survey = append(survey, n)
 		}
 	}
-	t := &table{file: file, names: names, survey: survey, lanes: map[string]*lane{}, aliasH: map[string]string{}, aliasB: map[string]string{}, work: expandHome(workV.tostring(), home)}
+	t := &table{file: file, names: names, survey: survey, lanes: map[string]*lane{}, aliasH: map[string]string{}, aliasB: map[string]string{}, work: expandHome(workS, home)}
 	for _, a := range aliases {
 		if a.kind == "hw" {
 			t.aliasH[a.alias] = a.lane
@@ -445,6 +452,7 @@ func loadTable(file, home string) (*table, []string) {
 		l.f["checkout"] = expandHome(str("checkout", ""), home)
 		l.f["checkout_var"] = str("checkout_var", "")
 		l.f["engram"] = str("engram", "brain")
+		l.f["org"] = str("org", "")
 		if p := field(v, "product_repo"); p != nil && p.kind == vBool && p.b {
 			l.f["product_repo"] = "1"
 		}
@@ -476,6 +484,65 @@ func loadTable(file, home string) (*table, []string) {
 		t.lanes[m.k] = l
 	}
 	return t, nil
+}
+
+// orgProblems checks `root`, `orgs` and each lane's `org`, in project-spaces.sh's order, and returns the jq error
+// text or "". Absent `orgs`, no lane may name an org (a test table declares neither); present, a lane's org is one of
+// its keys, and a product_repo lane's checkout must sit under its org's directory: that is the guard that keeps a
+// lane of one organisation from landing inside another's folder (docs/layout.md). That EVERY lane of the real table
+// names its org is held by TestRealProjectsJSONNamesEveryLanesOrg, not here: fixtures add org-less lanes to it.
+func orgProblems(root, lanesV *jval, home string) string {
+	if r := field(root, "root"); r != nil && (r.kind != vStr || r.s == "") {
+		return "root is the agents root, a path string"
+	}
+	orgs := field(root, "orgs")
+	if orgs != nil {
+		ok := orgs.kind == vObj && len(orgs.obj) > 0
+		for _, m := range orgs.obj {
+			if !reWord.MatchString(m.k) || m.v.kind != vStr || m.v.s == "" {
+				ok = false
+			}
+		}
+		if !ok {
+			return "orgs maps an organisation (a lowercase word) to the directory its product checkouts live under"
+		}
+	}
+	var badorg []string
+	for _, m := range lanesV.obj {
+		o := field(m.v, "org")
+		switch {
+		case orgs == nil:
+			if o != nil {
+				badorg = append(badorg, m.k+".org (no top-level orgs)")
+			}
+		case o == nil: // a lane may leave it out here; the real table names every lane's org (TestRealProjectsJSONNamesEveryLanesOrg)
+		case o.kind == vStr && field(orgs, o.s) != nil:
+		default:
+			badorg = append(badorg, m.k+".org")
+		}
+	}
+	if len(badorg) > 0 {
+		return "org is one of the keys of the top-level orgs: " + strings.Join(badorg, ", ")
+	}
+	if orgs == nil {
+		return ""
+	}
+	var badhome []string
+	for _, m := range lanesV.obj {
+		if p := field(m.v, "product_repo"); p == nil || p.kind != vBool || !p.b || field(m.v, "org") == nil {
+			continue
+		}
+		org := field(m.v, "org").s
+		h := expandHome(field(orgs, org).s, home)
+		c := expandHome(orDefault(field(m.v, "checkout"), ""), home)
+		if !strings.HasPrefix(c, h+"/") {
+			badhome = append(badhome, m.k+" ("+org+": "+c+" is not under "+h+")")
+		}
+	}
+	if len(badhome) > 0 {
+		return "a product checkout lives outside the directory of its org: " + strings.Join(badhome, ", ")
+	}
+	return ""
 }
 
 func readable(p string) bool {

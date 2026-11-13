@@ -21,7 +21,7 @@ labels: bug
 
 ## Versions and platform
 
-- foreman-sh (`./install.sh --version`):
+- foreman (`./install.sh --version`):
 - OS and shell (`bash --version`):
 - herdr:
 - Agent (Claude Code / OpenCode / Codex) and version:

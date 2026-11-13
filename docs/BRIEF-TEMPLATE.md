@@ -55,25 +55,42 @@
 #   requires-agents: [primary:|subagent:]<name>, …
 #              Agents the task cannot do without: hw refuses the dispatch
 #              when the executor cannot reach one, instead of warning.
-#   review:    omit the key = NO review (a review is opt-in) — or judgment-day | plugins | none,
-#              or ONE list: [judgment-day, thermo, ponytail, pstack]
-#              — the review the close names, in every lane and --sdd mode. judgment-day orders
-#              Judgment Day over the branch; plugins names only the review pieces of `plugins:`
-#              (below) and no Judgment Day; none (or no key) adds no review note, on any kind,
-#              and needs no `review-skip:` line: say nothing when the task needs no review.
-#              One focus per plugin, each piece once (the first plugin declared wins a piece two carry):
-#              thermo = maintainability; ponytail = senior review (correct, safe, load, tested, fast,
-#              lean); pstack = the diff's security and correctness, blast-radius (what breaks outside
-#              the diff), the comment-sicko agent (needless comments, workarounds) and maintainability.
-#              The list says it all in one field: hw LOADS the plugin of each plugin item (the
-#              `plugins:` path), the close names every item (Judgment Day, plus each plugin's
-#              review piece run first over the same committed range), and done-invoker refuses a
-#              done report that names no run of a skill or agent (a Skill call, or an Agent launch
-#              of `pstack:comment-sicko`), or `review-skip: <piece> — <why>`.
-#              judgment-day + `plugins:` with review skills (the scalar form) closes the same way.
-#              Any other value or item is refused before anything is built (rdd is retired: it
-#              warns and runs judgment-day). Keep `plugins:` (below) for plugins that are not review.
-#   plugins:   [thermo, ponytail, pstack]  (any subset)
+#   review:    on a `kind: build` (or no kind) EVERY value owes the independent review — the key
+#              absent, judgment-day | plugins | rdd, ONE list [judgment-day, thermo, ponytail,
+#              pstack, tests], or a bare `none`. The one opt-out is `review: none` PLUS a
+#              `review-skip: <why>` frontmatter line (the reason lands in the manifest); a bare
+#              `review: none` still owes the review and warns for one release (refused after it).
+#              A task of another kind (explore, audit, review, design) owes none: no key = no review.
+#              How it runs: when the build reports done, `hw review <lane> <task>` dispatches a fresh
+#              claude opus reviewer (`kind: review`) on the build's head. Its tier is the size of the
+#              diff in code-only lines (docs/ except REVIEW-BRIEF/BRIEF-TEMPLATE, decisions/, briefs/,
+#              changelog/ and changelog fragments do not count): 0 = nothing to review; 1-400 = S: thermo +
+#              test-review; over 400 = L: those plus ponytail-review and the two pstack principles.
+#              What `review:` adds to the reviewer, never to the builder:
+#              judgment-day (or rdd, which is retired and warns) = the reviewer runs Judgment Day:
+#              write it where the diff sends mail or messages, moves money, or writes or migrates
+#              production data (the brainer marks high risk; nothing guesses it); a list's plugin items
+#              (thermo, ponytail, pstack, tests) and `plugins` (the scalar: the review pieces of
+#              `plugins:`) join the reviewer's tier, each piece once: thermo = maintainability;
+#              ponytail = senior review (correct, safe, load, tested, fast, lean); tests = foreman's
+#              own test-review skill; pstack = in the reviewer, its two principles
+#              (minimize-reader-load, subtract-before-you-add), not the four reviewers it carries in a
+#              task's own close. The reviewer's done-invoker proves each piece from its transcript.
+#              The BUILDER runs no Judgment Day and no review skill. It closes with its own OLD/NEW
+#              tests (a brief that changes behaviour says so under Verification, below) and, on claude,
+#              `/simplify` (proved by the Skill call; pi: pstack:deslop if loaded, unproved; codex and
+#              opencode: not available). A build that owes the review launches with --keep-pane by
+#              default: the pane is there for the one fix round.
+#              The merge: `hw done` offers «Merge it» only for 0 code lines at the head, `review: none` +
+#              `review-skip:`, a reviewer's `verdict: approve` at exactly the branch head, or the
+#              brainer's `hw done <lane> <task> --accept-review "<why>"` (refused inside an executor).
+#              Otherwise it prints NOT MERGEABLE. A product lane's build opens its PR as a draft.
+#              A non-build task that declares `review:` keeps the old close: judgment-day orders Judgment
+#              Day at the close, plugins the `plugins:` review pieces, and the executor proves each, or
+#              carries `review-skip: <piece> — <why>`.
+#              Any other value or item is refused before anything is built. Keep `plugins:` (below)
+#              for plugins that are not review.
+#   plugins:   [thermo, ponytail, pstack, tests, webguide]  (any subset)
 #              Review plugins (pinned, complete: their hooks run in THIS executor only) loaded
 #              into it: claude gets one --plugin-dir each (hook writes go to $HW_ARTIFACTS/plugin-state),
 #              pi one -e <plugin dir> each, opencode and codex get NOT APPLIED. They are an
@@ -81,6 +98,8 @@
 #              install.sh --with-review-plugins): a name that is not installed is refused
 #              before anything is built, naming that command. Nothing is installed globally
 #              and nothing is written to ~/.claude or ~/.pi. A re-task (`hw next`) cannot add one.
+#              `webguide` (Chrome's modern web guidance) is guidance loaded at build time, not a review
+#              piece: name it here on a brief that touches UI, never in `review:`.
 #   boundary:  <what must never cross> — the task is not done without an
 #              approved design judgment (docs/INSTALL.md, Judgment Day)
 #
@@ -139,6 +158,8 @@ and gives the hour-long gate the same 900 s ceiling. The wording and the why liv
 it starts, before its first test in every mode, so edits made after that do not touch its run: never wait
 for a gate before editing.>
 
+<A behaviour change adds one line here: «OLD: the new test fails on the old code (paste the failure); NEW: it passes on the new (paste the run)». The reviewer's tier already runs test-review (S and L); list `tests` only on a non-build close.>
+
 <Only a fenced block or a 4-space-indented block counts. Inline backticks are
 prose: in these briefs a `path` and half a sentence of `VAR=1 VAR=2` are spelled
 exactly like a command, so hw does not read them — it would be executing prose.
@@ -166,6 +187,8 @@ The Go a change touches, as ONE focused test (a whole partition is the brainer's
 ```
 setup/heavy --short -- sh -c 'cd core && go test -count=1 -run <TestName> .'
 ```
+
+A cold `go test` (low memory, a fresh build cache) can pass the short lane's 120 s cap and exits 124 there: rerun it without `--short`. `--max <s>` only lowers the cap (above 120 it is clamped).
 
 What `--affected` reaches, spelled so it runs (only while the estimate is under the budget; over it, the line above):
 
@@ -210,8 +233,8 @@ Every path you name is RELATIVE TO THE WORKTREE, and the worktree is the only tr
 you commit in — a path under the brain root names the brainer's checkout, which
 is not yours to edit.
 
-ORDER WHEN THE CLOSE HAS A JUDGMENT DAY: commit, then the judges, then the fix
-rounds, and only then the touched-subject verification — on the FINAL tree. (The full fast gate is the
+ORDER WHEN THE CLOSE HAS A JUDGMENT DAY (a non-build task that declared it; a build's runs in its
+reviewer): commit, then the judges, then the fix rounds, and only then the touched-subject verification — on the FINAL tree. (The full fast gate is the
 brainer's.)
 
 A NEW TOP-LEVEL PATH (a directory or file at the repo root) needs its `include`/`exclude` line in `setup/export/manifest` in the SAME commit: `setup/commit-tree` runs `setup/export/check` and refuses an unclassified path.
@@ -223,12 +246,17 @@ branch; `--onto <base>` to commit onto a branch that is not HEAD; `-F <file>` fo
 RELATIVE TO THE REPO ROOT — inside a setup worktree that is `setup/CLAUDE.md`; the brain root's own copy is the
 same file under its lane directory, and it does not exist in the worktree.
 
+A mutant runs through `setup/mutation/safe-mutate` and must compile: it fails on the assertion, not on `go build`.
+A "costs no visible time" claim is proved with 6 interleaved old/new pairs, comparing medians (say the load average).
+A brief that dispatches pi first runs `pi -p --model <m> "say ok"`; if it fails, that leg is marked UNVERIFIED.
+
 A new `setup/tests/NNNN-*.sh` takes its number from `setup/next-test-number` (it reads main and the live `task/*`
 branches), and the file is named in your first commit. A collision still happening renumbers the subject THIS branch
 introduces, never someone else's.>
 
 ## QA
 <A QA in an isolated Herdr app starts it with `bin/herdr-isolated start <short dir under /tmp>` and ends it with `bin/herdr-isolated stop <dir>` before it reports: closing the app's pid leaves its herdr-core running, and done-invoker warns about it. To CHECK for a leak do not `pgrep` by name: the leaked core's argv is `hc --hc-launchd`, so a name match finds nothing. The detector is `HerdrLeaks` in `core/invokers/herdr_leak.go` (what done-invoker runs): it ties a process to the run by the sockets and cwd under the instance dir. By hand, after `bin/herdr-isolated stop <dir>`: `lsof -nP -U | rg <dir>` listing nothing.>
+<A herdr-core proof (a claim about the app, `hc`, the cockpit, or a `brain`/`hw` run inside the app) names three lines, because an executor that is not told how to reach the app guesses and the guess is the person's own: `Mechanism: bin/herdr-isolated start <short dir under /tmp> --brain`, then every command through `<dir>/q …` (never a bare `hc`, `herdr-app` or `herdr`). `Precheck: lsof -a -U -p <app pid>` showing its sockets under `<dir>` and not the person's, and `<dir>/q hc ls` listing only your own terminals; a terminal started with `hc run` is not in the Agents list until `<dir>/q herdr-app do terminal.keep '{"terminal":"<id>"}'` gives it a pane (recipe in herdr-app/README.md). `If it fails: report blocked` and stop with `bin/herdr-isolated stop <dir>`: never a fake marked pass, never a stand-in answer typed as if the app had given it, never the person's app or core.>
 <A browser or deployed-build check: QA is handed one string that only the new build carries (a commit sha, or a marker in the bundle) and FAILS if it is not there. A 200 alone does not prove the new build.>
 
 ## Reviewing PRs

@@ -27,7 +27,7 @@ node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.ex
 out="$(node "$ROOT/herdr-app/mods/foreman-cockpit/state.test.mjs" 2>&1)" || fail "the mod disagrees with cockpit/fixtures/index.json: $out"
 pass "$out"
 
-# Every other mod's own node test (foreman-artifacts/parse.test.mjs had no runner).
+# Every other mod's own node test (a mod's test with no runner of its own).
 # A mod the export excludes is simply absent there, so the glob skips it.
 for t in "$ROOT"/herdr-app/mods/*/*.test.mjs; do
   [ -f "$t" ] && [ "$t" != "$ROOT/herdr-app/mods/foreman-cockpit/state.test.mjs" ] || continue

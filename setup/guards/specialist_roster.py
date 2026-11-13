@@ -78,6 +78,9 @@ def _load_roster_policy():
         doc = json.load(f)
     repos = doc["specialists_from"]
     brain = doc["brain_root"]
+    if brain == "{brain}":  # the agents root is projects.json's `root` (docs/layout.md)
+        with open(os.path.join(os.path.dirname(path), "projects.json"), encoding="utf-8") as f:
+            brain = json.load(f)["root"] + "/brain"
     if not isinstance(brain, str) or not isinstance(repos, dict) or not all(
             isinstance(k, str) and isinstance(v, str) for k, v in repos.items()):
         raise ValueError("guards.json: brain_root or specialists_from is malformed")

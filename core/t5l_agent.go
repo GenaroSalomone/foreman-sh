@@ -15,6 +15,7 @@ import (
 type lagState struct {
 	sandboxArmed  string // _SANDBOX_ARMED: the pane _agent_start_sandboxed already armed (a per-call prefix assignment in bash)
 	sandboxRundir string // _SANDBOX_RUNDIR: set by revive for a run launched in the sandbox
+	hcShimDir     string // the sandbox shim's directory, first on an hc terminal's PATH (hcSandboxArm); "" with no sandbox
 }
 
 // lSleep is bash's `sleep`; a package variable so a test can set it to nothing. bash has no scale knob, so the

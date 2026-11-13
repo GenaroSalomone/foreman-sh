@@ -3,8 +3,10 @@ package invokers
 import (
 	"bufio"
 	"encoding/json"
+	"html"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -200,9 +202,10 @@ type claudeExtractor struct {
 	lastID    string // message.id of the last assistant line that launched agents
 	lastGroup int    // its index in TranscriptProof.Groups
 
-	judgeMsg   string         // message.id of the last assistant message that launched a judge
-	judgeRound int            // its index in TranscriptProof.JudgeRounds
-	judgeByUse map[string]int // tool_use id of a judge call -> its round, to put its result in it
+	judgeMsg   string          // message.id of the last assistant message that launched a judge
+	judgeRound int             // its index in TranscriptProof.JudgeRounds
+	judgeByUse map[string]int  // tool_use id of a judge call -> its round, to put its result in it
+	judgeSeen  map[string]bool // task-notification results already added: Claude Code repeats one under several line types
 }
 
 func (*claudeExtractor) flush(*TranscriptProof) {}
@@ -217,6 +220,10 @@ func (e *claudeExtractor) line(raw []byte, p *TranscriptProof) {
 	}
 	if json.Unmarshal(raw, &line) == nil && line.Type == "user" {
 		e.judgeResult(raw, p)
+		return
+	}
+	if line.Type == "attachment" {
+		e.judgeAttachment(raw, p)
 		return
 	}
 	if json.Unmarshal(raw, &line) != nil || line.Type != "assistant" {
@@ -310,6 +317,11 @@ func (e *claudeExtractor) judgeResult(raw []byte, p *TranscriptProof) {
 		IsError   bool            `json:"is_error"`
 		Content   json.RawMessage `json:"content"`
 	}
+	var notice string
+	if json.Unmarshal(line.Message.Content, &notice) == nil { // a background judge: its answer is a task-notification, not a tool_result
+		e.judgeNotification(notice, p)
+		return
+	}
 	if json.Unmarshal(line.Message.Content, &blocks) != nil {
 		return
 	}
@@ -320,6 +332,50 @@ func (e *claudeExtractor) judgeResult(raw []byte, p *TranscriptProof) {
 		}
 		p.JudgeRounds[round].Text += "\n" + textOfContent(b.Content)
 	}
+}
+
+// judgeAttachment reads the same notification when Claude Code delivers it as a queued_command attachment.
+func (e *claudeExtractor) judgeAttachment(raw []byte, p *TranscriptProof) {
+	var line struct {
+		Attachment struct {
+			Type   string `json:"type"`
+			Prompt string `json:"prompt"`
+		} `json:"attachment"`
+	}
+	if json.Unmarshal(raw, &line) == nil && line.Attachment.Type == "queued_command" {
+		e.judgeNotification(line.Attachment.Prompt, p)
+	}
+}
+
+var (
+	notifyUseRe    = regexp.MustCompile(`<tool-use-id>([^<]+)</tool-use-id>`)
+	notifyResultRe = regexp.MustCompile(`(?s)<result>(.*)</result>`)
+)
+
+// judgeNotification adds to its round the result of a <task-notification> that answers a background judge call: an Agent
+// launched with run_in_background answers its tool_use only with "Async agent launched", and its findings arrive later as
+// this text (measured: the first `hw review --at` of a product build, 2026-11-12; fixture testdata/transcripts/claude_bg_judges.jsonl). The result is XML-escaped.
+func (e *claudeExtractor) judgeNotification(text string, p *TranscriptProof) {
+	if len(e.judgeByUse) == 0 || !strings.Contains(text, "<task-notification>") { // # MUTATION-ANCHOR: 1250-G04
+		return
+	}
+	use, res := notifyUseRe.FindStringSubmatch(text), notifyResultRe.FindStringSubmatch(text)
+	if use == nil || res == nil {
+		return
+	}
+	round, ok := e.judgeByUse[use[1]]
+	if !ok || round >= len(p.JudgeRounds) {
+		return
+	}
+	key := use[1] + "\x00" + res[1]
+	if e.judgeSeen[key] { // # MUTATION-ANCHOR: 1250-G05
+		return
+	}
+	if e.judgeSeen == nil {
+		e.judgeSeen = map[string]bool{}
+	}
+	e.judgeSeen[key] = true
+	p.JudgeRounds[round].Text += "\n" + html.UnescapeString(res[1])
 }
 
 // textOfContent is the text of a tool_result's content: a string, or a list of {type:text,text}.

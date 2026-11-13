@@ -10,11 +10,8 @@ import (
 	"strings"
 )
 
-const reapApplyRegenerable = ".agents .atl .claude .codex .opencode .hw .specify .venv .ruff_cache .pytest_cache .mypy_cache __pycache__ node_modules dist build .next .turbo .DS_Store AGENTS.md PROGRESS.md opencode.json local next-env.d.ts tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo .astro"
-const reapApplyArchivable = ".artifacts qa-report test-results playwright-report"
-
 func (r *reapApplyRun) regenerable() string {
-	return reapApplyRegenerable + " " + r.a.getenv("HW_WT_REGENERABLE")
+	return wtRegenerable + " " + r.a.getenv("HW_WT_REGENERABLE")
 }
 
 func (r *reapApplyRun) set(verdict, why string) { r.verdict, r.why = verdict, why }
@@ -100,7 +97,7 @@ func (r *reapApplyRun) disposition(main, wt, branch, base string) {
 				other = true
 				break
 			}
-			if strings.Contains(" "+reapApplyArchivable+" ", " "+first+" ") {
+			if strings.Contains(" "+wtArchivable+" ", " "+first+" ") {
 				entries = append(entries, rel)
 			} else {
 				other = true

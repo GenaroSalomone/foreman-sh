@@ -1,4 +1,4 @@
-// The right column's switch (Cockpit / Issues / Artifacts), without the app: plain
+// The right column's switch (Cockpit / Issues / Ports / History), without the app: plain
 // node runs it, switcher.test.mjs pins it. The app's own mechanism is a layout
 // `stack` plus `layout.select {stack, child}`; this only says which child shows.
 

@@ -19,6 +19,9 @@
 #   log      ~/.cache/hw/heavy.log      `start end wall rc load1=<at start>/<at end> tag cmd` per run: the measured durations a report quotes,
 #            and the machine's 1-minute load average (`-` when it cannot be read) around them: a timing taken at load1 37 is not one
 #            taken at 3 (retro suite-under-15, 2026-11-11). The reading is `uptime`'s.
+#   out      ~/.cache/hw/heavy-out/<tag>-<YYYYmmdd-HHMMSS>.log   the LAST 40 LINES of the command's output (stdout and stderr, in arrival
+#            order), kept for every run, short lane included; the heavy.log line ends in ` out=<that file>`. heavy.log kept time and rc only, and 8
+#            of 24 reds of one day's batch gates could not be classified afterwards (retro-fixes-1111c). Files older than 14 days are removed.
 #   quiet    `--quiet <max-load1>` (not with --short): holding its slot, the job does not start until load1 reads at or under <max-load1>;
 #            it says once a minute what it reads. For a timing run: start at a known-quiet machine, run the control in the same hour.
 #
@@ -421,6 +424,23 @@ TAG="$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9._-' '_')"
 case "$SLOTS" in ''|*[!0-9]*|0) echo "setup/heavy: HW_HEAVY_SLOTS must be a positive number, not '$SLOTS'" >&2; exit 2 ;; esac
 CLASS="$(lane_class)"
 
+# A LONE SUBJECT THE TABLE BUDGETS AT THE SHORT LANE'S CAP OR LESS TAKES THE SHORT LANE BY ITSELF (retro-fixes-1111c: 207, budgeted seconds,
+# waited ~14 min for a slot behind a frozen holder). `setup/heavy -- bash setup/tests/<n>-*.sh` with no other word, the budget read from
+# suite-data/test-budgets.json beside this script; a subject the table does not list, or lists above the cap, queues as before.
+if [ "$SHORT" = 0 ] && [ "$WI_FLAG" = 0 ] && [ -z "$QUIET" ] && [ -z "$MAX" ] && [ "$#" -eq 2 ]; then
+  case "$1:$2" in
+    bash:setup/tests/[0-9]*-*.sh|bash:*/setup/tests/[0-9]*-*.sh|sh:setup/tests/[0-9]*-*.sh|sh:*/setup/tests/[0-9]*-*.sh)
+      _sec="$(python3 -I -c 'import json,sys
+try: print(json.load(open(sys.argv[1]))["files"][sys.argv[2]]["seconds"])
+except Exception: pass' "$(dirname "$0")/suite-data/test-budgets.json" "$(basename "$2")" 2>/dev/null)"
+      case "$_sec" in ''|*[!0-9.]*) ;; *)
+        if awk -v s="$_sec" -v c="$SHORT_CAP" 'BEGIN { exit !(s + 0 <= c + 0) }'; then  # MUTATION-ANCHOR: 1352-M01
+          SHORT=1
+          echo "setup/heavy: $(basename "$2") is budgeted ${_sec}s (<= ${SHORT_CAP}s): taking the short lane" >&2
+        fi ;;
+      esac ;;
+  esac
+fi
 if [ "$SHORT" = 1 ]; then  # a short job is seconds: the environment's switch does not reach it, the flag is a misuse
   [ "$WI_FLAG" = 0 ] || { echo "setup/heavy: --when-idle does not apply to --short (a short job is seconds)" >&2; exit 2; }
   WHEN_IDLE=0
@@ -593,6 +613,15 @@ release() {  # only what this process took
     HOLD=""
   fi
 }
+keep_output() {  # the command is over (or killed): let the tees drain, keep the last 40 lines, remove the plumbing
+  [ -n "$RAW" ] || return 0
+  local n=0
+  while [ "$n" -lt 50 ] && { kill -0 "$TEE_O" 2>/dev/null || kill -0 "$TEE_E" 2>/dev/null; }; do sleep 0.1; n=$((n + 1)); done
+  kill "$TEE_O" "$TEE_E" 2>/dev/null || true
+  wait "$TEE_O" "$TEE_E" 2>/dev/null || true
+  tail -n 40 "$RAW" > "$OUTLOG" 2>/dev/null || OUTLOG=""  # MUTATION-ANCHOR: 1352-M03
+  rm -f "$RAW" "$RAW.o" "$RAW.e"; RAW=""
+}
 on_signal() {  # <exit code>
   local n
   trap '' INT TERM
@@ -606,9 +635,11 @@ on_signal() {  # <exit code>
     kill -KILL -- "-$CPID" 2>/dev/null || true  # MUTATION-ANCHOR: 1134-M04
     wait "$CPID" 2>/dev/null
   fi
+  keep_output
   release
   exit "$1"
 }
+OUTLOG=""; RAW=""; TEE_O=""; TEE_E=""  # MUTATION-ANCHOR: 1352-M04 (on_signal reads them under `set -u`, and a signal can land while the job still queues)
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap release EXIT
@@ -799,7 +830,23 @@ record_verdict() {  # <tree before> <the command as one line>
 TREE0=""; [ "$SHORT" = 1 ] || TREE0="$(wt_tree)" || TREE0=""
 LOAD0="$(load1_reading)"  # MUTATION-ANCHOR: 1040-H28
 start="$(now)"; start_iso="$(date +%Y-%m-%dT%H:%M:%S)"
-"$@" <&0 &
+# THE LAST 40 LINES OF EVERY RUN (retro-fixes-1111c): heavy.log kept time and rc only. The command's stdout and stderr each go through a `tee` that
+# also appends to one raw file, so the caller sees what it always saw (the two streams stay two) and the tail is kept when the command ends.
+OUTDIR="$D/heavy-out"; OUTLOG=""; RAW=""; TEE_O=""; TEE_E=""
+if mkdir -p "$OUTDIR" 2>/dev/null; then
+  find "$OUTDIR" -type f -name '*.log' -mtime +14 -delete 2>/dev/null || true
+  RAW="$OUTDIR/.raw.$$"
+  if mkfifo "$RAW.o" "$RAW.e" 2>/dev/null && : > "$RAW"; then
+    OUTLOG="$OUTDIR/$TAG-$(date +%Y%m%d-%H%M%S).log"
+    tee -a "$RAW" < "$RAW.o" & TEE_O=$!
+    tee -a "$RAW" < "$RAW.e" >&2 & TEE_E=$!  # MUTATION-ANCHOR: 1352-M02
+  else
+    rm -f "$RAW" "$RAW.o" "$RAW.e"; RAW=""
+  fi
+fi
+if [ -n "$RAW" ]; then "$@" <&0 >"$RAW.o" 2>"$RAW.e" &
+else "$@" <&0 &
+fi
 CPID=$!
 keep_awake "$CPID"
 watch_frozen "$CPID" "$HOLD" & WPID=$!
@@ -824,14 +871,15 @@ if [ -n "$WD" ]; then
   if [ -e "$CAPFILE" ]; then
     kill -KILL -- "-$CPID" 2>/dev/null  # whatever outlived the TERM
     rc=124
-    echo "setup/heavy: short job $TAG was still running at its cap of ${MAX}s: killed, exit 124" >&2
+    echo "setup/heavy: short job $TAG was still running at its cap of ${MAX}s: killed, exit 124 (a job that can pass ${SHORT_CAP}s — a cold go test — runs without --short and takes a slot; --max <s> only lowers the cap)" >&2
   fi
 fi
 CPID=""
 stop_watch
+keep_output
 end="$(now)"; end_iso="$(date +%Y-%m-%dT%H:%M:%S)"
 LOGTAG="$TAG"; [ "$SHORT" = 0 ] || LOGTAG="short:$TAG"
-printf '%s %s %s %s load1=%s/%s %s %s\n' "$start_iso" "$end_iso" $((end - start)) "$rc" "$LOAD0" "$(load1_reading)" "$LOGTAG" "$*" >> "$LOG"  # MUTATION-ANCHOR: 1040-H08
+printf '%s %s %s %s load1=%s/%s %s %s%s\n' "$start_iso" "$end_iso" $((end - start)) "$rc" "$LOAD0" "$(load1_reading)" "$LOGTAG" "$*" "${OUTLOG:+ out=$OUTLOG}" >> "$LOG"  # MUTATION-ANCHOR: 1040-H08
 [ "$rc" != 0 ] || record_verdict "$TREE0" "$*"
 release
 exit "$rc"  # MUTATION-ANCHOR: 1040-H04

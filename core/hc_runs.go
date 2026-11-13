@@ -16,7 +16,7 @@ import (
 )
 
 // hcReadTimeout bounds each read: a stuck core must not hang `hw status` (the cockpit writer waits 5 s too).
-const hcReadTimeout = 5 * time.Second
+var hcReadTimeout = 5 * time.Second // a var so a test on a loaded machine can raise it (hcSelfWorld)
 
 // hcRunEntries is the live hc executors as herdr agent entries and pane entries; answered is false when
 // `hc ls` could not answer (absent or down), which is "unknown", never "none".

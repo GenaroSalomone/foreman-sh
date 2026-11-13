@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -376,6 +377,13 @@ func isSeparatorRow(l string) bool {
 // checks.md says a requirement failed is not done, it closes --blocked (setup:bash-justify-or-port closed done over
 // 2 fail rows, 2026-11-10). It returns CHECKS_NOTE.
 func ChecksGate(artifactsRoot string) (note string, err error) {
+	return checksGate(artifactsRoot, false)
+}
+
+// checksGate is ChecksGate; fnTable is a reviewer's close (review_of), whose checks.md also carries the one-thing-per-function
+// table `function | what it does | verdict | action` (design §3.5): its rows are that table's, with their own four verdicts, and
+// are read by ReviewerGate, not by this one. The table runs from its header to the first line without a pipe.
+func checksGate(artifactsRoot string, fnTable bool) (note string, err error) {
 	file := artifactsRoot + "/checks.md"
 	how := fmt.Sprintf("Write %s as a table, one row per requirement of the brief: its Verification section and each numbered goal:  requirement | verdict | evidence | correction  (verdict: pass, fail or unresolved). NOTHING was sent or marked.", file)
 	if !isRegular(file) {
@@ -385,16 +393,25 @@ func ChecksGate(artifactsRoot string) (note string, err error) {
 	failWhy := ""
 	why := ""
 	hdr := false
+	inFn := false
 	// awk (macOS, UTF-8 locale) aborts on the first record with an invalid
 	// byte sequence, END never runs and the bash sees an empty summary: no rows.
 	if b, rerr := os.ReadFile(file); rerr == nil && utf8.Valid(b) {
 		for _, line := range strings.Split(string(b), "\n") {
 			l := trimRightFn(trimLeftFn(line, awkSpace), awkSpace)
-			if !strings.Contains(l, "|") || isSeparatorRow(l) {
+			if !strings.Contains(l, "|") {
+				inFn = false
+				continue
+			}
+			if isSeparatorRow(l) {
 				continue
 			}
 			l = strings.TrimPrefix(l, "|")
 			c := splitUnescapedPipes(l)
+			if fnTable && (inFn || isFunctionHeader(c)) {
+				inFn = true
+				continue
+			}
 			v := ""
 			if len(c) > 1 {
 				v = trimRightFn(trimLeftFn(awkLower(c[1]), awkSpaceMark), awkSpaceMark)
@@ -497,4 +514,191 @@ func (c *Ctx) pluginVendored(receipt string) func(string) bool {
 		}
 		return false
 	}
+}
+
+// ── the independent reviewer's close (design §3.4, §3.5, §8 C3 S3) ──────────────────────────────────────────────────────────
+//
+// Active when the run's receipt holds `review_of_t<n>` (`<lane>:<task>@<sha>`, written at dispatch for a `kind: review` brief
+// with `review_of:`). The review's pieces are the plugin gates' (the same receipt carries `plugin_review_t<n>`); this one holds
+// what only a reviewer leaves: review.md bound to the SHA it judged, rows that agree with its verdict, and the function table.
+
+var (
+	reviewHeadRe = regexp.MustCompile(`^verdict:[ \t]*(approve|changes-needed)[ \t]+head:[ \t]*([0-9a-fA-F]{7,40})[ \t]*$`)
+	reviewLocRe  = regexp.MustCompile(`[^\s:` + "`" + `]:[0-9]+`)
+)
+
+// reviewSeverities are review.md's severities; `follow-up` is a defect that was already there and never blocks.
+var reviewSeverities = map[string]bool{"blocker": true, "should": true, "nit": true, "follow-up": true}
+
+// functionVerdicts are the one-thing-per-function verdicts of checks.md's function table.
+var functionVerdicts = map[string]bool{"simple": true, "split": true, "merge": true, "inline": true}
+
+// isFunctionHeader is the function table's header row, `function | what it does | verdict | action`, as split cells.
+func isFunctionHeader(c []string) bool {
+	cell := func(i int) string { return strings.Trim(strings.ToLower(strings.TrimSpace(c[i])), "` *") }
+	return len(c) >= 3 && cell(0) == "function" && cell(2) == "verdict"
+}
+
+// sameSHA is two spellings of one commit: equal, or one a prefix of the other of at least 7 hex digits.
+func sameSHA(a, b string) bool {
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	if len(a) < 7 || len(b) < 7 {
+		return false
+	}
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+}
+
+// ReviewerGate holds a reviewer's done to its review: of is the receipt's `<lane>:<task>@<sha>`, workHead the `git rev-parse HEAD`
+// of the reviewer's own worktree (C3: the bytes it read are the bytes the SHA names). review.md's first line is
+// `verdict: approve|changes-needed  head: <sha>` with that SHA, every row is `id | severity | file:line | …`, `approve` has no
+// blocker row and `changes-needed` at least one (S3), and checks.md's function table has a verdict row for every function in
+// functions.txt (a name hw could not extract is not owed).
+func ReviewerGate(artifactsRoot, of, workHead string) (note string, err error) {
+	review := artifactsRoot + "/review.md"
+	how := "Write " + review + " with the first line  verdict: approve | changes-needed  head: <the SHA you judged>  and one row per finding,  id | blocker|should|nit|follow-up | file:line | failure scenario | fix direction  (approve has no blocker row; changes-needed has at least one; a defect that was already there is a follow-up and never blocks). NOTHING was sent or marked."
+	want := of[strings.LastIndex(of, "@")+1:]
+	if !strings.Contains(of, "@") || len(want) < 7 {
+		return "", die("%s", fmt.Sprintf("this reviewer's receipt names the review as '%s', which is not <lane>:<task>@<sha>: hw review wrote it wrong. Report it with done-invoker --blocked. NOTHING was sent or marked.", of))
+	}
+	if !sameSHA(workHead, want) {
+		got := workHead
+		if got == "" {
+			got = "<unreadable>"
+		}
+		return "", die("%s", fmt.Sprintf("this review is of %s and the worktree you read is at %s: what you judged is not the SHA the verdict will name. Do not commit in a review worktree; if it moved, close with done-invoker --blocked naming both SHAs, so the brainer dispatches a fresh review of the right head. NOTHING was sent or marked.", want, got))
+	}
+	b, rerr := os.ReadFile(review)
+	if rerr != nil || !utf8.Valid(b) {
+		return "", die("%s", fmt.Sprintf("this task is the independent review of %s and there is no readable %s. %s", of, review, how))
+	}
+	lines := strings.Split(string(b), "\n")
+	m := reviewHeadRe.FindStringSubmatch(strings.TrimRight(lines[0], "\r"))
+	if m == nil {
+		return "", die("%s", fmt.Sprintf("the first line of %s is '%s', not  verdict: approve | changes-needed  head: <sha>. %s", review, strings.TrimSpace(lines[0]), how))
+	}
+	verdict, head := m[1], m[2]
+	if !sameSHA(head, want) {
+		return "", die("%s", fmt.Sprintf("%s judges head %s, and this review is of %s: a verdict for another SHA does not approve these bytes. Write the SHA you reviewed (%s). NOTHING was sent or marked.", review, head, want, want))
+	}
+	rows, blockers := 0, 0
+	for i, line := range lines[1:] {
+		l := strings.TrimSpace(line)
+		if !strings.Contains(l, "|") || isSeparatorRow(l) {
+			continue
+		}
+		c := splitUnescapedPipes(strings.TrimPrefix(l, "|"))
+		sev := ""
+		if len(c) > 1 {
+			sev = strings.Trim(strings.ToLower(strings.TrimSpace(c[1])), "` *")
+		}
+		if sev == "severity" { // the header row
+			continue
+		}
+		rows++
+		switch {
+		case !reviewSeverities[sev]:
+			return "", die("%s", fmt.Sprintf("row at line %d of %s ('%s') has the severity '%s'. Severities are exactly blocker, should, nit or follow-up, in the second cell. %s", i+2, review, strings.TrimSpace(c[0]), sev, how))
+		case len(c) < 3 || !reviewLocRe.MatchString(c[2]):
+			return "", die("%s", fmt.Sprintf("row at line %d of %s ('%s') has no file:line in its third cell. Every finding names the place it is about. %s", i+2, review, strings.TrimSpace(c[0]), how))
+		}
+		if sev == "blocker" {
+			blockers++
+		}
+	}
+	if verdict == "approve" && blockers > 0 {
+		return "", die("%s", fmt.Sprintf("%s says approve and carries %d blocker row(s): an approval with a blocker is a verdict that disagrees with its own findings. Say changes-needed, or re-rate the row (a defect that was already there is a follow-up). NOTHING was sent or marked.", review, blockers))
+	}
+	if verdict == "changes-needed" && blockers == 0 {
+		return "", die("%s", fmt.Sprintf("%s says changes-needed and carries no blocker row: name the blocker (id | blocker | file:line | failure scenario | fix direction) or approve. NOTHING was sent or marked.", review))
+	}
+	fnNote, err := reviewerFunctionsCovered(artifactsRoot)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("review.md: %s at %s, %d finding row(s), %d blocker(s); %s", verdict, head, rows, blockers, fnNote), nil
+}
+
+// reviewerFunctionsCovered is the function table's coverage of functions.txt (`name<TAB>path` per line, written by hw review next
+// to checks.md): a verdict row for every name. No functions.txt, or an empty one, owes nothing.
+func reviewerFunctionsCovered(artifactsRoot string) (string, error) {
+	fb, ferr := os.ReadFile(artifactsRoot + "/functions.txt")
+	var names []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(fb), "\n") {
+		if n, _, _ := strings.Cut(line, "\t"); strings.TrimSpace(n) != "" && !seen[strings.TrimSpace(n)] {
+			seen[strings.TrimSpace(n)] = true
+			names = append(names, strings.TrimSpace(n))
+		}
+	}
+	if ferr != nil || len(names) == 0 {
+		return "no functions listed, none owed", nil
+	}
+	file := artifactsRoot + "/checks.md"
+	how := fmt.Sprintf("Add to %s the table  function | what it does | verdict | action  with one row per function in %s (verdict exactly simple, split, merge or inline; action none for simple), after a blank line. NOTHING was sent or marked.", file, artifactsRoot+"/functions.txt")
+	var rows [][]string
+	header, inFn := false, false
+	if cb, err := os.ReadFile(file); err == nil && utf8.Valid(cb) {
+		for _, line := range strings.Split(string(cb), "\n") {
+			l := strings.TrimSpace(line)
+			if !strings.Contains(l, "|") {
+				inFn = false
+				continue
+			}
+			if isSeparatorRow(l) {
+				continue
+			}
+			c := splitUnescapedPipes(strings.TrimPrefix(l, "|"))
+			if isFunctionHeader(c) {
+				header, inFn = true, true
+				continue
+			}
+			if inFn && len(c) >= 3 {
+				rows = append(rows, c)
+			}
+		}
+	}
+	if !header {
+		return "", die("%s", fmt.Sprintf("functions.txt lists %d changed function(s) and %s has no function table. %s", len(names), file, how))
+	}
+	var missing, bad []string
+	for _, n := range names {
+		found, ok := false, false
+		for _, c := range rows {
+			if !mentionsToken(c[0], n) {
+				continue
+			}
+			found = true
+			if functionVerdicts[strings.Trim(strings.ToLower(strings.TrimSpace(c[2])), "` *")] {
+				ok = true
+			}
+		}
+		switch {
+		case !found:
+			missing = append(missing, n)
+		case !ok:
+			bad = append(bad, n)
+		}
+	}
+	shown := func(l []string) string {
+		if len(l) > 8 {
+			return strings.Join(l[:8], ", ") + fmt.Sprintf(" and %d more", len(l)-8)
+		}
+		return strings.Join(l, ", ")
+	}
+	if len(missing) > 0 {
+		return "", die("%s", fmt.Sprintf("the function table of %s has no row for %d function(s) the diff changed: %s. %s", file, len(missing), shown(missing), how))
+	}
+	if len(bad) > 0 {
+		return "", die("%s", fmt.Sprintf("the function table of %s has no valid verdict for %s. The third cell is exactly simple, split, merge or inline. %s", file, shown(bad), how))
+	}
+	return fmt.Sprintf("function table covers %d function(s)", len(names)), nil
+}
+
+// ReviewerGate is the Ctx side of ReviewerGate: it reads the reviewer's own worktree HEAD (C3), `git -C $HW_WORKDIR rev-parse HEAD`.
+func (c *Ctx) ReviewerGate(of, artifactsRoot, workdir string) (string, error) {
+	head := ""
+	if workdir != "" {
+		head, _ = c.out("git", "-C", workdir, "rev-parse", "HEAD")
+	}
+	return ReviewerGate(artifactsRoot, of, head)
 }

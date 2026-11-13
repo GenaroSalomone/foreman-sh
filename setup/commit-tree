@@ -499,6 +499,59 @@ and name setup/suite-data/test-budgets.json in this same commit-tree call."
 }
 ct_budget_check
 
+# ── a NEW setup/tests number another subject already holds is refused, by the check setup/test-hw runs first ─────────────────
+# A number picked by hand (1341) was main's already; it surfaced ~10 calls later, when the budget check refused something else
+# (retro hc-dispatch-every-vendor). setup/test-number-check is the runner's own question; here it reads the NEW TREE's file names and
+# its baseline. A repo that carries no checker or no baseline (a fixture) is not asked.
+ct_number_check() {
+  local p new=0 d out rc=0
+  for p in "${paths[@]}"; do
+    case "$p" in setup/tests/*/*) continue ;; setup/tests/[0-9]*-*.sh) ;; *) continue ;; esac
+    git cat-file -e "$tree:$p" 2>/dev/null || continue
+    git cat-file -e "$old:$p" 2>/dev/null && continue
+    new=1
+  done
+  [ "$new" = 1 ] && [ -x "$root/setup/test-number-check" ] || return 0
+  git cat-file -e "$tree:setup/suite-data/test-number-dups.txt" 2>/dev/null || return 0
+  d="$(mktemp -d "${TMPDIR:-/tmp}/ct-number.XXXXXX")" || return 0
+  git cat-file -p "$tree:setup/suite-data/test-number-dups.txt" > "$d/dups.txt"
+  mkdir "$d/tests"
+  while IFS= read -r p; do : > "$d/tests/${p##*/}"; done < <(git ls-tree --name-only "$tree" setup/tests/ | grep -E '^setup/tests/[0-9][0-9]*-[^/]*\.sh$')
+  out="$("$root/setup/test-number-check" "$d/tests" "$d/dups.txt" 2>&1)" || rc=$?
+  rm -rf "$d"
+  [ "$rc" = 0 ] || ct_refuse "a new setup/tests subject takes a number another subject already holds (the gate refuses a repeated number before it starts). The ref was not moved.
+$out
+Take a free number from setup/next-test-number (it reads main and the live task/* branches), rename the file and its budgets entry, and name both in this call."
+}
+ct_number_check
+
+# ── a table that leaves the suite over its time budget is refused, naming the headroom ───────────────────────────────────────
+# setup/test-budget-gate is pre-commit's question (966-M01) and the fast gate's, and commit-tree runs no hook: an executor that recorded a
+# measurement in test-budgets.json learned only at the touched run that main already sat at the ceiling (retro-fixes-1111b). The gate reads the
+# budgets, the ceilings, the retired list and the partition table of the NEW TREE, so a commit that moves the table AND its ceiling passes.
+# Asked only when the commit names one of those tables; a repo with no gate (a fixture) is not asked.
+ct_suite_budget_check() {
+  local p hit=0 d f gate_out gate_rc=0
+  for p in "${paths[@]}"; do
+    case "$p" in setup/suite-data/test-budgets.json|setup/suite-data/test-budget-ceilings.tsv|setup/suite-data/retired-subjects.txt|setup/suite-data/go-test-partitions.txt) hit=1 ;; esac
+  done
+  [ "$hit" = 1 ] && [ -f "$root/setup/test-budget-gate" ] || return 0
+  git cat-file -e "$tree:setup/suite-data/test-budgets.json" 2>/dev/null || return 0
+  d="$(mktemp -d "${TMPDIR:-/tmp}/ct-budget.XXXXXX")"
+  git cat-file -p "$tree:setup/suite-data/test-budgets.json" > "$d/test-budgets.json"
+  : > "$d/ceilings.tsv"
+  git cat-file -e "$tree:setup/suite-data/test-budget-ceilings.tsv" 2>/dev/null && git cat-file -p "$tree:setup/suite-data/test-budget-ceilings.tsv" > "$d/ceilings.tsv"
+  for f in retired-subjects.txt go-test-partitions.txt; do
+    if git cat-file -e "$tree:setup/suite-data/$f" 2>/dev/null; then git cat-file -p "$tree:setup/suite-data/$f" > "$d/$f"; fi
+  done
+  gate_out="$(python3 -I "$root/setup/test-budget-gate" "$d/test-budgets.json" "$d/ceilings.tsv" 2>&1)" || gate_rc=$?  # MUTATION-ANCHOR: 1233-M08
+  rm -rf "$d"
+  [ "$gate_rc" = 0 ] || ct_refuse "this commit leaves the suite over its time budget (setup/test-budget-gate over the new tree's table), so main would sit past its ceiling. The ref was not moved.
+$(printf '%s\n' "$gate_out" | sed 's/^/    /')
+Split the subject it names, or fix the measurement, and ask again; the same question by hand: python3 setup/test-budget-gate"
+}
+ct_suite_budget_check
+
 # ── the two shell checks `bash -n` cannot make: an unbalanced quote it accepts, and `printf | grep -q` under pipefail ──────
 # setup/shell-lint reads the NEW TREE's blobs against the parent's, so only what this commit adds is judged; the same helper is
 # pre-commit's. A repo with no setup/shell-lint (a fixture) is not asked.
@@ -509,6 +562,89 @@ $(printf '%s\n' "$lint_out" | sed 's/^/    /')"
   # a clean run still speaks when a check did not run (no shellcheck): shown on every commit, never only on a refusal
   [ -z "$lint_out" ] || printf '%s\n' "$lint_out" >&2  # MUTATION-ANCHOR: 1233-M06
 fi
+
+# ── the touched subjects of seconds run before the commit, and a red one refuses it ─────────────────────────────────────────────
+# commit-tree runs no hook, so a commit that broke a subject learned it from a gate, late: 540 went red about 30 minutes after a commit, 1334 two
+# hours after it first sat in the touched list, and 207 stayed red about 29 h after install.sh changed (retro-fixes-1111c). Same selector the
+# executor's verify uses (setup/gate-select: the fast subjects that name a named path, and the slow ones `touched` lists), run over THIS commit's
+# paths. A subject budgeted at 20 s or less runs here (cheapest first, up to 180 budgeted seconds), and a red one refuses the commit; the slower ones
+# are LISTED, not run: they stay the batch gate's. The bytes are the working tree's, which for a named path are the ones being committed. A repo with
+# no gate-select or budget table (a fixture) is not asked.
+# A COMMIT MUST NEVER HANG ON THIS (brainer's ruling, same day): the memory guard SIGSTOPs a tree when free memory is under 26%, and a frozen
+# subject made the first version of this check wait for minutes. Each subject therefore runs in its own session under a wall limit (its budget, at
+# least 20 s), the whole check under a wall allowance (150 s), and a subject that times out is KILLED and listed as NOT RUN (frozen/timeout), never
+# counted as red; after the first timeout the rest are not started (the machine is frozen or slow, and another try would only wait again).
+# Subjects run from a scratch directory, so one that writes into its cwd leaves nothing in the worktree.
+CT_SUBJECT_MAX_S=20     # a subject budgeted above this is listed, never run here
+CT_SUBJECT_ALLOW_S=180  # budgeted seconds this check may spend in one commit
+CT_SUBJECT_FLOOR_S="${COMMIT_TREE_SUBJECT_FLOOR_S:-20}"  # the wall limit of one subject is its budget, never less than this
+CT_SUBJECT_WALL_S="${COMMIT_TREE_SUBJECT_WALL_S:-150}"   # the wall the whole check may take
+ct_run_bounded() { # <limit s> <cwd> <subject file> <out file> → the subject's exit; 124 when the limit killed it (its whole session, stopped or not)
+  python3 -I -c '
+import os, signal, subprocess, sys
+lim, cwd, subj, out = float(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+with open(out, "wb") as f:
+    p = subprocess.Popen(["nice", "-n", "10", "bash", subj], cwd=cwd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        sys.exit(p.wait(timeout=lim))
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGCONT, signal.SIGKILL):
+            try: os.killpg(p.pid, sig)
+            except OSError: pass
+        p.wait()
+        sys.exit(124)' "$1" "$2" "$3" "$4"
+}
+ct_subjects_check() {
+  [ -f "$root/setup/gate-select" ] && [ -f "$root/setup/suite-data/test-budgets.json" ] && [ -f "$root/setup/hooks/suite-trigger-pattern.sh" ] || return 0
+  local changed trigger names n secs plan run=() runsecs=() later=() red=() spent=0 out rc first i limit scratch t0 timedout=0 ran=0
+  changed="$(mktemp "${TMPDIR:-/tmp}/commit-tree-changed.XXXXXX")" || return 0
+  printf '%s\n' "${paths[@]}" > "$changed"
+  trigger="$(bash -c '. "$1" && printf %s "$SUITE_TRIGGER_PATTERN"' _ "$root/setup/hooks/suite-trigger-pattern.sh" 2>/dev/null)" || trigger=""
+  names="$( { env -u HW_TASK python3 -I "$root/setup/gate-select" "$root" "$changed" "$trigger" 2>/dev/null | awk '$1 == "subject" { print $2 }'
+              env -u HW_TASK python3 -I "$root/setup/gate-select" "$root" "$changed" "$trigger" touched 2>/dev/null | awk '$1 == "touched" || $1 == "touched-skipped" { print $2 }'; } | sort -u)"
+  rm -f "$changed"
+  [ -n "$names" ] || return 0
+  plan="$(printf '%s\n' "$names" | python3 -I -c '
+import json, sys
+b = json.load(open(sys.argv[1]))["files"]
+for n in sorted((l.strip() for l in sys.stdin if l.strip()), key=lambda n: (b.get(n, {}).get("seconds", 1e9), n)):
+    print("%s\t%s" % (n, b[n]["seconds"] if n in b else "?"))' "$root/setup/suite-data/test-budgets.json")" || return 0
+  while IFS=$'\t' read -r n secs; do
+    [ -f "$root/setup/tests/$n" ] || continue
+    if [ "$secs" = "?" ] || ! awk -v s="$secs" -v m="$CT_SUBJECT_MAX_S" 'BEGIN { exit !(s + 0 <= m + 0) }'; then  # MUTATION-ANCHOR: 1354-M02
+      later+=("$n (${secs} s)")
+    elif ! awk -v t="$spent" -v s="$secs" -v m="$CT_SUBJECT_ALLOW_S" 'BEGIN { exit !(t + s <= m) }'; then
+      later+=("$n (${secs} s, over this commit's ${CT_SUBJECT_ALLOW_S} s allowance)")
+    else
+      spent="$(awk -v t="$spent" -v s="$secs" 'BEGIN { print t + s }')"; run+=("$n"); runsecs+=("$secs")
+    fi
+  done <<< "$plan"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/commit-tree-subjects.XXXXXX")" || return 0
+  t0="$(date +%s)"
+  i=-1
+  while [ $((i += 1)) -lt "${#run[@]}" ]; do
+    n="${run[$i]}"
+    if [ "$timedout" = 1 ]; then later+=("$n (${runsecs[$i]} s, not started: an earlier subject timed out, the machine is frozen or slow)"); continue; fi
+    if [ $(( $(date +%s) - t0 )) -ge "$CT_SUBJECT_WALL_S" ]; then later+=("$n (${runsecs[$i]} s, not started: this check's ${CT_SUBJECT_WALL_S} s wall allowance is spent)"); continue; fi
+    limit="$(awk -v s="${runsecs[$i]}" -v f="$CT_SUBJECT_FLOOR_S" 'BEGIN { printf "%d", (s + 0 > f + 0 ? s : f) + 0.999 }')"
+    out="$scratch/out.$i"; mkdir -p "$scratch/cwd.$i"
+    rc=0; ct_run_bounded "$limit" "$scratch/cwd.$i" "$root/setup/tests/$n" "$out" || rc=$?
+    ran=$((ran + 1))
+    if [ "$rc" -eq 124 ]; then  # MUTATION-ANCHOR: 1354-M03
+      timedout=1; later+=("$n (${runsecs[$i]} s, FROZEN/TIMEOUT: killed after ${limit} s)"); ran=$((ran - 1))
+    elif [ "$rc" -ne 0 ]; then  # MUTATION-ANCHOR: 1354-M01
+      first="$(grep -m1 '^not ok' "$out" | cut -c1-200)"
+      red+=("$n (exit $rc)${first:+: $first}")
+    fi
+  done
+  rm -rf "$scratch"
+  [ "$ran" -eq 0 ] || printf 'commit-tree: ran %s touched subject(s) of seconds%s\n' "$ran" "$([ "${#red[@]}" -eq 0 ] && printf ', all green')" >&2
+  [ "${#later[@]}" -eq 0 ] || printf 'commit-tree: NOT RUN here (they stay the batch gate'"'"'s): %s\n' "$(printf '%s; ' "${later[@]}")" >&2
+  [ "${#red[@]}" -eq 0 ] || ct_refuse "a subject this commit touches is red, so it would be red in the batch gate hours later. The ref was not moved.
+$(printf '    %s\n' "${red[@]}")
+Run it alone for the whole output: bash setup/tests/<n>-*.sh. Is the red the branch's or the base's: bash setup/test-hw --base \"\$(git merge-base HEAD main)\" setup/tests/<n>-*.sh"
+}
+ct_subjects_check
 
 # ── a test number another branch already owns is WARNED, never refused ─────────────────────────────
 # Same warning setup/hooks/pre-commit prints for `git commit`, which this tool never runs: three setup/tests/1262-* reached main

@@ -31,4 +31,28 @@ in="$(cat)" || in=""
   printf '%s\n' "$out" > "$dir/.$acct.$$" && mv -f "$dir/.$acct.$$" "$dir/$acct.json"
 ) >/dev/null 2>&1 || true
 
+# A LONG SESSION'S TRANSCRIPT IS READ WHOLE ON EVERY REFRESH. ccstatusline parses
+# transcript_path each time: a 473 MB transcript cost 2.8 GB RSS and 4.3 s per refresh
+# (99 MB, 0.16 s on a small one), and the memory guard froze the release cut under it
+# (2026-11-12). Over HW_STATUSLINE_TAIL_MB (default 8) the command gets a copy of the
+# transcript's last that-many MB, cut at a line boundary; the status line reads only
+# the recent turns anyway. 0 turns this off.
+tail_mb="${HW_STATUSLINE_TAIL_MB:-8}"
+case "$tail_mb" in ''|*[!0-9]*) tail_mb=8 ;; esac
+tp="$(printf '%s' "$in" | jq -r '.transcript_path // empty' 2>/dev/null)"
+if [ "$tail_mb" -gt 0 ] && [ -n "$tp" ] && [ -f "$tp" ]; then
+  size="$(stat -f %z "$tp" 2>/dev/null || stat -c %s "$tp" 2>/dev/null || echo 0)"
+  if [ "$size" -gt $((tail_mb * 1048576)) ]; then
+    tdir="${HW_STATUSLINE_TAIL_DIR:-$HOME/.cache/hw/statusline-tail}"
+    key="$(printf '%s' "$tp" | shasum | cut -c1-16)"
+    if mkdir -p "$tdir" 2>/dev/null \
+       && tail -c "$((tail_mb * 1048576))" "$tp" | tail -n +2 > "$tdir/.$key.$$" \
+       && mv -f "$tdir/.$key.$$" "$tdir/$key.jsonl"; then
+      in2="$(printf '%s' "$in" | jq -c --arg t "$tdir/$key.jsonl" '.transcript_path = $t' 2>/dev/null)"
+      [ -n "$in2" ] && in="$in2"
+    fi
+    rm -f "$tdir/.$key.$$" 2>/dev/null
+  fi
+fi
+
 printf '%s' "$in" | exec "$@"

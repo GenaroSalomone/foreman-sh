@@ -181,15 +181,18 @@ def main():
         for signum in [getattr(signal, n) for n in ('SIGTERM', 'SIGHUP') if hasattr(signal, n)]:  # MUTATION-ANCHOR: 881-M01
             signal.signal(signum, forward)  # MUTATION-ANCHOR-END: 881-M01
         proc = subprocess.Popen(['bash', str(candidate / 'setup/test-hw')],
-                                cwd=candidate, env=env, stdout=subprocess.PIPE,
-                                text=True)
+                                cwd=candidate, env=env, stdout=subprocess.PIPE)
         child.append(proc)
         pending = []
-        for line in proc.stdout:
-            if pending or re.match(r'^(?:[0-9]+ tests passed|NO TRACKED NUMBER)', line):
+        # BYTES, NOT TEXT. A subject may print bytes that are not UTF-8; reading the runner as text
+        # raised UnicodeDecodeError here, the wrapper left its TemporaryDirectory (the snapshot) and
+        # the runner went on over a deleted tree: every later bash subject read «does not parse».
+        out = sys.stdout.buffer
+        for line in proc.stdout:  # MUTATION-ANCHOR: 1367-M01
+            if pending or re.match(rb'^(?:[0-9]+ tests passed|NO TRACKED NUMBER)', line):
                 pending.append(line)
             else:
-                print(line, end='', flush=True)
+                out.write(line); out.flush()  # MUTATION-ANCHOR-END: 1367-M01
         rc = proc.wait()
         ended = inventory(candidate)
         intact = frozen == ended
@@ -200,7 +203,7 @@ def main():
                                + ' (first differences: %s)' % ', '.join(
                                    '%s %r != %r' % (k, frozen.get(k), ended.get(k)) for k in diff))
         if rc == 0:
-            print(''.join(pending), end='', flush=True)
+            out.write(b''.join(pending)); out.flush()
         return rc
 
 

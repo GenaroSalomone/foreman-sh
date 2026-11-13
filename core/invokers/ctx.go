@@ -32,6 +32,7 @@ type Ctx struct {
 	Exit      func(int)     // what a signal handler ends the process with
 
 	exitSpoken      bool
+	checking        bool   // done-invoker --check: nothing is delivered, so a refusal is not a failed delivery
 	exitTail        string // the last line the exit guard prints, when a held report has a pointer to keep
 	runLock         string // INVOKER_RUN_LOCK
 	envFile         string // INVOKER_ENV_FILE

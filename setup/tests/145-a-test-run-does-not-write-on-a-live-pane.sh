@@ -132,6 +132,10 @@ pollute() { # pollute <command...>
       HERDR_WORKSPACE_ID=wLIVE \
       HERDR_BIN_PATH=/nonexistent/herdr \
       HERDR_FUTURE_KNOB=1 \
+      HC_SCOPE=wLIVE \
+      HC_TERMINAL_ID=tLIVE \
+      HC_TERMINAL_SOCKET=/nonexistent/hc.sock \
+      HC_FUTURE_KNOB=1 \
       "$@"
 }
 
@@ -224,6 +228,10 @@ for n in HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID \
   eval "v=\${$n:-<swept>}"
   printf '%s=%s\n' "$n" "$v"
 done
+for n in HC_SCOPE HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_FUTURE_KNOB; do
+  eval "v=\${$n:-<swept>}"
+  printf '%s=%s\n' "$n" "$v"
+done
 printf 'SOCKET=%s\n' "${HERDR_SOCKET_PATH:-<swept>}"
 printf 'TMP=%s\n' "$TMP"
 PROBE
@@ -233,6 +241,18 @@ survivors="$(printf '%s\n' "$PROBE_OUT" | grep -v '=<swept>$' | grep -v '^SOCKET
 [ -z "$survivors" ] \
   || fail "C03 a live pane's herdr identity survived _common.sh: $(printf '%s' "$survivors" | tr '\n' ' ')"
 claim "C03 every HERDR_* a live pane exports is swept, including an invented HERDR_FUTURE_KNOB"
+
+# ── C05. herdr-core's terminal identity is swept too ────────────────────────
+#
+# An executor runs INSIDE an hc terminal, so HC_SCOPE/HC_TERMINAL_ID/HC_TERMINAL_SOCKET are in the environment of whoever runs the
+# suite. Measured 2026-11-11: with them left in, 174, 492, 493 and 824 were red (each green under `env -u HC_*`). A subject started
+# with them set must see none, an invented HC_FUTURE_KNOB included.
+hc_survivors="$(printf '%s\n' "$PROBE_OUT" | grep '^HC_' | grep -v '=<swept>$' || true)"
+grep -q '^HC_SCOPE=<swept>$' <<<"$PROBE_OUT" \
+  || fail "C05 the probe did not report HC_SCOPE at all, so the absence below proves nothing: $PROBE_OUT"
+[ -z "$hc_survivors" ] \
+  || fail "C05 an hc terminal's identity survived _common.sh: $(printf '%s' "$hc_survivors" | tr '\n' ' ')"
+claim "C05 HC_SCOPE, HC_TERMINAL_ID, HC_TERMINAL_SOCKET and an invented HC_FUTURE_KNOB are all swept"
 
 # ── C04. the second cut: the address belongs to the harness ─────────────────
 #
@@ -305,5 +325,16 @@ esac
 saw_mutant "M03 drops the address re-point, leaving no address for a caller that carries its own default" "$out" \
   'SOCKET=<swept>'
 
+# M04 — the HC_* sweep dropped: an hc terminal's identity survives into every subject (the four reds of 2026-11-11).
+make_harness m04
+mutate_anchor 145-M04 "$HARNESS" 'printf "M04-HC-KEPT\n" >&2; for _v in ; do'
+out="$(pollute bash "$TMP/probe.sh" "$HARNESS" 2>&1 || true)"
+case "$out" in
+  *M04-HC-KEPT*) : ;;
+  *) fail "M04 VACUOUS: the mutated line never ran — out: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')" ;;
+esac
+saw_mutant "M04 drops the HC_* sweep, and an hc terminal's identity survives into every fixture" "$out" \
+  "HC_SCOPE=wLIVE" "HC_TERMINAL_ID=tLIVE" "HC_FUTURE_KNOB=1"
+
 [ "$CLAIMS" -ge 1 ] || fail "no behaviour claims were made"
-printf 'coverage - %s behaviour claims, %s dedicated production mutants\n' "$CLAIMS" 3
+printf 'coverage - %s behaviour claims, %s dedicated production mutants\n' "$CLAIMS" 4

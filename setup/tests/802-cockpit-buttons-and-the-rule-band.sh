@@ -84,7 +84,7 @@ M = [
  ("a button calls a verb outside the allowlist", "hooks/verbs.ts", "hw done <project> <task>", "hw reap <project> <task>"),
  ("a button runs on the wrong row", "hooks/register.tsx", "task: r.task,\n  pane: r.pane,", "task: r.project,\n  pane: r.pane,"),
  ("a challenge is answered with the ask's verb", "hooks/register.tsx", "r.ask.kind === 'challenge' ? 'challenge-reply' : 'reply'", "'reply'"),
- ("the reply drops its hold", "hooks/verbs.ts", "'channel-send --report --reply-hold <pending_reply> herdr", "'channel-send --report herdr"),
+ ("the reply drops its hold", "hooks/verbs.ts", "'channel-send --report --reply-hold <pending_reply> <route>", "'channel-send --report <route>"),
  ("the reply text goes in argv, not stdin", "hooks/register.tsx", "r.id, namesOf(r), text)\n    },\n    subagents", "r.id, namesOf(r))\n    },\n    subagents"),
  ("done skips its confirmation", "hooks/verbs.ts", "template: 'hw done <project> <task>', confirm: true", "template: 'hw done <project> <task>', confirm: false"),
  ("the ruling text goes in argv, not stdin", "hooks/register.tsx", "stdin === undefined ? { timeoutMs: VERB_MS } : { stdin, timeoutMs: VERB_MS }", "{ timeoutMs: VERB_MS }"),

@@ -58,6 +58,7 @@ type runRec struct {
 	modelVerdict  string
 	lease         *leaseInfo
 	ownTab, ownWs string
+	ownHC         string // the app terminal dispatch recorded for the run (<rundir>/hc), "" for a herdr run
 }
 
 func (r *runRec) blockedTruthy() bool { return r != nil && r.hasBlocked && r.blockedSince != 0 }
@@ -508,6 +509,9 @@ func (s *statusReader) runsOf(workdir string) []*runRec {
 		r.lease = chainingLeaseOf(d)
 		r.ownTab = runOwns(d, "tab")
 		r.ownWs = runOwns(d, "workspace")
+		if _, _, addr, isHC := hcRunRecord(d); isHC {
+			r.ownHC = addr
+		}
 		out = append(out, r)
 	}
 	return out

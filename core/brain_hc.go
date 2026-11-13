@@ -44,6 +44,11 @@ func (b *brainRun) herdrApp(c brainCmd, args ...string) brainRes {
 	return b.run(c)
 }
 
+// hcAppFn is `herdr-app <args>` as the helpers shared with hw take it: (stdout, exit status).
+func (b *brainRun) hcAppFn() func(args ...string) (string, int) {
+	return func(a ...string) (string, int) { r := b.herdrApp(brainCmd{}, a...); return r.Out, r.RC }
+}
+
 // hcStr is one string field of an hc reply, "" when absent.
 func hcStr(m jmap, k string) string {
 	if pyTruthy(m[k]) {
@@ -90,18 +95,17 @@ func (b *brainRun) hcTerminals(labels ...string) ([]hcTerm, bool) {
 	return out, true
 }
 
-// hcUnsupported names the first flag hc has no mapping for yet, "" when none.
+// hcUnsupported names the flag the app route does not run, "" when none. --self and --await-idle run (brain_hc_self.go).
 func (b *brainRun) hcUnsupported() string {
-	switch {
-	case b.inPane != "":
-		return "--in-pane (brain relaunch)"
-	case b.self:
-		return "--self"
-	case b.awaitPane != "":
-		return "--await-idle"
+	if b.inPane != "" {
+		return "--in-pane"
 	}
 	return ""
 }
+
+// hcTabName is the name of the brainer's tab in the app, whatever the vendor: one brainer per lane (`label=brain`), so the
+// TUI's `brainer:oc` split has no counterpart here.
+const hcTabName = "brain"
 
 // hcName is the terminal's name. `hc run --name` takes 1-32 of a-z 0-9 - _ and
 // refuses a name already live; both are the core's to enforce, so nothing here
@@ -124,16 +128,19 @@ func sameDir(a, b string) bool {
 	return a != "" && b != "" && pyRealpath(a) == pyRealpath(b)
 }
 
-// hcRefuse is what this step cannot do on herdr-core, in one place: a flag or a
-// verb hc has no mapping for is refused by name, and nothing is sent.
+// hcRefuse is the one flag the app route does not run, refused with the reason that was measured: --in-pane restarts a
+// brainer INSIDE an existing herdr pane by typing into the shell under it, and an app terminal has no shell under the agent
+// (`hc run … env … claude`: `hc ls` names the terminal's program as the launch argv, measured 2026-11-12).
 func (b *brainRun) hcRefuse(what string) int {
-	only := "a brainer"
+	lane := "<lane>"
 	if b.proj != "" {
-		only = "the " + b.proj + " brainer"
+		lane = b.proj
 	}
-	b.errf("brain: %s has no herdr-core mapping yet: this step of foreman on the herdr app opens and\n", what)
-	b.errf("brain: focuses %s, and nothing else. Nothing was sent and nothing was restarted.\n", only)
-	b.errf("brain: run it from a herdr TUI pane.\n")
+	b.errf("brain: %s restarts a brainer inside an existing herdr pane by typing the new command into the\n", what)
+	b.errf("brain: shell under it, and an app terminal has no shell under the agent: `hc run` starts the agent as\n")
+	b.errf("brain: the terminal's own program, so there is nothing to type into. Nothing was sent and nothing was\n")
+	b.errf("brain: restarted. On the app the same job ends the terminal and starts a new one:\n")
+	b.errf("brain:   brain %s --resume <session id>   (or `brain relaunch %s`, which reads the session itself)\n", lane, lane)
 	return 1
 }
 
@@ -161,6 +168,14 @@ func (b *brainRun) launchHC() int {
 		if sameDir(t.cwd, b.dir) {
 			addr = t.addr
 			break
+		}
+	}
+	if b.self { // the brainer resetting ITSELF: armed now, performed by a detached process once this turn ends (brain_hc_self.go)
+		return b.hcArmSelfReset(addr)
+	}
+	if b.awaitPane != "" { // that detached process, waiting out the turn that armed it
+		if rc := b.hcAwaitIdle(addr); rc != 0 {
+			return rc
 		}
 	}
 	// --reset and --resume REPLACE the brainer: its terminal is ended and started again (brain_hc_reset.go).
@@ -216,6 +231,8 @@ func (b *brainRun) launchHC() int {
 		b.outf("opened %s / %s (%s, %s) — cwd %s\n", b.space, b.tabLabel, addr, b.kind, b.dir)
 		b.hcWaitReady(addr)
 	} else {
+		// a brainer opened before the tabs were named (or whose rename missed) is named now; a name a person gave it is left (hcNameTab)
+		hcNameTab(b.hcAppFn(), b.sleep, addr, hcTabName)
 		b.outf("focused %s / %s (%s, %s) — cwd %s\n", b.space, b.tabLabel, addr, b.kind, b.dir)
 	}
 	b.flushOutbox(b.proj, addr)
@@ -294,7 +311,7 @@ func (b *brainRun) hcStartBrainer(plan brainerLaunch) (string, int) {
 		"--label", "label=brain", "--label", "herdr.space=" + b.space,
 		"--"}
 	args = append(args, argv...)
-	app := func(a ...string) (string, int) { r := b.herdrApp(brainCmd{}, a...); return r.Out, r.RC }
+	app := b.hcAppFn()
 	spaceNew := hcSpaceIsNew(app, b.space)
 	raw := brTrimNL(b.hc(brainCmd{Merge: true}, args...).Out)
 	v, _ := bjParse(raw)
@@ -317,6 +334,7 @@ func (b *brainRun) hcStartBrainer(plan brainerLaunch) (string, int) {
 		if spaceNew {
 			hcNameSpace(app, b.sleep, b.space)
 		}
+		hcNameTab(app, b.sleep, addr, hcTabName) // the app would call the brainer's tab «1»
 		return addr, 0
 	}
 	b.errf("brain: %s started but is not provably this lane's brainer (label=brain, cwd %s), so the next\n", addr, b.dir)

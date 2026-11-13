@@ -1,4 +1,4 @@
-# Contributing to foreman-sh
+# Contributing to foreman
 
 ## Reporting
 

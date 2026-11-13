@@ -7,8 +7,8 @@ export type Verb = { template: string; confirm: boolean; stdin: boolean }
 export const VERBS: Record<string, Verb> = {
   done: { template: 'hw done <project> <task>', confirm: true, stdin: false },
   ruling: { template: 'hw ruling <pane> -', confirm: false, stdin: true },
-  reply: { template: 'channel-send --report --reply-hold <pending_reply> herdr <pane> - -', confirm: false, stdin: true },
-  'challenge-reply': { template: 'channel-send --ruling --reply-hold <pending_reply> herdr <pane> - -', confirm: false, stdin: true },
+  reply: { template: 'channel-send --report --reply-hold <pending_reply> <route> <pane> - -', confirm: false, stdin: true },
+  'challenge-reply': { template: 'channel-send --ruling --reply-hold <pending_reply> <route> <pane> - -', confirm: false, stdin: true },
   receipt: { template: 'hw receipt <project> <task>', confirm: false, stdin: false },
   preflight: { template: 'hw preflight --json -- <argv...>', confirm: false, stdin: false },
 }

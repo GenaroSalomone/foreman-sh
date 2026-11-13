@@ -89,7 +89,8 @@ def label_from_cwd(cwd, brain):
             table = json.load(fh)
     except (OSError, ValueError):
         return None
-    work = _expand(table.get("work", "{brain}/../work"), brain, None)
+    root = table.get("root")
+    work = _expand(table.get("work") or (root + "/work" if isinstance(root, str) else "{brain}/../work"), brain, None)
     best, best_len = None, -1
     cwd = os.path.realpath(cwd)
     for lane, conf in (table.get("lanes") or {}).items():

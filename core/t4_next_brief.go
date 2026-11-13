@@ -13,7 +13,7 @@ import (
 
 var nextKnownKeys = map[string]bool{"agent": true, "model": true, "effort": true, "sdd": true, "placement": true, "worktree": true,
 	"database": true, "invoker": true, "requires": true, "requires-agents": true, "kind": true, "base": true,
-	"decision": true, "delivery": true, "boundary": true, "deployed_check": true, "sandbox": true, "review": true, "plugins": true,
+	"decision": true, "delivery": true, "boundary": true, "deployed_check": true, "sandbox": true, "review": true, "review-skip": true, "review_of": true, "plugins": true,
 	"requested_by": true, "asked": true, "authorizes": true, "secrets": true}
 
 // nextBriefDeclares is _brief_declares: "key\tvalue" per declared key, "__malformed__\t…" and
@@ -297,7 +297,15 @@ func nextPluginsDeclared(brief string) []string {
 // nextReviewGate is `( BRIEF=<brief>; _review_gate )`: a bad value, or `plugins` with nothing to name, refuses the
 // re-task before anything is sent.
 func (a *app) nextReviewGate(brief string) {
-	reviewGateOf(reviewRawOf(nextFmValue("review", brief)), nextPluginsDeclared(brief), a.die, a.warn)
+	mode := reviewGateOf(reviewRawOf(nextFmValue("review", brief)), nextPluginsDeclared(brief), a.die, a.warn)
+	if reviewBareNone(nextIsBuild(brief), nextFmValue("review", brief) != "", mode, nextFmValue("review-skip", brief)) {
+		a.warn(reviewBareNoneWarning)
+	}
+}
+
+// nextIndependentReview is independentReview for a re-task: a build owes the independent review unless `review: none` + `review-skip:`.
+func nextIndependentReview(brief string) bool {
+	return reviewOwedBy(nextIsBuild(brief), nextFmValue("review", brief) != "", nextReviewMode(brief), nextFmValue("review-skip", brief))
 }
 
 // nextReviewReceipt is `BRIEF=<brief> _review_receipt <run dir> <key>`: only when the brief declares review:.
@@ -317,7 +325,7 @@ func (a *app) nextReviewReceipt(rundir, key, brief string) {
 func (a *app) nextJdAgentsReceipt(rundir, key, brief, vendor, workdir string) {
 	// The same gates the re-task's closing has (`f.jd` in t4_next_msg.go): a resolved base ref and a build kind, or
 	// there is no Judgment Day to hold the close to. Judgment Day, both judges, 2026-11-04.
-	if (vendor != "pi" && vendor != "claude") || !nextJudgmentDayRequired(brief) || a.nextEnvVal(rundir, "HW_REVIEW_BASE_REF") == "" || !nextIsBuild(brief) {
+	if (vendor != "pi" && vendor != "claude") || !nextJudgmentDayRequired(brief) || a.nextEnvVal(rundir, "HW_REVIEW_BASE_REF") == "" || !nextIsBuild(brief) || nextIndependentReview(brief) {
 		return
 	}
 	home := a.getenv("HOME")
@@ -330,13 +338,13 @@ func (a *app) nextJdAgentsReceipt(rundir, key, brief, vendor, workdir string) {
 }
 
 // nextPluginReviewReceipt is the plugin review skills the NEW brief's closing names, keyed by task like the review above.
-func (a *app) nextPluginReviewReceipt(rundir, key, brief string) {
-	sk := pluginReviewSkillsNamed(nextReviewMode(brief), a.nextEnvVal(rundir, "HW_REVIEW_BASE_REF"), nextIsBuild(brief), nextPluginsDeclared(brief))
-	if len(sk) == 0 { // # MUTATION-ANCHOR: 1150-G08
+func (a *app) nextPluginReviewReceipt(rundir, key, brief, vendor string) {
+	if !nextIndependentReview(brief) { // the pieces moved to the reviewer; see pluginReviewReceipt
 		return
 	}
-	a.receiptInto(rundir, key, strings.Join(reviewSkillsQualified(nextPluginsDeclared(brief)), ","),
-		"brief plugins: and review: in "+brief+" at hw next — done-invoker proves each skill from the transcript, or takes a review-skip: line")
+	if piece := closeSimplifyPiece(vendor); piece != "" {
+		a.receiptInto(rundir, key, piece, "kind build owing the independent review, on claude, at hw next — done-invoker proves the Skill call `simplify` from the transcript, or takes a review-skip: line")
+	}
 }
 
 func nextGitOut(dir string, args ...string) (string, error) {

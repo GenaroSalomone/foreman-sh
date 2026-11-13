@@ -407,6 +407,8 @@ def exp(p):
     return home + p[1:] if p == "~" or p.startswith("~/") else p
 if not work and isinstance(doc.get("work"), str):
     work = exp(doc["work"])
+elif not work and isinstance(doc.get("root"), str):
+    work = exp(doc["root"] + "/work")
 roots = [work] if work else []
 lanes = doc.get("lanes") if isinstance(doc.get("lanes"), dict) else {}
 for lane, v in lanes.items():

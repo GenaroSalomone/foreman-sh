@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Something you would like foreman-sh to do
+about: Something you would like foreman to do
 labels: enhancement
 ---
 
@@ -14,4 +14,4 @@ labels: enhancement
 
 ## Alternatives you considered
 
-<!-- Including "do it outside foreman-sh". -->
+<!-- Including "do it outside foreman". -->

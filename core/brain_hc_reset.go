@@ -7,7 +7,8 @@ package main
 // with `claude --resume <id>` (--resume) or without (--reset). The conversation the new terminal resumes is named by
 // the person (--resume) or read from the terminal's own claude: claude writes <config dir>/sessions/<pid>.json
 // (MEASURED 2026-11-09: pid, sessionId, cwd, status), and `hc get` names the terminal's pid.
-// shortcut: a brainer is replaced, never typed into, so --self/--await-idle/--in-pane (the pane's own typing) stay refused.
+// A brainer is replaced, never typed into: --in-pane (typing into the shell under a pane) stays refused by name, and
+// --reset --self is the same replacement armed by the brainer and performed from outside it (brain_hc_self.go).
 
 import (
 	"encoding/json"
@@ -20,7 +21,9 @@ var reHCAddr = regexp.MustCompile(`^t[0-9]+$`)
 
 // hcEnd ends the brainer terminal addr, refusing one that is working (a turn would be cut) unless --force says so.
 func (b *brainRun) hcEnd(addr string) bool {
-	if addr == b.getenv("HC_TERMINAL_ID") { // the TUI's ownPaneGate: brain does not end the terminal it runs in
+	// the TUI's ownPaneGate: brain does not end the terminal it runs in. The detached `--reset --await-idle` arm carries
+	// that terminal's HC_TERMINAL_ID but runs in a session of its own, outside it (hcAwaitIdle proved it is the armed one).
+	if addr == b.getenv("HC_TERMINAL_ID") && b.awaitPane != addr { // MUTATION-ANCHOR: hc-self-gate
 		b.errf("brain: %s is the terminal brain is running in, and brain does not kill its own terminal. Nothing was sent and nothing was restarted. Run this from ANOTHER terminal.\n", addr)
 		return false
 	}

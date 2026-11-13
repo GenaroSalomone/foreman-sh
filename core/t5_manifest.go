@@ -269,6 +269,9 @@ func (d *dsp) dispatchManifest(dir string) {
 		}
 	} else if d.brief == "" {
 		verifyLine = "none — no brief, so nothing to run and nothing measured at close"
+	} else if k := d.briefKindForClose(); d.proj == "setup" && (k == "" || k == "build") {
+		// a setup build closes with NOT VERIFIED and a done-invoker that wants checks, and a plain "none" line here was read by no one: the retro of 2026-11-11 met it only at `hw done`
+		verifyLine = "! setup build with no fence: paste the BRIEF-TEMPLATE Done-when fence"
 	} else {
 		verifyLine = "none — the brief has no runnable command in its Testing/Verification section"
 	}
@@ -406,7 +409,12 @@ func (d *dsp) dispatchManifest(dir string) {
 		if kf == "" {
 			kf = "4h"
 		}
-		chainingLine = "enabled — leased for " + d.keepPaneSeconds + "s  (chosen by --keep-pane " + kf + "; expiry closes the pane)\n  chaining why  " + d.keepPaneWhy // # MUTATION-ANCHOR: 844-37-M02
+		chainingLine = "enabled — leased for " + d.keepPaneSeconds + "s  (" + func() string { // # MUTATION-ANCHOR: 844-37-M02
+			if d.keepPaneDefault {
+				return "default for a build that owes the independent review"
+			}
+			return "chosen by --keep-pane " + kf
+		}() + "; expiry closes the pane)\n  chaining why  " + d.keepPaneWhy // # MUTATION-ANCHOR-END: 844-37-M02
 	} else {
 		chainingLine = "disabled  (default; a done report closes the owned pane, a --blocked one keeps it waiting)"
 		if !d.here {

@@ -68,7 +68,7 @@ func (c *Ctx) rootsFromTable() string {
 	}
 	home := c.get("HOME")
 	if work == "" {
-		if w, ok := doc["work"].(string); ok {
+		if w := tableWork(doc); w != "" {
 			work = expandHome(home, w)
 		}
 	}

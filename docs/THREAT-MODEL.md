@@ -1,6 +1,6 @@
 # Threat model
 
-What foreman-sh's guards are built to stop, what they are not, and what the
+What foreman's guards are built to stop, what they are not, and what the
 harness assumes about the machine it runs on. The limitations register,
 [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md), carries the measured detail
 (L5 for the guards).

@@ -72,12 +72,54 @@ unset _v 2>/dev/null || true
 # every red instead of the first. It travels as the environment because the
 # snapshot below re-executes this file without its arguments, and a nested
 # runner never inherits it (tests/_common.sh sweeps HW_*).
-for _a in "$@"; do
-  case "$_a" in
-    --keep-going) export HW_TEST_KEEP_GOING=1 ;;
-    *) printf 'not ok - runner: unknown argument %s (the only one is --keep-going)\n' "$_a" >&2; exit 2 ;;
+#
+# --base <ref> <subject>...: IS THIS RED THE BRANCH'S OR THE BASE'S? (retro-fixes-1111c, item 4.) Proving a bash subject red on the base by hand took about
+# 12 calls each time, and a `git archive` copy gave a false rc=128 (it has no .git, and the subject runs git). Go has had the answer since
+# `go-test-core.sh --base <ref> -run <T>`; this is the same answer for a subject, in the same words: ONE fresh clone at <ref>, each named subject run
+# there and on this tree under `env -i` (the label pass's clean environment), `red`/`green` for each and `none` where the subject does not exist on the
+# base (a subject the branch added). The exit is THIS tree's (1 when any named subject is red here). It runs nothing else and writes nothing but the clone.
+BASE_REF=""; BASE_SUBJECTS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --keep-going) export HW_TEST_KEEP_GOING=1; shift ;;
+    --base)
+      [ $# -ge 2 ] && [ -n "$2" ] || { printf 'not ok - test-hw: --base takes <ref> <subject>...: setup/tests files run on that ref and on this tree (see the header of setup/test-hw)\n' >&2; exit 2; }
+      BASE_REF="$2"; shift 2 ;;
+    *)
+      if [ -n "$BASE_REF" ] && [ "${1#-}" = "$1" ]; then BASE_SUBJECTS+=("$1"); shift; continue; fi
+      printf 'not ok - runner: unknown argument %s (the only ones are --keep-going and --base <ref> <subject>...)\n' "$1" >&2; exit 2 ;;
   esac
 done
+if [ -n "$BASE_REF" ]; then
+  [ "${#BASE_SUBJECTS[@]}" -gt 0 ] || { printf 'not ok - test-hw: --base %s names no subject: --base <ref> <subject>... (setup/tests/<n>-*.sh)\n' "$BASE_REF" >&2; exit 2; }
+  _b_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  _b_sha="$(git -C "$_b_root" rev-parse --verify -q "$BASE_REF^{commit}")" || { printf 'not ok - test-hw: --base: %s is no commit of %s\n' "$BASE_REF" "$_b_root" >&2; exit 2; }
+  _b_tree="$(mktemp -d "${TMPDIR:-/tmp}/hw-test-base.XXXXXX")" || exit 1
+  trap 'chmod -R u+w "$_b_tree" 2>/dev/null; rm -rf "$_b_tree"' EXIT
+  git clone -q --shared --no-checkout "$_b_root" "$_b_tree/wt" 2>/dev/null \
+    && git -C "$_b_tree/wt" -c advice.detachedHead=false checkout -q "$_b_sha" 2>/dev/null \
+    || { printf 'not ok - test-hw: --base: could not clone %s at %s\n' "$_b_root" "$_b_sha" >&2; exit 1; }
+  # a subject that drives hw needs hw-core built at the base, as the label pass builds its base worktree
+  if [ -x "$_b_tree/wt/setup/build-core" ]; then ( cd "$_b_tree/wt" && nice -n 10 bash setup/build-core --native >/dev/null 2>&1 ) || printf 'test-hw: --base: build-core failed at %s: a subject that needs hw-core will be red there for that reason\n' "$BASE_REF" >&2; fi
+  _b_one() { # <tree> <rel> <n> → red|green|none, the subject's output in $_b_tree/<n>.out
+    local rc=0
+    [ -f "$1/$2" ] || { printf 'none'; return 0; }
+    ( cd "$1" && env -i HOME="${HOME:-}" PATH="$PATH" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" nice -n 10 bash "$2" ) > "$_b_tree/$3.out" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then printf 'green'; else printf 'red'; fi  # MUTATION-ANCHOR: 1355-M01
+  }
+  _b_rc=0; _b_i=0
+  for _b_s in "${BASE_SUBJECTS[@]}"; do
+    _b_rel="setup/tests/$(basename "$_b_s")"
+    [ -f "$_b_root/$_b_rel" ] || { printf 'not ok - test-hw: --base: %s is no subject of this tree (setup/tests/<n>-*.sh)\n' "$_b_s" >&2; exit 2; }
+    _b_i=$((_b_i + 1))
+    _b_base="$(_b_one "$_b_tree/wt" "$_b_rel" "b$_b_i")"  # MUTATION-ANCHOR: 1355-M02
+    _b_here="$(_b_one "$_b_root" "$_b_rel" "h$_b_i")"
+    printf 'test-hw: --base %s\n  %s (%s): %s\n  this tree: %s\n' "$_b_rel" "$BASE_REF" "$(printf '%s' "$_b_sha" | cut -c1-9)" "$_b_base" "$_b_here" >&2
+    [ "$_b_base" != red ] || tail -n 12 "$_b_tree/b$_b_i.out" | sed 's/^/    base| /' >&2
+    [ "$_b_here" != red ] || { tail -n 12 "$_b_tree/h$_b_i.out" | sed 's/^/    this| /' >&2; _b_rc=1; }
+  done
+  exit "$_b_rc"
+fi
 unset _a 2>/dev/null || true
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -325,6 +367,39 @@ FAST_TOTAL="${#FILES[@]}"
 # A SELECTED RUN IS NOT THE FAST GATE, so it caches no fast verdict: pre-push
 # accepts `<tree>.fast` (any push, and the release cut), and that file has to mean all 104.
 # Full runs ignore HW_TEST_CHANGED; the floor at push does not move.
+# THE FORM setup/CLAUDE.md GIVES AN hw EXECUTOR: inside an executor (HW_TASK) with the paths file under $HW_ARTIFACTS (pre-commit's mktemp file is
+# elsewhere and keeps its whole-gate fallback). It is the one place the executor's touched form is told apart from the brainer's gate.
+_exec_touched_form() {
+  [ -n "${HW_TASK:-}" ] && [ -n "${HW_ARTIFACTS:-}" ] && [ -n "${HW_TEST_CHANGED:-}" ] \
+    && [ "$(cd -P "$(dirname "$HW_TEST_CHANGED")" 2>/dev/null && pwd)" = "$(cd -P "$HW_ARTIFACTS" 2>/dev/null && pwd)" ]
+}
+# A SLOW SUBJECT THAT NAMES THE DIFF AND DID NOT RUN IS NAMED AT THE END (suite-15-first-try; Judgment Day found it CRITICAL): the selected form runs only
+# the fast subjects and the pinned references, the touched form cuts the slow ones over its budget, and the closing lines said "the rest are deferred" without
+# saying WHICH, so 1283 and the layouts went unrun by an executor who believed the gate had covered his diff. One line each, copy-pasteable.
+DEFERRED_LINES=""; DEFERRED_N=0; DEFERRED_CAP=12; DEFERRED_REL=""
+TOUCHED_SKIPPED_LINES=""   # the touched-skipped lines of the run, repeated in the last lines: they were read in a `tail` of retro status-names-archivable-briefs and 812 was missed
+_defer_add() { # <subject file name>
+  local n="$1"
+  case "$DEFERRED_LINES" in *"-> bash setup/tests/$n"*) return 0 ;; esac   # two subjects can share a number (1040): the file name is the key
+  DEFERRED_N=$((DEFERRED_N + 1))
+  [ "$DEFERRED_N" -gt "$DEFERRED_CAP" ] \
+    || DEFERRED_LINES="$DEFERRED_LINES
+DEFERRED, names your diff: ${n%%-*} -> bash setup/tests/$n"
+}
+_skipped_collect() { # <gate-select touched output>: the touched-skipped lines, uncapped (DEFERRED is cut at DEFERRED_CAP)
+  TOUCHED_SKIPPED_LINES="$(printf '%s\n' "$1" | sed -n 's/^touched-skipped \([^ ]*\) \([^ ]*\) \(.*\)/SKIPPED, names your diff and was NOT run: \1 (\2s, over touched_budget_seconds)  <- \3/p')"
+}
+_defer_print() { # on stdout, in the last lines of the run
+  [ -z "$TOUCHED_SKIPPED_LINES" ] || printf '%s\n' "${TOUCHED_SKIPPED_LINES#
+}"
+  [ -z "$DEFERRED_REL" ] || printf '%s\n' "$DEFERRED_REL"   # the mutation partitions the diff reaches (the release gate's)
+  [ "$DEFERRED_N" -gt 0 ] || return 0
+  printf '%s\n' "${DEFERRED_LINES#
+}"
+  [ "$DEFERRED_N" -le "$DEFERRED_CAP" ] \
+    || printf 'DEFERRED, names your diff: and %s more (the list is cut at %s): python3 setup/gate-select "$PWD" <paths file> "$SUITE_TRIGGER_PATTERN" touched\n' \
+         "$((DEFERRED_N - $DEFERRED_CAP))" "$DEFERRED_CAP"
+}
 GATE_SELECTED=0; GATE_GUARDS=0; GATE_CHANGED=""
 GO_TALLY=""   # "go partitions Q of N" once the in-process suite is queued (the job table); empty where there is none
 # the changed paths of this gate, one per line, when it knows them: what narrows the in-process partitions (the job table below)
@@ -352,11 +427,14 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
   # `HW_TEST_CHANGED="$HW_ARTIFACTS/changed" HW_TEST_GATE=fast bash setup/test-hw`; for `bin/stall-watch`, which no fast subject names, the selector
   # answers `all` and that form ran 142 jobs, the brainer's gate (setup:bash-justify-or-port, 2026-11-10). The paths file under
   # $HW_ARTIFACTS is how the form is told apart from pre-commit's (a mktemp file, which keeps its whole-gate fallback: a commit has no other gate).
-  if [ -n "$_gs_why" ] && [ -n "${HW_TASK:-}" ] && [ -n "${HW_ARTIFACTS:-}" ] \
-     && [ "$(cd -P "$(dirname "$HW_TEST_CHANGED")" 2>/dev/null && pwd)" = "$(cd -P "$HW_ARTIFACTS" 2>/dev/null && pwd)" ]; then  # MUTATION-ANCHOR: 1294-M01
+  if [ -n "$_gs_why" ] \
+     && _exec_touched_form; then  # MUTATION-ANCHOR: 1294-M01
     printf 'not ok - runner: the touched form would run the WHOLE fast gate — %s. That gate is the brainer'"'"'s, once per batch on the merge tree (setup/CLAUDE.md), so an executor gets exit 75 here and nothing ran. Run what the change reaches, one at a time: the subjects that name it (`rg -l <path> setup/tests`), each as `bash setup/tests/<n>.sh` (`setup/heavy --short --` when longer than seconds); the Go partitions with `bash setup/go-test-core.sh --affected %s --run`. A slow subject gate-select names runs by hand too:\n' \
       "$_gs_why" "$HW_TEST_CHANGED" >&2
     printf '%s\n' "${_gs_out:-}" | sed -n 's/^reference \([^ ]*\) \(.*\)/    reference  bash setup\/tests\/\1  <- \2/p' >&2
+    # THE REFERENCE SUBJECTS COME WITH A LINE TO PASTE (suite-15-first-try): the list above named them and left the loop to the executor.
+    _gs_refs="$(printf '%s\n' "${_gs_out:-}" | sed -n 's/^reference \([^ ]*\) .*/\1/p' | paste -sd' ' -)"  # MUTATION-ANCHOR: 1350-M04
+    [ -z "$_gs_refs" ] || printf '    run them: for t in %s; do setup/heavy --short -- bash setup/tests/$t || break; done\n' "$_gs_refs" >&2
     exit 75
   fi
   if [ -n "$_gs_why" ]; then
@@ -386,9 +464,28 @@ if [ "$HW_TEST_GATE" = fast ] && [ -n "${HW_TEST_CHANGED:-}" ]; then
     while read -r _gs_kind _gs_name _gs_rest; do
       [ "$_gs_kind" = reference ] && [ -f "$TESTS/$_gs_name" ] && ! _is_retired "$_gs_name" && FILES+=("$TESTS/$_gs_name")
     done <<< "$_gs_out"
+    # THE EXECUTOR'S TOUCHED RUN IS OUTSIDE setup/heavy, so the FROZEN alert (heavy's, 20 min) never sees it (suite-15-first-try, item 6). Under
+    # `setup/heavy --short` it would be killed at the short lane's 120 s cap: the selected form with its slow references measured 300+ s on 2026-11-11.
+    # So it says how to look, once: the memory guard stops a tree under 26% free memory (state T) and lets it go when memory frees.
+    if _exec_touched_form; then
+      printf 'runner: this touched run is outside setup/heavy, so the FROZEN alert will not report it. If it looks stuck: ps -o state= -p %s (T = stopped by the memory guard under 26%% free, it resumes by itself; setup/heavy --status shows the guard'"'"'s holders)\n' "$$" >&2  # MUTATION-ANCHOR: 1350-M09
+    fi
     printf 'runner: SELECTED %s of %s fast subjects from the changed paths%s:\n' "${#FILES[@]}" "$FAST_TOTAL" \
       "$([ "$GATE_GUARDS" = 1 ] && printf ', plus the guard drivers')" >&2
     printf '%s\n' "$_gs_out" | sed -n 's/^core \(.*\)/    core     \1/p; s/^subject \([^ ]*\) \(.*\)/    \1  <- \2/p; s/^guards \(.*\)/    guards   <- \1/p; s/^reference \([^ ]*\) \(.*\)/    reference \1  <- \2 (a golden: it goes stale with what it names)/p; s/^deferred \(.*\)/    deferred \1 (slow: the full run at push, as always)/p' >&2
+    # the slow subjects this selection leaves out and that name the paths: a changed slow subject (`deferred`), a slow one that names a changed path
+    # (`gate-select ... touched`, uncapped here: the selected form runs none of them but the pinned references already in FILES)
+    while read -r _df_kind _df_name _df_rest; do
+      [ "$_df_kind" = deferred ] && [ -f "$TESTS/$_df_name" ] && _defer_add "$_df_name"
+    done <<< "$_gs_out"
+    _df_touched="$(python3 "$HERE/gate-select" "$SOURCE_ROOT" "$HW_TEST_CHANGED" "${_gs_pat:-}" touched 2>/dev/null || true)"
+    _skipped_collect "$_df_touched"
+    while read -r _df_kind _df_name _df_rest; do
+      case "$_df_kind" in touched|touched-skipped) ;; *) continue ;; esac
+      [ -f "$TESTS/$_df_name" ] && ! _is_retired "$_df_name" || continue
+      case " ${FILES[*]:-} " in *"/$_df_name "*) continue ;; esac   # a pinned reference already runs
+      _defer_add "$_df_name"
+    done <<< "$_df_touched"
     if [ "${#FILES[@]}" -eq 0 ] && [ "$GATE_GUARDS" != 1 ]; then
       printf 'not ok - runner: the selection is EMPTY — no core subject declares `# gate-core:`, so nothing would run\n' >&2
       exit 1
@@ -453,7 +550,9 @@ if [ "$HW_TEST_GATE" = fast ] && [ -z "${HW_TEST_CHANGED:-}" ] && [ -z "${TEST_H
   else
     _tc_file="$(mktemp "${TMPDIR:-/tmp}/hw-touched.XXXXXX")"
     { git -C "$_tc_live" -c core.quotepath=off diff --name-only "$_tc_base"; git -C "$_tc_live" -c core.quotepath=off ls-files -o --exclude-standard; } \
-      2>/dev/null | sort -u > "$_tc_file"
+      2>/dev/null | sort -u | awk '$0 != "setup/suite-data/gate-runs.tsv"' > "$_tc_file"  # MUTATION-ANCHOR: 1350-M11
+    # gate-runs.tsv is the runner's OWN output, appended to the main checkout by every batch gate: left in the diff it makes a gate run on main see one
+    # path that reaches no partition, and the in-process suite queues 0 of N (the b2b6f7514 failure again; Judgment Day, suite-15-first-try).
     _tc_pat=""
     if [ -f "$HERE/hooks/suite-trigger-pattern.sh" ]; then
       _tc_pat="$(. "$HERE/hooks/suite-trigger-pattern.sh" && printf '%s' "${SUITE_TRIGGER_PATTERN:-}")" || _tc_pat=""
@@ -475,6 +574,10 @@ if [ "$HW_TEST_GATE" = fast ] && [ -z "${HW_TEST_CHANGED:-}" ] && [ -z "${TEST_H
       while read -r _tc_kind _tc_name _tc_rest; do
         [ "$_tc_kind" = touched ] && [ -f "$TESTS/$_tc_name" ] && ! _is_retired "$_tc_name" && FILES+=("$TESTS/$_tc_name") && TOUCHED_RUN=$((TOUCHED_RUN + 1))
       done <<< "$_tc_out"
+      while read -r _tc_kind _tc_name _tc_secs _tc_rest; do
+        [ "$_tc_kind" = touched-skipped ] && [ -f "$TESTS/$_tc_name" ] && ! _is_retired "$_tc_name" && _defer_add "$_tc_name"
+      done <<< "$_tc_out"
+      _skipped_collect "$_tc_out"
       if [ -n "$_tc_out" ]; then
         printf 'runner: %s slow subject(s) name what this branch changed since %s and run with the fast gate:\n' "$TOUCHED_RUN" "$(printf '%s' "$_tc_base" | cut -c1-9)" >&2
         printf '%s\n' "$_tc_out" | sed -n 's/^touched \([^ ]*\) \(.*\)/    touched  \1  <- \2/p; s/^touched-skipped \([^ ]*\) \([^ ]*\) \(.*\)/    SKIPPED  \1 (\2s, over touched_budget_seconds)  <- \3: left to the full run/p' >&2
@@ -778,7 +881,7 @@ count_into() {
 if type gocache_trim_start >/dev/null 2>&1; then gocache_trim_start "${GOCACHE:-$(gocache_default)}" "${HW_TEST_GOCACHE_CAP_MB:-12288}" || true; fi   # MUTATION-ANCHOR: 1004-M11
 SUITE_WORK="${WORK:-}"
 if [ -z "$SUITE_WORK" ]; then
-  SUITE_WORK="$(jq -r '.work // empty' "$SOURCE_ROOT/projects.json" 2>/dev/null || true)"
+  SUITE_WORK="$(jq -r '.work // (if .root then .root + "/work" else empty end)' "$SOURCE_ROOT/projects.json" 2>/dev/null || true)"
   case "$SUITE_WORK" in
     "~") SUITE_WORK="$HOME" ;;
     "~/"*) SUITE_WORK="$HOME/${SUITE_WORK#"~/"}" ;;
@@ -1543,6 +1646,40 @@ if [ -f "$HERE/go-test-core.sh" ] && [ -f "$SOURCE_ROOT/core/go.mod" ]; then
       exit 1
     fi
   fi
+  # THE MUTATION PARTITIONS ARE THE RELEASE GATE'S, NOT THE BATCH'S (the brainer's call of 2026-11-11, setup/decisions.md "mutation partitions run at the release
+  # gate, not per batch"): the m* partitions were 3789 of the 7762 s of Go work every batch gate paid, a Go batch work-bound at 1109 s against a 900 s goal.
+  # The table's RELEASE= names them (`go-test-core.sh --release`); the fast gate in EVERY form (whole, touched, pre-commit, executor) leaves them out and says
+  # which the diff reaches, and setup/release/cut runs them before a cut and refuses it when one is red, so no claim is dropped. The full run queues them.
+  if [ "$HW_TEST_GATE" = fast ]; then
+    _gt_rel="$(bash "$HERE/go-test-core.sh" --release 2>/dev/null)" || _gt_rel=""
+    if [ -n "$_gt_rel" ]; then
+      _gt_left=""; _gt_rcut=""
+      for _gt_n in $_gt_pick; do
+        if grep -qx -- "$_gt_n" <<<"$_gt_rel"; then _gt_rcut="$_gt_rcut$_gt_n,"; else _gt_left="$_gt_left$_gt_n"$'\n'; fi
+      done
+      _gt_pick="${_gt_left%$'\n'}"  # MUTATION-ANCHOR: 1350-M13
+      _gt_rcut="${_gt_rcut%,}"
+      if [ -n "$_gt_rcut" ]; then
+        printf 'runner: the mutation partitions the table leaves to the release gate are not queued here (%s partition(s); setup/release/cut runs them before a cut)\n' \
+          "$(printf '%s' "$_gt_rcut" | tr ',' '\n' | grep -c .)" >&2
+        [ -z "${GATE_PATHS_FILE:-}" ] || DEFERRED_REL="DEFERRED, names your diff: mutation partitions $_gt_rcut -> bash setup/go-test-core.sh +$_gt_rcut  (the release gate runs them)"
+      fi
+    fi
+  fi
+  # AN EXECUTOR'S TOUCHED FORM NEVER QUEUES A BATCH OVER touched_budget_seconds (suite-15-first-try, 2026-11-11): HW_TEST_CHANGED on any core/ path
+  # queued 40 of 40 partitions (~7700 s of work), the brainer's gate, and go-test-core.sh's own exit 75 sits on the `--affected --run` form and on a
+  # list an executor NAMES, never on the partitions this runner queues itself (a job runs `env -u HW_TASK`, below). The estimate is the table's seconds,
+  # the one go-test-core.sh sums; the way out is the one focused test.
+  if [ "$HW_TEST_GATE" = fast ] && _exec_touched_form && [ -n "$_gt_pick" ]; then  # MUTATION-ANCHOR: 1350-M12 — fast only: a full run ignores HW_TEST_CHANGED, and BUDGETS is set only for fast
+    _gt_est="$(printf '%s\n' "$_gt_all" | awk -F'\t' -v names="$(printf '%s' "$_gt_pick" | tr '\n' ',')" 'BEGIN { n = split(names, a, ","); for (i = 1; i <= n; i++) w[a[i]] = 1 } ($1 in w) { s += $2 } END { printf "%d", s }')"
+    _gt_bud="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("touched_budget_seconds", 90)))' "$BUDGETS" 2>/dev/null || echo 90)"
+    if [ "${_gt_est:-0}" -gt "${_gt_bud:-90}" ]; then  # MUTATION-ANCHOR: 1350-M01
+      [ -z "${_tc_file:-}" ] || rm -f "$_tc_file"
+      printf 'not ok - runner: the touched form would queue %s of %s Go partitions, estimated at %s s, over the %s s budget of an executor (touched_budget_seconds in setup/suite-data/test-budgets.json). That batch is the brainer'"'"'s, once per merge tree (setup/CLAUDE.md), so an executor gets exit 75 here and nothing ran. Run the one focused test the change reaches instead: setup/heavy --short -- sh -c '"'"'cd core && go test -count=1 -timeout 5m -run <TestName> .'"'"' (from the repo root, in the background, never piped to tail); `bash setup/go-test-core.sh --affected %s` names the partitions the paths reach, and `--affected %s --run` prints the case slices of each.\n' \
+        "$(printf '%s\n' "$_gt_pick" | grep -c .)" "$(printf '%s\n' "$_gt_all" | grep -c .)" "$_gt_est" "$_gt_bud" "$GATE_PATHS_FILE" "$GATE_PATHS_FILE" >&2
+      exit 75
+    fi
+  fi
   # THE INCREMENTAL VERDICT NAMES THE PARTITIONS ITS DIFF REACHES. setup/verdict-incremental writes, beside the job names of
   # HW_TEST_ONLY, one `go-test-core.sh:<partition>` line per partition the diff since the recorded run can have moved (the fast
   # gate's own map, `go-test-core.sh --affected`), the ones red then and the ones it never ran; `go-test-core.sh:-` says none. Measured
@@ -1795,7 +1932,50 @@ _reap_job_groups() {
     kill -KILL -- "-$p" 2>/dev/null || true
   done
 }
-trap '_reap_job_groups; rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _gocache_trim_at_exit; _queue_release; _gate_release' EXIT  # MUTATION-ANCHOR: 1004-M07
+# EVERY FAST GATE LEAVES ONE ROW (suite-15-first-try): the first-try rate of the brainer's batches was reconstructed by hand from heavy.log (9 of 24 = 38%,
+# 2026-11-11). Now `awk -F'\t' '$4 == "green"' setup/suite-data/gate-runs.tsv` is the question: date, tree, HW_GATE_BATCH, result, first failing job, wall
+# seconds. The result is green, red, known-flake (every red is in flaky-ledger.tsv and red on the base too: not the batch's defect; the exit stays red) or killed.
+# One row per WHOLE fast gate a person or the brainer ran: not a selected/touched run (HW_TEST_CHANGED, no verdict), not a nested fixture, not an executor
+# (HW_TASK: its form never is the whole gate), not an incremental run, and not one that stopped before its first job. It lands in the MAIN checkout of the
+# repo (git's common dir), where the brainer keeps its history, because the gate's own tree is a private snapshot or a batch worktree that goes away.
+GATE_RUN_STARTED=0; GATE_KNOWN_FLAKE_N=0
+GATE_RUNS_HEADER='date\ttree\tbatch\tresult\tfirst_failing\twall_s'
+_gate_runs_row() { # <the run's exit status>
+  local rc="$1" res=green first="-" i live common root file tree wall batch n_red=0 n_flake=0
+  [ "$GATE_RUN_STARTED" = 1 ] && [ "$HW_TEST_GATE" = fast ] && [ -z "${HW_TEST_CHANGED:-}" ] && [ -z "${_RUNNER_STARTED_NESTED:-}" ] \
+    && [ -z "${HW_TASK:-}" ] && [ -z "${HW_TEST_ONLY:-}" ] || return 0
+  if [ "$rc" -ne 0 ]; then
+    for i in "${!JOB_PATH[@]}"; do
+      [ -n "${JOB_RED[$i]:-}" ] || continue
+      n_red=$((n_red + 1)); [ "$first" != - ] || first="$(_job_name "$i")"
+    done
+    n_flake="$GATE_KNOWN_FLAKE_N"   # counted where the labels still exist (the label file is gone by the exit)
+    if [ "$rc" -gt 128 ]; then res=killed
+    elif [ "$n_red" -gt 0 ] && [ "$n_red" -eq "$n_flake" ]; then res=known-flake  # MUTATION-ANCHOR: 1350-M07
+    else res=red; fi
+  fi
+  live="${TEST_HW_LIVE_ROOT:-$SOURCE_ROOT}"
+  common="$(git -C "$live" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common=""
+  case "$common" in */.git) root="${common%/.git}" ;; *) root="$live" ;; esac
+  [ -d "$root/setup/suite-data" ] || return 0
+  # NEVER INTO THE CHECKOUT UNDER TEST (setup/tests/880 and 1014 caught it). A row appended to the tree a gate is verifying changes the tree a dirty gate's
+  # verdict names (880 P01) and shows up as a changed path in the NEXT gate's diff, which narrows the in-process suite to a document that reaches no
+  # partition: a green gate with no Go test in it (1014 R07, the b2b6f7514 failure again). The row goes to the MAIN checkout of a linked worktree, which is
+  # where the brainer's batch gate runs; a gate run in the main checkout itself says so and leaves none.
+  if [ "$(cd -P "$root" 2>/dev/null && pwd)" = "$(cd -P "$live" 2>/dev/null && pwd)" ]; then  # MUTATION-ANCHOR: 1350-M10
+    printf 'runner: no gate-runs row — this gate ran in the repo'"'"'s own main checkout, and a row in the tree under test would change what the next gate diffs (run it from a linked worktree, as the brainer'"'"'s batch gate does)\n' >&2
+    return 0
+  fi
+  file="$root/setup/suite-data/gate-runs.tsv"
+  tree="${FAST_VERDICT_TREE:-}"; [ -n "$tree" ] || tree="$(git -C "$live" rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null || true)"
+  batch="$(printf '%s' "${HW_GATE_BATCH:-}" | tr '\t\n' '  ')"
+  wall=$(( $(date +%s) - RUN_T0 ))
+  { [ -s "$file" ] || printf '%b\n' "$GATE_RUNS_HEADER"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${tree:--}" "${batch:--}" "$res" "$first" "$wall"  # MUTATION-ANCHOR: 1350-M06
+  } >> "$file" 2>/dev/null || printf 'runner: could not append the gate-runs row to %s\n' "$file" >&2
+  return 0
+}
+trap '_gate_rc=$?; _gate_runs_row "$_gate_rc"; _reap_job_groups; rm -f "$TALLY" "$TALLY.subject"; [ -z "$WITNESS_PID" ] || kill "$WITNESS_PID" 2>/dev/null || true; rm -rf "$JOBDIR"; _pool_release_all; _gocache_trim_at_exit; _queue_release; _gate_release' EXIT  # MUTATION-ANCHOR: 1004-M07
 
 # ── THE PANE A FULL RUN IS STARTED FROM IS A WITNESS, NOT A TARGET ──────────
 #
@@ -2388,6 +2568,7 @@ _job_red() {
   return 1
 }
 
+GATE_RUN_STARTED=1
 _top_up
 _i=0
 NEXT_EMIT=0
@@ -2785,7 +2966,8 @@ _results_write
 # A red under --keep-going used to stop at the line it printed, and telling a real red from a false one cost one run about 23
 # calls. Each red subject is now RE-RUN ALONE with `env -i` — the gate's environment and its neighbours out of it — and
 # labelled, printed beside the red in the final list:
-#   ENV-ONLY       it passes alone: something in the run's environment or its neighbours was the cause
+#   ENV-ONLY       it passes alone: something in the run's environment or its neighbours was the cause; the label names the variable (or PREFIX_*) whose
+#                  put-back into the env -i run turns it red again, or says that no single group does
 #   FLAKY          it fails alone, then passes on a second lone run
 #   STALE-AT-BASE  it fails alone AND at the merge base (its own branch is not what broke it)
 #   REAL           it fails alone and passes at the merge base: this branch broke it
@@ -2794,15 +2976,42 @@ _results_write
 # never a subject the runner cannot re-run alone (a go-test partition, the witness). Past the bound the label is
 # UNLABELLED — never guessed. HW_TEST_NO_LABEL=1 skips the pass.
 LABEL_FILE=""
-red_alone_rc() { # <root> <repo-relative subject> → its exit status; sets LAST_FAIL to its first not-ok line
+red_alone_rc() { # <root> <repo-relative subject> [NAME=value…] → its exit status; sets LAST_FAIL to its first not-ok line. The NAME=value words are put back into the env -i environment (env_flip_names)
   local root="$1" rel="$2" log rc
+  shift 2
   log="$(mktemp "${TMPDIR:-/tmp}/hw-label.XXXXXX")"
-  ( cd "$root" && env -i HOME="${HOME:-}" PATH="$PATH" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" \
+  ( cd "$root" && env -i HOME="${HOME:-}" PATH="$PATH" USER="${USER:-}" TMPDIR="${TMPDIR:-/tmp}" "$@" \
       nice -n 10 bash "$rel" ) >"$log" 2>&1
   rc=$?
   LAST_FAIL="$(grep -m1 '^not ok' "$log" 2>/dev/null | cut -c1-160)"
   rm -f "$log"
   return "$rc"
+}
+# WHICH VARIABLE FLIPS IT (retro-fixes-1111c): ENV-ONLY said the gate's environment was the cause and not which part. The HC_* leak (a pane's HC_SCOPE /
+# HC_TERMINAL_ID) lasted about 2.7 days because the label never named it. Each group of the gate's exported variables (the name up to its first `_`) is put
+# back ALONE into the env -i run; a group that turns the subject red again is the flip. At most ENV_FLIP_MAX groups, inside what is left of the label budget.
+ENV_FLIP_MAX=24
+ENV_FLIP_SKIP=" _ PWD OLDPWD SHLVL HOME PATH USER TMPDIR BASH LC XDG SSH APPLE ITERM TERM COLORTERM TMUX LOGNAME SHELL LANG "
+ENV_FLIP_HIT=""; ENV_FLIP_TRIED=0
+env_flip_names() { # <root> <repo-relative subject> <deadline epoch> → ENV_FLIP_HIT (the variable, or PREFIX_*, per flipping group), ENV_FLIP_TRIED
+  local root="$1" rel="$2" deadline="$3" n g m seen=" " vars hit=""
+  ENV_FLIP_HIT=""; ENV_FLIP_TRIED=0
+  for n in $(compgen -e | sort); do
+    g="${n%%_*}"
+    case "$ENV_FLIP_SKIP$seen" in *" $g "*) continue ;; esac
+    seen="$seen$g "
+    [ "$ENV_FLIP_TRIED" -lt "$ENV_FLIP_MAX" ] && [ "$(date +%s)" -lt "$deadline" ] || break
+    vars=(); local count=0
+    for m in $(compgen -e); do
+      [ "${m%%_*}" = "$g" ] || continue
+      vars+=("$m=${!m}"); count=$((count + 1))
+    done
+    ENV_FLIP_TRIED=$((ENV_FLIP_TRIED + 1))
+    if ! red_alone_rc "$root" "$rel" "${vars[@]}"; then  # MUTATION-ANCHOR: 1357-M01
+      if [ "$count" -eq 1 ]; then hit="$hit${hit:+, }${vars[0]%%=*}"; else hit="$hit${hit:+, }${g}_*"; fi
+    fi
+  done
+  ENV_FLIP_HIT="$hit"
 }
 label_base_tree() { # builds ONCE (called directly, never in a $(…): the cache is a variable) a worktree at the merge base → LABEL_BASE, or ""
   [ -z "${LABEL_BASE_TRIED:-}" ] || return 0
@@ -2825,6 +3034,11 @@ label_base_drop() { # the base worktree is a temporary: take it out of the live 
     rm -rf "$LABEL_BASE"
   }
   LABEL_BASE=""
+}
+_flake_listed() { # <subject file name> — is it a row of setup/suite-data/flaky-ledger.tsv (date commit subject first_failing_line; the subject by file name or by number)
+  local b="$1" f="$SOURCE_ROOT/setup/suite-data/flaky-ledger.tsv"
+  [ -f "$f" ] || return 1
+  awk -F'\t' -v b="$b" -v n="${b%%-*}" 'NR > 1 && $0 !~ /^#/ && ($3 == b || $3 == n) { found = 1 } END { exit found ? 0 : 1 }' "$f"
 }
 red_label_pass() {
   local max="${HW_TEST_LABEL_MAX:-6}" budget="${HW_TEST_LABEL_BUDGET:-600}" idx f rel lab t0 spent=0 n=0 base
@@ -2851,6 +3065,12 @@ red_label_pass() {
     t0="$(date +%s)"; n=$((n + 1))
     if red_alone_rc "$SOURCE_ROOT" "$rel"; then
       lab="ENV-ONLY"
+      env_flip_names "$SOURCE_ROOT" "$rel" $((t0 + budget - spent))
+      if [ -n "$ENV_FLIP_HIT" ]; then
+        lab="ENV-ONLY (red again when only $ENV_FLIP_HIT is put back into the clean environment: the variable that flips it)"
+      else
+        lab="ENV-ONLY (no single group of the gate's exported variables turns it red alone — $ENV_FLIP_TRIED tried: a neighbour, the load, or several variables together)"
+      fi
     elif red_alone_rc "$SOURCE_ROOT" "$rel"; then
       lab="FLAKY"
     else
@@ -2863,6 +3083,9 @@ red_label_pass() {
         lab="REAL"   # the subject is NEW on this branch: it has no base to be red at (bash would exit 127 there, which is not "red")
       elif ! red_alone_rc "$base/wt" "$rel"; then  # MUTATION-ANCHOR: 1245-M01
         lab="STALE-AT-BASE"
+        # RED ON THE BASE TOO AND RECORDED AS A FLAKE: not this batch's defect (suite-15-first-try). Only the ledger can say it; a red that is
+        # merely red at the base stays STALE-AT-BASE, and a red the ledger lists that passes at the base is REAL.
+        _flake_listed "$(basename "$rel")" && lab="known flake (in setup/suite-data/flaky-ledger.tsv and red at the merge base too: not this batch's)"  # MUTATION-ANCHOR: 1350-M05
       else
         lab="REAL"
       fi
@@ -2891,6 +3114,10 @@ if [ "$RED_COUNT" -gt 0 ]; then
     printf '%s\n' "$_lb_line"
   done
   printf '\nKEEP-GOING RUN FAILED — %s red job(s):%s\n' "$RED_COUNT" "$RED_LINES"
+  _kf_n=0; for _lb_i in "${!JOB_PATH[@]}"; do [ -z "${JOB_RED[$_lb_i]:-}" ] || case "$(labels_for "$_lb_i")" in "known flake"*) _kf_n=$((_kf_n + 1)) ;; esac; done
+  GATE_KNOWN_FLAKE_N="$_kf_n"
+  [ "$_kf_n" -eq 0 ] || printf 'known flake: %s of the %s red job(s) are recorded in setup/suite-data/flaky-ledger.tsv and red at the merge base too — not this batch'"'"'s defect, and counted as `known-flake` in gate-runs.tsv; the gate itself stays red\n' "$_kf_n" "$RED_COUNT"
+  _defer_print
   [ -z "$LABEL_FILE" ] || rm -f "$LABEL_FILE"
   abort_marker; exit "$RED_RC"
 fi
@@ -3017,4 +3244,5 @@ else
   elif [ "$HW_TEST_GATE" = fast ]; then
     _fast_verdict_write "FAST GATE: $TRACKED_OK tests passed${GO_TALLY:+; $GO_TALLY}"  # MUTATION-ANCHOR: 1014-M21
   fi
+  _defer_print  # MUTATION-ANCHOR: 1350-M02
 fi

@@ -1,0 +1,14 @@
+# <PREFIX><TAB><why a leak of it into the suite cannot move a subject>. Read by setup/env-prefix-check (run by setup/tests/1356-*.sh). A prefix that
+# setup/tests/_common.sh sweeps does not belong here (the check says so), and one nothing in bin/ or core/ reads is removed. Reviewed 2026-11-11.
+ALLOW	ALLOW_STALE_HOOKS=1 is an opt-in override of `hw next` that a person types on purpose; no pane or hw exports it
+BRAIN	UNSWEPT ON PURPOSE, A DEBT: BRAIN_ENGRAM_SESSION is a brainer pane's identity (`brain` exports it, the stop hook reads it) and BRAIN_AWAIT_* are knobs. A leak of the session id is the HC_* shape; adding `${!BRAIN_@}` to _common.sh moves every subject's environment, so it waits for a task that runs the whole gate
+BROWSER	BROWSER_CLOSE_AGENT_BROWSER / BROWSER_CLOSE_SLEEP are test seams of bin/browser-close that its subject sets on its own command line; no pane exports them
+CHANNEL	CHANNEL_*_TIMEOUT_MS are channel-send knobs and CHANNEL_TARGET is set by channel-send for its own child process; no pane exports them
+DEPS	DEPS_NO_CACHE is a debugging switch of `hw deps` that a person sets by hand
+FOREMAN	FOREMAN_NO_UPDATE_CHECK (bin/release-check opt-out) and FOREMAN_COCKPIT are set by a person's shell, not by hw
+GH	GH_SESSION_TOKEN is bin/gh-attach's optional credential, from a person's shell; absent it the script says so and stops
+LC	LC_ALL / LC_CTYPE: core/hw_sandbox.go pins the locale it reads; the suite itself sets LC_ALL where a subject depends on it
+NO	NO_COLOR only switches colour off, and the suite's assertions read uncoloured text
+PI	PI_CODING_AGENT_DIR is pi's agent directory; transcript_archive reads it and the subjects that archive a transcript set it themselves
+SG	SG_WORK is a local of bin/suite-gate, assigned from WORK inside the script
+WITNESS	WITNESS_* are tuning knobs of `hw wait` (poll interval, read lines); a leak only changes how often it polls

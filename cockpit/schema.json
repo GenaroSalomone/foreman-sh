@@ -197,7 +197,8 @@
                 "seq": { "type": "string", "pattern": "^[0-9]+/[0-9]+$", "description": "`n/max`, as ask-invoker labels it." },
                 "state": { "enum": ["delivered", "undelivered"] },
                 "at": { "$ref": "#/$defs/ms" },
-                "pending_reply": { "type": ["string", "null"], "description": "Absolute path of the hold file the executor left for this ask (`pending-reply-<n>` in its task state dir): the argument of the `reply` and `challenge-reply` verbs. A string exactly when the ask is delivered and the hold is valid and addressed to this pane over the herdr route; null otherwise (the mod then draws no reply button). An idle executor holding an ask gets a reply button, not a ruling one." }
+                "pending_reply": { "type": ["string", "null"], "description": "Absolute path of the hold file the executor left for this ask (`pending-reply-<n>` in its task state dir): the argument of the `reply` and `challenge-reply` verbs. A string exactly when the ask is delivered and the hold is valid and addressed to this pane over the herdr or the hc route; null otherwise (the mod then draws no reply button). An idle executor holding an ask gets a reply button, not a ruling one." },
+                "route": { "enum": ["herdr", "hc", null], "description": "The route the hold was written for, the word the reply verbs hand channel-send (`herdr` in a herdr TUI, `hc` under the herdr app's core); null exactly when pending_reply is. Optional: a writer older than the mod does not publish it and the mod then says `herdr`. Added without a change of `schema`: a v1 reader ignores it." }
               }
             }
           ]

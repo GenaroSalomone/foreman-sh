@@ -76,7 +76,7 @@ case "$1" in
   status) shift; set -- status-full "$@" ;;
   outbox) if [ "${2:-}" = flush ]; then shift 2; set -- outbox-flush "$@"; fi ;;
   receipt|log|handle|help|worktrees|ruling|human-boundary|executor-turn-end|chaining-lease-start|chaining-lease-expire|output|stage|retro-done) ;;
-  review-range|review-delta|preflight|reports|sweep|reap|wait|wait-one|wait-monitor|train|suite|unstick|ledger|briefs|cockpit-state|secret) ;;
+  review-range|review-delta|review|preflight|reports|sweep|reap|wait|wait-one|wait-monitor|train|suite|unstick|ledger|briefs|cockpit-state|secret) ;;
   done|next|revive|preview) ;;
   *)  # not a verb: `hw <project> <task> …` is a dispatch, and -h/--help anywhere in it asks for the help instead
       for _a in "$@"; do case "$_a" in -h|--help) exec "$_core" help ;; esac; done

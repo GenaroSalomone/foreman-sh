@@ -12,9 +12,6 @@ import (
 	"strings"
 )
 
-const doneWtRegenerable = ".agents .atl .claude .codex .opencode .hw .specify .venv .ruff_cache .pytest_cache .mypy_cache __pycache__ node_modules dist build .next .turbo .DS_Store AGENTS.md PROGRESS.md opencode.json local next-env.d.ts tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo .astro"
-const doneWtArchivable = ".artifacts qa-report test-results playwright-report"
-
 // doneLockReason is _wt_lock_reason: whether <main>'s worktree list has <wt> locked, and the reason it gives.
 func doneLockReason(main, wt string) (string, bool) {
 	real := wt
@@ -151,7 +148,7 @@ func (d *doneRun) disposition(main, wt, branch, base string) {
 			if i := strings.Index(rel, "/"); i >= 0 {
 				first = rel[:i]
 			}
-			if strings.Contains(rel, " (") || !strings.Contains(" "+doneWtArchivable+" ", " "+first+" ") {
+			if strings.Contains(rel, " (") || !strings.Contains(" "+wtArchivable+" ", " "+first+" ") {
 				other = true
 				break
 			}
@@ -333,7 +330,7 @@ func (d *doneRun) irreplaceable(wt string) []string {
 		}
 	}
 	rows = doneSortUnique(rows)
-	regen := " " + doneWtRegenerable + " " + d.getenv("HW_WT_REGENERABLE") + " "
+	regen := " " + wtRegenerable + " " + d.getenv("HW_WT_REGENERABLE") + " "
 	var keep []string
 	for _, rel := range rows {
 		if rel == "" {

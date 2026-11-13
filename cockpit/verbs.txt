@@ -13,19 +13,25 @@
 # other two are attributes. No shell string is ever built, and a verb not listed
 # here is not callable from the mod.
 #
-# `stdin=text`: the text typed by the person goes on stdin, never in argv, so
-# backticks, `$` and newlines arrive intact (probe P3: $.process.run accepts init
-# `{ stdin }`). The template ends in a lone `-` that says so (`hw ruling <pane> -`).
+# `stdin=text`: the template ends in a lone `-` that says the person's text goes
+# there. The Claude cockpit mod puts it on stdin (probe P3: $.process.run accepts init
+# `{ stdin }`), so backticks, `$` and newlines arrive intact. The Herdr app's `exec`
+# has no stdin (herdr.d.ts: `{ cwd, on, timeout }`) and runs no shell, so the app
+# puts the text as ONE argv word in place of that last `-` (2026-11-11, ruling of the
+# setup brainer): still no shell, so nothing is expanded. A text `hw` would read as an
+# option (it begins with `-`), or that is a lone `-` (channel-send: "read stdin"), is
+# refused in the app with a message, never rewritten.
 # `channel-send` takes FOUR positional words, `<vendor> <target> <endpoint>
-# <message>`: on the herdr route the endpoint is the placeholder `-` and the message
-# is the lone `-` that reads stdin, so the reply verbs end in `herdr <pane> - -`
-# (MEASURED against a real herdr, setup/tests/798).
+# <message>`: on the herdr and hc routes the endpoint is the placeholder `-` and the message
+# is the lone `-` that reads stdin, so the reply verbs end in `<route> <pane> - -`
+# (MEASURED against a real herdr, setup/tests/798; `<route>` is the row's `ask.route`, `herdr` when
+# an older writer publishes none, `hc` under the herdr app's core — measured 2026-11-11, app-live-qa-devserver).
 #
 # `confirm=yes` verbs ask the person first ($.ui.ask); a dismissed question runs
 # nothing. Every verb's non-zero exit is shown verbatim and the card stays.
 done | hw done <project> <task> | confirm=yes | stdin=no
 ruling | hw ruling <pane> - | confirm=no | stdin=text
-reply | channel-send --report --reply-hold <pending_reply> herdr <pane> - - | confirm=no | stdin=text
-challenge-reply | channel-send --ruling --reply-hold <pending_reply> herdr <pane> - - | confirm=no | stdin=text
+reply | channel-send --report --reply-hold <pending_reply> <route> <pane> - - | confirm=no | stdin=text
+challenge-reply | channel-send --ruling --reply-hold <pending_reply> <route> <pane> - - | confirm=no | stdin=text
 receipt | hw receipt <project> <task> | confirm=no | stdin=no
 preflight | hw preflight --json -- <argv...> | confirm=no | stdin=no

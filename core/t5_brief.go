@@ -506,7 +506,7 @@ func (d *dsp) checkTaskKind(kind, how string) {
 
 var brKnownDecl = map[string]bool{"agent": true, "model": true, "effort": true, "sdd": true, "placement": true, "worktree": true, "database": true,
 	"invoker": true, "requires": true, "requires-agents": true, "kind": true, "base": true, "decision": true, "delivery": true,
-	"boundary": true, "deployed_check": true, "sandbox": true, "review": true, "plugins": true, "requested_by": true, "asked": true, "authorizes": true, "secrets": true,
+	"boundary": true, "deployed_check": true, "sandbox": true, "review": true, "review-skip": true, "review_of": true, "plugins": true, "requested_by": true, "asked": true, "authorizes": true, "secrets": true,
 	"top_tier_why": true, "after": true,
 	"release": true, "env-from": true, "env-to": true, "env-diff": true, "screens": true, "qa": true, "rehearsal-of": true}
 
@@ -1148,7 +1148,7 @@ func (d *dsp) checkBriefContract() {
 			d.brAppendDeclared("sandbox") // # MUTATION-ANCHOR: 844-A48
 			continue
 		}
-		if key == "requested_by" || key == "asked" || key == "authorizes" || key == "secrets" || key == "release" || key == "env-from" || key == "env-to" || key == "env-diff" || key == "screens" || key == "qa" || key == "rehearsal-of" { // the release standard: t5_release.go // # MUTATION-ANCHOR: 844-A49
+		if key == "requested_by" || key == "asked" || key == "review-skip" || key == "review_of" || key == "authorizes" || key == "secrets" || key == "release" || key == "env-from" || key == "env-to" || key == "env-diff" || key == "screens" || key == "qa" || key == "rehearsal-of" { // the release standard: t5_release.go // # MUTATION-ANCHOR: 844-A49
 			continue
 		}
 		if key == "delivery" { // was the gentle gate's; with gentle gone it fixes nothing and is ignored

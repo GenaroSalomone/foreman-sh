@@ -195,6 +195,47 @@ func hcPathWord(binDir, path string) string {
 	return "PATH=" + binDir + ":" + path
 }
 
+// hcSandboxPathWord puts the sandbox shim's directory first in a `PATH=` word; with no shim the word is returned as it is.
+func hcSandboxPathWord(shimdir, word string) string {
+	if shimdir == "" {
+		return word
+	}
+	return "PATH=" + shimdir + ":" + strings.TrimPrefix(word, "PATH=") // MUTATION-ANCHOR: hc-sbx-path
+}
+
+// hcBrokerAlive waits (10 s, as agentStartSandboxed) for the sandbox broker's heartbeat in the run's state dir: the proof
+// that the agent an hc terminal started went through the shim, and so runs inside the profile.
+func hcBrokerAlive(state string, sleep func(time.Duration)) bool {
+	for n := 0; n < 20; n++ {
+		if fi, err := os.Stat(state + "/broker.alive"); err == nil && fi.Mode().IsRegular() {
+			return true
+		}
+		sleep(500 * time.Millisecond)
+	}
+	return false
+}
+
+// hcChildPids is `pgrep -P <pid>`: the pids of a process's children; a variable so a test names a tree without spawning one.
+var hcChildPids = func(pid string) []string {
+	out, _ := exec.Command("pgrep", "-P", pid).Output()
+	return strings.Fields(string(out))
+}
+
+// claudeSessionSandboxed is claudeSessionOf for a terminal started through the sandbox shim: the pid `hc get` names is the
+// launch wrapper (`hw-sandbox run`, which holds the broker) and claude is its child under sandbox-exec, so the session file
+// is the child's. Measured 2026-11-12: with the terminal's own pid a sandboxed dispatch recorded "NO SESSION ID".
+func claudeSessionSandboxed(pid, cwd string, dirs ...string) string {
+	if !allDigits(pid) {
+		return ""
+	}
+	for _, child := range hcChildPids(pid) {
+		if sid := claudeSessionOf(child, cwd, dirs...); sid != "" { // MUTATION-ANCHOR: hc-sbx-session
+			return sid
+		}
+	}
+	return ""
+}
+
 // hcCoreID is the id of the herdr-core this process talks to ("" when unreadable): `<state>/herdr-core/default/core.json`, with the
 // state root the core itself uses ($XDG_STATE_HOME, else ~/.local/state). An address (t2) is only unique inside one core, so
 // the files and runs hw keys on one carry this beside it. shortcut: only the `default` core is read, when a second named core exists.

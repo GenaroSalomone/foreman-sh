@@ -238,9 +238,25 @@ func (a *app) reviveStartFailureScreen(target string) {
 
 // reviveSandboxArm is _sandbox_arm_pane: write the shim hw-sandbox makes and put it first on the pane's PATH.
 func (a *app) reviveSandboxArm(st *reviveRunState, pane, kind, rundir string) bool {
+	shim, ok := a.reviveSandboxShim(st, kind, rundir)
+	if !ok {
+		return false
+	}
+	if !a.reviveHerdrQuiet("pane", "run", pane, "export PATH="+reviveQuote(shim)+":$PATH; hash -r 2>/dev/null; clear") {
+		a.warn("sandbox: could not put the shim on " + pane + "'s PATH — the agent is NOT started unconfined")
+		return false
+	}
+	a.receiptInto(rundir, "sandbox", filepath.Dir(shim)+"/profile.sb", "hw-sandbox arm ("+kind+"); shim "+shim+" exported in "+pane)
+	return true
+}
+
+// reviveSandboxShim is the half of the arming that needs no pane: `hw-sandbox arm` rebuilds the run's profile and shim and
+// answers the shim's directory. A herdr pane exports it (reviveSandboxArm); an app terminal takes it as the first entry of
+// its PATH word (reviveOnHC).
+func (a *app) reviveSandboxShim(st *reviveRunState, kind, rundir string) (string, bool) {
 	if !strings.HasPrefix(rundir, "/") || !strings.Contains(rundir, "/.hw/") || strings.HasSuffix(rundir, "/.hw/") {
 		a.warn("sandbox: no run directory to arm (" + rundir + ")")
-		return false
+		return "", false
 	}
 	cmd := exec.Command(a.reviveBinDir()+"/hw-sandbox", "arm", rundir, kind, st.proj, st.task)
 	cmd.Env = append(os.Environ(), "HW_WORKDIR="+st.cwd, "HW_ARTIFACTS="+a.getenv("HW_ARTIFACTS"))
@@ -258,19 +274,9 @@ func (a *app) reviveSandboxArm(st *reviveRunState, pane, kind, rundir string) bo
 	out, err := cmd.Output()
 	if err != nil {
 		a.warn("sandbox: could not arm " + rundir + " — the agent is NOT started unconfined")
-		return false
+		return "", false
 	}
-	shim := bashSub(string(out))
-	if !a.reviveHerdrQuiet("pane", "run", pane, "export PATH="+reviveQuote(shim)+":$PATH; hash -r 2>/dev/null; clear") {
-		a.warn("sandbox: could not put the shim on " + pane + "'s PATH — the agent is NOT started unconfined")
-		return false
-	}
-	dir := shim
-	if i := strings.LastIndexByte(dir, '/'); i >= 0 {
-		dir = dir[:i]
-	}
-	a.receiptInto(rundir, "sandbox", dir+"/profile.sb", "hw-sandbox arm ("+kind+"); shim "+shim+" exported in "+pane)
-	return true
+	return bashSub(string(out)), true
 }
 
 // reviveAgentStartSandboxed is _agent_start_sandboxed: arm, start through the ordinary path, then PROVE it.

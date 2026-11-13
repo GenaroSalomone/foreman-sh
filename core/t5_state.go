@@ -69,6 +69,7 @@ type dsp struct {
 	devserverSrc                              string
 	wantReport                                bool
 	keepPane                                  bool
+	keepPaneDefault                           bool // hw chose it: a build owing the independent review
 	keepPaneFor, keepPaneSeconds, keepPaneWhy string
 	wantWT                                    bool
 	wtSrc                                     string

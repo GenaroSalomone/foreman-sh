@@ -5,7 +5,7 @@
 #   herdr-isolated start <dir> [--brain] [--quiet]   build <dir>, start the app from a clean env, prove its sockets are under <dir>, write <dir>/env
 #   herdr-isolated stop  <dir>                       stop everything that instance started: app, feeders, core (the --hc-launchd parent) and holder
 #   herdr-isolated ls    <dir>                       list those processes (pid, comm, why) and stop nothing
-#   herdr-isolated shot  <dir> <out.png>             raise the instance's window, wait, take the screenshot; refuse a frame equal to the last one
+#   herdr-isolated shot  <dir> <out.png>             raise the instance's window, wait, take the screenshot, put the person's frontmost app back; refuse a frame equal to the last one
 #
 # WHY. The recipe in herdr-app/README.md was prose: one QA spent ~30 tool calls rebuilding it, and killing the app and the feeder
 # by pid leaves the DETACHED core alive (an `--hc-launchd` parent re-parented to pid 1 plus its `hold --socket <dir>/run/herdr-core/…`
@@ -75,12 +75,19 @@ scan() {
     lsof -nP -d cwd -F pn 2>/dev/null | awk -v a="$d" -v b="$p" '
       /^p/ {pid=substr($0,2); next}
       /^n/ {n=substr($0,2); if (n==a || n==b || index(n,a "/")==1 || index(n,b "/")==1) print pid "\tcwd\t" n}'
+    # a command line that names <dir>/…: the cockpit writers (`<dir>/brain/bin/cockpit-state --loop 5 --bind-pane …`) of a --brain instance hold no
+    # socket and run under an interpreter, so neither source above sees them; left running they respawn a core under <dir> (measured 2026-11-11)
+    ps -axo pid=,command= 2>/dev/null | awk -v a="$d" -v b="$p" '
+      {pid=$1; cmd=$0; sub(/^ *[0-9]+ /,"",cmd)
+       if (index(cmd,a "/") || index(cmd,b "/")) print pid "\targv\t" cmd}'
   } | while IFS="$(printf '\t')" read -r pid why name; do
     case " $chain " in *" $pid "*) continue ;; esac
     comm="$(ps -o comm= -p "$pid" 2>/dev/null)"; [ -n "$comm" ] || continue
     base="${comm##*/}"
     # a cwd alone only counts for the instance's own binaries; a socket under <dir> is the instance's by definition
     if [ "$why" = cwd ]; then case "$base" in herdr-core|Herdr|herdr-app|herdr) ;; *) continue ;; esac; fi
+    # a command line only counts when it is not THIS tool or a shell that merely mentions <dir> (a person's `tail -f <dir>/app.log` is left alone too)
+    if [ "$why" = argv ]; then case "$name" in *herdr-isolated*) continue ;; esac; case "$base" in bash|zsh|sh|tail|less|cat|rg|grep|vim|nvim) continue ;; esac; fi
     printf '%s\t%s\t%s %s\n' "$pid" "$base" "$why" "$name"
   done | sort -un -k1,1
 }
@@ -99,15 +106,18 @@ cmd_ls() {
 
 cmd_stop() {
   validate "$1"; shaped "$1"
-  local d="${1%/}" pids n=0
+  local d="${1%/}" pids pids2 n=0
   pids="$(alive_pids "$d")"
-  if [ -z "$pids" ]; then echo "herdr-isolated: nothing of $d is running"; unregister "$d"; return 0; fi
+  if [ -z "$pids" ]; then echo "herdr-isolated: nothing of $d is running"; unregister "$d"; unregister "$(physical "$d")"; return 0; fi
   # Kill the OUTERMOST parents first so a supervisor cannot respawn: TERM all, then re-scan (a pid is re-verified by the scan, never by
   # the old list), then KILL what is left.
   printf '%s\n' "$pids" | while read -r p; do kill -TERM "$p" 2>/dev/null; done
+  # a writer that outlived the first wave (or respawned a core before its own TERM landed) is TERMed again on every round, never left to the KILL
   while [ "$n" -lt 20 ]; do
     sleep 0.25; n=$((n+1))
-    [ -n "$(alive_pids "$d")" ] || break
+    pids2="$(alive_pids "$d")"
+    [ -n "$pids2" ] || break
+    printf '%s\n' "$pids2" | while read -r p; do kill -TERM "$p" 2>/dev/null; done
   done
   local left; left="$(alive_pids "$d")"
   if [ -n "$left" ]; then
@@ -119,7 +129,7 @@ cmd_stop() {
     printf 'herdr-isolated: still alive after SIGKILL:\n%s\n' "$left" >&2
     return 1
   fi
-  unregister "$d"
+  unregister "$d"; unregister "$(physical "$d")"
   printf 'herdr-isolated: stopped %s process(es) of %s\n' "$(printf '%s\n' "$pids" | wc -l | tr -d ' ')" "$d"
 }
 
@@ -170,7 +180,18 @@ echo "$(date +%T) pid=$$ cwd=$PWD HOME=$HOME CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_D
 trap 'rm -f "$D/sessions/$$.json"' EXIT
 osc() { printf '\033]7501;state=%s\007' "$1"; }
 osc idle
-while IFS= read -r line; do osc working; echo "stand-in: $line"; sleep 1; osc idle; done
+# a launch prompt (a positional argument that is not a flag: hw hands an executor its brief this way) is a turn of its own
+for a in "$@"; do case "$a" in -*) ;; *" "*) osc working; echo "stand-in: launch task received"; sleep 2; osc idle; break ;; esac; done
+# a line that begins with "!" is run in this stand-in's own environment (its HW_*, its PATH): that is how a QA has the "agent" ask,
+# challenge and report as the executor, or dispatch as the brainer; any other line is answered
+while IFS= read -r line; do
+  osc working
+  case "$line" in
+    '!'*) echo "stand-in runs: ${line#!}"; sh -c "${line#!}" 2>&1; echo "stand-in: exit $?" ;;
+    *) echo "stand-in: $line"; sleep 1 ;;
+  esac
+  osc idle
+done
 CLAUDE
   chmod +x "$I/bin/gh" "$I/bin/claude"
 }
@@ -187,6 +208,15 @@ brain_copy() { # <dir>
   mkdir -p "$I/brain" || return 1
   rsync -a --exclude .git --exclude node_modules --exclude core/dist --exclude .artifacts --exclude .worktrees "$REPO/" "$I/brain/" || return 1
   ( cd "$I/brain" && $build >"$I/brain-build.log" 2>&1 ) || { echo "herdr-isolated: building hw-core in $I/brain failed; see $I/brain-build.log" >&2; return 1; }
+  # The layouts name a verbs.txt under the brain root's cockpit/ (props.verbs, `~/<root>/cockpit/verbs.txt`: the Cockpit buttons) and the History
+  # mod reads projects.json from that same root: under the instance's HOME that is <dir>/h/<root>, which the app reads only inside HOME with
+  # links resolved (a link to <dir>/brain would leave it). Without the copies the buttons read "off" and History lists no product lane
+  # (app-live-qa-devserver, 2026-11-11). The root is read from the layout, not spelled here.
+  local root
+  root="$(sed -n 's|.*"verbs": *"~/\(.*\)/cockpit/verbs.txt".*|\1|p' "$I/brain/herdr-app/layouts/foreman.json" | head -n 1)"
+  [ -n "$root" ] || { echo "herdr-isolated: no props.verbs in the layout; cannot place the cockpit's verb table" >&2; return 1; }
+  mkdir -p "$I/h/$root/cockpit" || return 1
+  cp "$I/brain/cockpit/verbs.txt" "$I/h/$root/cockpit/" && cp "$I/brain/projects.json" "$I/h/$root/projects.json" || return 1
 }
 
 cmd_start() { # <dir> [--brain] [--quiet]
@@ -194,6 +224,10 @@ cmd_start() { # <dir> [--brain] [--quiet]
   local I="${1%/}" brain=0 quiet=0 a; shift
   for a in "$@"; do case "$a" in --brain) brain=1 ;; --quiet) quiet=1 ;; *) usage ;; esac; done
   [ -x "$APP_BIN" ] || die "the Herdr app is not at $APP_BIN"
+  # The instance lives at its PHYSICAL path: the app's appHome and every pane cwd are what the kernel says (/tmp/x is /private/tmp/x), and the
+  # app's "inside the folder" checks compare them as strings (measured 2026-11-11: appHome /tmp/x/app against a pane cwd under /private/tmp/x)
+  mkdir -p "$I" || die "cannot create $I"
+  I="$(physical "$I")"
   [ -z "$(alive_pids "$I")" ] || die "an instance already runs under $I (herdr-isolated ls $I); stop it first"
   mkdir -p "$I"/{app,state,config,run,bin,zdot,h,claude,engram,tmp} || die "cannot create $I"
   # the app's built-in mods (read from the person's tree, never written), then this tree's mods/layouts/themes over them.
@@ -254,21 +288,29 @@ ENV
 # equal the last shot of this instance (<dir>/shot.sha): a frame that did not change is a frame that did not redraw, or nothing moved — look.
 cmd_shot() { # <dir> <out.png>
   validate "$1"; shaped "$1"
-  local I="${1%/}" out="$2" pid sha last tries=0
+  local I="${1%/}" out="$2" pid sha last prev tries=0
   case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
   pid="$(cat "$I/app.pid" 2>/dev/null)"
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive_pids "$I" | grep -qx "$pid" || die "no running app of $I (its pid file is gone or the app exited): herdr-isolated start $I"
   [ -x "$I/q" ] || die "$I has no q: it was started by an older herdr-isolated; stop and start it again"
   last="$(cat "$I/shot.sha" 2>/dev/null)"
+  # the person's frontmost app BEFORE the raise: his keystrokes land in the isolated terminal for as long as it stays in front (seen twice, app-file-links)
+  prev="$(osascript -e 'tell application "System Events" to get unix id of first process whose frontmost is true' 2>/dev/null)"
+  restore_front() { # not for the instance's own pid, and not when the frontmost app could not be read
+    [ -n "$prev" ] && [ "$prev" != "$pid" ] || return 0
+    osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $prev) to true" >/dev/null 2>&1 \
+      || echo "herdr-isolated: could not put pid $prev (the app that was in front) back in front" >&2
+  }
   while [ "$tries" -lt 3 ]; do
     tries=$((tries+1))
     osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true" >/dev/null 2>&1 \
       || echo "herdr-isolated: could not raise the window of pid $pid (System Events refused osascript); the frame may be stale" >&2
     sleep "${HERDR_ISOLATED_SHOT_WAIT:-4}"
-    "$I/q" herdr-app shot "$out" >/dev/null 2>"$I/shot.err" || { cat "$I/shot.err" >&2; die "herdr-app shot failed for $I"; }
+    "$I/q" herdr-app shot "$out" >/dev/null 2>"$I/shot.err" || { restore_front; cat "$I/shot.err" >&2; die "herdr-app shot failed for $I"; }
     sha="$(shasum -a 256 "$out" | cut -d' ' -f1)"
     [ "$sha" != "$last" ] && break
   done
+  restore_front
   if [ "$sha" = "$last" ]; then
     echo "herdr-isolated: $out is byte-identical to the last shot of $I after $tries raises: the window did not redraw, or nothing changed" >&2
     return 1

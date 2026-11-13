@@ -29,10 +29,6 @@ import (
 	"time"
 )
 
-// WT_REGENERABLE / WT_ARCHIVABLE (bin/hw:9122-9133).
-const wtRegenerable = ".agents .atl .claude .codex .opencode .hw .specify .venv .ruff_cache .pytest_cache .mypy_cache __pycache__ node_modules dist build .next .turbo .DS_Store AGENTS.md PROGRESS.md opencode.json local next-env.d.ts tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo .astro"
-const wtArchivable = ".artifacts qa-report test-results playwright-report"
-
 // A TRACKED AGENTS.md THAT `next dev` REWROTE (bin/hw _wt_agents_block_only): excused only while the diff of the file is
 // ONE insertion that is exactly the block between these markers, blank lines around it aside.
 const (

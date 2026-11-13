@@ -78,7 +78,7 @@ and any other install (the native installer) gets `claude update`. Measured on a
 the stable cask (2.1.287) refused by `--check` with the second command, which then
 installed 2.1.296 in 18 s.
 
-`foreman-sh init` offers Homebrew only for what Homebrew carries. If only `git` or `python3`
+`foreman-setup init` offers Homebrew only for what Homebrew carries. If only `git` or `python3`
 is missing it names `xcode-select --install` (Apple's Command Line Tools) and sends you
 to nothing else. A `git` or `python3` that does not run counts as missing: on a Mac without
 the Command Line Tools, `/usr/bin/git` and `/usr/bin/python3` exist as shims that print
@@ -169,14 +169,14 @@ reports saved without a `topic_key`. The judgment that line asks for is a skill,
 `_skills/memory-retro/SKILL.md`: copy that directory into your brain's
 `.claude/skills/` and ask the brainer for a memory retro.
 
-## Quick start: `foreman-sh init`
+## Quick start: `foreman-setup init`
 
 One command takes a fresh install to a first dispatch:
 
 ```sh
-foreman-sh init             # from a checkout: ./install.sh init
-foreman-sh init --dry-run   # prints the plan and changes nothing
-foreman-sh init --yes       # answers its questions yes
+foreman-setup init             # from a checkout: ./install.sh init
+foreman-setup init --dry-run   # prints the plan and changes nothing
+foreman-setup init --yes       # answers its questions yes
 ```
 
 It checks `git`, `jq`, `python3`, `herdr`, `claude`, `rg`, `fd` and `sd`: a missing
@@ -185,7 +185,7 @@ whether to install what Homebrew carries (`--with-recommended`, above; `--yes`
 answers yes) and checks again in the same run, so a machine without `claude` needs
 one `init`, not `init`, `--with-recommended`, `init`. Without that answer, or if
 something is still missing, it stops having written nothing and prints one line to
-copy: `foreman-sh --with-recommended && foreman-sh init`. It then offers herdr's
+copy: `foreman-setup --with-recommended && foreman-setup init`. It then offers herdr's
 Claude integration and `engram setup claude-code` (it asks first, and `--yes` answers
 for you), builds `~/brain` with a `demo` lane over a toy repository at `~/code/toy`
 (`--lane NAME --repo PATH` for your own), copies a sample brief to
@@ -196,23 +196,33 @@ nothing and says so. `--brain DIR` and `--bin-dir DIR` move what it writes.
 
 ## The command
 
-On macOS, the Homebrew formula is the shortest way. It installs foreman-sh
-with herdr, jq, rg, fd and sd, and links `foreman-sh`, which is this
+On macOS, the Homebrew formula is the shortest way. It installs foreman
+with herdr, jq, rg, fd and sd, and links `foreman-setup`, which is this
 `install.sh` with the same flags:
 
 ```sh
-brew install GenaroSalomone/tap/foreman-sh
-foreman-sh --brain ~/brain --lane myapp --repo ~/code/myapp
+brew install GenaroSalomone/tap/foreman
+foreman-setup --brain ~/brain --lane myapp --repo ~/code/myapp
 ```
 
 The brain keeps its own copy of the mechanism. To refresh it, run
-`foreman-sh upgrade --brain ~/brain`: it takes the newest release (`brew upgrade
-foreman-sh`), reinstalls with the flags recorded in `~/brain/.foreman/install.json`,
+`foreman-setup upgrade --brain ~/brain`: it takes the newest release (`brew upgrade
+foreman`), reinstalls with the flags recorded in `~/brain/.foreman/install.json`,
 runs `--check` and prints the release's "In short". `--to VERSION` installs that
 one (the way back) and `--dry-run` changes nothing. Claude Code is a
-cask, so the formula cannot depend on it: `foreman-sh --with-recommended`
+cask, so the formula cannot depend on it: `foreman-setup --with-recommended`
 installs it (above). Nothing is installed unless you ask for it with that flag, and
-`foreman-sh --with-recommended --check` prints the commands without running them.
+`foreman-setup --with-recommended --check` prints the commands without running them.
+
+From `1.0.0-rc.1` the project, the repository and the formula are `foreman` (they were
+`foreman-sh`); the command is still `foreman-setup`, because homebrew-core has its own
+`foreman` formula and this one links no `foreman` executable. An install made by 0.9.x
+upgrades with `foreman-setup upgrade --brain ~/brain`, and the `FOREMAN_SH_*` variables
+are now `FOREMAN_*` (the three a 0.9.x installer hands to the new one are still read).
+The formula also links `foreman-sh`, only so that a 0.9.x install's own `foreman-sh upgrade`
+completes; it is deprecated, like the name.
+The [1.0 promise](REFERENCE.md#what-10-promises) covers this install; OpenCode and Codex
+are deprecated and outside it.
 
 `upgrade` reads what a lane declares from `projects.json`, so your hand edits there
 win. `hw status` tells you when a newer release exists (once a day, silent offline).
@@ -227,7 +237,7 @@ release tag into a temporary directory, runs that `install.sh` with your
 arguments and removes the directory (`git` and `curl` are required):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp
+curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman/main/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp
 ```
 
 Or from a checkout, as the README's Quickstart shows:
@@ -310,6 +320,8 @@ and so does a `--bin-dir` that cannot be a directory. Nothing is overwritten.
 
 ## OpenCode executors
 
+OpenCode is **deprecated**: outside the [1.0 promise](REFERENCE.md#what-10-promises), it keeps working and can be removed without a major version.
+
 ```sh
 ./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp --vendor opencode --model opencode/big-pickle
 brain myapp
@@ -367,14 +379,14 @@ there:
 |---|---|
 | `speckit` | [Spec Kit](https://github.com/github/spec-kit) (MIT), with a `speckit-*` skill in the repository's `.claude/skills` or in `~/.claude/skills`. Claude Code only: Codex and OpenCode dispatches are refused. |
 
-foreman-sh is not part of that project and implies no endorsement by it.
+foreman is not part of that project and implies no endorsement by it.
 
 There is no other mode: `--sdd gentle` and `sdd: gentle` in a brief are gone and
 warn, then run `--sdd none`; `hw gentle-home` no longer exists; and the
 `sdd_modes` lane field is not a field any more, so a `projects.json` that still
 carries it fails to load (`unknown lane field(s)`): delete the key. A
-`review: rdd` brief warns and closes with Judgment Day. What a task closes with
-is the brief's `review:` (`judgment-day`; `plugins`; `none`, which is also what an absent key means), below.
+`review: rdd` brief warns and runs `judgment-day`. What a task closes with is the brief's
+`review:` (below); a build owes the independent review whatever it says, unless `review: none` carries a `review-skip:` line.
 
 ## Dispatching: briefs, the ledger and `hw preflight`
 
@@ -467,7 +479,7 @@ builds it and refuses without Go, and a command with no `hw-core` stops, naming
   is reproducible (the same bytes every run), so a second run writes nothing. No
   switch file is written: Go is the default and needs none.
 - **The way back is 0.5.x.** There is no bash left to switch to for these five:
-  `foreman-sh upgrade --to 0.5.0 --brain <brain>` installs the release that has it.
+  `foreman-setup upgrade --to 0.5.0 --brain <brain>` installs the release that has it.
   A `HW_IMPL=bash` in a shell profile, or a `default=bash` or bare `bash` line in
   `~/.config/hw/impl` (`$XDG_CONFIG_HOME` and `HW_IMPL_FILE` are honoured), is said once per
   state ("bash was removed in 0.6.0; running Go — delete this line") and Go runs: it never
@@ -481,7 +493,7 @@ builds it and refuses without Go, and a command with no `hw-core` stops, naming
   answer `go version` (unreadable), the installer refuses, exit 1, **before writing
   anything**, and names https://go.dev/dl; `--check` lists Go among the missing
   prerequisites and writes nothing. `--no-core` is refused too (it was removed in
-  0.6.0; `FOREMAN_SH_NO_CORE=1` remains only as the seam the test suite's own installs
+  0.6.0; `FOREMAN_NO_CORE=1` remains only as the seam the test suite's own installs
   use). A build that fails, or a Go that builds for another architecture than this
   machine's, refuses as well and removes the `hw-core` an earlier install left, which
   would run against this release's `bin/hw`. Install Go and run the installer again.
@@ -493,7 +505,7 @@ builds it and refuses without Go, and a command with no `hw-core` stops, naming
   `opencode-auto`, `codex-channel-session-hook.sh` and `hw-sandbox` — are shims that exec
   their `hw-core` verb. Their bash bodies are gone: a `HW_IMPL_<TOOL>=bash` or `<tool>=bash`
   line is read only to say once that bash was removed, and Go runs. The way back for one of
-  them is `foreman-sh upgrade --to 0.6.3`. KNOWN-LIMITATIONS L16 has what differs.
+  them is `foreman-setup upgrade --to 0.6.3`. KNOWN-LIMITATIONS L16 has what differs.
 - **Lane hooks.** The export carries the builders of git-worktree lanes only; a lane
   `build` hook of another name is refused before anything is created (`hw` has no bash left to source it
   into); dispatch with `--worktree none` for a plain work directory.
@@ -537,7 +549,7 @@ See `KNOWN-LIMITATIONS.md` L23.
 
 Removed in 0.7.0: the Windows code (the `_windows.go` build files, the Git Bash
 compatibility layer `bin/msys-compat.sh`, and the Windows CI workflow) is gone.
-foreman-sh runs on macOS and Linux only. WSL2 is a Linux, so the Linux path may
+foreman runs on macOS and Linux only. WSL2 is a Linux, so the Linux path may
 work there, but it is not tested (see `KNOWN-LIMITATIONS.md`, L1b).
 
 ## Judgment Day (optional)
@@ -572,14 +584,20 @@ written. `--check` says on one line whether Judgment Day is active, and with
 Then ask a session for "judgment day" over a diff. The judges use engram to
 recall context when it is registered (see Memory above).
 
-**Which review a build closes with is the brief's choice**, in every lane and
-every `--sdd` mode: `review: judgment-day` (a review is opt-in: with no `review:` key the close names none)
-orders Judgment Day over the branch at the close; `review: plugins` names only
-the review pieces of the brief's `plugins:` (`thermo`, `ponytail`, `pstack`: skills, and
-`pstack`'s `comment-sicko` agent, launched with the Agent tool as `pstack:comment-sicko`; each piece once) and
-no Judgment Day; `review: none` (or no key) adds no review note, on any kind, with no `review-skip:` line needed. Any
-other value refuses the dispatch, naming those three. The choice is printed in
-the dispatch manifest and recorded in the run's receipt.
+**Every build gets an independent review; the brief's `review:` says what that review adds**, in every lane and
+every `--sdd` mode. When a `kind: build` (or no kind) reports done, `hw review <lane> <task>` dispatches a fresh
+claude opus reviewer on the build's head, with the tier its size picks: no code-only line changed = none;
+1-400 lines = thermo and test-review; more = those plus `ponytail-review` and the two pstack principles
+(docs, decisions, briefs and changelog fragments do not count as code). Every `review:` value owes it (the key
+absent, `judgment-day`, `plugins`, a list, a bare `none`); the one opt-out is `review: none` with a
+`review-skip: <why>` line (a bare `none` still owes the review and warns for one release). `judgment-day`
+(or a list naming it) adds Judgment Day, run by the reviewer; a list's plugin items, or `plugins` (the
+brief's `plugins:` review pieces), join the reviewer's tier. The builder itself runs no Judgment Day: it closes
+with its own tests and, on claude, `/simplify`. `hw done` prints «Merge it» only for an approved review at the
+branch head, an opt-out, or a brainer's `--accept-review "<why>"`. A task of another kind (explore, audit,
+review, design) owes no review: with no `review:` key its close names none, and a declared `judgment-day` or
+`plugins` still orders that close. Any other value refuses the dispatch. The choice is printed in the dispatch
+manifest and recorded in the run's receipt.
 
 ## Limits, stated
 

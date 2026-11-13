@@ -24,6 +24,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 - [L1b. Windows is not supported](#l1b-windows-is-not-supported)
 - [L2. herdr is required](#l2-herdr-is-a-hard-requirement)
 - [L29. The herdr app (herdr-core) carries turn-end tokens, the brainer and the executor launch](#l29-the-herdr-app-herdr-core-carries-turn-end-tokens-the-brainer-and-the-executor-launch)
+- [L33. The herdr app: no script can press a mod button, a report card outlives its pane by about a second, and the QA stand-in hides three real behaviours](#l33-the-herdr-app-no-script-can-press-a-mod-button-a-report-card-outlives-its-pane-by-about-a-second-and-the-qa-stand-in-hides-three-real-behaviours)
 - [L2b. Homebrew on macOS, a pipe elsewhere](#l2b-native-install-homebrew-on-macos-a-pipe-elsewhere)
 
 **The Go core**
@@ -66,6 +67,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 **Review**
 
 - [L10. Judgment Day is optional, except for `boundary:`](#l10-judgment-day-is-optional-except-for-a-brief-that-declares-boundary)
+- [L34. `hw review --at <sha>` on an already-merged commit measures against the current base, counts 0 code lines and dispatches nothing](#l34-hw-review---at-sha-on-an-already-merged-commit-measures-against-the-current-base-counts-0-code-lines-and-dispatches-nothing)
 
 **Sandbox**
 
@@ -133,7 +135,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
 
 ### L29. The herdr app (herdr-core) carries turn-end tokens, the brainer and the executor launch
 - **Scope:** an executor running in an herdr-core (`hc`) terminal, as the herdr app starts one, and `brain <lane>`
-  run from that terminal; a TUI brainer is unchanged.
+  run from that terminal; a TUI brainer is unchanged. The app is inside the [1.0 promise](REFERENCE.md#what-10-promises): what this limit lists is what it does not cover yet, and changing its interface after 1.0 takes a major version.
 - **Impact:** this release publishes the executor's turn-end and invoker state as `hc` labels (`hw_turn_state`,
   `hw_turns`, `hw_done_state`, …), proved by an `hc get --json` read-back, and chooses the backend by the nearest
   `herdr`/`herdr-core` process ancestor, so an app terminal that inherited `HERDR_ENV`/`HERDR_PANE_ID` from whoever
@@ -149,9 +151,20 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   `hw_project`/`hw_task`/`hw_run` plus `hw_role=<the pane's label>`, so `hw done` and `hw reap` end it with the executor and
   nothing takes it for the executor (a task's executor is the terminal with no `hw_role`: `hc ls` carries no labels, so dispatch
   and `hw revive` read one `hc get` per terminal; a dev terminal already live for the task is kept, not doubled). A read-only
-  dispatch (`--worktree none --no-db`, or a lane whose dev server is opt-in, without it) starts none. Another vendor, `--sandbox`
-  and `--here` are refused by name, and the dry run prints each of them as a ✗ (one function, `hcRefusal`, which the launch asks
-  again); the cheap explorer's arming is skipped, and the receipt records no session id on hc. A dev server runs as `sh -c <cmd>` with the dispatching shell's `PATH`, not the
+  dispatch (`--worktree none --no-db`, or a lane whose dev server is opt-in, without it) starts none. `--agent pi`, `opencode` and
+  `codex` launch the same way, each as its own binary with the brief as its launch task (claude, pi and codex after `--`, opencode as
+  `--prompt`), measured 2026-11-12 on the app: the brief arrives, `hw status` sees the terminal, `done-invoker` reaches the brainer and
+  `hw done` closes it. What differs from claude: pi and codex record no session id (only claude writes `sessions/<pid>.json`), opencode's
+  is read from its own server (`--port`), which is also what proves its brief arrived (it reports no status for `hc get`); codex stops at
+  its own first-run "Hooks need review" dialog until a person clears it, as on a TUI pane (`hc read <terminal>`); pi's turn-end publishes
+  through its extension, which needs a model that answers (all of pi's `-free` models answered 403/410/400 that day, with or without the app);
+  opencode's `hw-turn-ended.js` plugin only publishes turn tokens on the app once the installed plugin is this tree's. `--here`
+  is refused with its reason (hw starts an app executor as its own `hc run` terminal and has no pane of the caller's to split; `--worktree none --no-db` is the same no-worktree run in a tab), and the dry run prints it as a ✗ (one function, `hcRefusal`, which the launch asks
+  again). `--sandbox` is launched (L11): the run is armed before `hc run`, the shim's directory is the first entry of the terminal's `PATH`,
+  the broker's heartbeat is the proof, and a terminal with no heartbeat inside 10 s is killed (`hc kill`) and the dispatch dies; `hw revive`
+  arms a sandboxed run again the same way. Inside the profile the core's socket is denied like herdr's, so a sandboxed executor on the app
+  publishes no turn-end label and each turn end waits out `hc label`'s 10 s (measured 2026-11-12: `hc ls` inside answers
+  "core did not stop or start within 15 s"); its reports and asks cross through the broker; the cheap explorer's arming is skipped (claude's `--agents` JSON), and the receipt records no session id for claude-less vendors. A dev server runs as `sh -c <cmd>` with the dispatching shell's `PATH`, not the
   user's interactive shell: a tool only an interactive profile puts on `PATH` is not found, and the server's terminal ends when its
   process exits (`hc read <terminal>` while it is listed, `hc ls --all` after). `hw done` of that run kills and removes its terminals by label (`hc ls --label hw_project= --label hw_task=`, then `hc kill` and `hc rm`: a terminal with other labels is never touched; dispatch records the run as `.hw/<run>/hc`, and a run without that record makes no `hc` call), the in-use guard reads the terminal's status and report labels from `hc get`, and `hw reap`/`hw status`/the worktree occupancy count an hc run's live terminals as occupants of its worktree (an unreadable `hc ls` is "unobserved", never "free").
   `channel-send hc <terminal> - <message>` delivers to an hc terminal (a brainer `brain <lane>` opened in the app, or an
@@ -168,28 +181,40 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   task is delivered with `channel-send hc`; there is no endpoint or screen witness for an app terminal, so the "settled, no
   budget helps" refusal does not exist there. `hc wait`'s own exit code is not interpreted (its meanings are unmeasured): a failed wait backs off a
   second and `hc get` decides. `hw outbox flush <lane> --to <terminal>` delivers with the `hc` vendor when the target is an hc address, and
-  `brain <lane>` in the app runs it once a started brainer has reported a status; a report that lands that way also moves the executor terminal's labels to `hw_done_state=delivered` and `hw_invoker=<the new brainer>`, or the cockpit would say "report undelivered" to a dead brainer for ever. The brainer has a cockpit writer (`cockpit-state --loop 5 --bind-pane --invoker <terminal>`), which also removes the state files of writers that did not leave (older than an hour, loop lock free). `brain <lane> --reset` and `--resume <id>` replace the brainer by `hc kill` + `hc rm` and a new `hc run` (a working brainer is refused unless `--reset --force`); `brain relaunch [--all|<lane|terminal>…] [--dry-run]` does that for each idle claude brainer terminal, reading its conversation from claude's own `<config dir>/sessions/<pid>.json` (the pid is `hc get`'s) and skipping by name a terminal whose session it cannot read. `--self`, `--await-idle` and `--in-pane` type into a pane and stay refused by name (and `brain relaunch` in the TUI does not see a brainer living in the app). hc labels do
+  `brain <lane>` in the app runs it once a started brainer has reported a status; a report that lands that way also moves the executor terminal's labels to `hw_done_state=delivered` and `hw_invoker=<the new brainer>`, or the cockpit would say "report undelivered" to a dead brainer for ever. The brainer has a cockpit writer (`cockpit-state --loop 5 --bind-pane --invoker <terminal>`), which also removes the state files of writers that did not leave (older than an hour, loop lock free). `brain <lane> --reset` and `--resume <id>` replace the brainer by `hc kill` + `hc rm` and a new `hc run` (a working brainer is refused unless `--reset --force`); `brain relaunch [--all|<lane|terminal>…] [--dry-run]` does that for each idle claude brainer terminal, reading its conversation from claude's own `<config dir>/sessions/<pid>.json` (the pid is `hc get`'s) and skipping by name a terminal whose session it cannot read. `brain <lane> --reset --self` works in the app since 2026-11-12: the brainer arms its own reset, a detached process (`--reset --await-idle <terminal>`, in a session of its own) waits for that turn to end and then ends the terminal and starts a new one, so the brainer's address changes and the lane's open runs are repointed to it (measured: a process that called `setsid` survives `hc kill` of the terminal it was started from). `--in-pane` types into the shell under a herdr pane and stays refused, with that reason and the app's own command (`brain <lane> --resume <id>`, `brain relaunch`); `brain relaunch` in the TUI does not see a brainer living in the app. hc labels do
   not expire (no TTL) and `clear` is not applied on hc. `hw` puts `brain/bin` first on the `PATH` of the brainer and the executor it starts in an app terminal (the caller's `PATH` follows it), so `hw` and `brain` resolve there. The read side sees app executors: the cockpit state (`bin/cockpit-state`) and `hw status` list
   the live `hc ls` terminals that carry an `hw_task` label (hc 0.1.19 refuses a bare `--label hw_task`, and `hc ls` carries no labels, so each costs one `hc get`) beside herdr's panes (status and turn from `hc get`), `state-witness` reads
-  `hc get`/`hc read` when herdr knows no such pane, and `stall-watch` asks `hc get` whether the terminal is live; `hw`
-  looks for and focuses no herdr tab or space on the app route. An app row has no statusline context (it falls back to the
-  transcript). `hw wait <terminal>` reads the app terminal with `hc get`/`hc read`/`hc wait` (it ends at the turn boundary, and its non-blocking form starts `hw wait-monitor` in an `hc run` terminal of its own instead of a herdr tab (its screen stays readable with `hc read` after it exits, and the terminal removes itself `HW_WAIT_MONITOR_KEEP_S` seconds, default 300, after its last verdict); with no process-info endpoint for an app terminal its cross-check says "unknown", never "settled"), `hw unstick <terminal>` reads it the same way and refuses a non-OpenCode terminal by name as on herdr; restarting a stuck OpenCode inside a kept hc terminal is `unverified` and refused by name, with `hc kill` and `brain <lane> --resume` as the way out. `hw done` and `hw reap` judge a worktree whose run is recorded as hc by `hc` alone when no herdr server is running (`server_not_running`); a worktree with no hc record keeps the refusal.
+  `hc get`/`hc read` when herdr knows no such pane, and `stall-watch` asks `hc get` whether the terminal is live. Its alert and `setup/heavy`'s FROZEN alert name the brainer as
+  `channel-send --report herdr "$HW_INVOKER_PANE"`: `channel-send` sends that through `hc` when the pane is an app terminal and the caller runs on herdr-core
+  (measured live 2026-11-12; before it every such alert ended in a log as "did not reach pane t24 (channel-send exit 1)"); `hw`
+  looks for and focuses no herdr tab or space on the app route. A cockpit row of an app terminal has no statusline context (it falls back to the
+  transcript); `hw status` reads an app executor's context from its screen with `hc read <terminal> --lines 40`, as `hw receipt` does, names a
+  finished app run's terminal ("app terminal t4 closed") from the run's `.hw/<run>/hc` record, and tells you to read a stalled one with `hc read`.
+  A `--keep-pane` lease on the app records the terminal that started it (`by=`), and its expiry ends the run's terminals by label (`hc kill`, `hc rm`),
+  as `hw done` does (before 2026-11-12 it recorded `cleanup=no-owned-container` and left the terminal open). `hw wait <terminal>` reads the app terminal with `hc get`/`hc read`/`hc wait` (it ends at the turn boundary, and its non-blocking form starts `hw wait-monitor` in an `hc run` terminal of its own instead of a herdr tab (its screen stays readable with `hc read` after it exits, and the terminal removes itself `HW_WAIT_MONITOR_KEEP_S` seconds, default 300, after its last verdict); with no process-info endpoint for an app terminal its cross-check says "unknown", never "settled"), `hw unstick <terminal>` reads it the same way and refuses a non-OpenCode terminal by name as on herdr; restarting a stuck OpenCode inside a kept hc terminal is `unverified` and refused by name, with `hc kill` and `brain <lane> --resume` as the way out. `hw done` and `hw reap` judge a worktree whose run is recorded as hc by `hc` alone when no herdr server is running (`server_not_running`); a worktree with no hc record keeps the refusal.
+  **Still open on the app (inventory of 2026-11-12, each measured on an isolated instance or read at its line):** `hw sweep` lists and closes only herdr
+  tabs and workspaces, so it answers "no run recorded a workspace id" for app runs (`hw done` and `hw reap` are what end an app run's terminals);
+  the vault alert (`hw secret`) finds the lane's brainer with `herdr pane list` and runs from a LaunchAgent with no app terminal in its environment, so it
+  reaches a TUI brainer only (the alert stays in `vault-alerts.log` and on `hw status`); `hw revive --help` still says "in a new tab"; on a machine
+  with no herdr server `hw status` opens with "herdr unreachable" and ends with the `herdr update --handoff` tip, which do not apply there; the
+  unreported-executors refusal of `brain --reset` says "the pane id SURVIVES a reset", and on the app the brainer's address changes (the runs are
+  repointed instead); `hw ruling` says "herdr agent_status=" for an app terminal's status; `hw next` records `consumed_by=unknown` on the app; the detached arm of `brain --reset --self` does not re-read which terminal is the lane's brainer after its wait (the TUI arm does), so a brainer opened by hand during that wait can end up beside the new one.
 - **Evidence:** `measured` — `hc label`/`hc get` round-trip, the Stop hook firing in an hc terminal, the ancestry rule
   (design 0b P5, P7, P9, P12, P14; setup test 1261, the cockpit mod 1272), and the live brainer in the app shown by `hc ls --label
   label=brain`, `hc get` and `herdr-app ls`, with `hw … --dry-run` printing `invoker t1b (resolved by env; verified as
   label=brain cwd=…)` (setup tests 1262 and 1263), the launch argv and the dry-run route (core `TestHCDispatch*`), and the `hc` route, the invokers' reports, the ask hold and `hw ruling`
   against a fake `hc` that records argv (setup test 1264; core/invokers `TestHC*`), the read tools by a fake `hc` (core `TestHCRun*`, `TestHCDispatchNeverFocusesAHerdrSpace`, setup tests 1278 and 1266), and `hw next`, the outbox flush and the wait backoff the same way (setup tests 1279, 1262), and `hw done`/occupancy against a stateful fake `hc` (core `TestDoneRunEndsTheHCTerminal`, `TestHCOccupancy`; red on the old code). Against a live core (herdr app 0.1.14, hc 0.1.19, isolated instance, real claude haiku, main e0ff921f1, 2026-11-10; the fifth live-cycle QA): `brain <lane>` in an app terminal, `hw` dispatch with the brief proved by `hc get`, `hw ruling` delivered mid-turn by the PostToolUse hook, `ask-invoker` and its reply, `done-invoker` reaching the brainer, `hw done` of a kept terminal, `hw next` on a `--keep-pane` run, the outbox flush on reopening the brainer, `hw wait` (blocking and non-blocking), `brain --reset`/`--resume`/`relaunch` and the cockpit, Issues and Artifacts panels all `measured` live. The four suspicions this entry once listed were refuted there: the brainer's `PATH` starts with `brain/bin`, `hw wait`/`hw unstick` work on hc (`hw unstick` refusing a non-OpenCode terminal by name), the brainer has a cockpit writer, and `--reset`/`--resume`/`relaunch` restart it. The sixth live-cycle QA (main 253a6eadd, real claude haiku, 2026-11-10) repeated all of it and measured `hw revive` of an app run live too. Not measured live: the Artifacts panel (the isolated home has no signed-in claude), and the remaining slices (design §5 and §6b).
-- **Workaround:** keep in the TUI what the app refuses by name (a vendor other than claude, `--sandbox`, `--here`). Do not start the app from inside a herdr pane **or an hw executor's shell**: the core gives
+- **Workaround:** keep in the TUI what the app refuses by name (`--here`, and the `brain` flags that type into a pane). Do not start the app from inside a herdr pane **or an hw executor's shell**: the core gives
   every terminal the launcher's environment until it restarts, and that is herdr's variables (`HERDR_ENV`, `HERDR_PANE_ID`, …) AND the executor's
   `HW_*` (measured: `HW_INVOKER_PANE`, `HW_RUN`, `HW_TASK` in every app terminal). Start the app with `env -i` and only what it needs
   (`herdr-app/README.md`); a brainer `brain <lane>` opens there starts without the run identity (`HW_RUN`, `HW_TASK`, `HW_PROJECT`, …).
   The cockpit mod reads only under the app's own `$HOME`, links resolved, and `mod.json` cannot widen that: keep the work root under `~`.
 
 ### L2b. Native install: Homebrew on macOS; a pipe elsewhere
-- **Scope:** `brew install GenaroSalomone/tap/foreman-sh` and
+- **Scope:** `brew install GenaroSalomone/tap/foreman` and
   `install.sh --with-recommended`.
 - **Impact:** the formula cannot depend on Claude Code, which is a cask, so
-  Claude Code is one more step: `foreman-sh --with-recommended` or
+  Claude Code is one more step: `foreman-setup --with-recommended` or
   `brew install --cask claude-code@latest`. On Linux there is no native package. The
   piped installer is the way, and `--with-recommended` works only where
   Homebrew is on PATH. Without it, it names https://brew.sh and installs nothing.
@@ -197,11 +222,11 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   calls. The formula and `--with-recommended` install them.
 - **Evidence:** measured on macOS with Homebrew 7.0.7. The formula passes
   `brew audit --strict`, installs from a local tap with `--build-from-source`,
-  its test assertions hold, and the installed `foreman-sh --check` runs. The
+  its test assertions hold, and the installed `foreman-setup --check` runs. The
   dependencies were not reinstalled, so that run used `--ignore-dependencies`.
   A real `--with-recommended` run and the published tap were measured on a clean macOS 26.6
   VM (tart, no Homebrew, no Command Line Tools, empty HOME), through `init` in one run:
-  Homebrew + CLT 145 s and 367 s (two runs, network-bound), `brew install foreman-sh`
+  Homebrew + CLT 145 s and 367 s (two runs, network-bound), `brew install foreman`
   14-24 s, `init --yes` 49 s (claude cask, engram, fzf, integrations, brain, dry run),
   a second `init` 2 s. That run found the `claude-code` cask below the version floor
   (hence `claude-code@latest`). Measured later on the same image: `engram serve` starts inside
@@ -226,7 +251,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
     runs. It never stops the command: a hook calls `hw` every turn. `hw shadow` is gone (it
     says so and exits 64). A `HW_IMPL_<TOOL>=bash` or `<tool>=bash` line for one of the eight
     small tools below is retired the same way since 0.7.0, and Go runs. The way back to bash is
-    `foreman-sh upgrade --to 0.6.3` (for `hw` itself, 0.5.0 was the last release with its bash). `bin/hw` is a shim that finds `hw-core` and execs it:
+    `foreman-setup upgrade --to 0.6.3` (for `hw` itself, 0.5.0 was the last release with its bash). `bin/hw` is a shim that finds `hw-core` and execs it:
     it has no bash body, and a lane build hook outside `lanes/` is refused (hw used to source such
     a file into its own bash, and that bash is gone; a builder is Go now). `brain`, `channel-send`,
     `ask-invoker` and `done-invoker` are shims too: each keeps its name and execs its Go binary.
@@ -275,7 +300,7 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
     `hw secret` are shims that exec their `hw-core` verb. Their bash bodies are gone, and `bin/wrapper-go.sh` with them:
     `HW_IMPL_<TOOL>=bash` or a `<tool>=bash` line in `~/.config/hw/impl` is read only to say, once per state, that bash
     was removed and to run Go; it never stops the command. The way back for one of these tools is
-    `foreman-sh upgrade --to 0.6.3`.
+    `foreman-setup upgrade --to 0.6.3`.
   - **Five small wrappers run in Go.** `browser-close`,
     `brain-archive`, `secret-unlock`, `opencode-auto` and `codex-channel-session-hook.sh`
     are shims that exec `hw-core <tool>`; the transcripts the bash left behind
@@ -330,12 +355,12 @@ Every entry, by section; the sections below give scope, impact, evidence and wor
   resulting tree byte for byte; the binary is reproducible (the same sha256 on two builds).
   Windows was removed in 0.7.0 and no Windows binary is built (L1b).
 - **Workaround:** none inside 0.6.0: `hw-core` is required (`setup/build-core --native`, Go 1.22 or newer).
-  To get the bash back, install the previous release: `foreman-sh upgrade --to 0.5.0 --brain <brain>`.
+  To get the bash back, install the previous release: `foreman-setup upgrade --to 0.5.0 --brain <brain>`.
 
 ## Agents
 
 ### L3. Codex is not set up by the installer, and is a reduced dispatch target
-- **Scope:** `--agent codex`.
+- **Scope:** `--agent codex`. **Deprecated** since 1.0: outside the [1.0 promise](REFERENCE.md#what-10-promises), it keeps working and can be removed without a major version.
 - **Impact:** the installer configures Claude Code and OpenCode only. A Codex
   executor can be dispatched with `--sdd none` only; its first launch needs a
   person to clear two dialogs (hook review and a model-migration prompt); and
@@ -615,7 +640,7 @@ it leaves the brain directory, is unguarded even with the hook registered.
 
 ### L4. OpenCode background subagents are experimental
 - **Scope:** OpenCode executors and brainers that spawn subagents in the
-  background. The harness enables them with OpenCode's
+  background. **OpenCode is deprecated** since 1.0: outside the [1.0 promise](REFERENCE.md#what-10-promises), it keeps working and can be removed without a major version. The harness enables them with OpenCode's
   `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` variable.
 - **Impact:** the behaviour, and the variable itself, are OpenCode's and may
   change between its releases. The installer requires OpenCode 1.18.31 or
@@ -990,6 +1015,12 @@ it leaves the brain directory, is unguarded even with the hook registered.
 - **Evidence:** measured.
 - **Workaround:** leave `boundary:` out of a brief until the skill is active.
 
+### L34. `hw review --at <sha>` on an already-merged commit measures against the current base, counts 0 code lines and dispatches nothing
+- **Scope:** `hw review <lane> <task> --at <sha>` (the benchmark form: a review of a past head) when `<sha>` is already an ancestor of the lane's base, which is the case for any merged build.
+- **Impact:** the diff base is the merge-base of the SHA with the lane's base. For a commit already in the base that merge-base is the SHA itself, so the range is empty: `hw review setup review-past-head --at f77d35df7 --dry-run` prints `0 code-only line(s)` and tier `0`, and no reviewer is dispatched. `--at` works as designed only on a head the base does not contain yet (a branch before its merge). It never touches the build's receipt either way, so it cannot satisfy `hw done`'s merge gate.
+- **Evidence:** `measured` by the dry run above, on the commit that introduced `--at`; the engram topic `setup/review-docs/findings` carries the output. The design did not cover it (`setup/review-past-head/findings`).
+- **Workaround:** none in `hw` today. Review a branch before it merges, or read the merged range by hand with `git diff <parent>..<sha>`.
+
 ## Sandbox
 
 ### L11. `--sandbox` is macOS-only, opt-in, Claude Code and pi only, and leaves TCP open
@@ -1205,3 +1236,15 @@ it leaves the brain directory, is unguarded even with the hook registered.
   - **#21** `hw sweep --apply` closes the herdr tab or workspace whose id a run-dir file names (`core/t4_sweep.go`); open: whether a forged id plus a done marker closes another pane. Availability only; an unsandboxed executor can call `herdr` itself.
 - **Evidence:** `unverified`: source-confirmed by the audit, not executed here. The nine leads that were executed are in the changelog entry of this release.
 - **Workaround:** run an executor that must not be trusted under `--sandbox` (L11) and read what `hw done`, `hw revive`, `hw sweep` and `hw outbox flush` print before accepting it.
+
+### L32. `bin/move-root` repairs the places it knows; a quiet window is the operator's, and a task branch keeps its old root
+- **Scope:** `bin/move-root` (the move, `--undo`, `--audit`), `projects.json` `root`, `guards.json` `{brain}`/`{work}`.
+- **Impact:** (1) The move refuses while any process stands in `brain/`, `work/` or `archive/` (brainers included) and while herdr, herdr-app or hc answers on its socket: the window is every agent stopped and `hc server stop`, from a plain terminal. (2) Not repaired, by design or not yet: the vendors' own session stores keyed by path (opencode, pi, Codex `sessions/`), the cwd recorded inside transcripts and the archive's receipts (history), herdr's `session-snapshots/`, untracked files inside the brain, the run state of a product lane's task (`<checkout>/.worktrees/<task>/.hw/`, inside a product checkout the move does not write; a run there keeps naming the old brain until it ends), a symlink deeper than the depth scanned (work 6, brain 5, a product checkout's `.worktrees` 4) or a relative one from outside into the trees, and run-state files over 8 MB. (3) A task branch made before the move carries `"root"` on the old path until it is rebased onto the move's commit; its guards resolve `{brain}` to a directory that no longer exists, so `deny_setup_brain_writes` protects nothing from that worktree. (4) `--undo` restores a file byte for byte only if nothing touched it since the move, and skips, naming it, one removed since (`hw done`, `hw reap`); a file changed since (Claude Code rewrites `.claude.json` often) is reversed by substitution, and said. (5) A rewritten LaunchAgent needs `launchctl bootout`/`bootstrap`; the command prints them and does not run them. (6) With the agents root moved out of an org's directory, a session in a non-lane directory of the old root (an org's shared docs, say) is no longer "under the org root" for `bin/engram-label-proxy`, so it relays instead of refusing an unlabelled write. (7) `--audit` reads the spellings `/<dir>/brain|work` and, in root-bearing files, home-rooted ones; a path built at run time from pieces, or spelled as Claude's project-directory slug (`-<home>-<root>-brain…`, which step 5 renames), is invisible to it.
+- **Evidence:** `measured` on HOME-like scratch trees: `setup/tests/1362` (move, every repair, the commit, `--audit`, `--undo` byte for byte, the live-process refusal and its mutant) and the brief's end-to-end proof (a clone of the brain with worktrees, re-homed copies of the accounts' settings, herdr/hc state and run state). The real move has not been run.
+- **Workaround:** run `bin/move-root --to <dir> --dry-run` first and read every line; after the move, rebase or finish the task branches it lists, reload the LaunchAgents it prints, and run `bin/move-root --audit`.
+
+### L33. The herdr app: no script can press a mod button, a report card outlives its pane by about a second, and the QA stand-in hides three real behaviours
+- **Scope:** the herdr app's foreman mods (Cockpit, Agents) and `bin/herdr-isolated`, as the rc.1 live QA (2026-11-12, `website` and `setup` fixture lanes) measured them.
+- **Impact:** (1) `herdr-app commands` lists no `<mod>.<command>`, so no QA can press a mod button (Reply, Rule, Done, Dispatch, the fold): the QA runs the exact argv the button runs through the app's own `exec()` (a throwaway mod in the isolated app) and looks at the cockpit with `herdr-app shot`; the click handler itself stays unmeasured. (2) A run dispatched without `--keep-pane` is closed about a second after its report (`done-invoker` closes the executor and its dev terminal), so its report card is on screen for about that long and neither the fold nor **Done** can apply to it; `--keep-pane <ttl>` keeps it for the person to read. By design. (3) The isolated app runs a stand-in `claude`: it has no `Stop` hook (a ruling queued for the turn end is delivered by `done-invoker`, not at the turn end), writes no transcript (`model_running` reads `none`, so a model on a row is shown by a simulated receipt line), and answers slowly enough that `done-invoker` can exit 5 while the stand-in brainer is still echoing; its `npx` is a python server. A real claude cannot sign in under the instance's config dir.
+- **Evidence:** `measured` in the isolated app (`rc1-app-live-qa`, `rc1-app-qa-fixes`; engram topic `setup/rc1-app-live-qa/findings`).
+- **Workaround:** prove a click by its argv and its effect (`herdr-app shot`, `hc get`), dispatch with `--keep-pane` when the report must be read in the cockpit, and treat the Stop-hook delivery and the real model reader as established only by their own tests.

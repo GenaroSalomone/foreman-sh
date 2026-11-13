@@ -73,7 +73,7 @@ sg_load_ncpu() {
 sg_resolve_work() {
   SG_WORK="${WORK:-}"
   if [ -z "$SG_WORK" ]; then
-    SG_WORK="$(jq -r '.work // empty' "$1/projects.json" 2>/dev/null || true)"
+    SG_WORK="$(jq -r '.work // (if .root then .root + "/work" else empty end)' "$1/projects.json" 2>/dev/null || true)"
     case "$SG_WORK" in
       "~") SG_WORK="$HOME" ;;
       "~/"*) SG_WORK="$HOME/${SG_WORK#"~/"}" ;;

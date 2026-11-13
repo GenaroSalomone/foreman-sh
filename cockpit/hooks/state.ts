@@ -55,6 +55,7 @@ export type Row = {
     state: string
     at: number
     pending_reply?: string | null
+    route?: string | null
   } | null
 }
 

@@ -71,7 +71,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | (["product_repo","hw_aliases","brain_aliases","space","engram","vendor","model","account","artifacts","repoless",
         "checkout","checkout_var","base","base_ref_prefix","branch","worktree_root","worktree","ports",
         "hint_aliases","build","agents_from","deps","db","devserver","reap","sweep","brain_guard","brief_note","qa_target",
-        "model_floor","model_pins","subagent_model","pi_subagent_models","requested_by","opencode_config_dir","suite_lock"]) as $fields
+        "model_floor","model_pins","subagent_model","pi_subagent_models","requested_by","opencode_config_dir","suite_lock","org"]) as $fields
     | ({model_floor: ["tier","accepts"], deps: ["line","contention"], db: ["line","provisioned","no_worktree","no_db_inert"],
         devserver: ["start","line","off"], reap: ["copies","copies_from","max_worktrees","max_disk_pct","max_build_gb"]}) as $sub
     | ([$lanes | to_entries[] | .key as $l | .value | to_entries[] | select($sub[.key] != null) | .key as $f
@@ -112,8 +112,22 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ($badpins | length) == 0 then . else error("model_pins maps an alias (haiku, sonnet, opus, fable) to a full claude-* id: \($badpins | join(", "))") end
     | if ($badfloor | length) == 0 then . else error("model_floor.tier is haiku, sonnet or opus, and accepts is a list of model ids: \($badfloor | join(", "))") end
     | if (.pi_roster == null) or (.pi_roster | IN("go","free")) then . else error("pi_roster is go (the paid opencode-go roster) or free (opencode'"'"'s free models)") end
-    | ((keys - ["comment","work","operator","metrics_direct","survey_order","retention","pi_roster","lanes"])) as $top
+    | ((keys - ["comment","root","work","orgs","operator","metrics_direct","survey_order","retention","pi_roster","lanes"])) as $top
     | if ($top | length) == 0 then . else error("unknown top-level key(s): \($top | join(", "))") end
+    | if (.root == null) or (.root | type == "string" and length > 0) then . else error("root is the agents root, a path string") end
+    | (.orgs // null) as $orgs
+    | if ($orgs == null) or (($orgs | type == "object") and ($orgs | length > 0) and ($orgs | to_entries | all((.key | word) and (.value | type == "string" and length > 0))))
+      then . else error("orgs maps an organisation (a lowercase word) to the directory its product checkouts live under") end
+    | ([$lanes | to_entries[] | .key as $l | .value.org as $o
+        | if $orgs == null then (if $o == null then empty else "\($l).org (no top-level orgs)" end)
+          elif $o == null then empty
+          elif ($o | type == "string") and ($orgs | has($o)) then empty
+          else "\($l).org" end]) as $badorg
+    | if ($badorg | length) == 0 then . else error("org is one of the keys of the top-level orgs: \($badorg | join(", "))") end
+    | ([$lanes | to_entries[] | .key as $l | .value as $v | select($orgs != null and $v.product_repo == true and $v.org != null)
+        | ($orgs[$v.org] | exp) as $h | ($v.checkout // "" | exp) as $c
+        | if ($c | startswith($h + "/")) then empty else "\($l) (\($v.org): \($c) is not under \($h))" end]) as $badhome
+    | if ($badhome | length) == 0 then . else error("a product checkout lives outside the directory of its org: \($badhome | join(", "))") end
     | ((.retention // {}) as $r
        | if ($r | type == "object") and ((($r | keys_unsorted) - ["artifact_retention_days","backup_retention_days","build_output_days"]) | length) == 0
             and ([$r.artifact_retention_days // 30, $r.backup_retention_days // 60, $r.build_output_days // 7] | all(type == "number" and . >= 0 and . == floor))
@@ -128,7 +142,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
     | if ([$aliases | group_by(.kind)[] | group_by(.alias)[] | select(length > 1)] | length) == 0 then . else error("an alias is claimed twice") end
     | "HW_LANES=\($names | join(" ") | @sh)",
       "HW_LANES_SURVEY=\($survey | join("\n") | @sh)",
-      "_LC_WORK_DEFAULT=\(.work // error("no top-level `work`") | exp | @sh)",
+      "_LC_WORK_DEFAULT=\(.work // (if .root == null then error("no top-level `work`") else .root + "/work" end) | exp | @sh)",
       "_LC_RETENTION_ARTIFACT_DAYS=\(.retention.artifact_retention_days // 30 | tostring | @sh)",
       "_LC_RETENTION_BACKUP_DAYS=\(.retention.backup_retention_days // 60 | tostring | @sh)",
       "_LC_RETENTION_BUILD_DAYS=\(.retention.build_output_days // 7 | tostring | @sh)",
@@ -138,6 +152,7 @@ lane_config_load() {  # $1 = brain root; reads $1/projects.json
         | if ($v.checkout_var // "" | test("^([A-Z_][A-Z0-9_]*)?$")) then . else error("checkout_var of \($l) is not an identifier") end
         | emit($l; "space"; $v.space // error("lane \($l) has no space label")),
           emit($l; "engram"; $v.engram // "brain"),
+          emit($l; "org"; $v.org // ""),
           emit($l; "vendor"; $v.vendor // "claude"),
           emit($l; "model"; $v.model // ""),
           emit($l; "model_floor"; $v.model_floor.tier // ""),

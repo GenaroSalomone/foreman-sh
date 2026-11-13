@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-deps.sh — install what foreman-sh needs and recommends, through Homebrew,
+# install-deps.sh — install what foreman needs and recommends, through Homebrew,
 # one at a time, each command printed before it runs.
 #
 #   ./install.sh --with-recommended            # install what is missing

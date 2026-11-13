@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # The Homebrew keg builds a brain: no .git, its own command name, nothing pointing back
 #
-# WHAT THIS HOLDS. The formula (setup/packaging/homebrew/foreman-sh.rb.in) puts the
-# release tree in libexec/, with no .git, and links bin/foreman-sh as Homebrew's
-# write_env_script: export FOREMAN_SH_VERSION and FOREMAN_SH_INSTALL_CMD, then
+# WHAT THIS HOLDS. The formula (setup/packaging/homebrew/foreman.rb.in) puts the
+# release tree in libexec/, with no .git, and links bin/foreman-setup as Homebrew's
+# write_env_script: export FOREMAN_VERSION and FOREMAN_INSTALL_CMD, then
 # exec libexec/install.sh. Before, install.sh had no way to know either: run from
 # a keg it said "install.sh unknown" and told the person to run ./install.sh,
 # which a brew user does not have. Claims, over a keg laid out the same way:
 #
-#   1. `foreman-sh --version` prints the packaged version;
-#   2. `foreman-sh --brain … --lane … --repo …` builds the brain, and its marker
+#   1. `foreman-setup --version` prints the packaged version;
+#   2. `foreman-setup --brain … --lane … --repo …` builds the brain, and its marker
 #      carries the packaged version;
-#   3. every hint names `foreman-sh`, never `./install.sh`;
+#   3. every hint names `foreman-setup`, never `./install.sh`;
 #   4. the keg is not written to, and nothing in the brain or the bin dir links
 #      into it (`brew upgrade` deletes the old keg).
 #
@@ -28,15 +28,15 @@ export ENGRAM_PORT=9 ENGRAM_DATA_DIR="$TMP/engram"   # never 7437
 export TMPDIR="$TMP"
 
 # ── the keg: the tree without .git in libexec/, and the env script Homebrew writes ──
-KEG="$TMP/Cellar/foreman-sh/9.9.9"; mkdir -p "$KEG/libexec" "$KEG/bin"
+KEG="$TMP/Cellar/foreman/9.9.9"; mkdir -p "$KEG/libexec" "$KEG/bin"
 ( cd "$SUBJECT" && tar --exclude=./.git -cf - . ) | tar -xf - -C "$KEG/libexec"
-cat > "$KEG/bin/foreman-sh" <<EOF
+cat > "$KEG/bin/foreman-setup" <<EOF
 #!/bin/bash
-export FOREMAN_SH_VERSION="v9.9.9"
-export FOREMAN_SH_INSTALL_CMD="foreman-sh"
+export FOREMAN_VERSION="v9.9.9"
+export FOREMAN_INSTALL_CMD="foreman-setup"
 exec "$KEG/libexec/install.sh" "\$@"
 EOF
-chmod +x "$KEG/bin/foreman-sh"
+chmod +x "$KEG/bin/foreman-setup"
 keg_sum() { (cd "$KEG" && find . -type f -exec cksum {} + | sort); }
 keg_before="$(keg_sum)"
 
@@ -60,26 +60,26 @@ git config --global user.email t@t; git config --global user.name t
 REPO="$HOME/code/myapp"; mkdir -p "$REPO"
 ( cd "$REPO" && git init -q -b main && echo hi > README.md && git add . && git commit -q -m base )
 
-fs() { set +e; out="$(cd "$TMP" && foreman-sh "$@" < /dev/null 2>&1)"; rc=$?; set -e; }
+fs() { set +e; out="$(cd "$TMP" && foreman-setup "$@" < /dev/null 2>&1)"; rc=$?; set -e; }
 
 # ── 1. the version ──────────────────────────────────────────────────────────
 fs --version
-[ "$rc" = 0 ] && [ "$out" = "install.sh v9.9.9" ] || fail "foreman-sh --version printed '$out' (rc=$rc), not 'install.sh v9.9.9'"
-pass "foreman-sh --version prints the packaged version, with no .git in the keg"
+[ "$rc" = 0 ] && [ "$out" = "install.sh v9.9.9" ] || fail "foreman-setup --version printed '$out' (rc=$rc), not 'install.sh v9.9.9'"
+pass "foreman-setup --version prints the packaged version, with no .git in the keg"
 
-# ── 3. the hints name foreman-sh ───────────────────────────────────────────
+# ── 3. the hints name foreman-setup ───────────────────────────────────────────
 fs --brain "$HOME/brain" --check
-case "$out" in *"foreman-sh --brain $HOME/brain --lane <name> --repo <path>"*) ;; *) fail "--check from the keg does not name foreman-sh as the next command: $out" ;; esac
+case "$out" in *"foreman-setup --brain $HOME/brain --lane <name> --repo <path>"*) ;; *) fail "--check from the keg does not name foreman-setup as the next command: $out" ;; esac
 case "$out" in *"./install.sh"*) fail "--check from the keg tells a brew user to run ./install.sh: $out" ;; esac
 
 # ── 2. the brain ────────────────────────────────────────────────────────────
 fs --brain "$HOME/brain" --lane myapp --repo "$REPO" --operator me --min-model none --requested-by none
-[ "$rc" = 0 ] || fail "foreman-sh did not install (rc=$rc): $(printf '%s' "$out" | tail -8 | tr '\n' ' ')"
-[ -x "$HOME/brain/bin/hw" ] && [ -d "$HOME/brain/myapp" ] || fail "no brain, or no lane, after foreman-sh"
+[ "$rc" = 0 ] || fail "foreman did not install (rc=$rc): $(printf '%s' "$out" | tail -8 | tr '\n' ' ')"
+[ -x "$HOME/brain/bin/hw" ] && [ -d "$HOME/brain/myapp" ] || fail "no brain, or no lane, after foreman"
 [ "$(jq -r .version "$HOME/brain/.brain-install.json")" = v9.9.9 ] || fail "the marker says $(jq -r .version "$HOME/brain/.brain-install.json"), not v9.9.9"
-pass "foreman-sh builds the brain and a lane, and the marker carries v9.9.9"
+pass "foreman builds the brain and a lane, and the marker carries v9.9.9"
 case "$out" in *"./install.sh"*) fail "the install from the keg tells a brew user to run ./install.sh: $out" ;; esac
-pass "every hint names foreman-sh, never ./install.sh"
+pass "every hint names foreman-setup, never ./install.sh"
 
 # ── 4. nothing points back into the keg, and the keg is untouched ──────────
 [ "$keg_before" = "$(keg_sum)" ] || fail "the install wrote into the keg"

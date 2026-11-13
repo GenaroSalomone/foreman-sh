@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { brainerLane, classify, folderError, parseState, dur, laneOf, metaText, modelOf, scrub, terminalFor, titleOf } from "./state.js";
+import { brainerLane, classify, folderError, parseState, dur, laneOf, metaText, modelOf, modelsByPane, scrub, terminalFor, titleOf } from "./state.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const fixtures = join(root, "cockpit/fixtures");
@@ -120,6 +120,12 @@ if (tip !== "a b c" + "x".repeat(200)) fail("scrub for the tooltip", tip, "a b c
 checks += 3;
 // A click reaches only a terminal the app's core holds; a TUI pane id (w1:p11) is unreachable (L29).
 const held = [{ address: "t1b" }, { address: "t7" }];
+// rc1-app-live-qa F4: the agents panel gets pane → model from the same rows and the same field (modelOf) as the cockpit row;
+// a row with no model (hw's null, its "n/a —" sentence) or no pane is left out, never drawn as a word.
+const mp = modelsByPane([{ pane: "t5", model: "claude-sonnet-5-5" }, { pane: "t6", model: null }, { pane: "t7", model: "n/a — hw has no model reader" }, { pane: "", model: "claude-opus-5-5" }, { pane: "t8", model: "openai/gpt-5.6-sol" }]);
+if (JSON.stringify(mp) !== JSON.stringify({ t5: "claude-sonnet-5-5", t8: "openai/gpt-5.6-sol" })) fail("modelsByPane", JSON.stringify(mp), '{"t5":"claude-sonnet-5-5","t8":"openai/gpt-5.6-sol"}');
+
+checks += 1;
 for (const [pane, want] of [["t7", "t7"], ["w1:p11", null], ["", null]]) {
   if (terminalFor(pane, held) !== want) fail(`terminalFor(${pane})`, terminalFor(pane, held), want);
 }

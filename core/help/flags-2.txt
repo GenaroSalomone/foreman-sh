@@ -33,15 +33,15 @@ BRIEF KEYS (front-matter; docs/BRIEF-TEMPLATE.md has the whole block)
                        dispatch when the executor cannot reach one from its
                        work directory, instead of warning.
     review: judgment-day|plugins|none
-                       the review the close names, in every lane and --sdd
-                       mode. Absent = none: a review is opt-in. judgment-day is
-                       the Judgment Day closing (enforced: a frozen ledger, a
-                       re-judgment cannot add findings, at most 2 rounds);
-                       plugins names only the review skills of the brief's
-                       plugins: and no Judgment Day; none adds no review note
-                       and needs no review-skip: on any kind. Another value
-                       refuses the dispatch. `rdd` is retired: it warns and
-                       runs judgment-day.
+                       the review, in every lane and --sdd mode. A build owes
+                       the independent review for every value, absent too
+                       (`hw review`; the builder runs no Judgment Day):
+                       judgment-day has the reviewer run Judgment Day; plugins
+                       and list items add the plugins: review skills to the
+                       reviewer's tier; none opts out only with a review-skip:
+                       line. Other kinds owe none: absent = no review. Another
+                       value refuses the dispatch. `rdd` is retired: it warns
+                       and runs judgment-day.
     plugins: [<name>, …]  installed review plugins (thermo, ponytail, pstack)
                        loaded into THIS executor only. They are an optional
                        install step, off by default (setup/vendor/plugins/install

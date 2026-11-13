@@ -159,7 +159,7 @@ unset _v _HW_TEST_INPUTS 2>/dev/null || true
 unset ENGRAM_PROJECT AGENT_BROWSER_NAMESPACE 2>/dev/null || true  # MUTATION-ANCHOR: 54-M03
 # install.sh builds hw-core, and the suite's HOME is empty: a cold Go cache, a minute per installer run. The suite's
 # installs build nothing; 993 holds the build, the switch file and the way back, and unsets this.
-export FOREMAN_SH_NO_CORE=1
+export FOREMAN_NO_CORE=1
 
 # AND THE HERDR ADDRESS FAMILY — THE FOURTH INSTANCE, AND THE FIRST ONE THAT
 # MUTATED SOMETHING OUTSIDE THIS SUITE.
@@ -242,6 +242,13 @@ export FOREMAN_SH_NO_CORE=1
 _HERDR_TEST_INPUTS=" "
 for _v in ${!HERDR_@}; do  # MUTATION-ANCHOR: 145-M01a  # MUTATION-ANCHOR: 145-M02
   case "$_HERDR_TEST_INPUTS" in *" $_v "*) continue ;; esac
+  unset "$_v" 2>/dev/null || true
+done
+# THE SAME SWEEP FOR herdr-core's terminal identity (HC_SCOPE, HC_TERMINAL_ID, HC_TERMINAL_SOCKET). An executor runs inside an hc
+# terminal, so those names are in the environment of whoever runs the suite; left in, `hw --dry-run` plans an hc terminal instead
+# of a herdr tab (174), done-invoker/ask-invoker try to verify metadata on the live core (492, 493) and `hw` finds a live `hc ls` (824).
+# A subject that needs one sets it on its own command line. Held by 145 (C05, M04).
+for _v in ${!HC_@}; do  # MUTATION-ANCHOR: 145-M04
   unset "$_v" 2>/dev/null || true
 done
 unset _v _HERDR_TEST_INPUTS 2>/dev/null || true
@@ -496,10 +503,10 @@ FIXTURES="$ROOT/setup/fixtures"
 # the old bin/ spelled (guards.json's brain_root under the home, which home_brain
 # links to the tree) and the table of the tree under test. The subjects about derivation
 # itself (174, 175) unset them.
-# Where the brain sits under the home is the guards' own setting (guards.json's
-# brain_root), so the fixture follows the configuration instead of naming a path.
-# A minimal tree that copies only this file has no guards.json: it gets a neutral name.
-_brain_rel="$(jq -r '.brain_root // empty' "$ROOT/guards.json" 2>/dev/null || true)"
+# Where the brain sits under the home is projects.json's `root` (+ /brain, the one
+# place the agents root is written), so the fixture follows the configuration
+# instead of naming a path. A minimal tree with no projects.json gets a neutral name.
+_brain_rel="$(jq -r 'if .root then .root + "/brain" else empty end' "$ROOT/projects.json" 2>/dev/null || true)"
 _brain_rel="${_brain_rel:-brain-under-test}"
 export HW_BRAIN_ROOT="$HOME/${_brain_rel#\~/}"
 export HW_PROJECTS_JSON="$ROOT/projects.json"
@@ -908,6 +915,14 @@ mutate_anchor() {
   MUTANT_SUITE_ROOT="$ROOT" python3 - "$id" "$file" "$repl" <<'PYANCHOR' || fail "mutate_anchor $id: anchor not applied in $file"
 import os, pathlib, re, sys
 anchor_id, path, repl = sys.argv[1:4]
+# AN UNREGISTERED ANCHOR FAILS HERE, AT ITS FIRST USE, NAMING THE TSV (suite-15-first-try): a new MUTATION-ANCHOR with no row in
+# setup/mutation/mutation-anchors.tsv used to pass its own subject and fail only at 540, the end of a ~20 minute gate. A root with no
+# registry (a fixture) has nothing to check against.
+reg = pathlib.Path(os.environ.get("MUTANT_SUITE_ROOT", ".")) / "setup" / "mutation" / "mutation-anchors.tsv"
+if reg.is_file():
+    ids = {l.split("\t", 1)[0] for l in reg.read_text().split("\n") if l and not l.startswith("#")}
+    if anchor_id not in ids:  # MUTATION-ANCHOR: 1350-M08
+        sys.exit("anchor %r has no row in setup/mutation/mutation-anchors.tsv: add `%s<TAB><the file that carries the marker>` (setup/tests/540 fails the whole gate on it otherwise)" % (anchor_id, anchor_id))
 p = pathlib.Path(path)
 lines = p.read_text().split("\n")
 pat = re.compile(r"MUTATION-ANCHOR: " + re.escape(anchor_id) + r"(?![\w-])")

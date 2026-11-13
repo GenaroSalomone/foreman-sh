@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""release-check — one line when a newer foreman-sh release exists, else nothing.
+"""release-check — one line when a newer foreman release exists, else nothing.
 
     release-check BRAIN
 
@@ -9,7 +9,7 @@ asks at most once a day: the answer (or the failure to get one) is cached in
 BRAIN/.foreman/latest-release.json. Offline, unreadable or unwritable is
 silence and exit 0 — `hw status` calls it and must never fail or wait on it.
 A brain with no record (made before `upgrade` existed) is never asked about.
-FOREMAN_SH_NO_UPDATE_CHECK=1 turns it off; FOREMAN_SH_LATEST_URL (JSON with
+FOREMAN_NO_UPDATE_CHECK=1 turns it off; FOREMAN_LATEST_URL (JSON with
 `tag_name`) overrides where the newest release is looked up; the record
 install.sh wrote names the default (`latest_url`), so no repository is named here.
 """
@@ -56,9 +56,9 @@ def fetch(url):
 
 
 def how(brain):
-    """The command that upgrades this install: foreman-sh only where Homebrew put it on PATH."""
-    if shutil.which("foreman-sh"):
-        return "foreman-sh"
+    """The command that upgrades this install: foreman only where Homebrew put it on PATH."""
+    if shutil.which("foreman-setup"):
+        return "foreman-setup"
     src = load(os.path.join(brain, ".brain-install.json")).get("installed_from") or ""
     if src.startswith(("http://", "https://")):
         return "curl -fsSL %s/raw/HEAD/install.sh | bash -s --" % src.rstrip("/")
@@ -68,7 +68,7 @@ def how(brain):
 
 
 def main(argv):
-    if len(argv) != 2 or os.environ.get("FOREMAN_SH_NO_UPDATE_CHECK") == "1":
+    if len(argv) != 2 or os.environ.get("FOREMAN_NO_UPDATE_CHECK") == "1":
         return 0
     state = os.path.join(argv[1], ".foreman")
     record = load(os.path.join(state, "install.json"))
@@ -82,7 +82,7 @@ def main(argv):
     if isinstance(checked, (int, float)) and 0 <= now - checked < DAY:
         tag = cache.get("tag") or ""
     else:
-        tag = fetch(os.environ.get("FOREMAN_SH_LATEST_URL") or record.get("latest_url"))
+        tag = fetch(os.environ.get("FOREMAN_LATEST_URL") or record.get("latest_url"))
         try:
             with open(cache_path + ".tmp", "w") as f:
                 json.dump({"checked_at": int(now), "tag": tag}, f)
@@ -90,7 +90,7 @@ def main(argv):
         except OSError:
             pass
     if tag and key(tag) > key(have):
-        print("foreman-sh %s is out (this brain has %s): %s upgrade --brain %s" % (tag, have, how(argv[1]), argv[1]))
+        print("foreman %s is out (this brain has %s): %s upgrade --brain %s" % (tag, have, how(argv[1]), argv[1]))
     return 0
 
 

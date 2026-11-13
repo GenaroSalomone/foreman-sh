@@ -1,0 +1,12 @@
+# The brain's attributes file for `hw review` (core/t6_review.go): handed to git as `-c core.attributesFile=<this file>`, so the
+# product repo is read and nothing is written in it. The hunk header of `git diff -U0` then names the function a change is in.
+# go and python are git's own drivers; `jsfn` is defined on the command line (reviewJSDriver). Shell, SQL and XML functions are
+# not extracted: the function table is a quality check, not the boundary.
+*.go diff=golang
+*.py diff=python
+*.js diff=jsfn
+*.mjs diff=jsfn
+*.cjs diff=jsfn
+*.jsx diff=jsfn
+*.ts diff=jsfn
+*.tsx diff=jsfn

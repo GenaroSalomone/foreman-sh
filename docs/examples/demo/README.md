@@ -6,7 +6,7 @@ repository holds one file, a one-line README, because the example brief asks the
 executor to read the README.
 
 ```sh
-git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
+git init ~/code/toy && echo "toy: a throwaway repository for trying foreman." > ~/code/toy/README.md
 git -C ~/code/toy add README.md && git -C ~/code/toy commit -m init
 ./install.sh --brain ~/brain --lane demo --repo ~/code/toy
 cp docs/examples/demo/briefs/hello.md ~/brain/demo/briefs/

@@ -159,9 +159,11 @@ def _mark(path):
 
 # Where a session's directory says which role it played. An executor runs in
 # the table's `work` root, or in the flat `worktrees` root beside it that
-# preceded it; a brainer runs in the brain root guards.json names.
-_WORK = _TABLE.get("work") if isinstance(_TABLE.get("work"), str) else ""
-_BRAIN = _config("guards.json").get("brain_root")
+# preceded it; a brainer runs in the brain root, `root`/brain (projects.json's
+# `root`, the one place the agents root is written).
+_AGENTS = _TABLE.get("root") if isinstance(_TABLE.get("root"), str) else ""
+_WORK = _TABLE.get("work") if isinstance(_TABLE.get("work"), str) else (_AGENTS + "/work" if _AGENTS else "")
+_BRAIN = _AGENTS + "/brain" if _AGENTS else _config("guards.json").get("brain_root")
 EXECUTOR_MARKS = [_mark(p) + "-" for p in (
     [_WORK, os.path.join(os.path.dirname(os.path.expanduser(_WORK)), "worktrees")] if _WORK else [])]
 BRAIN_MARK = _mark(_BRAIN) if isinstance(_BRAIN, str) and _BRAIN else ""

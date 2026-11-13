@@ -132,6 +132,13 @@ func (d *dsp) run(argv []string) {
 			d.die("brief is empty: " + d.brief)
 		}
 	}
+	// A build that owes the independent review is re-tasked by the brainer when the reviewer finds something (one fix round,
+	// design 3.4): its pane has to outlive its report, and that cannot be turned on after the spawn.
+	if !d.keepPane && d.wantReport && !d.here && d.reusePane == "" && d.independentReview() {
+		d.keepPane, d.keepPaneDefault = true, true
+		d.keepPaneWhy = "this build owes the independent review: the brainer re-tasks it with hw next if the reviewer asks for one fix round"
+		d.keepPaneSeconds = d.leaseSeconds(d.keepPaneFor)
+	}
 	if d.here && d.tabExplicit { // # MUTATION-ANCHOR: 844-M04
 		d.die("--here and --tab are two different placements: --here splits your pane and drops the worktree, --tab gives the task its own tab and keeps it. Pick one.")
 	}

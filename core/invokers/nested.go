@@ -34,7 +34,7 @@ func headlessAgent(argv string) bool {
 	}
 	flags := f[1:]
 	for i, a := range flags {
-		if a == "--" {
+		if a == "--" || a == "--prompt" { // what follows is the brief (opencode's TUI takes it as --prompt): prose, not flags
 			flags = flags[:i]
 			break
 		}

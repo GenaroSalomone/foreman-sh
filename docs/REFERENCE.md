@@ -1,9 +1,9 @@
-# foreman-sh reference
+# foreman reference
 
 Every command, brief field, framework, cockpit control and lane setting, in one
 place. The [README](../README.md) is the tour; this is the lookup.
 
-Jump to: [Commands](#commands) · [Frameworks](#frameworks---sdd) · [Model tiers](#delegating-by-model-tier) · [Cockpit](#the-cockpit) · [Layout](#layout) · [Lane settings](#customizing-a-lane-projectsjson).
+Jump to: [Commands](#commands) · [Frameworks](#frameworks---sdd) · [Model tiers](#delegating-by-model-tier) · [Cockpit](#the-cockpit) · [Layout](#layout) · [Lane settings](#customizing-a-lane-projectsjson) · [What 1.0 promises](#what-10-promises).
 
 ## Commands
 
@@ -14,7 +14,7 @@ Jump to: [Commands](#commands) · [Frameworks](#frameworks---sdd) · [Model tier
 | `hw` | With no arguments, an [fzf](https://github.com/junegunn/fzf) picker over every lane's briefs, plus a `+ new brief` row. Needs `fzf`. |
 | `hw status` | What is running, what reported and what is left over, and one line when the brainer's memory has drifted (a stale or duplicated memory, engram's conflicts piling up) that names the `memory-retro` skill. |
 | `hw ledger [<lane>] [--brief <path>\|--task <t>] [--state <s>] [--json]` | Every brief as never-dispatched, in-progress or done, from the ledger `hw` writes at each dispatch. When the brain is a git repository on `main` (the installer does not make it one), `hw` also commits the brief at dispatch if it is untracked or changed. `hw <lane> <task>` with no brief is refused, naming the path it looked for; `--no-brief` launches without one on purpose. |
-| brief frontmatter `review: judgment-day\|plugins\|none` | The review the task's close names, in every lane and `--sdd` mode. Absent means `none`: a review is opt-in. `judgment-day` orders Judgment Day over the branch (and, on pi and Claude, `done-invoker` holds the close to its protocol from the transcript: at most 6 judge runs in 3 calls, and a re-judgment adds no finding to the first judgment's ledger); `plugins` names only the review skills of the brief's `plugins:` and no Judgment Day; `none` adds no review note, on any `kind`, and needs no `review-skip:`. Any other value refuses the dispatch, naming the three; `rdd` is retired and warns into `judgment-day`. The dry run prints it in a `review` line and the run's receipt records it. |
+| brief frontmatter `review: judgment-day\|plugins\|none` | What the task's review is, in every lane and `--sdd` mode. A `kind: build` (or no kind) owes the independent review for every value, the key absent included: when it reports done, `hw review <lane> <task>` dispatches a fresh claude opus reviewer on its head (tier by code-only lines: 0 none, 1-400 thermo + test-review, more adds ponytail-review and two pstack principles). `judgment-day` (or a list naming it) adds Judgment Day, run by the reviewer; a list's plugin items, or `plugins`, add the brief's review pieces to the reviewer's tier. The one opt-out is `review: none` with a `review-skip: <why>` line (a bare `none` still owes the review and warns for one release). The builder runs no Judgment Day: it closes with its own tests and, on claude, `/simplify`. `hw done` offers the merge only for an approved review at the branch head, an opt-out, or a brainer's `--accept-review "<why>"`. A task of another kind owes no review: absent means no review there, and a declared `judgment-day` or `plugins` still orders its close (on pi and Claude `done-invoker` holds a Judgment Day close to its protocol from the transcript). Any other value refuses the dispatch; `rdd` is retired and warns into `judgment-day`. The dry run prints it in a `review` line and the run's receipt records it. |
 | brief frontmatter `secrets: [<item>[.<field>], …]` | Bitwarden items the task needs, by name (folder `agents`). Before anything is built `hw` checks that the vault is unlocked and each item exists, and refuses naming what is missing. The executor reaches a value only through `hw secret run <item>[.<field>] --as VAR -- <cmd>`, which puts it in `<cmd>`'s environment and nowhere else. See *Secrets* below. |
 | brief frontmatter `plugins: [<name>, …]` | Load installed review plugins (an optional install step, off by default: `install.sh --with-review-plugins`) into that executor only: Claude Code gets one `--plugin-dir` each, pi one `-e <plugin dir>` each (the plugins' hooks run natively in that executor only), and the dry run says `NOT APPLIED` for opencode and codex. Nothing is installed globally; what a hook writes goes to `$HW_ARTIFACTS/plugin-state`, never `~/.claude` or `~/.pi`, and a name that is not installed refuses the dispatch, naming the command that installs it. The export ships no plugin (KNOWN-LIMITATIONS L22). |
 | `hw briefs archive <lane> [--apply]` | Move the lane's finished briefs to `briefs/archive/<yyyy-mm>/` (a plan unless `--apply`). An archived task does not launch: `hw` names the archived path and `hw briefs restore <lane> <task>`; `hw briefs unarchive <lane> --manifest <file>` undoes a whole run. |
@@ -44,8 +44,8 @@ repository already has, name it in the brief.
 
 There is no other mode. `--sdd gentle` (and `sdd: gentle` in a brief) is gone:
 it warns and runs `--sdd none`.
-Spec Kit is a third-party project that foreman-sh integrates with, under its
-own licence. foreman-sh is not part of it, and no endorsement is implied:
+Spec Kit is a third-party project that foreman integrates with, under its
+own licence. foreman is not part of it, and no endorsement is implied:
 
 - [Spec Kit](https://github.com/github/spec-kit), MIT licence.
 
@@ -146,12 +146,13 @@ nothing is read from it. Other values are not checked.
 `hw help lanes` prints this table in short form.
 
 Paths accept a leading `~` (your home). `{brain}` is the brain root, `{work}`
-the top-level `work` directory, `{checkout}` the lane's checkout, `{lane}` its
+the work directory (`work`, else `root`/work), `{checkout}` the lane's checkout, `{lane}` its
 name and `{task}` the task name.
 
 | Field | Type | What it does | Default |
 |---|---|---|---|
 | `space` | string | The herdr workspace label for the lane. Required. | none: the file fails to load |
+| `org` | string | The organisation the lane works for: a key of the top-level `orgs`. A `product_repo` lane's `checkout` must sit under that org's directory or the file fails to load; a rule that applies to one organisation reads `org`. Every lane of your table should name one (`docs/layout.md`). | none |
 | `engram` | string | The engram project label the lane's memory is filed under. | `brain` |
 | `vendor` | string | The agent `brain <lane>` and `hw` default to: `claude` or `opencode`. Not validated at load. | `claude` |
 | `model` | string | The model executors get when the dispatch passes no `--model`. | empty: the vendor's own |
@@ -189,7 +190,11 @@ name and `{task}` the task name.
 | `brain_aliases` | array | Other names `brain <lane>` accepts. | none |
 | `hint_aliases` | array | The aliases the refusal messages print beside the lane name. | none |
 
-At the top level of the file: `work` (required), `lanes` (required),
+At the top level of the file: `root` (the agents root, the one place it is
+written: brain is `root`/brain, work `root`/work, the archive `root`/archive;
+`bin/move-root` changes it), `work` (required when there is no `root`),
+`orgs` (each organisation's directory, where its lanes' product checkouts
+live), `lanes` (required),
 `operator` (the person messages tell an agent to leave a decision to),
 `survey_order` (the order `hw reap` and `hw worktrees` walk the lanes),
 `retention` (how long `hw reap` keeps the artifacts of a task that reported and
@@ -215,3 +220,25 @@ with `hw next`.
 
 `hw <lane> <task> --dry-run` shows the note inside the prompt. The note is
 plain text, one string, with no tokens expanded.
+
+## What 1.0 promises
+
+From `1.0.0` the interface is stable and [SemVer](https://semver.org) counts it: a
+change that breaks a working setup takes a new major version, a new flag, field or
+subcommand a minor, and a fix a patch. The promise covers:
+
+- `hw` and `brain`: their subcommands and flags, and what each one does;
+- the invokers (`ask-invoker`, `done-invoker`, `channel-send`): their arguments and exit codes;
+- the brief format: its front matter keys and the values `hw` accepts;
+- the install: `install.sh`, the `foreman-setup` command Homebrew links, and the layout it produces;
+- the herdr app: foreman's mods and layouts for it, and the `hc` backend (herdr-core's command line) it runs on.
+
+**Deprecated, and outside the promise: Codex and OpenCode.** They keep working, and
+either can be removed without a major version. Claude Code and pi are the agents the
+promise is made for.
+
+**The name.** Up to 0.9.x the project was `foreman-sh`; from `1.0.0-rc.1` it is
+`foreman`: the repository, the formula (`foreman` in the tap)
+and the environment variables (`FOREMAN_SH_*` became `FOREMAN_*`). The installer
+command is `foreman-setup`. There is no `foreman` executable, because
+homebrew-core already has a different formula with that name.

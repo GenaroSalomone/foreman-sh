@@ -2,7 +2,7 @@
 # `brain <lane>` LOADS THE COCKPIT MOD FOR A CLAUDE BRAINER THAT CAN RUN IT, AND SAYS SO WHEN IT CANNOT.
 #
 # The mod is a session-only plugin folder: `--plugin-dir <installed>/cockpit`,
-# resolved from bin/brain's own physical path, so a foreman-sh upgrade replaces
+# resolved from bin/brain's own physical path, so a foreman-setup upgrade replaces
 # the tree and the mod with it and nothing is written to ~/.claude. The flag goes
 # on only for the claude vendor, only with claude >= 2.1.289, and only when
 # neither FOREMAN_COCKPIT=0 nor --no-cockpit is set. Below the floor it is one

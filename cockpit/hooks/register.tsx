@@ -159,6 +159,7 @@ const namesOf = (r: Row): Names => ({
   project: r.project,
   task: r.task,
   pane: r.pane,
+  route: r.ask?.route === 'hc' ? 'hc' : 'herdr', // the word channel-send takes first; a writer older than the field says herdr
   ...(typeof r.ask?.pending_reply === 'string' ? { pending_reply: r.ask.pending_reply } : {}),
 })
 

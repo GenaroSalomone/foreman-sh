@@ -28,6 +28,10 @@ set -euo pipefail
 # (HW_INVOKERS was swept with the rest until go-060 S5: the "failed ask delivery" case below died on "the Go invokers are not built".)
 _keep_core="${HW_CORE:-}"; _keep_inv="${HW_INVOKERS:-}"
 for _v in ${!HW_@}; do unset "$_v" 2>/dev/null || true; done  # MUTATION-ANCHOR: 54-M04
+# THE SAME SWEEP FOR herdr-core's terminal identity (HC_*), as in setup/tests/_common.sh. An executor or brainer runs inside an hc terminal,
+# and with HC_TERMINAL_ID in the environment the invokers' route for the case's `pane-brainer` is "hc", not "herdr": channel-send exit 4
+# ("delivered, its turn failed") then counts as delivered, so "failed ask delivery" exited 0 (measured 2026-11-12, release cut 1.0.0-rc.1 gate 6).
+for _v in ${!HC_@}; do unset "$_v" 2>/dev/null || true; done
 unset _v 2>/dev/null || true
 [ -z "$_keep_core" ] || export HW_CORE="$_keep_core"
 [ -z "$_keep_inv" ] || export HW_INVOKERS="$_keep_inv"
@@ -53,6 +57,23 @@ cleanup() {
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+
+# NO TEST SUBJECT TALKS TO THE LIVE herdr-core (measured 2026-11-12: this file left hw_task=accounting-test hw_ask_state=delivered on the
+# brainer's real terminal t24). The HC_* sweep above removes the identity; this removes the address. Unlike setup/tests/_common.sh this file
+# does not fake HOME, and `hc` finds a core from $HOME (a fake one gets its own; the real one is the person's), so any `hc` call that still
+# gets made would land on the live core. A tripwire `hc` first on PATH is the end of that road: it records the call and refuses it, and the
+# last line of this file fails on a recorded call. TEST_CHANNEL_SEND_HC_LOG names the record (setup/tests/1337 reads it).
+HC_TRIPWIRE_LOG="${TEST_CHANNEL_SEND_HC_LOG:-$TMP/hc-calls}"
+mkdir -p "$TMP/no-live-hc"
+cat > "$TMP/no-live-hc/hc" <<STUB
+#!/bin/sh
+printf 'hc %s\n' "\$*" >> '$HC_TRIPWIRE_LOG'
+printf 'hc: refused by setup/test-channel-send: a test never talks to the live herdr-core\n' >&2
+exit 1
+STUB
+chmod +x "$TMP/no-live-hc/hc"
+export PATH="$TMP/no-live-hc:$PATH"
+# TRIPWIRE-END (setup/tests/1365 sources this file up to here)
 
 node --input-type=module - "$PORT_FILE" <<'NODE' &
 import fs from "node:fs"
@@ -736,3 +757,10 @@ esac
 # had run the bash body (a seam deleted since), the one implementation the claim was about. Deleting state-witness.sh from a bin/
 # copy is now a no-op for channel-send; what the two cases above hold (a settled receiver is refused fast, an unreadable cross-check never
 # becomes a refusal) is the whole of the witness's contract in Go.
+
+# THE TRIPWIRE STAYED QUIET: no case above reached for the live herdr-core.
+[ ! -s "$HC_TRIPWIRE_LOG" ] || {
+  printf 'not ok - a case called hc, which would have reached the live herdr-core: %s\n' "$(tr '\n' ';' < "$HC_TRIPWIRE_LOG")" >&2
+  exit 1
+}
+pass "channel-send: no case reached for the live herdr-core (the hc tripwire stayed quiet)"

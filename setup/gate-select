@@ -83,6 +83,17 @@ CODE_SKIP = re.compile(
     r"|\.(md|timeline|png|svg|jpg|gif|pdf)$|^setup/decisions\.md$")
 ROOT_FILES = ("projects.json", "guards.json")
 COMMENT = re.compile(r"^\s*(#(?!!)|//).*$", re.M)
+# A TABLE a helper names for everyone: `mutate_anchor` (tests/_common.sh) reads the anchors registry, so every subject that builds a
+# mutant "names" it through the helper body, and an edit to one row selected 12 slow subjects (2285 s, no red of the branch's,
+# retro-fixes-1111b). 540 judges the table (each id once in its file, each marker registered, each id used); a subject answers for a
+# table only when its OWN text spells it, never through a helper.
+TABLES = ("setup/mutation/mutation-anchors.tsv",)
+
+
+def own_names(root, pool, path):
+    """The subjects of <pool> whose own text (no helper, no _common.sh top level) spells <path>."""
+    tests = os.path.join(root, "setup", "tests")
+    return [n for n in pool if path in COMMENT.sub("", read(os.path.join(tests, n)))]
 
 
 def read(path):
@@ -307,6 +318,12 @@ def slow_hits(root, changed, trigger):
                 found[name] = (0, path)
                 spell.setdefault(path, []).append(name)
             continue
+        if path in TABLES:  # MUTATION-ANCHOR: 999-M09
+            for n in own_names(root, stext, path):
+                spell.setdefault(path, []).append(n)
+                if found.get(n, (9,))[0] > 0:
+                    found[n] = (0, path)
+            continue
         if trigger is not None and trigger.search(path) is None:
             for n, t in stext.items():
                 if names(t, path):
@@ -427,6 +444,10 @@ def main(argv):
                 chosen.setdefault(name, path)
             else:
                 print("deferred %s" % name)
+            continue
+        if path in TABLES:  # MUTATION-ANCHOR: 999-M08
+            for n in own_names(root, stext, path):
+                chosen.setdefault(n, path)
             continue
         if RUNNER.search(path):
             all_why = "%s is the runner's own machinery" % path  # MUTATION-ANCHOR: 999-M05

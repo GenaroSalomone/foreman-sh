@@ -10,7 +10,7 @@
 #
 # The eight small tools are read here too since 0.7.0: HW_IMPL_STOP_HOOK, HW_IMPL_HW_SECRET, HW_IMPL_HW_SANDBOX, HW_IMPL_BROWSER_CLOSE,
 # HW_IMPL_BRAIN_ARCHIVE, HW_IMPL_SECRET_UNLOCK, HW_IMPL_OPENCODE_AUTO, HW_IMPL_CODEX_CHANNEL_SESSION_HOOK and their `<tool>=` lines
-# name a bash that no longer exists. The way back is `foreman-sh upgrade --to 0.6.3`. HW_BASH_BODY=1, the seam that ran a bash body,
+# name a bash that no longer exists. The way back is `foreman-setup upgrade --to 0.6.3`. HW_BASH_BODY=1, the seam that ran a bash body,
 # is gone too, so it does nothing.
 #
 # impl_retired_warn <tool> — prints nothing and returns 0 when nothing retired is set.

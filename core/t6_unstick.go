@@ -270,6 +270,9 @@ func (a *app) cmdUnstick() int {
 		a.die("herdr does not know pane " + pane + " (or herdr is unreachable on $HERDR_SOCKET_PATH)")
 	}
 	state, agent, reason, scope := unstickTokens(info)
+	if hc && agent == "" { // `hc get` names no agent kind for a terminal that is not OpenCode: the refusal read "t5 is , not OpenCode"
+		agent = "not an agent hc names"
+	}
 	if agent != "opencode" {
 		a.die(pane + " is " + agent + ", not OpenCode; hw unstick will not send control keys to another agent")
 	}

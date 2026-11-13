@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# init.sh — foreman-sh init: from a fresh install to a first dispatch, in one command.
+# init.sh — foreman-setup init: from a fresh install to a first dispatch, in one command.
 #
-#   foreman-sh init                       # ~/brain, lane "demo" on a toy repository
-#   foreman-sh init --yes                 # no questions: every fix below is consented to
-#   foreman-sh init --dry-run             # print the plan, change nothing
-#   foreman-sh init --lane myapp --repo ~/code/myapp --brain ~/brain
+#   foreman-setup init                       # ~/brain, lane "demo" on a toy repository
+#   foreman-setup init --yes                 # no questions: every fix below is consented to
+#   foreman-setup init --dry-run             # print the plan, change nothing
+#   foreman-setup init --lane myapp --repo ~/code/myapp --brain ~/brain
 #
 # Run through the front (`install.sh init`, which the Homebrew formula links as
-# `foreman-sh`), never on its own initiative. In order:
+# `foreman-setup`), never on its own initiative. In order:
 #   1. prerequisites     git, jq 1.7+, python3, herdr, claude, rg, fd, sd (and a shell
 #                        it was measured with). A missing one is NAMED with its install
 #                        command. With Homebrew present init ASKS (--yes answers) to run
 #                        `--with-recommended` right there and checks again; without the
 #                        answer, or if something is still missing, the run stops with one
-#                        copyable line (`foreman-sh --with-recommended && foreman-sh init`)
+#                        copyable line (`foreman-setup --with-recommended && foreman-setup init`)
 #   2. Claude account    the welcome, login and Bypass Permissions warning: yours, named
 #   3. herdr + engram    herdr's Claude integration (needed to install) and `engram setup
 #                        claude-code` (recommended) — each ASKED, or done under --yes;
@@ -35,7 +35,7 @@
 set -uo pipefail
 
 SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # scripts/ sits one level under the checkout
-INIT_CMD="${FOREMAN_SH_INIT_CMD:-./install.sh init}"
+INIT_CMD="${FOREMAN_INIT_CMD:-./install.sh init}"
 FRONT="${INIT_CMD% init}"
 BRAIN_DIR="" LANE="demo" REPO="" BIN_DIR="" YES=0 DRY=0 WITH_RP=0
 SAMPLE_TASK=hello
@@ -116,8 +116,8 @@ CLAUDE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 [ -z "$REPO" ] || REPO="$(abspath "$REPO")"
 case "$SRC/" in "$BRAIN/"*) die "--brain $BRAIN is (or contains) the checkout init runs from — choose another directory" ;; esac
 
-[ "$DRY" = 0 ] || printf 'foreman-sh init — dry run: the plan, nothing is changed\n'
-[ "$DRY" = 1 ] || printf 'foreman-sh init — brain %s, lane %s\n' "$BRAIN" "$LANE"
+[ "$DRY" = 0 ] || printf 'foreman-setup init — dry run: the plan, nothing is changed\n'
+[ "$DRY" = 1 ] || printf 'foreman-setup init — brain %s, lane %s\n' "$BRAIN" "$LANE"
 
 # ── 1. prerequisites ────────────────────────────────────────────────────────
 stage 1/7 "prerequisites (a missing one is named with its command; Homebrew's are installed only if you say yes)"
@@ -179,7 +179,7 @@ if [ "$((MISSING - CLT_MISSING))" -gt 0 ] && type -P brew >/dev/null 2>&1 && [ "
 fi
 case "${SHELL##*/}" in
   bash|zsh) ok "shell ${SHELL##*/}" ;;
-  *) warn "your login shell is '${SHELL:-unset}': foreman-sh is measured with zsh and bash (chsh -s /bin/zsh switches); hw itself runs under bash either way" ;;
+  *) warn "your login shell is '${SHELL:-unset}': foreman is measured with zsh and bash (chsh -s /bin/zsh switches); hw itself runs under bash either way" ;;
 esac
 if [ -z "$(git config --global --get user.name 2>/dev/null)" ] || [ -z "$(git config --global --get user.email 2>/dev/null)" ]; then
   warn "git has no user.name/user.email — an executor's commit fails without them. Set them: git config --global user.name 'Your Name' && git config --global user.email you@example.com"
@@ -280,9 +280,9 @@ if [ "$TOY" = 1 ]; then
   else
     mkdir -p "$REPO" \
       && git init -q -b main "$REPO" \
-      && printf 'toy: a throwaway repository for trying foreman-sh.\n' > "$REPO/README.md" \
+      && printf 'toy: a throwaway repository for trying foreman.\n' > "$REPO/README.md" \
       && git -C "$REPO" add README.md \
-      && git -C "$REPO" -c user.name=foreman-sh -c user.email=foreman-sh@localhost commit -q -m init \
+      && git -C "$REPO" -c user.name=foreman -c user.email=foreman@localhost commit -q -m init \
       || die "could not create the toy repository $REPO"
     chg "toy repository $REPO"
   fi
@@ -327,7 +327,7 @@ else
   say "permissions: $PERMISSIONS ($PERMISSIONS_SRC) — change with: hw --permissions ask|skip"
   if [ "$before" = "$after" ]; then ok "brain $BRAIN and lane $LANE → $REPO were already in place: nothing changed"   # MUTATION-ANCHOR: 824-M03
   else chg "brain $BRAIN, lane $LANE → $REPO (links in $BIN)"; fi
-  # install.sh's own NOTE lines are the only place it says hw-core is not built (FOREMAN_SH_NO_CORE=1, the suite's seam; no Go refuses before this):
+  # install.sh's own NOTE lines are the only place it says hw-core is not built (FOREMAN_NO_CORE=1, the suite's seam; no Go refuses before this):
   # init keeps its log to itself, so without this the person never learns which half of hw they got (measured 2026-10-13)
   strip_ansi < "$LOG" | sed -n 's/^  NOTE  //p' | while IFS= read -r _note; do say "NOTE  $_note"; done   # MUTATION-ANCHOR: 824-M08
 fi

@@ -1,14 +1,15 @@
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex, Scrollbar } from "gpui-base";
-import { focused, home, layout, props, readTextFile, run, setShared, shared, terminals, theme } from "herdr";
+import { h_flex, v_flex, Scrollbar, InputState, Input } from "gpui-base";
+import { exec, focused, home, layout, props, readTextFile, run, setShared, shared, terminals, theme } from "herdr";
 import * as fs from "fs/promises";
 import {
   attentionParts, brainerLane, classify, cut, dur, metaText, noProgressAfterMs, parseState, progressText,
-  ctxLevel, filterId, FILTERS, folderError, keeps, modelOf, scrub, statusText, subagentLine, subagentsSummary, terminalFor, waitingQueue,
+  ctxLevel, filterId, FILTERS, folderError, keeps, modelOf, modelsByPane, queueFold, summaryText, scrub, statusText, subagentLine, subagentsSummary, terminalFor, waitingQueue,
 } from "./state.js";
 import { activeChild, LOOK_LAYOUTS, shownLook, SWITCH_ROW2, switchOf } from "./switcher.js";
 import { ageText, lineOf, parseUsage, sortAccounts } from "./usage.js";
-import { alarm, button, kindOf, colorOf, lookOf, mark, SPACE, TEXT } from "./tokens.js";
+import { alarm, button, kindOf, colorOf, lookOf, mark, RADIUS, SPACE, TEXT } from "./tokens.js";
+import { binDirOf, dispatch, forgettable, offers, parseVerbs, snapshot } from "./actions.js";
 
 // The foreman cockpit as the herdr app draws it. The data is the file
 // bin/cockpit-state writes for each brainer pane (contract: cockpit/schema.json;
@@ -24,6 +25,9 @@ import { alarm, button, kindOf, colorOf, lookOf, mark, SPACE, TEXT } from "./tok
 // `props.look` (c, d, g) picks the grammar of its mockup. The window around them is the app's own
 // mods (spaces, agents, tabs, pane, workspace-chrome, workspace-status), styled by the layout. The
 // body (`props.dir`) publishes hw's counts as shared("foreman.cockpit") for the switch's live count.
+//
+// The queue's rows carry the buttons (actions.js): Reply, Rule and Done, each running the argv cockpit/verbs.txt gives
+// (`props.verbs`, the file's path). The app's exec has no stdin, so the typed text is the one last argv word.
 
 // The four attention states that need the brainer: their status text in its color, bold.
 const LOUD = new Set(["challenge", "ask", "blocked", "report"]);
@@ -35,12 +39,14 @@ const URGENT = ["blocked", "waits", "working", "idle"];
 const since = (r) => (r.attention === "working" ? r.dispatched_at : r.report?.at ?? r.attention_since ?? r.dispatched_at);
 const age = (r, now) => dur(now - since(r)).replace(/^(\d+[hd])\d+[mh]$/, "$1");
 const model = (r) => modelOf(r)?.split("/").pop().replace(/^claude-/, "") ?? "—";
+// A refusal's deciding line is usually its last: a long outcome keeps its end, not its head.
+const lastOf = (text, max) => { const flat = scrub(text); return flat.length <= max ? flat : `…${flat.slice(-(max - 1))}`; };
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 // The switch's live count: "3 brainers · 9 executors".
 const liveText = (brainers, executors) => `${plural(brainers, "brainer")} · ${plural(executors, "executor")}`;
 const commits = (r) => (r.commits === null ? null : r.commits.count);
 // The report's own words, or what waits: the one line D and G show under a row.
-const detailOf = (r, attention) => (r.report !== null && r.report.status !== "blocked" && r.report.summary.trim() !== "" ? r.report.summary : attention);
+const detailOf = (r, attention) => summaryText(r) ?? attention;
 
 export default class Cockpit extends View {
   init(_props, cx) {
@@ -54,6 +60,13 @@ export default class Cockpit extends View {
     this.held = [];
     this.picked = null;
     this.published = "";
+    this.invOf = new Map();
+    this.verbs = null; // cockpit/verbs.txt as a table, or null (no buttons)
+    this.bin = null; // the brain's bin/, beside the folder of props.verbs; every verb runs `<bin>/hw`, never a bare `hw`
+    this.verbsProblem = null;
+    this.acts = {}; // a queue row's button state by row id: { mode, verb, result, before, inv }
+    this.inputs = new Map(); // the text field of a row being answered, by row id
+    this.queue = shared("foreman.cockpit.queue") ?? null; // the queue block's fold: { folded, seen }, remembered by the app
     this.filter = filterId(shared("foreman.cockpit.filter")); // remembered by the app across restarts and windows
     const p = props();
     if (switchOf(p)) return;
@@ -103,6 +116,8 @@ export default class Cockpit extends View {
       }
       this.states = states;
       this.error = null;
+      await this.readVerbs();
+      this.settle();
       // The accounts' usage, written by bin/statusline-usage-tee; a missing folder is no line, never an error.
       const udir = `${home()}/.cache/hw/claude-usage`;
       const us = [];
@@ -117,10 +132,54 @@ export default class Cockpit extends View {
     }
   }
 
+  // The verb table the buttons run: `props.verbs`, the path of cockpit/verbs.txt. A block that names none has no buttons
+  // (and says nothing); one that names a file that is not the contract says so, because its buttons would otherwise just be missing.
+  async readVerbs() {
+    const given = props()?.verbs;
+    if (typeof given !== "string" || !given) { this.verbs = null; this.verbsProblem = null; return; }
+    const path = given.startsWith("~/") ? `${home()}/${given.slice(2)}` : given;
+    const table = parseVerbs(await readTextFile(path).catch(() => null));
+    this.verbs = table;
+    this.verbsProblem = table === null ? `buttons off: ${path} is missing or is not cockpit/verbs.txt` : null;
+    this.bin = binDirOf(path); // where hw and channel-send are: exec's PATH (the login shell's) does not carry the brain's bin/
+  }
+
+  // A verb that ran waits here until a state read shows the change: its row stays, with its outcome, until then.
+  settle() {
+    const live = new Map(this.groups(Date.now()).filter((g) => g.cls === "fresh").map((g) => [g.state.invoker_pane, new Map(g.rows.map((r) => [r.id, r]))]));
+    for (const [id, a] of Object.entries(this.acts)) {
+      const rows = live.get(a.inv);
+      if (rows === undefined || a.mode === "busy") continue; // its brainer's file is not live: no row is "gone" then
+      if (forgettable(a, rows.get(id), this.verbs)) this.forget(id);
+    }
+  }
+
+  forget(id) {
+    delete this.acts[id];
+    this.inputs.get(id)?.release();
+    this.inputs.delete(id);
+  }
+
+  // A report that arrives after the fold reopens the block: compared on every read, written only when it changed.
+  syncQueue(groups) {
+    const ids = waitingQueue(groups.filter((g) => g.cls === "fresh").flatMap((g) => g.rows)).map((r) => r.id);
+    const next = queueFold(this.queue, ids);
+    if (!next.changed) return;
+    this.queue = next.state;
+    setShared("foreman.cockpit.queue", next.state);
+  }
+
   // hw's counts for the switch's live count. Set only when it changed: every setShared redraws every mod.
   publish() {
     const groups = this.groups(Date.now());
+    this.syncQueue(groups);
     const executors = groups.reduce((n, g) => n + (g.state.totals.executors ?? 0), 0);
+    // The agents panel draws each executor's model beside its row from this: pane → model id, the cockpit row's own field.
+    const models = JSON.stringify(modelsByPane(groups.filter((g) => g.cls === "fresh").flatMap((g) => g.rows)));
+    if (models !== this.publishedModels) {
+      this.publishedModels = models;
+      setShared("foreman.cockpit.models", models);
+    }
     const text = liveText(groups.length, executors);
     if (text === this.published) return;
     this.published = text;
@@ -206,8 +265,8 @@ export default class Cockpit extends View {
     const lines = [];
     const meta = [metaText(r), progressText(r, now)].filter(Boolean).join(" · ");
     lines.push(this.line(cut(meta, 200), t.muted));
-    if (r.report !== null && r.report.status !== "blocked" && r.report.summary.trim() !== "") {
-      lines.push(this.line(cut(r.report.summary, 200), loud ? t.ansi7 : t.muted, true));
+    if (summaryText(r) !== null) {
+      lines.push(this.line(cut(summaryText(r), 200), loud ? t.ansi7 : t.muted, true));
     }
     const subs = r.subagents ?? [];
     const folded = subagentsSummary(subs);
@@ -333,7 +392,15 @@ export default class Cockpit extends View {
     const title = [[by("report"), "report", "to read"], [by("ask"), "ask", "to answer"], [by("challenge"), "challenge", "to rule"],
       [by("blocked"), "blocked", ""]].filter(([n]) => n > 0)
       .map(([n, l, what]) => (l === "blocked" ? `${n} blocked` : `${n} ${l}${n === 1 ? "" : "s"} ${what}`)).join(" · ");
-    const shown = rows.slice(0, QUEUE_MAX);
+    const folded = this.queue?.folded === true;
+    const toggle = (_e, cx) => {
+      this.queue = { folded: !folded, seen: this.queue?.seen ?? [] };
+      setShared("foreman.cockpit.queue", this.queue);
+      cx.notify();
+    };
+    const head = (e) => e.id("queue-fold").cursor_pointer().on_click(toggle);
+    const caret = folded ? "▸" : "▾";
+    const shown = folded ? [] : rows.slice(0, QUEUE_MAX);
     const c = look.id === "c";
     const entry = (r) => {
       const k = kindOf(r.attention);
@@ -345,11 +412,11 @@ export default class Cockpit extends View {
         .child(div().flex_none().when(!c, (e) => e.text_color(t.dim)).child(`${r.project} · ${r.attention === "report" ? "reported" : r.attention}`))
         .child(div().flex_none().w(34).text_right().when(!c, (e) => e.text_color(t.dim)).child(age(r, now)));
     };
-    const more = rows.length > shown.length ? [div().text_size(TEXT.label).when(!c, (e) => e.text_color(t.dim)).child(`+${rows.length - shown.length}`)] : [];
+    const more = !folded && rows.length > shown.length ? [div().text_size(TEXT.label).when(!c, (e) => e.text_color(t.dim)).child(`+${rows.length - shown.length}`)] : [];
     if (c) {
       return v_flex().w_full().flex_none().px(14).py(12).gap(3).bg(t.done).text_color(t.background)
-        .child(div().text_size(14).font_bold().child(title))
-        .children([...shown.map(entry), ...more]);
+        .child(head(div().text_size(14).font_bold()).child(`${caret} ${title}`))
+        .children([...shown.flatMap((r) => [entry(r), ...this.actionBlock(r, t, look)]), ...more]);
     }
     const kind = rows.some((r) => r.attention === "blocked" || r.attention === "challenge") ? "blocked" : "waits";
     const box = look.id === "d"
@@ -357,8 +424,89 @@ export default class Cockpit extends View {
       : v_flex().m(8).px(10).py(8).rounded(6).border_1().border_color(t.input).bg(t.background);
     return box.flex_none().gap(2)
       .child(h_flex().gap(look.id === "d" ? 10 : 8).items_center().child(mark(look, kind, t, 12))
-        .child(div().flex_1().min_w(0).truncate().text_size(13).font_weight(look.id === "d" ? 600 : 500).text_color(t.foreground).child(title)))
-      .children([...shown.map(entry), ...more]);
+        .child(head(div().flex_1().min_w(0).truncate().text_size(13).font_weight(look.id === "d" ? 600 : 500).text_color(t.foreground)).child(`${caret} ${title}`)))
+      .children([...shown.flatMap((r) => [entry(r), ...this.actionBlock(r, t, look)]), ...more]);
+  }
+
+  // ---- the queue's buttons ----
+
+  // The text field of a row being answered; created in a handler (the app refuses it in render), kept until the row settles.
+  inputFor(r, cx) {
+    let input = this.inputs.get(r.id);
+    if (input === undefined) {
+      input = InputState.new({ placeholder: "Type the answer…" });
+      input.on("change", (_e, cx2) => cx2.notify());
+      this.inputs.set(r.id, input);
+    }
+    return input;
+  }
+
+  // A label was pressed: a text verb opens its field, one that asks (`done`) asks first. Nothing runs yet.
+  begin(r, o, inv, cx) {
+    this.acts[r.id] = { mode: o.text ? "compose" : "confirm", verb: o.id, result: null, inv };
+    if (o.text) this.inputFor(r, cx).focus();
+    cx.notify();
+  }
+
+  // Send / Confirm: dispatch() runs the verb and decides what the outcome says; the row stays either way.
+  go(r, o, cx) {
+    const a = this.acts[r.id];
+    if (a === undefined || a.mode === "busy" || a.mode === "sent") return;
+    const text = o.text ? this.inputs.get(r.id)?.value() ?? "" : null;
+    const confirmed = a.mode === "confirm"; // only the second press, the Confirm button, sets it
+    const before = snapshot(r);
+    this.acts[r.id] = { ...a, mode: "busy", result: { state: "busy", text: "Sending…" } };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const out = await dispatch(this.verbs, o.verb, o.params, { text, confirmed, bin: this.bin }, exec);
+      const waits = out.state === "sent" || out.state === "unknown"; // unknown is never blind-retried: the row waits like a sent one
+      this.acts[r.id] = { ...a, mode: waits ? "sent" : o.text ? "compose" : "idle", verb: o.id, result: out, before };
+      if (out.state === "sent") this.refresh(cx);
+      cx.notify();
+    });
+  }
+
+  cancel(r, cx) {
+    this.forget(r.id);
+    cx.notify();
+  }
+
+  // Under a queue entry: its buttons, the field or the question they open, and the outcome of the last press.
+  actionBlock(r, t, look) {
+    const a = this.acts[r.id];
+    const offered = offers(r, this.verbs);
+    if (offered.length === 0 && a === undefined) return [];
+    const c = look.id === "c";
+    const inv = this.invOf.get(r) ?? null; // read at draw time: the click's row object may be replaced by the next state read
+    const lines = [];
+    const mode = a?.mode ?? "idle";
+    const row = (...kids) => h_flex().w_full().min_w(0).gap(6).items_center().pl(c ? 0 : 4).children(kids);
+    // C draws the queue on the signal color: the token's muted text would sit unread on it, so the label takes the block's own.
+    const btn = (id, label, active, on) => button(id, label, t, active, look).when(c, (e) => e.text_color(t.background).font_bold()).on_click(on);
+    if (mode === "idle") {
+      lines.push(row(...offered.map((o) => btn(`act-${r.id}-${o.id}`, o.label, false, (_e, cx) => this.begin(r, o, inv, cx)))));
+    }
+    const o = offered.find((x) => x.id === a?.verb);
+    if (mode === "compose" && o !== undefined) {
+      lines.push(row(Input.new(this.inputFor(r)).flex_1().min_w(0).h(22).px(SPACE.sm).rounded(RADIUS).border_1().border_color(t.border).bg(t.background).text_color(t.foreground),
+        btn(`act-${r.id}-send`, "Send", true, (_e, cx) => this.go(r, o, cx)),
+        btn(`act-${r.id}-cancel`, "Cancel", false, (_e, cx) => this.cancel(r, cx))));
+    }
+    if (mode === "confirm" && o !== undefined) {
+      lines.push(row(div().flex_1().min_w(0).truncate().text_size(TEXT.label).child(`Close ${r.project}/${r.task}?`),
+        btn(`act-${r.id}-confirm`, `Confirm ${o.label.toLowerCase()}`, true, (_e, cx) => this.go(r, o, cx)),
+        btn(`act-${r.id}-cancel`, "Cancel", false, (_e, cx) => this.cancel(r, cx))));
+    }
+    if (mode === "sent") {
+      lines.push(row(div().flex_1().min_w(0).truncate().text_size(TEXT.label).child(a.result.state === "unknown" ? "Waiting; look in the pane before sending again." : "Waiting for the state to change."),
+        btn(`act-${r.id}-dismiss`, "Dismiss", false, (_e, cx) => this.cancel(r, cx))));
+    }
+    if (a?.result) {
+      const bad = a.result.state === "failed" || a.result.state === "refused" || a.result.state === "unknown";
+      lines.push(div().w_full().min_w(0).text_size(TEXT.label).when(!c, (e) => e.text_color(bad ? t.blocked : t.dim))
+        .when(bad, (e) => e.font_semibold()).child(lastOf(a.result.text, 600)));
+    }
+    return [v_flex().id(`acts-${r.id}`).w_full().min_w(0).flex_none().gap(3).pb(4).pl(c ? 0 : 22).children(lines)];
   }
 
   // The state filter: all / needs you / working / done; the choice is the app's shared state, so it survives a restart.
@@ -426,7 +574,9 @@ export default class Cockpit extends View {
     const drawn = groups.filter((g) => g.rows.length > 0);
     const empty = groups.filter((g) => g.rows.length === 0);
     const stale = groups.some((g) => g.cls === "stale");
-    const loud = waitingQueue(groups.filter((g) => g.cls === "fresh").flatMap((g) => g.rows));
+    const fresh = groups.filter((g) => g.cls === "fresh");
+    this.invOf = new Map(fresh.flatMap((g) => g.rows.map((r) => [r, g.state.invoker_pane]))); // which brainer a queue row belongs to
+    const loud = waitingQueue(fresh.flatMap((g) => g.rows));
     // Nothing live: the freshest file's own class says why, and one line stands for every brainer.
     const freshest = this.states.reduce((best, s) => (best === null || s.generated_at > best.generated_at ? s : best), null);
     const silent = groups.length === 0 ? classify(freshest, now) : null;
@@ -437,6 +587,7 @@ export default class Cockpit extends View {
         e.child(alarm(silent.cls === "herdr-down"
           ? `HERDR UNREACHABLE — rows unknown (${silent.why})`
           : `NO STATE — no writer's file is live (${silent.why})`, null, t).text_size(TEXT.label)))
+      .when(this.verbsProblem !== null, (e) => e.child(alarm(this.verbsProblem, null, t).text_size(TEXT.label)))
       .children([this.usageLines(now, t, look), this.callout(loud, now, t, look)].filter((x) => x !== null))
       .when(drawn.length > 0, (e) => e.child(this.filters(t, look)))
       .when(stale, (e) => e.child(div().flex_none().px(14).py(4).text_size(TEXT.label).text_color(t.dim).child("stale — a writer has not beaten for 15 s; its rows are dimmed")))

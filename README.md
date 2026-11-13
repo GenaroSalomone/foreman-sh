@@ -1,13 +1,13 @@
-# foreman-sh
+# foreman
 
 **Plan with one agent. Build with many. Keep your repository out of the planner's hands.**
 
-[![CI](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml/badge.svg)](https://github.com/GenaroSalomone/foreman-sh/actions/workflows/ci.yml)
+[![CI](https://github.com/GenaroSalomone/foreman/actions/workflows/ci.yml/badge.svg)](https://github.com/GenaroSalomone/foreman/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![foreman-sh 0.8.0: a brainer that plans and never touches code, executors in their own worktrees, reviews and a retro, guards, secrets as resolvers, all inside the herdr desktop app; Claude and pi are the supported agents](docs/foreman-overview.svg)
+![foreman architecture: you talk to a brainer that cannot write to your repository; hw dispatches its briefs to Claude Code and pi executors in their own worktrees, reports come back through done-invoker and ask-invoker, opt-in review pieces and hw done close a task, engram keeps the memory, and merged work leaves through hw train](docs/foreman-architecture.png)
 
-foreman-sh runs coding agents in two roles, on top of [herdr](https://herdr.dev),
+foreman runs coding agents in two roles, on top of [herdr](https://herdr.dev),
 and since 0.8.0 it runs from the herdr desktop app ([The herdr app](#the-herdr-app)):
 
 - a **brainer**, the planner, that reads your code, plans the work and writes
@@ -17,20 +17,7 @@ and since 0.8.0 it runs from the herdr desktop app ([The herdr app](#the-herdr-a
 
 You talk to the brainer. It sends out the work, and the results come back to it.
 
-```mermaid
-sequenceDiagram
-    actor You
-    participant B as Brainer
-    participant E as Executor
-    You->>B: describe the work
-    B->>B: write a brief
-    B->>E: hw myapp fix-login --brief … (own worktree and branch)
-    E->>E: work and commit
-    E->>B: report
-    B->>You: what was done, and what is next
-```
-
-**Install on macOS:** `brew install GenaroSalomone/tap/foreman-sh && foreman-sh init`
+**Install on macOS:** `brew install GenaroSalomone/tap/foreman && foreman-setup init`
 builds a brain with a demo lane and ends with a dry-run dispatch. Linux, step by
 step and requirements: [Quickstart](#quickstart). Not related to Ruby's `foreman`.
 
@@ -69,7 +56,7 @@ npm test -- login
 Put several coding agents on one repository and three things go wrong. Each has a
 mechanism here:
 
-| What goes wrong | What foreman-sh does |
+| What goes wrong | What foreman does |
 |---|---|
 | The planner starts editing, and changes land that nobody reviewed. | A guard refuses the brainer's writes to your repository. |
 | Agents step on each other in a shared checkout. | One worktree and one branch per task. |
@@ -79,7 +66,7 @@ mechanism here:
 
 | Term | Meaning |
 |---|---|
-| **Brain** | The directory the installer creates (`~/brain` here). It holds foreman-sh's commands, its configuration and one folder per lane, outside every repository. |
+| **Brain** | The directory the installer creates (`~/brain` here). It holds foreman's commands, its configuration and one folder per lane, outside every repository. |
 | **Lane** | One of your repositories, together with the brainer that plans for it. |
 | **Brainer** | A long-lived Claude Code session for a lane, opened with `brain <lane>`. A guard refuses its writes to the repository. |
 | **Executor** | A disposable agent session, launched with `hw`. It works in its own worktree and branch and ends each task with a report. |
@@ -97,20 +84,26 @@ mechanism here:
   dispatch before anything is built, and `hw done` runs the brief's verification
   command itself and records its exit code.
 - **Your agent, your model.** Claude Code and pi are the native agents;
-  OpenCode and Codex also run a lane's executors, with limits
-  ([L3](docs/KNOWN-LIMITATIONS.md), [L3b](docs/KNOWN-LIMITATIONS.md#l3b-pi-is-a-dispatch-target-its-guard-reads-text-and---sandbox-is-what-contains)). Each executor gets a
-  `cheap-explorer` subagent on its vendor's cheapest tier.
+  OpenCode and Codex also run a lane's executors, deprecated and with limits ([L3](docs/KNOWN-LIMITATIONS.md),
+  [L3b](docs/KNOWN-LIMITATIONS.md)). Each executor gets a `cheap-explorer` subagent on its vendor's cheapest tier.
+- **A review you did not have to ask for.** A build gets a fresh reviewer after its report, and `hw done` offers the merge only for an approved head; `review: [judgment-day, thermo]` adds pieces to it.
 - **Frameworks when you want them.** By default the brief is the whole
   contract; `--sdd speckit` opts into [Spec Kit](https://github.com/github/spec-kit)'s phases.
 - **Secrets as Bitwarden items.** A brief names `secrets: [item, …]`; the value
   reaches the executor through `hw secret run`, never as text in a brief or a prompt.
 - **A cockpit.** A card per executor, in the herdr app's side panel or as a band
   above the brainer's prompt in the terminal UI, naming the one that needs you.
-- **Cleanup that is safe.** `hw reap` removes the worktree, branch and database
-  of a task that is merged and clean, and nothing else.
-- **A Go core.** `hw`, `brain`, `channel-send` and the invokers run in `hw-core`,
-  which the installer builds ([INSTALL.md](docs/INSTALL.md#the-go-core-and-the-way-back),
-  [L16](docs/KNOWN-LIMITATIONS.md)).
+- **Cleanup that is safe.** `hw reap` removes the worktree, branch and database of a task that is merged and clean, and nothing else.
+- **A Go core.** `hw`, `brain`, `channel-send` and the invokers run in `hw-core`, which the installer builds ([INSTALL.md](docs/INSTALL.md#the-go-core-and-the-way-back), [L16](docs/KNOWN-LIMITATIONS.md)).
+
+## What 1.0 promises
+
+From 1.0.0 a change that breaks a working setup takes a new major version. That
+covers `hw`, `brain`, the invokers, the brief format, the install and the herdr
+app: foreman's mods and layouts for it, and the `hc` backend it runs on. Codex
+and OpenCode are deprecated and outside the promise: they keep working, and
+either can be removed without a major version
+([REFERENCE.md](docs/REFERENCE.md#what-10-promises)).
 
 ## Requirements
 
@@ -131,21 +124,8 @@ mechanism here:
 On macOS, Homebrew installs all of these but Claude Code's first run. Each tool
 has a minimum version, kept in `lib/hw/deps.conf`; `install.sh --check` and
 `hw preflight` name the command that updates one
-([INSTALL.md](docs/INSTALL.md), [L15](docs/KNOWN-LIMITATIONS.md)).
-
-Recommended and optional:
-
-- **[engram](https://github.com/Gentleman-Programming/engram)**, recommended: it
-  gives the brainer memory across sessions, and without it nothing is saved
-  between them ([L8](docs/KNOWN-LIMITATIONS.md)). Install it with
-  `brew install gentleman-programming/tap/engram && engram setup claude-code`
-  and answer `y` when it asks about the allowlist. `brain` also needs `engram serve` running
-  (`127.0.0.1:7437`); without it `brain` warns `engram session NOT registered`.
-- **Judgment Day**, a blind review of a diff by two judges
-  ([L10](docs/KNOWN-LIMITATIONS.md)); **Bitwarden CLI (`bw`)**, for a brief that
-  declares `secrets:`; **[OpenCode](https://opencode.ai)** 1.18.31 or newer and
-  **pi**, to run a lane's executors
-  ([INSTALL.md](docs/INSTALL.md#opencode-executors), [L3b](docs/KNOWN-LIMITATIONS.md)).
+([INSTALL.md](docs/INSTALL.md), [L15](docs/KNOWN-LIMITATIONS.md)). engram, pi, Bitwarden
+and the rest are optional: [Tools foreman works with](#tools-foreman-works-with).
 
 ## Quickstart
 
@@ -168,19 +148,19 @@ On macOS, one command builds a brain, a `demo` lane over a toy repository and a
 sample brief, and ends with a dry-run dispatch:
 
 ```sh
-brew install GenaroSalomone/tap/foreman-sh
-foreman-sh init             # checks what you have, builds ~/brain with a demo lane, ends with a dry-run dispatch
-foreman-sh init --dry-run   # the plan only; --yes answers its questions
+brew install GenaroSalomone/tap/foreman
+foreman-setup init             # checks what you have, builds ~/brain with a demo lane, ends with a dry-run dispatch
+foreman-setup init --dry-run   # the plan only; --yes answers its questions
 ```
 
 `init` names each missing tool with its install command and offers to install
 what Homebrew carries. A second run changes nothing and says so
-([INSTALL.md](docs/INSTALL.md#quick-start-foreman-sh-init)). For your own
-repository instead of the demo, `foreman-sh` takes the installer's flags
-(`foreman-sh --with-recommended` installs Claude Code, engram and fzf):
+([INSTALL.md](docs/INSTALL.md#quick-start-foreman-setup-init)). For your own
+repository instead of the demo, `foreman-setup` takes the installer's flags
+(`foreman-setup --with-recommended` installs Claude Code, engram and fzf):
 
 ```sh
-foreman-sh --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
+foreman-setup --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
 export PATH="$HOME/.local/bin:$PATH"                          # puts hw and brain on your PATH
 brain myapp                                                   # opens the brainer
 ```
@@ -188,14 +168,14 @@ brain myapp                                                   # opens the braine
 On Linux, or without Homebrew, the installer runs from a pipe:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --check   # checks everything, writes nothing
-curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman-sh/main/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
+curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman/main/install.sh | bash -s -- --brain ~/brain --check   # checks everything, writes nothing
+curl -fsSL https://raw.githubusercontent.com/GenaroSalomone/foreman/main/install.sh | bash -s -- --brain ~/brain --lane myapp --repo ~/code/myapp   # creates your brain and a first lane
 ```
 
 To read the installer first, clone the repository and run it from there:
 
 ```sh
-git clone https://github.com/GenaroSalomone/foreman-sh && cd foreman-sh
+git clone https://github.com/GenaroSalomone/foreman && cd foreman
 ./install.sh --brain ~/brain --check
 ./install.sh --brain ~/brain --lane myapp --repo ~/code/myapp
 ```
@@ -229,7 +209,7 @@ first run of Claude Code in this account (yours to do)
 Before the first `brain`, finish the [Requirements](#requirements); `--check` names what is left.
 
 ```sh
-git init ~/code/toy && echo "toy: a throwaway repository for trying foreman-sh." > ~/code/toy/README.md
+git init ~/code/toy && echo "toy: a throwaway repository for trying foreman." > ~/code/toy/README.md
 git -C ~/code/toy add README.md && git -C ~/code/toy commit -m init
 ./install.sh --brain ~/brain --lane demo --repo ~/code/toy
 cp docs/examples/demo/briefs/hello.md ~/brain/demo/briefs/
@@ -255,8 +235,8 @@ report arrives in the brainer's session.
 ### Upgrading
 
 ```sh
-foreman-sh upgrade --brain ~/brain              # the newest release, with the flags you installed with
-foreman-sh upgrade --brain ~/brain --dry-run    # says what it would do and changes nothing; --to 0.3.0 goes back
+foreman-setup upgrade --brain ~/brain              # the newest release, with the flags you installed with
+foreman-setup upgrade --brain ~/brain --dry-run    # says what it would do and changes nothing; --to 0.3.0 goes back
 ```
 
 `upgrade` replays the flags the install recorded, runs `--check` and prints the
@@ -292,7 +272,7 @@ new release's "In short"; `hw status` tells you when a newer release exists
 | `hw reap [<lane>]` | List merged worktrees and task branches that are safe to remove; `--apply` removes them. |
 | `hw train add\|push <lane> …` | Merge reported tasks into `train-<lane>`, then run the suite and move `main` to it. |
 
-A brief's front matter also takes `review:`, `secrets:` and `plugins:`. `hw help all` lists every
+A brief's front matter also takes `review:`, `secrets:` and `plugins:` ([tools](#tools-foreman-works-with)). `hw help all` lists every
 command and flag, `hw help <topic>` shows one part, and [REFERENCE.md](docs/REFERENCE.md) has
 each row in full, with the frameworks, the cockpit and every lane setting. `<pane>` is the executor's herdr pane, as
 `hw status` lists it.
@@ -310,7 +290,7 @@ is not printed or written ([INSTALL.md](docs/INSTALL.md#secrets-bitwarden),
 
 0.8.0 runs foreman from the [herdr desktop app](https://herdr.dev). In a terminal
 the app opened, `brain <lane>` opens the lane's brainer there and `hw` launches
-its Claude executors in app terminals of their own; a report, an ask, a ruling,
+its executors in app terminals of their own, `--sandbox` included; a report, an ask, a ruling,
 `hw next`, `hw done` and `hw revive` go through the same commands as in the
 terminal UI. A report sent while the brainer is closed arrives when it reopens.
 
@@ -320,8 +300,10 @@ The right column holds the Cockpit, Issues and Artifacts panels. The look in the
 picture is foreman's own; this export carries the Cockpit mod only
 ([`herdr-app/`](herdr-app/README.md) says how to put it in a layout). Without the
 app, `brain <lane>` opens the brainer in a herdr pane, as in the rest of this
-page. What the app route does not cover yet (lanes with dev servers, other agents
-than Claude, `--here`) is in
+page. What the app route does not do, each refused with its reason — `--here`,
+`brain --in-pane`, `hw revive` of an agent other than Claude, `hw unstick`
+restarting a stuck OpenCode — and what it does differently (a sandboxed executor
+publishes no turn-end label) is in
 [L29](docs/KNOWN-LIMITATIONS.md#l29-the-herdr-app-herdr-core-carries-turn-end-tokens-the-brainer-and-the-executor-launch).
 
 ### The cockpit
@@ -340,11 +322,38 @@ needs you: an ask, a blocked report, no progress. Turn it off with
 `brief_note` there adds a rule to every executor prompt of that lane. Every field is
 in [REFERENCE.md](docs/REFERENCE.md#customizing-a-lane-projectsjson).
 
+## Tools foreman works with
+
+Each has code here that installs, pins, launches or reads it. A version is a floor from `lib/hw/deps.conf`; a sha is a pinned commit.
+
+| Tool | What foreman does with it | Needed | Version |
+|---|---|---|---|
+| [herdr](https://herdr.dev) | Opens every brainer and executor in its tabs or app terminals, and delivers reports through it. | required | 0.9.1 or newer |
+| [Claude Code](https://claude.com/claude-code) | Runs the brainer, and a lane's executors by default. | required | 2.1.289 or newer |
+| [pi](https://github.com/earendil-works/pi) | Runs executors with `--agent pi`, through foreman's own extension ([L3b](docs/KNOWN-LIMITATIONS.md)). | optional | |
+| [Go](https://go.dev/dl) | `install.sh` builds `hw-core` with it. | required | 1.22 or newer |
+| [jq](https://jqlang.github.io/jq/) | Reads `projects.json` and herdr's answers, with `git`, `python3`, `rg`, `fd` and `sd`. | required | 1.7 or newer |
+| [engram](https://github.com/Gentleman-Programming/engram) | The brainer's memory across sessions and the store an executor's findings go to ([L8](docs/KNOWN-LIMITATIONS.md)). | recommended | 3.0.0 or newer |
+| [Bitwarden CLI](https://bitwarden.com/help/cli/) | `hw secret run` hands a brief's `secrets:` to one command's environment ([L23](docs/KNOWN-LIMITATIONS.md)). | optional | |
+| [fzf](https://github.com/junegunn/fzf) | Draws the brief picker a bare `hw` opens. | optional | |
+| [agent-browser](https://github.com/vercel-labs/agent-browser) | Each run gets its own browser namespace and profile, and `browser-close` proves the close. | optional | |
+| [GitHub CLI](https://cli.github.com) and [gh-image](https://github.com/drogers0/gh-image) | `gh-attach` puts screenshots on a pull request or an issue; gh-image is built from a pinned commit. | optional | v1.4.1, `ca57d96` |
+| [Spec Kit](https://github.com/github/spec-kit) | `--sdd speckit` runs its phases where its skills are installed ([L14](docs/KNOWN-LIMITATIONS.md)). | optional | |
+| Judgment Day | The bundled blind review by two judges: `install.sh --with-judgment-day`, then `review: judgment-day` ([L10](docs/KNOWN-LIMITATIONS.md)). | optional | bundled |
+| [thermo](https://github.com/cursor/plugins) | Review piece: a strict maintainability rubric. | optional | `1e5c90a` |
+| [ponytail](https://github.com/DietrichGebert/ponytail) | Review piece: lean-code skills, with hooks and a pi extension. | optional | `2961b52` |
+| [pstack](https://github.com/michael-denyer/pstack-claude) | Review piece: skills, agents and hooks, with a pi extension. | optional | `94f5ce9` |
+| `tests` | foreman's own review piece for the tests a change ships; its rubric is from [superpowers](https://github.com/obra/superpowers). | optional | `22f0b46` |
+| [webguide](https://github.com/GoogleChrome/modern-web-guidance) | Chrome's Modern Web Guidance, loaded with `plugins: [webguide]` on a brief that touches UI. | optional | `4dd9683` |
+| [OpenCode](https://opencode.ai) and [Codex](https://github.com/openai/codex) | Also run executors; both are deprecated ([L3](docs/KNOWN-LIMITATIONS.md), [L4](docs/KNOWN-LIMITATIONS.md)). | optional | OpenCode 1.18.31 |
+
+The five plugins load into one executor, from pinned copies a brain vendors ([L22](docs/KNOWN-LIMITATIONS.md)); `hw preflight` names a tool below its floor.
+
 ## How it compares
 
 | | Isolation | Guards the brainer | Agents | UI |
 |---|---|---|---|---|
-| **foreman-sh** | worktree and branch per task | yes | Claude Code and pi; OpenCode and Codex with limits ([L3](docs/KNOWN-LIMITATIONS.md)) | herdr desktop app or panes |
+| **foreman** | worktree and branch per task | yes | Claude Code and pi; OpenCode and Codex, deprecated ([L3](docs/KNOWN-LIMITATIONS.md)) | herdr desktop app or panes |
 | [claude-squad](https://github.com/smtg-ai/claude-squad) | tmux and worktree per agent | — | Claude Code, Codex, Gemini, Aider | TUI |
 | [Conductor](https://www.conductor.build) | isolated workspaces | — | Claude Code, Codex, Cursor | macOS app |
 | [uzi](https://github.com/devflowinc/uzi) | worktree per agent | — | Claude Code, Codex and others | CLI and tmux |

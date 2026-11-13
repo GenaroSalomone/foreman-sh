@@ -11,6 +11,11 @@
                        (plan only without --apply); an archived task does not launch
     hw briefs restore <lane> <task> | unarchive <lane> --manifest <file>
                        the way back, one brief or a whole manifest
+    hw review <lane> <task> [--dry-run] [--here] [--no-report] [--at <sha>]
+                       the independent review of a build's branch tip. --at <sha>
+                       reviews a past head instead (a benchmark): cut locally, no
+                       origin ref needed, the build's receipt is not touched, so it
+                       never satisfies `hw done`'s merge gate
 
   KEYCHAIN HANDLES
     --no-handle-check  skip the keychain-handle preflight

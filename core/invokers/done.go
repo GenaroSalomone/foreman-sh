@@ -118,6 +118,7 @@ loop:
 		}
 	}
 
+	c.checking = checkOnly // the exit footer of a refused rehearsal must not read as a failed delivery
 	var summary string
 	if len(args) > 0 && args[0] == "-" {
 		if len(args) != 1 { // 135-M02
@@ -140,7 +141,7 @@ loop:
 		}
 	} else {
 		if len(args) < 1 {
-			return die("usage: done-invoker [--blocked] [--retask] \"<one paragraph>\" | done-invoker [--blocked] [--retask] - (reads the paragraph from stdin)")
+			return die("usage: done-invoker [--blocked] [--retask] [--check] \"<one paragraph>\" | done-invoker [--blocked] [--retask] [--check] - (reads the paragraph from stdin)")
 		}
 		summary = strings.Join(args, " ")
 		if !hasNonSpace(summary) {
@@ -202,6 +203,9 @@ loop:
 	}
 
 	receipt := c.runDir() + "/receipt.jsonl"
+	if err := c.draftPRGate(receipt, status, project, workdir, &preflight); err != nil { // C4: a build owing the review closes with a draft PR
+		return err
+	}
 	// -- a completion names an observation that exists, under this lane
 	if status == "done" {
 		if sess := receiptValue(receipt, "engram_session"); strings.HasPrefix(sess, "hw-") {
@@ -264,11 +268,12 @@ loop:
 			preflight = append(preflight, "design: judged APPROVED for boundary "+boundary)
 		}
 	}
+	reviewOf := receiptValue(receipt, "review_of_t"+c.taskSeq()) // an independent reviewer: <lane>:<task>@<sha>
 	// -- a build closes on checks.md
 	checksNote := ""
 	if status == "done" { // 818-M05
 		if ck := receiptValue(receipt, "checks_required_t"+c.taskSeq()); ck != "" { // 818-M04
-			n, err := ChecksGate(artifacts)
+			n, err := checksGate(artifacts, reviewOf != "")
 			if err != nil {
 				return err
 			}
@@ -277,6 +282,16 @@ loop:
 		} else {
 			preflight = append(preflight, "checks.md: not owed by this task's brief")
 		}
+	}
+
+	// -- an independent review closes on a review.md bound to the SHA it judged, and on its function table
+	if status == "done" && reviewOf != "" {
+		note, err := c.ReviewerGate(reviewOf, artifacts, workdir)
+		if err != nil {
+			return err
+		}
+		checksNote += "\n" + note
+		preflight = append(preflight, note)
 	}
 
 	// -- a release: prod closes on a fresh env diff, its screens and its QA run
@@ -574,6 +589,7 @@ loop:
 	os.Remove(stateDir + "/queued") // a direct delivery after the reopen supersedes the queued one
 	c.transcriptAppend(stateDir, "REPORT", envelope, summary)
 	publishDone("delivered")
+	c.reviewAfterDelivery(hwBin, receipt, status, project, task) // the build's independent review is dispatched once its report is safe
 
 	// -- close only after receiver-owned delivery proof
 	closeNote := ""

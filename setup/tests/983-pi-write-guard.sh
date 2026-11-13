@@ -53,7 +53,7 @@ FX="$TMP/fxbrain"; lane=fxlane
 mkdir -p "$FX/setup/guards"
 cp "$ROOT/setup/guards/deny-repo-writes.js" "$FX/setup/guards/"
 jq '.lanes.fxlane = (.lanes.setup | .repo = "~/fx-lane/app" | .worktrees = "~/fx-lane/app/.worktrees")
-    | .product_repos += ["~/fx-lane/app"]' "$ROOT/guards.json" > "$FX/guards.json" \
+    | .product_repos += ["~/fx-lane/app"]' "$ROOT/guards.json" > "$FX/guards.json"; cp "$ROOT/projects.json" "$FX/" \
   || fail "could not build the fixture lane from $ROOT/guards.json"
 repo="$pw/fx-lane/app"; wts="$pw/fx-lane/app/.worktrees"
 out="$(env HW_TASK=t HW_RUN=r HW_WORKDIR="$wts/pi-guard-test-wt" HW_PROJECT="$lane" OTHER_PROTECTED="$repo" \

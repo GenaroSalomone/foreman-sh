@@ -123,6 +123,35 @@ func doneReasons(ev, status string, selfClose bool, post, seq, pane, marker stri
 	return strings.Join(reasons, "\n"), stranded
 }
 
+// branchActedOn is the proof that a report whose delivery stayed unconfirmed (done-invoker exit 5) reached the brainer: the task branch
+// is merged into the lane's base BY ANCESTRY, and it is a branch that did work — its reflog holds more than the line that created it,
+// so a report-only task (a branch still at its start point is an ancestor of everything) is never called delivered on this evidence.
+func (d *doneRun) branchActedOn(proj, task string) bool {
+	a := d.app
+	main := a.c.checkout(proj)
+	branch := a.c.lanePath(proj, "branch", task)
+	if main == "" || branch == "" {
+		return false
+	}
+	base := a.c.t.get(proj, "base")
+	if base == "" {
+		base = "main"
+	}
+	if _, rc := doneGit(main, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); rc != 0 {
+		return false
+	}
+	log, _ := doneGit(main, "reflog", "show", "--format=%H", "refs/heads/"+branch)
+	if len(strings.Fields(log)) < 2 {
+		return false
+	}
+	for _, ref := range []string{"origin/" + base, base} {
+		if _, rc := doneGit(main, "merge-base", "--is-ancestor", branch, ref); rc == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // paneInfo is `herdr agent get <pane>`, or the same facts from `hc get` when the run lives on herdr-core.
 func (d *doneRun) paneInfo(pane, rundir string) string {
 	if _, _, _, ok := hcRunRecord(rundir); ok {
@@ -162,6 +191,10 @@ func (d *doneRun) inUseGuard(proj, task, rundir string) {
 	}
 	seq := doneCurrentTask(rundir)
 	ev := d.reportEvidence(pane, rundir)
+	if doneReStranded.MatchString(ev) && d.branchActedOn(proj, task) {
+		a.info("the report of " + proj + ":" + task + " exited 5 (delivery unconfirmed) but its branch is already merged into the lane's base: the brainer received and acted on it — treated as delivered")
+		ev = strings.TrimSuffix(strings.TrimRight(ev, "\n"), "undelivered") + "delivered"
+	}
 	status := doneJqRawEmpty(info, "result", "agent", "agent_status")
 	focus := doneJqRawEmpty(info, "result", "agent", "focused")
 	post := d.postReportTurns(rundir, seq, info)

@@ -81,7 +81,7 @@ func (t *t3) leaseStart() int {
 	now := time.Now().Unix()
 	until := now + secs
 	untilH := time.Unix(until, 0).Format("2006-01-02T15:04:05-0700")
-	by := t.getenv("HERDR_PANE_ID")
+	by := t.paneAddress() // the herdr pane, or the app terminal: an hc executor has no HERDR_PANE_ID and every lease read by=unknown
 	if by == "" {
 		by = "unknown"
 	}
@@ -194,6 +194,17 @@ func (t *t3) leaseExpire() int {
 	t.fs.appendTo(lease, []byte("state=expired-cleanup\n"), 0o666)     // # MUTATION-ANCHOR: 841-E01
 	t.fs.appendTo(lease, []byte("expired_at="+t3IsoNow()+"\n"), 0o666) // # MUTATION-ANCHOR: 841-E02
 	kind, id := "", ""
+	if proj, task, own, isHC := hcRunRecord(rundir); isHC { // an app run owns no tab or workspace: its terminals carry the task's labels
+		// OLD: this fell to "cleanup=no-owned-container" and an expired --keep-pane terminal stayed open for ever.
+		if t.closeHCRun(proj, task, own) { // MUTATION-ANCHOR: lease-hc-close
+			t.fs.appendTo(lease, []byte("cleanup=closed\n"), 0o666)
+			release()
+			return 0
+		}
+		t.fs.appendTo(lease, []byte("cleanup=failed\n"), 0o666)
+		release()
+		return 1
+	}
 	if b, err := os.ReadFile(rundir + "/tab"); err == nil {
 		kind, id = "tab", strings.Join(strings.Fields(string(b)), "")
 	} else if b, err := os.ReadFile(rundir + "/workspace"); err == nil {
@@ -215,6 +226,41 @@ func (t *t3) leaseExpire() int {
 
 // closeHerdrObject is _close_herdr_object: close it, or prove it is already gone. A
 // failed close is not evidence of absence — only a parseable list that omits the id is.
+// closeHCRun ends the live terminals that carry this project+task (`hc kill`, then `hc rm`), as hw done's closeHC does: true
+// when none is left. An `hc ls` that cannot answer is a failed close, never "nothing to close".
+//
+// The labels name the TASK, not the run, so the close is made only while own, the terminal this run recorded, is still one
+// of them: a lease left by an older run (its terminal closed without `hw done`) must not end the terminals a newer run of the
+// same task started (judgment day, 2026-11-12). The herdr expiry closes the tab id its own run recorded, the same bound.
+func (t *t3) closeHCRun(proj, task, own string) bool {
+	addrs, ok := hcOwned(proj, task)
+	if !ok {
+		t.warn("CLOSE FAILED: `hc ls` could not answer, so whether " + proj + ":" + task + " is still running on herdr-core is UNKNOWN")
+		return false
+	}
+	mine := false
+	for _, a := range addrs {
+		mine = mine || a == own
+	}
+	if !mine { // MUTATION-ANCHOR: lease-hc-own
+		t.info("terminal " + own + " of this run is already gone; " + strconv.Itoa(len(addrs)) + " live terminal(s) of " + proj + ":" + task + " belong to another run and are left")
+		return true
+	}
+	for _, a := range addrs {
+		hcOut(10*time.Second, "kill", a)
+		hcOut(10*time.Second, "rm", a)
+		t.ok("closed expired chaining terminal " + a + " (" + proj + ":" + task + ")")
+	}
+	if left, ok := hcOwned(proj, task); !ok || len(left) > 0 {
+		t.warn("CLOSE FAILED: " + proj + ":" + task + " still has a live terminal on herdr-core")
+		return false
+	}
+	if len(addrs) == 0 {
+		t.info("terminal for " + proj + ":" + task + " already gone")
+	}
+	return true
+}
+
 func (t *t3) closeHerdrObject(kind, id, success, absent string) bool {
 	h := herdrClient{getenv: t.getenv}
 	out, rc := h.capture(kind, "close", id)

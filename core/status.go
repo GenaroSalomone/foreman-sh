@@ -543,6 +543,12 @@ func (s *statusRun) paneCtxMany(panes []string) map[string]*ctxReading {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			if hcTerminal(p) { // an app terminal is in no `herdr agent read`: its screen is `hc read`, as hw receipt reads it (snapshot.go)
+				if out, ok := hcOut(time.Duration(timeout*float64(time.Second)), "read", p, "--lines", "40"); ok { // MUTATION-ANCHOR: st-hc-ctx
+					res[i] = paneCtxParse(out)
+				}
+				return
+			}
 			if out, ok := h.readPane(p, time.Duration(timeout*float64(time.Second))); ok { // # MUTATION-ANCHOR: 826-G04
 				res[i] = paneCtxParse(out)
 			}
@@ -612,8 +618,10 @@ func keyCell(key string) string {
 }
 
 // placementGone is _placement_gone.
-func placementGone(here bool, ownTab, ownWs string) string {
+func placementGone(here bool, ownTab, ownWs, ownHC string) string {
 	switch {
+	case ownHC != "": // an app run builds no tab or workspace: its record is <rundir>/hc, the terminal dispatch started
+		return "app terminal " + ownHC + " closed"
 	case ownTab != "":
 		return "tab " + ownTab + " closed"
 	case ownWs != "":
@@ -622,6 +630,25 @@ func placementGone(here bool, ownTab, ownWs string) string {
 		return "pane gone (--here)"
 	}
 	return "its placement record is gone, so what closed is not recorded"
+}
+
+// paneReadCmd is the command that prints a pane's screen: herdr's for a pane, hc's for an app terminal.
+func paneReadCmd(pane string) string {
+	if hcTerminal(pane) {
+		return "hc read " + pane
+	}
+	return "herdr pane read " + pane
+}
+
+// hcTerminalsOf keeps the app terminals of a list of panes.
+func hcTerminalsOf(panes []string) []string {
+	var out []string
+	for _, p := range panes {
+		if hcTerminal(p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // orphanOf is orphan_of: finished, never reported, nothing running.
@@ -755,6 +782,8 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 	ctxByPane := map[string]*ctxReading{}
 	if d.herdrOK {
 		ctxByPane = s.paneCtxMany(ctxPanes)
+	} else if hcPanes := hcTerminalsOf(ctxPanes); len(hcPanes) > 0 { // no herdr server (an app-only session): the app terminals are still readable
+		ctxByPane = s.paneCtxMany(hcPanes)
 	}
 	ctxFresh := 150000
 	if v := s.getenv("HW_CTX_PREFER_FRESH_TOKENS"); v != "" {
@@ -782,9 +811,9 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 		if len(runs) > 0 {
 			newest = runs[0]
 		}
-		hereRun, runMode, ownTab, ownWs := false, "", "", ""
+		hereRun, runMode, ownTab, ownWs, ownHC := false, "", "", "", ""
 		if newest != nil {
-			hereRun, runMode, ownTab, ownWs = newest.here, newest.mode, newest.ownTab, newest.ownWs
+			hereRun, runMode, ownTab, ownWs, ownHC = newest.here, newest.mode, newest.ownTab, newest.ownWs, newest.ownHC
 		}
 		var dead []string
 		if wsTruthy {
@@ -1024,7 +1053,7 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 			if (state == "working" || state == "idle") && newest != nil && newest.stalledSince != 0 {
 				mark, state, tint = "!", "STALLED since "+time.Unix(int64(newest.stalledSince), 0).Format("15:04"), c.warn
 				notes = append(notes, "its last turn ended legally (a background child, a reply to its ask, a human-boundary) and no new turn came in "+itoa(int(math.Floor((statusNow(s.getenv)-newest.stalledSince)/60)))+" min (the brainer was alerted once by bin/stall-watch; HW_STALL_MIN changes the threshold)")
-				notes = append(notes, "look at: `herdr pane read "+aPane()+"` (what it waits on), `setup/heavy --status` (a long heavy run is legitimate); then `hw ruling "+aPane()+" \"<the unblock>\"` or `hw done "+keyArg+"`")
+				notes = append(notes, "look at: `"+paneReadCmd(aPane())+"` (what it waits on), `setup/heavy --status` (a long heavy run is legitimate); then `hw ruling "+aPane()+" \"<the unblock>\"` or `hw done "+keyArg+"`")
 				limits["stalled"] = true
 			}
 			if state == "working" && newest != nil && t.workdir != "" { // # MUTATION-ANCHOR: 826-G19
@@ -1032,7 +1061,7 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 				if q := staleOf(newest, t.workdir, statusNow(s.getenv), mins); q != nil {
 					mark, state, tint = "!", "STALE", c.warn
 					notes = append(notes, "working by herdr's word, but no turn end, file change or new process for "+itoa(int(math.Floor(q.quiet/60)))+" min (last sign: "+q.what+" at "+pyStrftimeDHM(q.at)+"); threshold "+pyG(mins)+" min, HW_STALE_MINUTES changes it")
-					notes = append(notes, "look at: `herdr pane read "+aPane()+"` (what it is doing), `hw log "+keyArg+"` (what was said), its engram findings; it may be waiting on something, hung, or in one long step")
+					notes = append(notes, "look at: `"+paneReadCmd(aPane())+"` (what it is doing), `hw log "+keyArg+"` (what was said), its engram findings; it may be waiting on something, hung, or in one long step")
 					limits["stale"] = true
 				}
 			}
@@ -1049,13 +1078,13 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 			notes = append(notes, "hw revive reopened this run and its pane is gone with no new report — `hw done` it, or `hw revive` it again")
 		} else if blockedTok {
 			mark, state, tint = "!", "blocked", c.warn
-			notes = append(notes, "the executor reported BLOCKED and stopped, and its "+placementGone(hereRun, ownTab, ownWs))
+			notes = append(notes, "the executor reported BLOCKED and stopped, and its "+placementGone(hereRun, ownTab, ownWs, ownHC))
 		} else if doneTok || doneDisk {
 			mark, state, tint = "✓", "done", c.ok
-			notes = append(notes, "reported done, "+placementGone(hereRun, ownTab, ownWs))
+			notes = append(notes, "reported done, "+placementGone(hereRun, ownTab, ownWs, ownHC))
 		} else if orph != nil {
 			mark, state, tint = "!", "finished, unreported", c.warn
-			notes = append(notes, "its "+placementGone(hereRun, ownTab, ownWs)+" and no turn since — see `finished, never reported` below")
+			notes = append(notes, "its "+placementGone(hereRun, ownTab, ownWs, ownHC)+" and no turn since — see `finished, never reported` below")
 			limits["orphan"] = true
 			if st, ns, ok := unreportedRow(newest); ok {
 				state = st
@@ -1069,12 +1098,12 @@ func (s *statusRun) reportTasks(out *bufio.Writer) (map[string]bool, []*orphanRe
 			}
 			if ok {
 				mark, state, tint = "!", urState, c.warn
-				notes = append(notes, "its "+placementGone(hereRun, ownTab, ownWs)+", and no turn end was ever recorded")
+				notes = append(notes, "its "+placementGone(hereRun, ownTab, ownWs, ownHC)+", and no turn end was ever recorded")
 				notes = append(notes, ur...)
 				limits["first-turn"] = true
 			} else {
 				mark, state, tint = "✗", "DIED-BEFORE-FIRST-TURN", c.err
-				notes = append(notes, "its "+placementGone(hereRun, ownTab, ownWs)+", and no turn end was ever recorded — it died or was closed before finishing one (`hw done` closes a task without a report too, and leaves no mark of it)")
+				notes = append(notes, "its "+placementGone(hereRun, ownTab, ownWs, ownHC)+", and no turn end was ever recorded — it died or was closed before finishing one (`hw done` closes a task without a report too, and leaves no mark of it)")
 				notes = append(notes, "look at: `hw log "+keyArg+"`, its engram findings, .hw/"+newest.name+"/ in its work directory; if it was closed on purpose, `hw done` leaves this row in place for the rest of this herdr session; otherwise dispatch it again")
 				limits["first-turn"] = true
 			}

@@ -68,6 +68,8 @@ function repointGuard(lane, repo, worktrees) {
   const tree = `${base}/${lane}-guard`;
   mkdirSync(`${tree}/setup/guards`, { recursive: true });
   writeFileSync(`${tree}/guards.json`, JSON.stringify(policy, null, 2));
+  // {brain}/{work} in the policy resolve from projects.json's `root`, beside it.
+  writeFileSync(`${tree}/projects.json`, readFileSync(`${root}/projects.json`, "utf8"));
   const path = `${tree}/setup/guards/deny-repo-writes.js`;
   writeFileSync(path, readFileSync(`${root}/setup/guards/deny-repo-writes.js`, "utf8"));
   return path;

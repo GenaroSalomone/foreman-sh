@@ -68,6 +68,7 @@ def classes():
     w.executor(task="chal", status="idle", holds=[dict(kind="challenge", n=1)], tokens={"ask_seq": "1/3", "ask_state": "delivered"})
     w.executor(task="asked", status="idle", holds=[dict(kind="ask", n=2)], tokens={"ask_seq": "2/3"})
     w.executor(task="asked-undelivered", status="working", holds=[dict(kind="ask", n=1, state="undelivered")])
+    w.executor(task="hc-ask", status="idle", holds=[dict(kind="ask", n=1, route="hc")])
     w.executor(task="opencode-ask", vendor="opencode", status="idle", holds=[dict(kind="ask", n=1, route="opencode", target="sess-1")])
     w.executor(task="blocked", status="idle", done=True, blocked_waiting=True,
                tokens=dict(done_tokens, done_status="blocked"))
@@ -99,6 +100,9 @@ def classes():
     assert a["attention"] == "ask" and a["ask"]["seq"] == "2/3", a["ask"]
     u = row(s, "asked-undelivered")
     assert u["ask"]["state"] == "undelivered" and u["ask"]["pending_reply"] is None, "pending_reply set on an undelivered hold: %s" % u["ask"]    # 797-M08
+    hc = row(s, "hc-ask")
+    assert isinstance(hc["ask"]["pending_reply"], str) and hc["ask"]["route"] == "hc", "an hc-route hold gets its reply button: %s" % hc["ask"]    # 797-M08
+    assert a["ask"]["route"] == "herdr" and u["ask"]["route"] is None, "route is the hold's, and null with pending_reply: %s %s" % (a["ask"], u["ask"])
     o = row(s, "opencode-ask")
     assert o["ask"]["pending_reply"] is None, "pending_reply set on a hold on another route, which the herdr verbs would refuse"  # 797-M08
     assert o["vendor"] == "opencode"
@@ -121,8 +125,8 @@ def classes():
     assert sec["task_n"] == 2 and sec["report"] is None, "task 1's done tokens must not make task 2 a report"
     assert sec["attention"] == "idle"
     t = s["totals"]
-    assert t["executors"] == len(s["rows"]) == 10 and t["omitted"] == 0
-    assert (t["challenges"], t["asks"], t["blocked"], t["reports"], t["working"], t["idle"]) == (1, 3, 1, 1, 2, 2), t
+    assert t["executors"] == len(s["rows"]) == 11 and t["omitted"] == 0
+    assert (t["challenges"], t["asks"], t["blocked"], t["reports"], t["working"], t["idle"]) == (1, 4, 1, 1, 2, 2), t
     assert t["rulings_pending"] == 2, t
     order = ["challenge", "ask", "blocked", "report", "working", "idle", "gone"]
     keys = [(order.index(x["attention"]), x["attention_since"] or 0, x["id"]) for x in s["rows"]]

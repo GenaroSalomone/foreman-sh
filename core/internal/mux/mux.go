@@ -28,13 +28,17 @@ var AncestorName = nearestName
 
 // Backend is the multiplexer this process writes to.
 //
-//   - no HC_TERMINAL_ID: the herdr TUI, today's path, untouched;
+//   - no HC_TERMINAL_ID: the herdr TUI, today's path, untouched — unless the app itself started this process with `exec`
+//     (AppExec: HERDR_APP_HOME and XDG_RUNTIME_DIR, no TUI ancestor), which is on the app's backend;
 //   - HC_TERMINAL_ID without HERDR_ENV=1: herdr-core;
 //   - both: the nearest multiplexer ancestor decides, because HERDR_ENV is
 //     inherited, not measured (P12). An unknown tree is read as herdr-core:
 //     never write onto a HERDR_PANE_ID that may belong to somebody else.
 func Backend(getenv func(string) string) string {
 	if getenv("HC_TERMINAL_ID") == "" {
+		if AppExec(getenv) {
+			return HC
+		}
 		return Herdr
 	}
 	if getenv("HERDR_ENV") != "1" {
@@ -101,12 +105,20 @@ func IsHCAddress(getenv func(string) string, addr string) bool {
 	return addr != "" && !strings.Contains(addr, ":") && Backend(getenv) == HC
 }
 
+// AppExec says whether this process is one the herdr app itself started with `exec` (a mod button's `hw ruling t5 …`):
+// it is no terminal, so it has no HC_TERMINAL_ID, but the app hands it its own HERDR_APP_HOME and XDG_RUNTIME_DIR, which
+// is all `hc` needs to ask THAT app (measured 2026-11-12, rc1-app-live-qa F1: `hw done` and `channel-send hc` work from
+// it, `hw ruling t5` was refused). A herdr TUI ancestor still decides against it: the TUI is the person's own server.
+func AppExec(getenv func(string) string) bool {
+	return getenv("HC_TERMINAL_ID") == "" && getenv("HERDR_APP_HOME") != "" && getenv("XDG_RUNTIME_DIR") != "" && AncestorName() != "herdr"
+}
+
 var hcShaped = regexp.MustCompile(`^([^/:]+/)?t[0-9]+$`)
 
 // OutsideAppRefusal is the refusal for an hc address named from a process that is not an app terminal.
 // An hc address is `t3` or `machine/t3` (herdr pane ids carry a colon, and its agent names are words), so it can only be
 // an app terminal; without HC_TERMINAL_ID the caller names no app, and falling through to herdr would ask the person's
-// own server about it (QA6 N2). "" when addr is fine for this process.
+// own server about it (QA6 N2). "" when addr is fine for this process (a process the app started with `exec` is: see Backend).
 func OutsideAppRefusal(getenv func(string) string, addr string) string {
 	if !hcShaped.MatchString(addr) || Backend(getenv) == HC {
 		return ""

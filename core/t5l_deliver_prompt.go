@@ -104,7 +104,6 @@ func (l *lch) promptFacts() *promptFacts {
 	f.qaTarget = l.proj != "" && l.c.t.get(l.proj, "qa_target") != ""
 	f.portWeb = l.env("HW_PORT_WEB")
 	f.build = l.checksGateApplies()
-	f.jd = l.judgmentDayApplies()
 	piSkill, _ := l.piSkillDirFor("judgment-day")
 	f.jdJudges, f.jdSkill, f.jdSkillPath = jdFacts(f.vendor, l.accountConfigDir, l.env("HOME"), l.workdir(), piSkill, l.piSubagentsReady())
 	f.fastGate = isFile(l.workdir() + "/setup/test-hw")
@@ -115,7 +114,7 @@ func (l *lch) promptFacts() *promptFacts {
 	}
 	f.jdRequired = l.reviewDeclared() && f.reviewMode == "judgment-day"
 	f.plugins = l.pluginsDeclared()
-	f.pluginsOnly = l.pluginsReviewApplies()
+	f.independent = l.independentReview()
 	f.secrets = l.brSecrets
 	f.requestedBy = l.requestedBy
 	if l.brAuthorizes != "" {

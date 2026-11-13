@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""setup/env-prefix-check [<root>] — an environment prefix that bin/ or core/ reads must be swept by the suite or named on the allowlist.
+
+WHY (retro-fixes-1111c, item 5). The HC_* leak lasted about 2.7 days: an executor's pane carried HC_SCOPE / HC_TERMINAL_ID / HC_TERMINAL_SOCKET, hw read
+them, and nothing compared the prefixes bin/ and core/ READ against the prefixes setup/tests/_common.sh SWEEPS out of the suite's environment, so the
+subjects that ran inside such a pane went red (174, 492, 493, 824) and the runner labelled them ENV-ONLY without saying which variable.
+
+What it reads (prefix = the name up to its first `_`; a name with no `_` is not a prefix and is left out):
+  reads  — Go: getenv("X") / Getenv("X") / LookupEnv("X") in core/ and bin/ (test files excluded); shell scripts under bin/: ${X:-…} ${X:=…} ${X:+…} ${X:?…}
+           ${X-…}; python under bin/: os.environ.get("X") / os.environ["X"] / os.getenv("X").
+  swept  — setup/tests/_common.sh: a `${!PFX@}` / `${!PFX_@}` expansion, or a name in an `unset` list. A prefix swept by name only (ENGRAM_PROJECT) counts
+           as swept: this check is per prefix, and says so; a partial sweep is a decision `_common.sh` documents beside it.
+  allow  — setup/suite-data/env-prefix-allowlist.tsv, `<PREFIX><TAB><why a leak of it cannot move a subject>`. An entry with no reason, one that is also
+           swept, or (when core/ exists) one nothing reads any more, is itself red: the list shrinks as the code does.
+A prefix read that is neither swept nor listed is red, naming the first file that reads it and both ways out (sweep it in _common.sh, or list it with a
+reason). Exit 0 ok, 1 red. Run by setup/tests/1356-*.sh.
+"""
+import os
+import re
+import sys
+
+GO_READ = re.compile(r'(?:[Gg]etenv|[Ll]ookupEnv)\(\s*"([A-Z][A-Z0-9_]*)"')
+SH_READ = re.compile(r'\$\{([A-Z][A-Z0-9_]*)(?::?[-=+?])')
+PY_READ = re.compile(r'os\.(?:environ\.get|getenv)\(\s*["\']([A-Z][A-Z0-9_]*)["\']|os\.environ\[\s*["\']([A-Z][A-Z0-9_]*)["\']\s*\]')
+SWEEP_EXPANSION = re.compile(r'\$\{!([A-Z][A-Z0-9]*)_?@\}')
+SKIP_DIRS = {".git", "node_modules", "vendor", "testdata"}
+
+
+def prefix(name):
+    return name.split("_", 1)[0]
+
+
+def reads(root):
+    """{prefix: first 'file: NAME'} of every environment read in bin/ and core/."""
+    found = {}
+    for top in ("bin", "core"):
+        for dp, dn, fn in os.walk(os.path.join(root, top)):
+            dn[:] = sorted(d for d in dn if d not in SKIP_DIRS)
+            for f in sorted(fn):
+                p = os.path.join(dp, f)
+                if f.endswith("_test.go"):
+                    continue
+                try:
+                    text = open(p, encoding="utf-8", errors="ignore").read()
+                except OSError:
+                    continue
+                rel = os.path.relpath(p, root)
+                names = []
+                if f.endswith(".go"):
+                    names = GO_READ.findall(text)
+                elif top == "bin" and text.startswith("#!"):
+                    first = text.split("\n", 1)[0]
+                    if re.search(r"\b(?:ba|z|da)?sh\b", first):
+                        names = SH_READ.findall(text)
+                    elif "python" in first:
+                        names = [a or b for a, b in PY_READ.findall(text)]
+                for n in names:
+                    if "_" not in n:  # a plain name (HOME, PATH, TERM, WORK, SDD) is not a prefix: out of this check's scope
+                        continue
+                    found.setdefault(prefix(n), "%s: %s" % (rel, n))
+    return found
+
+
+def swept(root):
+    path = os.path.join(root, "setup", "tests", "_common.sh")
+    text = open(path, encoding="utf-8", errors="ignore").read() if os.path.isfile(path) else ""
+    out = set(SWEEP_EXPANSION.findall(text))  # MUTATION-ANCHOR: 1356-M01
+    logical = re.sub(r"\\\n", " ", text)
+    for line in logical.split("\n"):
+        m = re.match(r"\s*unset\s+(.*)", line)
+        if not m:
+            continue
+        for tok in re.split(r"\s+", re.sub(r"[;#].*", "", m.group(1)).strip()):
+            if re.fullmatch(r"[A-Z][A-Z0-9_]*", tok):
+                out.add(prefix(tok))
+    return out
+
+
+def allowed(root):
+    path = os.path.join(root, "setup", "suite-data", "env-prefix-allowlist.tsv")
+    rows, bad = {}, []
+    for i, line in enumerate(open(path, encoding="utf-8") if os.path.isfile(path) else [], 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.rstrip("\n").split("\t", 1)
+        if len(f) < 2 or not f[1].strip():
+            bad.append("env-prefix-allowlist.tsv:%d: `%s` has no reason (`<PREFIX><TAB><why a leak of it cannot move a subject>`)" % (i, f[0]))
+            continue
+        rows[f[0]] = f[1].strip()
+    return rows, bad
+
+
+def check(root):
+    r, sw = reads(root), swept(root)
+    allow, bad = allowed(root)
+    for p in sorted(r):
+        if p in sw or p in allow:  # MUTATION-ANCHOR: 1356-M02
+            continue
+        bad.append("%s is read (%s) but is neither swept in setup/tests/_common.sh nor on setup/suite-data/env-prefix-allowlist.tsv: a pane that carries %s_* "
+                   "leaks it into every subject (HC_* did for 2.7 days). Sweep it in _common.sh (`for _v in ${!%s_@}; do unset \"$_v\"; done`), or list it with the reason a leak cannot move a subject"
+                   % (p, r[p], p, p))
+    for p in sorted(allow):
+        if p in sw:
+            bad.append("%s is on the allowlist and is also swept in _common.sh: remove the allowlist line" % p)
+        elif os.path.isdir(os.path.join(root, "core")) and p not in r:
+            bad.append("%s is on the allowlist but nothing in bin/ or core/ reads it any more: remove the line" % p)
+    return bad, len(r), len(sw), len(allow)
+
+
+if __name__ == "__main__":
+    root = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bad, n_read, n_swept, n_allow = check(root)
+    for b in bad:
+        print("not ok - " + b)
+    if not bad:
+        print("ok - %d environment prefixes read in bin/ and core/: each is swept in setup/tests/_common.sh (%d prefixes) or allowlisted with a reason (%d)" % (n_read, n_swept, n_allow))
+    sys.exit(1 if bad else 0)

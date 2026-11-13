@@ -29,7 +29,7 @@ unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR OPENCODE_CONFIG_DIR OPENC
 SUBJECT="${SUBJECT_ROOT:-$ROOT}"
 export ENGRAM_PORT=9 ENGRAM_DATA_DIR="$TMP/engram"   # never 7437
 
-# ── a PATH of single links: the base tools, and nothing foreman-sh depends on ──
+# ── a PATH of single links: the base tools, and nothing foreman depends on ──
 SYS="$TMP/sys"; mkdir -p "$SYS"
 for t in bash sh env sed awk cat dirname basename mkdir rm chmod tr head tail wc \
          mktemp readlink grep sort cut ls printf id touch cp mv ln date rsync md5 md5sum; do

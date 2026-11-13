@@ -54,6 +54,7 @@ type promptFacts struct {
 	fastGate                      bool   // the work directory carries setup/test-hw
 	plugins                       []string
 	pluginsOnly                   bool // `review: plugins` closes this build
+	independent                   bool // this build owes the independent review: it closes with /simplify, no Judgment Day, no review skill
 
 	briefText string
 }
@@ -84,7 +85,7 @@ func hasSession(f *promptFacts) bool   { return f.session != "" }
 func hasPiNote(f *promptFacts) bool    { return f.piNote != "" }
 func hasTier(f *promptFacts) bool      { return tierText(f) != "" }
 func isBuild(f *promptFacts) bool      { return f.build }
-func closesWithJD(f *promptFacts) bool { return f.jd } // # MUTATION-ANCHOR: 847-C-09
+func closesWithJD(f *promptFacts) bool { return f.jd }
 
 func hasAuthorization(f *promptFacts) bool  { return len(f.authorizes) > 0 } // # MUTATION-ANCHOR: 862-G18
 func hasGrants(f *promptFacts) bool         { return hasSecrets(f) || hasAuthorization(f) }
@@ -92,6 +93,7 @@ func hasLaunchEntry(f *promptFacts) bool    { return !f.retask && f.sddEntry != 
 func hasSpecialists(f *promptFacts) bool    { return f.piNote == "" && f.specialists != "" }
 func hasLaneQAOverride(f *promptFacts) bool { return f.laneNote != "" && f.laneQA != "" }
 func closesWithPlugins(f *promptFacts) bool { return !f.jd && f.pluginsOnly }
+func closesIndependent(f *promptFacts) bool { return f.build && f.independent }
 
 // pi loads no ~/.claude/CLAUDE.md, so for pi this line is the only carrier of the rule that a delegate inherits no remote access.
 func hasNoRemoteLine(f *promptFacts) bool { return f.vendor == "pi" && !hasAuthorization(f) }
@@ -153,6 +155,7 @@ var promptBlocks = []promptBlock{
 	{"design-gate", grpClose, hasDesignGate, designJudgmentText},
 	{"close-judgment-day", grpClose, closesWithJD, closeJudgmentDayText},
 	{"close-plugins", grpClose, closesWithPlugins, func(f *promptFacts) string { return reviewPluginsNote(f.plugins) }},
+	{"close-independent", grpClose, closesIndependent, closeIndependentText},
 	{"brief", grpBrief, pAlways, func(f *promptFacts) string { return f.briefText }},
 }
 
@@ -419,6 +422,26 @@ func closeJudgmentDayText(f *promptFacts) string {
 		"4. The report carries the judged range (base SHA..head SHA), the verdict APPROVED or ESCALATED"+report+", and, separately, each severe finding only ONE judge raised (unconfirmed: fix it only once reproduced), with its file:line.", f.plugins)
 }
 
+// closeIndependentText is the close of a build that owes the independent review: the builder keeps its tests and runs /simplify
+// (mutating, so it is the builder's step and not the review's: the reviewer judges the bytes that merge); it runs no Judgment Day
+// and no review skill, because a fresh opus reviewer does that after the report. What it can run depends on the vendor.
+func closeIndependentText(f *promptFacts) string {
+	var simplify string
+	switch f.vendor {
+	case "claude":
+		simplify = "2. After your tests pass and before checks.md is final: run /simplify over this branch with the Skill tool (name `simplify`), re-run the tests it touched and commit what it changed. checks.md gets one row, `simplify | pass | <what it changed, or \"no changes\"> | -`. done-invoker proves the Skill call from your transcript."
+	case "pi":
+		simplify = "2. After your tests pass and before checks.md is final: if pstack is loaded, run pstack:deslop over this branch (it edits), re-run the tests and commit what it changed. Nothing proves it."
+	default:
+		simplify = "2. simplify: not available on " + orDefaultStr(f.vendor, "this vendor") + " — nothing is owed."
+	}
+	return bashSub(`Closing this code task, then done-invoker, in this order:
+
+1. Commit per work unit as you go, on this branch, Conventional Commits; uncommitted work is neither reviewed nor delivered. The tests the behaviour rule above asks for are yours.
+` + simplify + `
+3. Do NOT run Judgment Day or a review skill: this build owes an independent review, a fresh session that reads your committed branch after your report (hw review dispatches it). Your report says what you built and what you tested.`)
+}
+
 var (
 	briefGoalHeading = regexp.MustCompile(`(?m)^## Goal[ \t]*$`)
 	briefDoneHeading = regexp.MustCompile(`(?m)^## Done when[ \t]*$`)
@@ -436,6 +459,9 @@ func judgeSpecText(brief string) string {
 
 func designJudgmentText(f *promptFacts) string {
 	end := reviewDesignEnd(f.reviewMode)
+	if f.independent {
+		end = "the independent review of the finished build"
+	}
 	return fmt.Sprintf(`Judge the design before the code. This brief declares a boundary:
 
     boundary: %s

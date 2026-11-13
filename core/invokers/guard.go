@@ -15,6 +15,9 @@ func (c *Ctx) exitMeaning(rc int) string {
 		}
 		return "a failure, not a delivery"
 	}
+	if c.checking && rc == 1 {
+		return "CHECK REFUSED — --check delivers nothing by design; the message above is the gate that refused, fix that and run --check again"
+	}
 	switch rc {
 	case 1:
 		return "NOT DELIVERED — nothing was reported, no marker written, this pane is the only copy; the message above names what clears it — run it again only when it says to"

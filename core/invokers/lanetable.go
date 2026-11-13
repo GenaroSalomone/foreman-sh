@@ -16,8 +16,8 @@ import (
 
 var laneNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
-// laneTableDoc is the table's JSON, or nil when the file cannot be read, does not parse, or lacks the `lanes` object or the
-// `work` string every table has (what lane_config_load refuses first). It prints nothing: rootsFromTable says why when the
+// laneTableDoc is the table's JSON, or nil when the file cannot be read, does not parse, or lacks the `lanes` object or a
+// work root — `work`, else `root`/work (tableWork) — every table has (what lane_config_load refuses first). It prints nothing: rootsFromTable says why when the
 // fallback runs.
 func (c *Ctx) laneTableDoc() map[string]any {
 	b, err := os.ReadFile(c.or("HW_PROJECTS_JSON", c.brainRoot()+"/projects.json"))
@@ -31,10 +31,22 @@ func (c *Ctx) laneTableDoc() map[string]any {
 	if lanes, _ := doc["lanes"].(map[string]any); len(lanes) == 0 {
 		return nil
 	}
-	if _, ok := doc["work"].(string); !ok {
+	if tableWork(doc) == "" {
 		return nil
 	}
 	return doc
+}
+
+// tableWork is the table's work root as written: `work` when it is a string, else `root` + "/work" (docs/layout.md: the
+// agents root is written once, as `root`), else "". project-spaces.sh's _LC_WORK_DEFAULT and core/lanes.go say the same.
+func tableWork(doc map[string]any) string {
+	if w, ok := doc["work"].(string); ok {
+		return w
+	}
+	if r, ok := doc["root"].(string); ok {
+		return r + "/work"
+	}
+	return ""
 }
 
 // jqStringOr is `tostring` of a value `// default` leaves alone: null and false are absent, a string is itself, anything else
@@ -75,8 +87,7 @@ func (c *Ctx) derivedRoots(doc map[string]any) string {
 	home := c.get("HOME")
 	work := c.get("WORK")
 	if work == "" {
-		w, _ := doc["work"].(string)
-		work = expandHome(home, w)
+		work = expandHome(home, tableWork(doc))
 	}
 	roots := []string{work}
 	lanes, _ := doc["lanes"].(map[string]any)

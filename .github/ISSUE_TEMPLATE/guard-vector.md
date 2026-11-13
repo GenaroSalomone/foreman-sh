@@ -25,5 +25,5 @@ as `SECURITY.md` describes.
 
 ## Versions and platform
 
-- foreman-sh (`./install.sh --version`):
+- foreman (`./install.sh --version`):
 - OS and agent version:

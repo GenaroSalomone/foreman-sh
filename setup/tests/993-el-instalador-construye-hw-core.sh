@@ -8,7 +8,7 @@
 #   - without Go, with an older Go, or with a go that does not answer `go version`, it REFUSES before writing anything to the
 #     brain — it exits 1, names the missing go >= 1.22 and https://go.dev/dl, and creates nothing (`--check` lists it among the
 #     missing prerequisites and, like every `--check`, writes nothing);
-#   - `--no-core` is refused, "removed in 0.6.0", before anything is written; FOREMAN_SH_NO_CORE=1 is no option of a user's but the
+#   - `--no-core` is refused, "removed in 0.6.0", before anything is written; FOREMAN_NO_CORE=1 is no option of a user's but the
 #     seam the suite's own installs use (_common.sh): it builds nothing, says so, and writes nothing;
 #   - a build that FAILS refuses (exit 1, the builder's last lines), and so does a Go that builds for another architecture than
 #     the one bin/hw looks in: both remove the hw-core an earlier install left, which would run against this release's bin/hw;
@@ -25,7 +25,7 @@
 #
 # Run by ../test-hw. Alone:  bash setup/tests/993-el-instalador-construye-hw-core.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
-unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR FOREMAN_SH_NO_CORE
+unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR FOREMAN_NO_CORE
 # The claim is what the INSTALLED hw does with nothing set, so the runner's choice is not an input here.
 unset HW_IMPL
 command -v go >/dev/null 2>&1 || { pass "993: no Go toolchain on this machine — the build arms need one (the no-Go arm is held by 993's stub in a machine that has it)"; exit 0; }
@@ -159,11 +159,11 @@ out="$(PATH="$PATH_NOGO" inst "$ROOT" "$HOME/b")" && fail "993: an install with 
 [ -x "$BIN" ] || fail "993: a refused install removed the hw-core of the earlier one"
 pass "993: no Go, an older Go, a go that says nothing and --no-core each refuse with status 1 before writing anything (a brain that does not exist is not created, one that does is left as it was), and --check lists the missing go"
 
-# FOREMAN_SH_NO_CORE=1, the suite's seam: builds nothing, says so, writes no switch file, exits 0
-fresh; out="$(FOREMAN_SH_NO_CORE=1 inst "$ROOT" "$HOME/b")" || fail "993: the seam install failed: $out"
-case "$out" in *"hw-core is not built (FOREMAN_SH_NO_CORE=1"*"setup/build-core --native"*) ;; *) fail "993: the seam did not say hw-core is not built, and how to build it: $out" ;; esac
+# FOREMAN_NO_CORE=1, the suite's seam: builds nothing, says so, writes no switch file, exits 0
+fresh; out="$(FOREMAN_NO_CORE=1 inst "$ROOT" "$HOME/b")" || fail "993: the seam install failed: $out"
+case "$out" in *"hw-core is not built (FOREMAN_NO_CORE=1"*"setup/build-core --native"*) ;; *) fail "993: the seam did not say hw-core is not built, and how to build it: $out" ;; esac
 [ ! -e "$HOME/b/core/dist" ] && [ ! -e "$IMPL" ] || fail "993: the seam built a hw-core or wrote a switch file"
-pass "993: FOREMAN_SH_NO_CORE=1, the suite's seam, builds nothing, says so, and writes no switch file"
+pass "993: FOREMAN_NO_CORE=1, the suite's seam, builds nothing, says so, and writes no switch file"
 
 # ── mutants of install.sh, in a source tree of its own (it installs what lies beside it), with a builder that is a stub ──
 MS="$TMP/mutant-src"; mkdir -p "$MS/lanes" "$MS/setup" "$MS/core"
@@ -250,7 +250,7 @@ saw_mutant "M03 --no-core accepted" "install exit: $([ "$m3rc" = 0 ] && echo 0 |
 # M04: a stale hw-core is kept (a run that builds none — the suite's seam here — must remove the one an earlier install left)
 fresh; fresh_src; STUB_BODY=one inst "$MS" "$HOME/b" >/dev/null || true
 mutate_anchor 993-M04 "$MS/install.sh" ':'; parses 993-M04
-FOREMAN_SH_NO_CORE=1 inst "$MS" "$HOME/b" >/dev/null || true
+FOREMAN_NO_CORE=1 inst "$MS" "$HOME/b" >/dev/null || true
 saw_mutant "M04 a stale hw-core kept" "core after a run that builds none: $([ -e "$HOME/b/core/dist" ] && echo kept || echo removed)" "core after a run that builds none: kept"
 
 # M05: hw-core written in place

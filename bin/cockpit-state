@@ -174,7 +174,8 @@ def work_root():
         root = os.environ.get("HW_BRAIN_ROOT") or os.path.dirname(BIN)
         try:
             with open(os.path.join(root, "projects.json"), encoding="utf-8") as fh:
-                w = json.load(fh).get("work")
+                t = json.load(fh)
+            w = t.get("work") or (t["root"] + "/work" if isinstance(t.get("root"), str) else None)
         except (OSError, ValueError):
             w = None
     return os.path.expanduser(w) if w else None
@@ -800,7 +801,7 @@ def ask_of(rundir, tdir, pane_id, run, vendor, tokens, hold):
 
     `pending_reply` is the hold's path only when the reply verbs would be accepted:
     the hold is valid for THIS pane (holdfacts, the validator channel-send itself asks)
-    and its route is herdr, which is what the verbs name.
+    and its route is herdr or hc, the two routes channel-send delivers a reply on; the verbs take it from `route`.
     """
     best = None
     for f in sorted(glob.glob(os.path.join(tdir, "pending-reply-*"))):
@@ -812,11 +813,12 @@ def ask_of(rundir, tdir, pane_id, run, vendor, tokens, hold):
             continue
         kind, n = m.group(1), int(m.group(2))
         at = mtime_ms(f) or 0
-        valid = hold.problem(facts, run, pane_id, vendor) is None and facts.get("route") == "herdr"  # MUTATION-ANCHOR: 797-M08
+        route = facts.get("route")
+        valid = hold.problem(facts, run, pane_id, vendor) is None and route in ("herdr", "hc")  # MUTATION-ANCHOR: 797-M08
         label = tokens.get("ask_seq") if re.fullmatch(r"%d/\d+" % n, tokens.get("ask_seq") or "") else "%d/3" % n
         cand = {"kind": kind, "seq": label,
                 "state": "delivered" if facts.get("state") == "delivered" else "undelivered",
-                "at": at, "pending_reply": os.path.abspath(f) if valid else None}
+                "at": at, "pending_reply": os.path.abspath(f) if valid else None, "route": route if valid and route in ("herdr", "hc") else None}
         if best is None or at >= best["at"]:
             best = cand
     return best

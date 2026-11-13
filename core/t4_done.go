@@ -30,6 +30,7 @@ type doneRun struct {
 
 	dropDB, force, blocked, keepPreview bool
 	keepFor, keepWhy, verifySkip        string
+	acceptReview                        string // --accept-review: a brainer's reason to merge without an approved review
 
 	t0, verifySecs int64
 	closeResult    string // _HERDR_CLOSE_RESULT
@@ -65,7 +66,7 @@ func (a *app) cmdDone() int {
 	d.occ = occupantsReader{h: herdrClient{getenv: a.getenv}, win: windowsPaths(a.getenv)}
 	args := a.args
 	if len(args) < 2 { // # MUTATION-ANCHOR: 861-G01
-		a.die("usage: hw done <project> <task> [--drop-db] [--force] [--keep-preview [<duration>] --why <reason>]")
+		a.die("usage: hw done <project> <task> [--drop-db] [--force] [--accept-review <why>] [--keep-preview [<duration>] --why <reason>]")
 	}
 	dp, dt := args[0], args[1]
 	args = args[2:]
@@ -93,8 +94,17 @@ func (a *app) cmdDone() int {
 			}
 			d.keepWhy = args[1]
 			args = args[2:]
+		case "--accept-review":
+			if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+				a.die("--accept-review needs a reason: --accept-review \"<why this merge needs no approved review>\"")
+			}
+			if a.getenv("HW_TASK") != "" || a.getenv("HW_RUN") != "" {
+				a.die("--accept-review is refused inside an executor (HW_TASK or HW_RUN is set): only a brainer overrides the review gate. Report blocked with done-invoker --blocked instead.")
+			}
+			d.acceptReview = args[1]
+			args = args[2:]
 		default:
-			a.die("unknown option: " + args[0] + " (hw done takes --drop-db, --force, --blocked, --keep-preview [<duration>], --why <reason>)")
+			a.die("unknown option: " + args[0] + " (hw done takes --drop-db, --force, --blocked, --accept-review <why>, --keep-preview [<duration>], --why <reason>)")
 		}
 	}
 	if d.keepPreview {
@@ -123,7 +133,9 @@ func (a *app) cmdDone() int {
 // taskBase is the directory _task_rundirs and _latest_run_record look in.
 func (d *doneRun) taskBase(proj, task string) string {
 	base := d.c.lanePath(proj, "worktree", task)
-	if base == "" {
+	if base == "" || !isDir(base+"/.hw") {
+		// a --worktree none task in a repo lane recorded itself in the work directory, not in the lane's worktree path
+		// (the same fallback receipt and revive make); without it no run record is found and an hc terminal is never closed
 		base = d.c.work + "/" + proj + "/" + task
 	}
 	return base
@@ -284,6 +296,12 @@ func (d *doneRun) run(proj, task string) int {
 			d.outcome(proj, task, "space "+ws)
 		} else {
 			a.info("no open tab or space labelled " + proj + ":" + task)
+			if a.getenv("HW_DONE_INVOKER_PID") != "" && !(rundir != "" && runIsHere(rundir)) { // a --here pane is no tab and no space: hw done closes nothing for it, by design
+				// the close that follows a report (done-invoker's own detached closer): the report just landed, so the run owns a
+				// pane, and finding none means hw looked in the wrong place. That is a failed close, not a quiet exit 0.
+				d.closeResult = "unfound"
+				closeFailed = 1
+			}
 			d.outcome(proj, task, "")
 		}
 	}
@@ -358,8 +376,22 @@ func (d *doneRun) run(proj, task string) int {
 		syncLines = "  git checkout " + base + "\n  " + a.cDim + "# no origin in " + main + " — nothing to fetch or pull" + a.c0
 	}
 	if _, rc := doneGit(main, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); rc == 0 && ahead > 0 {
-		a.printf("\n%sMerge it:%s\n\n  cd %s\n%s\n  git merge --no-ff %s          # %d commit(s) against %s%s — or open a PR and squash-merge it\n\n",
-			a.cB, a.c0, main, syncLines, branch, ahead, aheadRef, aheadNote)
+		if gate := d.reviewGate(proj, task, main, wt, branch, rundir, d.acceptReview); gate.allow {
+			a.printf("\n%sMerge it:%s\n\n  cd %s\n%s\n  git merge --no-ff %s          # %d commit(s) against %s%s — or open a PR and squash-merge it\n\n",
+				a.cB, a.c0, main, syncLines, branch, ahead, aheadRef, aheadNote)
+			for _, n := range gate.notes {
+				a.info(n)
+			}
+			if gate.readyPR > 0 {
+				a.printf("  gh pr ready %d          # the PR is a draft; this head is the one the review covers\n\n", gate.readyPR)
+			}
+		} else {
+			a.printf("\n%s%s%s\n", a.cB, gate.deny, a.c0)
+			for _, l := range append(gate.why, gate.how...) {
+				a.printf("  %s\n", l)
+			}
+			a.printf("\n")
+		}
 	} else if _, rc := doneGit(main, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); rc == 0 {
 		a.printf("\n")
 		a.warn("NOTHING TO MERGE: " + branch + " exists but is level with " + aheadRef + " — 0 commits." + aheadNote)
@@ -553,6 +585,8 @@ func (d *doneRun) outcome(proj, task, what string) {
 		d.ok("CLOSED: " + what + " — this call closed it (" + proj + ":" + task + ")")
 	case "absent":
 		d.info("NOTHING TO CLOSE: " + what + " was already gone when hw asked — this call closed nothing, and that is not a failure (" + proj + ":" + task + ")")
+	case "unfound":
+		d.warn("NOT CLOSED — NOTHING FOUND: the report of " + proj + ":" + task + " was just delivered, so its executor owns a tab, space or terminal, and hw found none labelled that way. This call closed nothing and exits non-zero (close-failed): look before anything else: hw status")
 	case "failed":
 		d.warn("NOT CLOSED — FAILED: " + what + " may still be RUNNING; this call did not close it and exits non-zero (" + proj + ":" + task + "). Look before anything else: hw status")
 	default:

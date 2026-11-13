@@ -11,7 +11,7 @@ _hw() {
   # without an edit here.
   local table=$brain/projects.json
   projects=(
-    ${(f)"$(jq -r '.work as $w | .lanes | to_entries[] | .key as $l | .value as $v
+    ${(f)"$(jq -r '(.work // ((.root // "~") + "/work")) as $w | .lanes | to_entries[] | .key as $l | .value as $v
       | ("\($l):" + (if $v.repoless then "no repo — work in \($w)/\($l)"
                     elif $v.checkout == "{brain}" then "this setup itself — work in \($w)/\($l)"
                     else $v.checkout end)),

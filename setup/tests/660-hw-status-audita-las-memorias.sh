@@ -224,7 +224,7 @@ cp "$AUDIT" "$TMP/mx-660-M14"; mutate_anchor 660-M14 "$TMP/mx-660-M14" 'return N
 saw_mutant "660-M14 an engram that does not answer goes unsaid" \
   "$(MUT_ENGRAM="$TMP/engram-broken" mutsolo 660-M14 "$D")" "[rc=0]"
 
-# no engram on this machine at all (a foreman-sh install without it): silent, not a drift
+# no engram on this machine at all (a foreman install without it): silent, not a drift
 rc=0; out="$(python3 "$AUDIT" --root "$D/brain" --config-dir "$D/cfg" --engram "$TMP/no-such-engram" 2>&1)" || rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] || fail "engram absent: a machine with no engram binary should be silent: $out"
 pass "engram absent: no engram binary is silent, so an install without engram sees nothing"

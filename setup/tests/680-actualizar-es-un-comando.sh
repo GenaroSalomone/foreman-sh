@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upgrading foreman-sh is one command, and it keeps the install's flags
+# Upgrading foreman is one command, and it keeps the install's flags
 #
 # WHAT THIS HOLDS. Before: an upgrade was the new release plus install.sh run
 # again with the flags of the first install, from memory; a forgotten flag made
@@ -31,8 +31,8 @@
 # Run alone:  bash setup/tests/680-actualizar-es-un-comando.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 unset HW_BRAIN_ROOT HW_PROJECTS_JSON CLAUDE_CONFIG_DIR OPENCODE_CONFIG_DIR OPENCODE_EXECUTOR_CONFIG \
-      FOREMAN_SH_VERSION FOREMAN_SH_INSTALL_CMD FOREMAN_SH_INSTALLED_FROM FOREMAN_SH_UPGRADE_TARGET \
-      FOREMAN_SH_NO_UPDATE_CHECK FOREMAN_SH_LATEST_URL FOREMAN_SH_TARBALL_BASE
+      FOREMAN_VERSION FOREMAN_INSTALL_CMD FOREMAN_INSTALLED_FROM FOREMAN_UPGRADE_TARGET \
+      FOREMAN_NO_UPDATE_CHECK FOREMAN_LATEST_URL FOREMAN_TARBALL_BASE
 SUBJECT="${SUBJECT_ROOT:-$ROOT}"
 export ENGRAM_PORT=9 ENGRAM_DATA_DIR="$TMP/engram"   # never 7437
 export TMPDIR="$TMP"
@@ -69,12 +69,12 @@ copy_tree() {  # <dst>
   copy_tracked_tree "$SUBJECT" "$1"   # the tracked tree is what a release ships (_common.sh)
 }
 notes() {  # <version> <in short text> — a RELEASE-NOTES.md with an "In short" section
-  printf '# foreman-sh %s\n\n## In short\n\n%s\n\n## Added\n\n- a thing\n' "$1" "$2"
+  printf '# foreman %s\n\n## In short\n\n%s\n\n## Added\n\n- a thing\n' "$1" "$2"
 }
 package() {  # <tree> <tag> — <tree> becomes <REL>/<tag>.tar.gz, one top directory like GitHub's
-  local top="$TMP/pkg/$2/foreman-sh-${2#v}"
+  local top="$TMP/pkg/$2/foreman-${2#v}"
   rm -rf "$TMP/pkg/$2"; mkdir -p "$TMP/pkg/$2"; cp -R "$1" "$top"
-  tar -czf "$REL/$2.tar.gz" -C "$TMP/pkg/$2" "foreman-sh-${2#v}"
+  tar -czf "$REL/$2.tar.gz" -C "$TMP/pkg/$2" "foreman-${2#v}"
 }
 build_releases() {  # <mutate fn, or ":"> — v1.0.0 (what is installed) and v2.0.0 (the newest), both mutated alike
   rm -rf "$TMP/rel-v1" "$TMP/rel-v2"
@@ -97,7 +97,7 @@ PY
 }
 build_releases :
 
-export FOREMAN_SH_LATEST_URL="file://$REL/latest.json" FOREMAN_SH_TARBALL_BASE="file://$REL"
+export FOREMAN_LATEST_URL="file://$REL/latest.json" FOREMAN_TARBALL_BASE="file://$REL"
 
 # ── an install, then what upgrading it does, as one function the mutants reuse ──
 # <name> <v1 tree> — installs v1.0.0 with flags a default would not give, in $TMP/<name>
@@ -109,10 +109,10 @@ install_v1() {
   printf '{"skipDangerousModePermissionPrompt":true}' > "$HOME/.claude/settings.json"   # one user, one brain: each scenario starts clean
   FLAGS_OF=(--brain "$BR" --lane myapp --repo "$REPO" --base main --operator "Ada L" --min-model sonnet \
             --requested-by required --bin-dir "$BINX" --permissions ask)
-  set +e; v1out="$(cd "$TMP" && FOREMAN_SH_VERSION=v1.0.0 bash "$src/install.sh" "${FLAGS_OF[@]}" < /dev/null 2>&1)"; v1rc=$?; set -e
+  set +e; v1out="$(cd "$TMP" && FOREMAN_VERSION=v1.0.0 bash "$src/install.sh" "${FLAGS_OF[@]}" < /dev/null 2>&1)"; v1rc=$?; set -e
 }
 upgrade() {  # [args...] — from the installed release's own copy, as a person would
-  set +e; uout="$(cd "$TMP" && FOREMAN_SH_VERSION=v1.0.0 bash "$TMP/rel-v1/install.sh" upgrade --brain "$BR" "$@" < /dev/null 2>&1)"; urc=$?; set -e
+  set +e; uout="$(cd "$TMP" && FOREMAN_VERSION=v1.0.0 bash "$TMP/rel-v1/install.sh" upgrade --brain "$BR" "$@" < /dev/null 2>&1)"; urc=$?; set -e
 }
 tree_sum() { ( cd "$TMP" && find "$HOME" "$BR" "$BINX" -path "$HOME/code" -prune -o -path "$HOME/.local" -prune -o -type f -print0 2>/dev/null | sort -z | xargs -0 shasum 2>/dev/null ) | shasum; }
 # what is true of the brain after an upgrade, one line per fact, for the mutants to be read by
@@ -151,7 +151,7 @@ want="$(jq -c '[.bin_dir, .permissions, .lanes[0].lane, .lanes[0].repo, .lanes[0
 [ "$(jq -c '.lanes[0] | keys' "$REC")" = '["base","lane","repo"]' ] || fail "the record keeps what the lane's row in projects.json already says (vendor, model, operator, floor, request rule), which goes stale when the row is edited: $(cat "$REC")"
 [ "$(jq -r 'keys | join(",")' "$REC")" = "bin_dir,date,lanes,latest_url,permissions,version" ] || fail "the record carries something besides version, date, flags and where to look for the newest release: $(jq -c keys "$REC")"
 before="$(shasum "$REC")"; sleep 1
-set +e; again="$(cd "$TMP" && FOREMAN_SH_VERSION=v1.0.0 bash "$TMP/rel-v1/install.sh" "${FLAGS_OF[@]}" < /dev/null 2>&1)"; set -e
+set +e; again="$(cd "$TMP" && FOREMAN_VERSION=v1.0.0 bash "$TMP/rel-v1/install.sh" "${FLAGS_OF[@]}" < /dev/null 2>&1)"; set -e
 [ "$before" = "$(shasum "$REC")" ] || fail "a second identical install rewrote the record"
 pass "an install writes .foreman/install.json with its version, date and flags, and a second identical run leaves it byte for byte"
 
@@ -222,13 +222,34 @@ install_v1 main "$TMP/rel-v1"; forget_lane; upgrade   # back to the main brain, 
 
 # ── 5. --to is the way back ─────────────────────────────────────────────────
 sum0="$(tree_sum)"
-set +e; uout="$(cd "$TMP" && FOREMAN_SH_VERSION=v2.0.0 bash "$TMP/rel-v2/install.sh" upgrade --brain "$BR" --to 1.0.0 < /dev/null 2>&1)"; urc=$?; set -e
+set +e; uout="$(cd "$TMP" && FOREMAN_VERSION=v2.0.0 bash "$TMP/rel-v2/install.sh" upgrade --brain "$BR" --to 1.0.0 < /dev/null 2>&1)"; urc=$?; set -e
 [ "$urc" = 0 ] || fail "upgrade --to 1.0.0 exited $urc: $(printf '%s' "$uout" | tail -8)"
 [ "$(jq -r .version "$BR/.brain-install.json")" = v1.0.0 ] && [ ! -e "$BR/bin/probe-new-release" ] || fail "--to 1.0.0 did not put v1.0.0 back"
 case "$uout" in *"THE-OLD-RELEASE-IN-SHORT"*"") ;; *) fail "--to does not print the In short of the version it installed: $uout" ;; esac
-set +e; bad="$(cd "$TMP" && FOREMAN_SH_VERSION=v2.0.0 bash "$TMP/rel-v2/install.sh" upgrade --brain "$BR" --to 7.7.7 < /dev/null 2>&1)"; badrc=$?; set -e
+set +e; bad="$(cd "$TMP" && FOREMAN_VERSION=v2.0.0 bash "$TMP/rel-v2/install.sh" upgrade --brain "$BR" --to 7.7.7 < /dev/null 2>&1)"; badrc=$?; set -e
 [ "$badrc" != 0 ] && [ "$(jq -r .version "$BR/.brain-install.json")" = v1.0.0 ] || fail "--to a release that does not exist changed the brain or succeeded: $bad"
 pass "--to 1.0.0 puts the old release back, and a release that does not exist changes nothing"
+
+# ── 5b. a 0.9.x installer (then foreman-sh) hands the upgrade over through FOREMAN_SH_* ──
+# That installer is already on people's machines and cannot be edited: after downloading the release it
+# runs the release's own install.sh with FOREMAN_SH_UPGRADE_TARGET=1, FOREMAN_SH_VERSION and
+# FOREMAN_SH_INSTALLED_FROM. The new installer must read them, or it goes looking for the newest release
+# by itself. Here the newest release is one that does not exist: only the version it was handed can win.
+legacy_handoff() {  # prints the exit code and the version the brain ends on
+  printf '{"tag_name":"v3.0.0"}\n' > "$REL/latest.json"
+  set +e; uout="$(cd "$TMP" && env FOREMAN_SH_UPGRADE_TARGET=1 FOREMAN_SH_VERSION=v2.0.0 FOREMAN_SH_INSTALLED_FROM="file://$REL" \
+    bash "$TMP/rel-v2/install.sh" upgrade --brain "$BR" < /dev/null 2>&1)"; urc=$?; set -e
+  printf '{"tag_name":"v2.0.0"}\n' > "$REL/latest.json"
+}
+legacy_handoff
+[ "$urc" = 0 ] && [ "$(jq -r .version "$BR/.brain-install.json")" = v2.0.0 ] && [ "$(jq -r .version "$REC")" = v2.0.0 ] \
+  || fail "the upgrade handed over through FOREMAN_SH_* was not applied (rc=$urc): $(printf '%s' "$uout" | tail -6 | tr '\n' ' ')"
+case "$uout" in *"upgraded v1.0.0 -> v2.0.0"*) ;; *) fail "the legacy handover does not say what it did: $uout" ;; esac
+case "$uout" in *"download "*) fail "the legacy handover went and fetched a release by itself: $uout" ;; esac
+set +e; uout="$(cd "$TMP" && FOREMAN_VERSION=v2.0.0 bash "$TMP/rel-v2/install.sh" upgrade --brain "$BR" --to 1.0.0 < /dev/null 2>&1)"; urc=$?; set -e
+[ "$(jq -r .version "$BR/.brain-install.json")" = v1.0.0 ] || fail "could not put v1.0.0 back after the legacy handover: $uout"
+pass "an upgrade handed over through the 0.9.x FOREMAN_SH_* variables is applied from the version it names"
+
 
 # ── 6. release-check, the line hw status prints ─────────────────────────────
 CHECKER="$SUBJECT/bin/release-check"
@@ -238,32 +259,32 @@ printf '{"version":"v1.0.0","date":"2026-01-01T00:00:00Z"}\n' > "$RB/.foreman/in
 ask() { rc_out="$(python3 "$CHECKER" "$RB" 2>&1)"; rc_rc=$?; }
 set +e
 ask
-[ "$rc_rc" = 0 ] && [ "$(printf '%s\n' "$rc_out" | wc -l | tr -d ' ')" = 1 ] && [[ "$rc_out" == "foreman-sh v2.0.0 is out"*"has v1.0.0"* ]] \
+[ "$rc_rc" = 0 ] && [ "$(printf '%s\n' "$rc_out" | wc -l | tr -d ' ')" = 1 ] && [[ "$rc_out" == "foreman v2.0.0 is out"*"has v1.0.0"* ]] \
   || fail "a newer release was not announced in one line (rc=$rc_rc): $rc_out"
 printf '{"tag_name":"v3.0.0"}\n' > "$REL/latest.json"; ask
-[[ "$rc_out" == "foreman-sh v2.0.0 is out"* ]] || fail "asked twice in one day: the cached answer was not used: $rc_out"
+[[ "$rc_out" == "foreman v2.0.0 is out"* ]] || fail "asked twice in one day: the cached answer was not used: $rc_out"
 python3 - "$RB/.foreman/latest-release.json" <<'PY'
 import json, sys
 p = sys.argv[1]; d = json.load(open(p)); d["checked_at"] -= 2 * 86400; json.dump(d, open(p, "w"))
 PY
 ask
-[[ "$rc_out" == "foreman-sh v3.0.0 is out"* ]] || fail "a day later it did not ask again: $rc_out"
+[[ "$rc_out" == "foreman v3.0.0 is out"* ]] || fail "a day later it did not ask again: $rc_out"
 printf '{"version":"v3.0.0"}\n' > "$RB/.foreman/install.json"; rm -f "$RB/.foreman/latest-release.json"; ask
 [ "$rc_rc" = 0 ] && [ -z "$rc_out" ] || fail "an install already on the newest release was told about one: $rc_out"
 printf '{"version":"v1.0.0"}\n' > "$RB/.foreman/install.json"; rm -f "$RB/.foreman/latest-release.json"
 # with no override, it asks where the install recorded (bin/release-check names no repository itself)
 printf '{"version":"v1.0.0","latest_url":"file://%s/latest.json"}\n' "$REL" > "$RB/.foreman/install.json"
 printf '{"tag_name":"v2.0.0"}\n' > "$REL/latest.json"
-rc_out="$(env -u FOREMAN_SH_LATEST_URL python3 "$CHECKER" "$RB" 2>&1)"
-[[ "$rc_out" == "foreman-sh v2.0.0 is out"* ]] || fail "release-check ignored the latest_url the install recorded: $rc_out"
+rc_out="$(env -u FOREMAN_LATEST_URL python3 "$CHECKER" "$RB" 2>&1)"
+[[ "$rc_out" == "foreman v2.0.0 is out"* ]] || fail "release-check ignored the latest_url the install recorded: $rc_out"
 rm -f "$RB/.foreman/latest-release.json"; printf '{"version":"v1.0.0"}\n' > "$RB/.foreman/install.json"
-rc_out="$(env -u FOREMAN_SH_LATEST_URL python3 "$CHECKER" "$RB" 2>&1)"
+rc_out="$(env -u FOREMAN_LATEST_URL python3 "$CHECKER" "$RB" 2>&1)"
 [ -z "$rc_out" ] || fail "release-check guessed a place to look when none was recorded: $rc_out"
 rm -f "$RB/.foreman/latest-release.json"
-FOREMAN_SH_LATEST_URL="file://$REL/nowhere.json" ask
+FOREMAN_LATEST_URL="file://$REL/nowhere.json" ask
 [ "$rc_rc" = 0 ] && [ -z "$rc_out" ] || fail "offline was not silent (rc=$rc_rc): $rc_out"
-FOREMAN_SH_NO_UPDATE_CHECK=1 ask
-[ -z "$rc_out" ] || fail "FOREMAN_SH_NO_UPDATE_CHECK=1 did not silence it: $rc_out"
+FOREMAN_NO_UPDATE_CHECK=1 ask
+[ -z "$rc_out" ] || fail "FOREMAN_NO_UPDATE_CHECK=1 did not silence it: $rc_out"
 rm -rf "$RB/.foreman/latest-release.json" "$RB/.foreman/install.json"; ask
 [ -z "$rc_out" ] && [ ! -e "$RB/.foreman/latest-release.json" ] || fail "a brain with no record was asked about: $rc_out"
 set -e
@@ -274,10 +295,10 @@ printf '{"tag_name":"v2.0.0"}\n' > "$REL/latest.json"
 set +e; st="$(cd "$TMP" && env -u HW_TASK -u HW_RUN HOME="$HOME" "$BR/bin/hw" status 2>&1 < /dev/null)"; strc=$?; set -e
 rm -f "$BR/.foreman/latest-release.json"
 set +e; st="$(cd "$TMP" && env -u HW_TASK -u HW_RUN HOME="$HOME" "$BR/bin/hw" status 2>&1 < /dev/null)"; strc=$?; set -e
-case "$st" in *"foreman-sh v2.0.0 is out (this brain has v1.0.0)"*) ;; *) fail "hw status (rc=$strc) does not say a newer release exists: $(printf '%s' "$st" | tail -6 | tr '\n' ' ')" ;; esac
-case "$st" in *"install.sh upgrade --brain $BR"*) ;; *) fail "hw status names a command this install does not have (no foreman-sh on PATH): $(printf '%s' "$st" | rg 'is out')" ;; esac
-case "$st" in *"foreman-sh upgrade"*) fail "hw status says foreman-sh upgrade on a non-Homebrew install" ;; esac
-pass "hw status prints the line for the brain it runs in, naming install.sh upgrade where there is no Homebrew foreman-sh"
+case "$st" in *"foreman v2.0.0 is out (this brain has v1.0.0)"*) ;; *) fail "hw status (rc=$strc) does not say a newer release exists: $(printf '%s' "$st" | tail -6 | tr '\n' ' ')" ;; esac
+case "$st" in *"install.sh upgrade --brain $BR"*) ;; *) fail "hw status names a command this install does not have (no foreman-setup on PATH): $(printf '%s' "$st" | rg 'is out')" ;; esac
+case "$st" in *"foreman-setup upgrade"*) fail "hw status says foreman-setup upgrade on a non-Homebrew install" ;; esac
+pass "hw status prints the line for the brain it runs in, naming install.sh upgrade where there is no Homebrew foreman-setup"
 
 # ── 7. mutants: each one runs the same scenario over a broken copy ──────────
 # survival control above: the healthy copy gave every fact in $SURVIVAL_FACTS.
@@ -293,7 +314,7 @@ run_mutant() {  # <name> <mutation fn over a release tree>; prints the facts aft
 }
 m_drop_flags()  { replace_in "$1/install.sh" 'if r.get("bin_dir"): g += ["--bin-dir", r["bin_dir"]]' 'pass'
                   replace_in "$1/install.sh" 'if r.get("permissions"): g += ["--permissions", r["permissions"]]' 'pass'; }
-m_skip_check()  { replace_in "$1/install.sh" 'env -u FOREMAN_SH_UPGRADE_TARGET bash "$SRC/install.sh" --brain "$BR" --check || rc=$?' ':'; }
+m_skip_check()  { replace_in "$1/install.sh" 'env -u FOREMAN_UPGRADE_TARGET bash "$SRC/install.sh" --brain "$BR" --check || rc=$?' ':'; }
 m_no_in_short() { replace_in "$1/install.sh" 'if not m or not m.group(1).strip(): raise SystemExit(1)' 'raise SystemExit(1)'; }
 m_no_record()   { replace_in "$1/install.sh" 'os.replace(path + ".tmp", path)' 'os.remove(path + ".tmp")'; }
 m_drop_lane()   { replace_in "$1/install.sh" 'a += ["--lane", l["lane"], "--repo", l["repo"]]' 'pass'; }
@@ -331,6 +352,21 @@ saw_mutant "M05 the install writes no record" "$out" "record: absent"
 out="$(run_stale_mutant M09 m_stale_replay)"
 saw_mutant "M09 the record keeps what the row owns and the upgrade replays it over a hand edit" "$out" "stale upgrade exit: 1"
 
+# the 0.9.x handover: the bridge from FOREMAN_SH_* is one loop, and without it the upgrade fetches by itself
+m_no_legacy_bridge() { replace_in "$1/install.sh" 'for _v in VERSION INSTALLED_FROM UPGRADE_TARGET; do' 'for _v in; do'; }
+run_legacy_mutant() {  # <name> <mutation fn>
+  local n="$1" fn="$2"
+  build_releases "$fn"
+  install_v1 "$n" "$TMP/rel-v1"
+  [ "$v1rc" = 0 ] || { printf 'the mutant did not install (rc=%s)\n' "$v1rc"; return 0; }
+  legacy_handoff
+  printf 'legacy handover exit: %s\n' "$urc"
+}
+healthy_legacy="$(run_legacy_mutant M11h :)"
+[ "$healthy_legacy" = "legacy handover exit: 0" ] || fail "the healthy installer does not take the legacy handover the way the mutant assumes: $healthy_legacy"
+out="$(run_legacy_mutant M11 m_no_legacy_bridge)"
+saw_mutant "M11 the installer ignores the FOREMAN_SH_* handover of a 0.9.x installer" "$out" "legacy handover exit: 1"
+
 # release-check and hw status: the same fixture, one line changed
 mutate_checker() {  # <old> <new> — a copy of the subject's bin/ with release-check mutated, in $TMP/mut-bin
   rm -rf "$TMP/mut-bin"; mkdir -p "$TMP/mut-bin"; cp "$CHECKER" "$TMP/mut-bin/release-check"
@@ -350,21 +386,21 @@ mut_ask() {  # prints what the mutated checker says for: current install, then a
 mkdir -p "$TMP/mut-bin"; cp "$CHECKER" "$TMP/mut-bin/release-check"
 healthy="$(mut_ask)"
 [ "$healthy" = "when current: []
-second ask in a day: [foreman-sh v2.0.0 is out (this brain has v1.0.0): install.sh upgrade --brain $TMP/mut-brain]" ] \
+second ask in a day: [foreman v2.0.0 is out (this brain has v1.0.0): install.sh upgrade --brain $TMP/mut-brain]" ] \
   || fail "the healthy release-check does not behave as the mutants assume: $healthy"
 mutate_checker 'if tag and key(tag) > key(have):' 'if tag and key(tag) >= key(have):'
 out="$(mut_ask)"
-saw_mutant "M06 an equal version is announced as newer" "$out" "when current: [foreman-sh v2.0.0 is out"
+saw_mutant "M06 an equal version is announced as newer" "$out" "when current: [foreman v2.0.0 is out"
 mutate_checker 'if isinstance(checked, (int, float)) and 0 <= now - checked < DAY:' 'if False:'
 out="$(mut_ask)"
-saw_mutant "M07 the cache is written and never read" "$out" "second ask in a day: [foreman-sh v9.0.0 is out"
+saw_mutant "M07 the cache is written and never read" "$out" "second ask in a day: [foreman v9.0.0 is out"
 
-mutate_checker 'how(argv[1]), argv[1]))' '"foreman-sh", argv[1]))'
+mutate_checker 'how(argv[1]), argv[1]))' '"foreman-setup", argv[1]))'
 out="$(mut_ask)"
-saw_mutant "M10 status names foreman-sh upgrade on an install that has no foreman-sh" "$out" "second ask in a day: [foreman-sh v2.0.0 is out (this brain has v1.0.0): foreman-sh upgrade"
+saw_mutant "M10 status names foreman-setup upgrade on an install that has no foreman-setup" "$out" "second ask in a day: [foreman v2.0.0 is out (this brain has v1.0.0): foreman-setup upgrade"
 
 # 680-M08 (hw status never asks: `_status_par_start release _release_quiet` removed from bin/hw's bash) is gone with
 # the bash source (go-060 S4). hw status's own release line is still asserted end to end above (section 6, through
 # the shim); the Go side holds the call in core/status_full.go (the `release` job) and the line in core/status_quiet_test.go
 # TestReleaseGateAndAgentToolsQuiet.
-printf 'coverage - 680: 8 live claims, 9 mutants (9 must be named)\n'
+printf 'coverage - 680: 9 live claims, 10 mutants (10 must be named)\n'
